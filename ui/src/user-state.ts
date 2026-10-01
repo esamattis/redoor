@@ -25,11 +25,22 @@ export const recentEditorFileSchema = z.object({
 
 export type RecentEditorFile = z.infer<typeof recentEditorFileSchema>;
 
+/** One editor file kept in the left menu so it can be reopened without browsing. */
+export const pinnedFileSchema = z.object({
+    agentId: z.string(),
+    path: z.string(),
+    name: z.string(),
+    agentName: z.string(),
+});
+
+export type PinnedFile = z.infer<typeof pinnedFileSchema>;
+
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
     theme: z.enum(["system", "dark", "light"]).catch("system"),
     bookmarks: z.array(bookmarkSchema).catch([]),
+    pinnedFiles: z.array(pinnedFileSchema).catch([]),
     recentEditorFilesByAgent: z
         .record(z.string(), z.array(recentEditorFileSchema))
         .catch({}),
@@ -46,6 +57,7 @@ export const defaultUserState: UserState = {
     showHiddenFiles: true,
     theme: "system",
     bookmarks: [],
+    pinnedFiles: [],
     recentEditorFilesByAgent: {},
     vimMode: false,
     wrapEditorLines: false,
@@ -66,6 +78,40 @@ export function isPathBookmarked(
 ) {
     const targetKey = getBookmarkKey(target);
     return bookmarks.some((bookmark) => getBookmarkKey(bookmark) === targetKey);
+}
+
+/** Identifies one pinned file so the same path cannot be stored twice. */
+export function getPinnedFileKey(file: Pick<PinnedFile, "agentId" | "path">) {
+    return `${file.agentId}:${file.path}`;
+}
+
+/** Lets the editor button and the left menu share one membership check. */
+export function isFilePinned(
+    pinnedFiles: PinnedFile[],
+    target: Pick<PinnedFile, "agentId" | "path">,
+) {
+    const targetKey = getPinnedFileKey(target);
+    return pinnedFiles.some((file) => getPinnedFileKey(file) === targetKey);
+}
+
+/**
+ * Appends a new pin so later pins stay below earlier ones.
+ * Re-pinning an existing path keeps its place instead of jumping to the bottom.
+ */
+export function pinFile(pinnedFiles: PinnedFile[], file: PinnedFile) {
+    if (isFilePinned(pinnedFiles, file)) {
+        return pinnedFiles;
+    }
+    return [...pinnedFiles, file];
+}
+
+/** Drops one pin without reordering the files that remain. */
+export function unpinFile(
+    pinnedFiles: PinnedFile[],
+    target: Pick<PinnedFile, "agentId" | "path">,
+) {
+    const targetKey = getPinnedFileKey(target);
+    return pinnedFiles.filter((file) => getPinnedFileKey(file) !== targetKey);
 }
 
 /** Bookmarking is a toggle so the same menu item can add or remove. */

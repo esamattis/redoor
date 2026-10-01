@@ -26,6 +26,10 @@ import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { Button } from "#ui/components/button";
 import { BookmarkButton } from "#ui/components/browser/bookmark-action";
 import {
+    PinButton,
+    usePinOnFirstEdit,
+} from "#ui/components/browser/pin-action";
+import {
     CodeEditor,
     type EditorSelection,
 } from "#ui/components/browser/code-editor";
@@ -151,6 +155,7 @@ function FileEditActions(props: {
         name: string;
         entryType: "file";
     };
+    agentName: string;
     selection: EditorSelection | null;
     recentFiles: RecentEditorFile[];
     preview?: boolean;
@@ -191,6 +196,14 @@ ${props.selection.text}
                     <Save className="h-4 w-4" aria-hidden="true" />
                 </Button>
             </Tooltip>
+            <PinButton
+                file={{
+                    agentId: props.bookmark.agentId,
+                    path: props.bookmark.path,
+                    name: props.bookmark.name,
+                    agentName: props.agentName,
+                }}
+            />
             <IconButton
                 ref={recentFilesButtonRef}
                 type="button"
@@ -678,6 +691,79 @@ type FileEditViewProps = {
     onPreviewChange: (preview: boolean) => void;
 };
 
+/** Groups editor toolbar actions so the edit view can stay focused on buffer state. */
+function FileEditHeader(props: {
+    fileName: string;
+    statusMessage: string | null;
+    hasError: boolean;
+    isSaved: boolean;
+    canEdit: boolean;
+    isDirty: boolean;
+    isSaving: boolean;
+    agent: Agent;
+    filePath: string;
+    selection: EditorSelection | null;
+    recentFiles: RecentEditorFile[];
+    preview: boolean | undefined;
+    isSearchOpen: boolean;
+    isReloading: boolean;
+    downloadUrl: string;
+    isFullWindow: boolean;
+    onSave: () => void;
+    onToggleSearch: () => void;
+    onRemoveRecentFile: (path: string) => void;
+    onPreviewChange: ((preview: boolean) => void) | undefined;
+    onToggleFullWindow: () => void;
+    onReload: () => void;
+}) {
+    return (
+        <header className="shrink-0 border-b border-slate-800 p-4">
+            <h1 aria-label="File name" className="sr-only">
+                {props.fileName}
+            </h1>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex flex-wrap items-center justify-start gap-2">
+                    <FileEditActions
+                        statusMessage={props.statusMessage}
+                        hasError={props.hasError}
+                        isSaved={props.isSaved}
+                        canEdit={props.canEdit}
+                        isDirty={props.isDirty}
+                        isSaving={props.isSaving}
+                        bookmark={{
+                            agentId: props.agent.id,
+                            path: props.filePath,
+                            name: props.fileName,
+                            entryType: "file",
+                        }}
+                        agentName={props.agent.name}
+                        selection={props.selection}
+                        recentFiles={props.recentFiles}
+                        preview={props.preview}
+                        isSearchOpen={props.isSearchOpen}
+                        onSave={props.onSave}
+                        onToggleSearch={props.onToggleSearch}
+                        onRemoveRecentFile={props.onRemoveRecentFile}
+                        onPreviewChange={props.onPreviewChange}
+                    />
+                </div>
+                <FileEditorSecondaryActions
+                    agent={props.agent}
+                    path={props.filePath}
+                    fileName={props.fileName}
+                    canEdit={props.canEdit}
+                    isReloading={props.isReloading}
+                    isSaving={props.isSaving}
+                    downloadUrl={props.downloadUrl}
+                    isFullWindow={props.isFullWindow}
+                    onToggleFullWindow={props.onToggleFullWindow}
+                    onReload={props.onReload}
+                />
+            </div>
+        </header>
+    );
+}
+
 /**
  * Edits file contents in a viewport-bounded CodeMirror with explicit save/reload.
  * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
@@ -720,6 +806,15 @@ export function FileEditView(props: FileEditViewProps) {
     const savedContent = contentQuery.data ?? "";
     const content = draft ?? savedContent;
     const isDirty = draft !== null && draft !== savedContent;
+    // Opening a file must not pin it; only the first change away from the saved text does.
+    const pinOnFirstEdit = usePinOnFirstEdit({
+        file: {
+            agentId: props.agent.id,
+            path: props.filePath,
+            name: props.fileName,
+            agentName: props.agent.name,
+        },
+    });
     // Saving must not flip CodeMirror read-only, or Mod-s and :w steal editor focus.
     const canEdit = contentQuery.isSuccess;
     const isMarkdown =
@@ -782,63 +877,38 @@ export function FileEditView(props: FileEditViewProps) {
                         : "rounded-lg"
                 }`}
             >
-                <header className="shrink-0 border-b border-slate-800 p-4">
-                    <h1 aria-label="File name" className="sr-only">
-                        {props.fileName}
-                    </h1>
-                    <div className="flex flex-wrap items-center justify-between gap-2">
-                        <div className="flex flex-wrap items-center justify-start gap-2">
-                            <FileEditActions
-                                statusMessage={statusMessage}
-                                hasError={
-                                    contentQuery.isError || saveMutation.isError
-                                }
-                                isSaved={saveMutation.isSuccess}
-                                canEdit={canEdit}
-                                isDirty={isDirty}
-                                isSaving={saveMutation.isPending}
-                                bookmark={{
-                                    agentId: props.agent.id,
-                                    path: props.filePath,
-                                    name: props.fileName,
-                                    entryType: "file",
-                                }}
-                                selection={selection}
-                                recentFiles={editorUserState.recentFiles}
-                                preview={isMarkdown ? props.preview : undefined}
-                                isSearchOpen={isSearchOpen}
-                                onSave={handleSave}
-                                onToggleSearch={() => {
-                                    if (!searchHandleRef.current?.close()) {
-                                        searchHandleRef.current?.open();
-                                    }
-                                }}
-                                onRemoveRecentFile={
-                                    editorUserState.removeRecentFile
-                                }
-                                onPreviewChange={
-                                    isMarkdown
-                                        ? props.onPreviewChange
-                                        : undefined
-                                }
-                            />
-                        </div>
-                        <FileEditorSecondaryActions
-                            agent={props.agent}
-                            path={props.filePath}
-                            fileName={props.fileName}
-                            canEdit={canEdit}
-                            isReloading={contentQuery.isFetching}
-                            isSaving={saveMutation.isPending}
-                            downloadUrl={props.downloadUrl}
-                            isFullWindow={isFullWindow}
-                            onToggleFullWindow={() =>
-                                setIsFullWindow((current) => !current)
-                            }
-                            onReload={handleReload}
-                        />
-                    </div>
-                </header>
+                <FileEditHeader
+                    fileName={props.fileName}
+                    statusMessage={statusMessage}
+                    hasError={contentQuery.isError || saveMutation.isError}
+                    isSaved={saveMutation.isSuccess}
+                    canEdit={canEdit}
+                    isDirty={isDirty}
+                    isSaving={saveMutation.isPending}
+                    agent={props.agent}
+                    filePath={props.filePath}
+                    selection={selection}
+                    recentFiles={editorUserState.recentFiles}
+                    preview={isMarkdown ? props.preview : undefined}
+                    isSearchOpen={isSearchOpen}
+                    isReloading={contentQuery.isFetching}
+                    downloadUrl={props.downloadUrl}
+                    isFullWindow={isFullWindow}
+                    onSave={handleSave}
+                    onToggleSearch={() => {
+                        if (!searchHandleRef.current?.close()) {
+                            searchHandleRef.current?.open();
+                        }
+                    }}
+                    onRemoveRecentFile={editorUserState.removeRecentFile}
+                    onPreviewChange={
+                        isMarkdown ? props.onPreviewChange : undefined
+                    }
+                    onToggleFullWindow={() =>
+                        setIsFullWindow((current) => !current)
+                    }
+                    onReload={handleReload}
+                />
 
                 <div className="flex min-h-0 flex-1 flex-col">
                     <FileEditorSurface
@@ -859,8 +929,13 @@ export function FileEditView(props: FileEditViewProps) {
                         preview={isMarkdown && props.preview}
                         scrollToLine={props.scrollToLine}
                         onChange={(nextContent) => {
+                            const startingEdit =
+                                !isDirty && nextContent !== savedContent;
                             setDraft(nextContent);
                             if (saveMutation.isSuccess) saveMutation.reset();
+                            if (startingEdit) {
+                                pinOnFirstEdit();
+                            }
                         }}
                         onFocus={() => {
                             if (!isDirty) reloadFile();
