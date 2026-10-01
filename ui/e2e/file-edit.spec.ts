@@ -73,14 +73,8 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("button", { name: "Bookmark", exact: true }),
         ).toHaveText("");
-        await expect(
-            page.getByRole("button", { name: "Recent files", exact: true }),
-        ).toHaveText("");
         const saveBox = await page
             .getByRole("button", { name: "Save file" })
-            .boundingBox();
-        const recentFilesBox = await page
-            .getByRole("button", { name: "Recent files", exact: true })
             .boundingBox();
         const bookmarkBox = await page
             .getByRole("button", { name: "Bookmark", exact: true })
@@ -94,23 +88,19 @@ test.describe.serial("File Edit View", () => {
         const copyReferenceBox = await copyReferenceButton.boundingBox();
         const searchSelectionBox = await searchSelectionButton.boundingBox();
         expect(saveBox).not.toBeNull();
-        expect(recentFilesBox).not.toBeNull();
         expect(bookmarkBox).not.toBeNull();
         expect(copyReferenceBox).not.toBeNull();
         expect(searchSelectionBox).not.toBeNull();
         if (
             saveBox === null ||
-            recentFilesBox === null ||
             bookmarkBox === null ||
             copyReferenceBox === null ||
             searchSelectionBox === null
         ) {
             throw new Error("expected editor action measurements");
         }
-        // Recent files is available immediately after Save at every breakpoint.
-        expect(recentFilesBox.x).toBeGreaterThan(saveBox.x);
-        // Bookmark remains the next persistent path action.
-        expect(bookmarkBox.x).toBeGreaterThan(recentFilesBox.x);
+        // Bookmark follows Save so persistent path actions stay beside editing controls.
+        expect(bookmarkBox.x).toBeGreaterThan(saveBox.x);
         // Copy reference follows Bookmark and stays unavailable without selected editor text.
         expect(copyReferenceBox.x).toBeGreaterThan(bookmarkBox.x);
         // Search selection follows Copy reference so the same selection can be grepped from git root.
