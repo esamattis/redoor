@@ -8,7 +8,7 @@ import {
     RotateCcw,
     X,
 } from "lucide-react";
-import { useAtomValue, useSetAtom } from "jotai";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import type { WTerm } from "@wterm/dom";
 import type { GhosttyCore } from "@wterm/ghostty";
 import { z } from "zod";
@@ -40,6 +40,7 @@ import {
     type BrowserListingRefreshTarget,
     consumeTerminalCreationRequestsAtom,
     terminalCreationRequestsAtom,
+    terminalOpenRequestedAtom,
 } from "#ui/bottom-drawer-state";
 import { queryKeys } from "#ui/queries";
 import { OneShotTerminalCommand } from "#ui/terminal/one-shot-command";
@@ -229,6 +230,19 @@ function useTerminalCreationRequests(
     }, [consumeRequests, onCreate, requests]);
 }
 
+/** Consumes feature-button requests before opening so rerenders cannot create duplicate tabs. */
+function useTerminalOpenRequest(onOpen: () => void) {
+    const [openRequested, setOpenRequested] = useAtom(
+        terminalOpenRequestedAtom,
+    );
+    React.useEffect(() => {
+        if (openRequested) {
+            setOpenRequested(false);
+            onOpen();
+        }
+    }, [openRequested, setOpenRequested, onOpen]);
+}
+
 /** Owns terminal tabs globally so route and agent navigation cannot destroy live shells. */
 export function TerminalPanel(props: {
     agents: Agent[];
@@ -343,6 +357,32 @@ export function TerminalPanel(props: {
         event.preventDefault();
     };
 
+    /** Shares tab reuse and focus behavior between feature buttons and keyboard shortcuts. */
+    const openActiveTerminal = () => {
+        if (!props.activeTarget) {
+            if (!isPickerOpen) {
+                activateBottomDrawerTab("terminal");
+                setIsPickerOpen(true);
+            }
+            return;
+        }
+        const existingTab = findOpenTerminalForAgent(
+            tabs,
+            activeTabId,
+            props.activeTarget,
+        );
+        if (existingTab) {
+            setActiveTabId(existingTab.id);
+            activateBottomDrawerTab("terminal");
+        } else {
+            createTerminal(props.activeTarget);
+        }
+        pendingTerminalFocusRef.current = true;
+        setFocusRequestId((current) => current + 1);
+    };
+
+    useTerminalOpenRequest(openActiveTerminal);
+
     React.useEffect(() => {
         /** Opens the routed shell or asks for an agent when the route has no terminal target. */
         const handleShortcut = (event: KeyboardEvent) => {
@@ -361,42 +401,19 @@ export function TerminalPanel(props: {
                 return;
             }
 
-            if (!props.activeTarget) {
-                if (!isPickerOpen) {
-                    event.preventDefault();
-                    activateBottomDrawerTab("terminal");
-                    setIsPickerOpen(true);
-                }
+            if (!props.activeTarget && isPickerOpen) {
                 return;
             }
 
             event.preventDefault();
-            const existingTab = findOpenTerminalForAgent(
-                tabs,
-                activeTabId,
-                props.activeTarget,
-            );
-            if (existingTab) {
-                setActiveTabId(existingTab.id);
-                activateBottomDrawerTab("terminal");
-            } else {
-                createTerminal(props.activeTarget);
-            }
-            pendingTerminalFocusRef.current = true;
-            setFocusRequestId((current) => current + 1);
+            openActiveTerminal();
         };
 
         // Capture so Alt+t reaches the terminal action before Vim consumes t.
         window.addEventListener("keydown", handleShortcut, true);
         return () =>
             window.removeEventListener("keydown", handleShortcut, true);
-    }, [
-        activeTabId,
-        activateBottomDrawerTab,
-        isPickerOpen,
-        props.activeTarget,
-        tabs,
-    ]);
+    }, [isPickerOpen, props.activeTarget, openActiveTerminal]);
 
     return (
         <section

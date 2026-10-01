@@ -64,7 +64,8 @@ import {
 } from "#ui/components/contextual-top-bar";
 import {
     bottomDrawerActivationAtom,
-    type BottomDrawerTabId,
+    bottomDrawerCollapsedAtom,
+    bottomDrawerActiveTabAtom,
 } from "#ui/bottom-drawer-state";
 import { openSideMenuAtom, usePersistentSideMenus } from "#ui/side-menu-state";
 
@@ -472,9 +473,8 @@ function ApplicationBottomDrawer(props: {
 }) {
     const selectedFiles = useAtomValue(selectedFilesAtom);
     const drawerActivation = useAtomValue(bottomDrawerActivationAtom);
-    const [activeTab, setActiveTab] =
-        React.useState<BottomDrawerTabId>("terminal");
-    const [isCollapsed, setIsCollapsed] = React.useState(true);
+    const [activeTab, setActiveTab] = useAtom(bottomDrawerActiveTabAtom);
+    const [isCollapsed, setIsCollapsed] = useAtom(bottomDrawerCollapsedAtom);
     const lastActivationRef = React.useRef(0);
     const activeTransfers = props.transfers.filter(
         (transfer) =>

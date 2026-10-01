@@ -4,6 +4,12 @@ import type { Agent } from "#ui/api-client";
 /** Identifies one primary pane in the shared application drawer. */
 export type BottomDrawerTabId = "selected" | "transfers" | "terminal";
 
+/** Shares drawer visibility so feature buttons can fold an already visible pane. */
+export const bottomDrawerCollapsedAtom = atom(true);
+
+/** Identifies which drawer pane a feature toggle would hide. */
+export const bottomDrawerActiveTabAtom = atom<BottomDrawerTabId>("terminal");
+
 /** Carries ordered activation requests so only explicit feature actions steal focus. */
 export const bottomDrawerActivationAtom = atom<{
     tab: BottomDrawerTabId;
@@ -38,6 +44,9 @@ export type BrowserListingRefreshTarget = {
 
 /** Queues every creation request until the global terminal owner atomically consumes them. */
 export const terminalCreationRequestsAtom = atom<TerminalCreationRequest[]>([]);
+
+/** Lets feature buttons invoke the same routed terminal action as the global shortcut. */
+export const terminalOpenRequestedAtom = atom(false);
 
 /** Appends terminal requests so rapid actions cannot replace an earlier request. */
 export const requestTerminalCreationAtom = atom(

@@ -38,6 +38,10 @@ function useFocusEditorShortcut(view: EditorView | null) {
 
         /** Returns from a focused shell without typing e into the session. */
         const handleFocusEditorShortcut = (event: KeyboardEvent) => {
+            if (isUnmodifiedAltKey(event, "t") || event.key === "t") {
+                // A newer shell activation must win over the delayed Alt-e focus correction.
+                window.clearTimeout(focusCorrectionTimer);
+            }
             if (
                 !isUnmodifiedAltKey(event, "e") ||
                 !isTerminalInputTarget(event.target)

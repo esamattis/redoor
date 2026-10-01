@@ -54,6 +54,88 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
     });
 
+    test("opens the editor terminal from its toolbar and matching shortcuts", async ({
+        page,
+    }) => {
+        const terminalSockets: PlaywrightWebSocket[] = [];
+        page.on("websocket", (socket) => {
+            if (socket.url().includes("/terminal/ws")) {
+                terminalSockets.push(socket);
+            }
+        });
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .getByRole("link", { name: ctx.testDirName, exact: true })
+            .click();
+        await page
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+        const editor = page.getByLabel("File editor");
+        const openTerminal = page.getByRole("button", {
+            name: "Open terminal",
+            exact: true,
+        });
+        const expandEditor = page.getByRole("button", {
+            name: "Expand editor to full window",
+        });
+        await openTerminal.hover();
+        // The toolbar must advertise both existing ways to reach the shell.
+        await expect(page.getByRole("tooltip")).toContainText(
+            "t, Alt+t / Option+T",
+        );
+        const terminalBox = await openTerminal.boundingBox();
+        const expandBox = await expandEditor.boundingBox();
+        if (terminalBox === null || expandBox === null) {
+            throw new Error("expected editor secondary action measurements");
+        }
+        // The terminal belongs immediately before full-window in the right-hand actions.
+        expect(terminalBox.x + terminalBox.width).toBeLessThanOrEqual(
+            expandBox.x,
+        );
+        await openTerminal.click();
+        // The button creates a ready shell and focuses it for immediate typing.
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        await expectTerminalFocused(
+            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+        );
+        // A file editor opens its terminal in the parent directory.
+        expect(
+            new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
+        ).toBe(ctx.testDirPath);
+        await openTerminal.click();
+        // A second toolbar click folds the drawer without killing the live shell.
+        await expect(
+            page.getByRole("button", { name: "Expand bottom drawer" }),
+        ).toBeVisible();
+        await openTerminal.click();
+        // Reopening the drawer must reuse the same shell and restore keyboard focus.
+        await expectTerminalFocused(
+            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+        );
+        expect(terminalSockets).toHaveLength(1);
+        await page.keyboard.press("Alt+e");
+        const originalText = await editor.innerText();
+        await editor.press("t");
+        // Plain t remains editor input and cannot create another shell.
+        await expect(editor).not.toHaveText(originalText);
+        expect(terminalSockets).toHaveLength(1);
+        await editor.press("Alt+t");
+        // Option/Alt+t returns to the same terminal rather than creating a duplicate.
+        await expectTerminalFocused(
+            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+        );
+        await page.keyboard.press("Alt+e");
+        await openTerminal.focus();
+        await page.keyboard.press("t");
+        // Outside text entry, the single-key shortcut invokes the same reuse action.
+        await expectTerminalFocused(
+            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+        );
+        expect(terminalSockets).toHaveLength(1);
+    });
+
     test("initializes a shell and executes a command", async ({ page }) => {
         let terminalOutput = "";
         page.on("websocket", (socket) => {

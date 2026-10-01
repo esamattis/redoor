@@ -1,4 +1,5 @@
 import React from "react";
+import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
     getRouteApi,
@@ -16,9 +17,15 @@ import {
     Save,
     Search,
     ScanText,
+    Terminal,
     X,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import {
+    bottomDrawerActiveTabAtom,
+    bottomDrawerCollapsedAtom,
+    terminalOpenRequestedAtom,
+} from "#ui/bottom-drawer-state";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { Button } from "#ui/components/button";
@@ -341,8 +348,34 @@ function FileEditorSecondaryActions(props: {
     onToggleFullWindow: () => void;
     onReload: () => void;
 }) {
+    const requestTerminalOpen = useSetAtom(terminalOpenRequestedAtom);
+    const [isDrawerCollapsed, setDrawerCollapsed] = useAtom(
+        bottomDrawerCollapsedAtom,
+    );
+    const activeDrawerTab = useAtomValue(bottomDrawerActiveTabAtom);
+    const isTerminalOpen = !isDrawerCollapsed && activeDrawerTab === "terminal";
     return (
         <div className="flex shrink-0 items-center gap-1">
+            <IconButton
+                type="button"
+                label="Open terminal"
+                tooltip={
+                    isTerminalOpen
+                        ? "Fold down terminal"
+                        : "Open terminal (t, Alt+t / Option+T)"
+                }
+                aria-expanded={isTerminalOpen}
+                onClick={() => {
+                    if (isTerminalOpen) {
+                        setDrawerCollapsed(true);
+                    } else {
+                        requestTerminalOpen(true);
+                    }
+                }}
+                className="h-9 w-9 rounded-md text-slate-400 hover:bg-white/5 hover:text-slate-100"
+            >
+                <Terminal className="h-4 w-4" aria-hidden="true" />
+            </IconButton>
             <FullWindowToggle
                 targetName="editor"
                 isFullWindow={props.isFullWindow}
