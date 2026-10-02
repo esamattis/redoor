@@ -84,7 +84,7 @@ export function SideMenu(props: {
             </aside>
             {!isPersistent && props.isOpen ? (
                 <div
-                    className="fixed inset-0 z-50 bg-black/60"
+                    className="fixed inset-0 z-[70] bg-black/60"
                     role="dialog"
                     aria-modal="true"
                     aria-label={props.label}
