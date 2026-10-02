@@ -37,7 +37,10 @@ type SortableOrientation = "vertical" | "horizontal";
 /** Bindings a row needs without learning about sensors or user state. */
 export type SortableItemState = {
     setNodeRef: (element: HTMLElement | null) => void;
-    dragProps: React.HTMLAttributes<HTMLElement> & { "data-dragging": boolean };
+    dragProps: React.HTMLAttributes<HTMLElement> & {
+        "data-dragging": boolean;
+        "data-sortable-item": boolean;
+    };
     style: React.CSSProperties;
     isDragging: boolean;
     isOver: boolean;
@@ -522,6 +525,7 @@ export function SortableList(props: {
  */
 export function SortableItem(props: {
     id: string;
+    onRemove?: () => void;
     children: (item: SortableItemState) => React.ReactNode;
 }) {
     const list = React.useContext(SortableListContext);
@@ -542,8 +546,17 @@ export function SortableItem(props: {
             "aria-roledescription": list?.canReorder ? "sortable" : undefined,
             "aria-describedby": sortable.attributes["aria-describedby"],
             "data-dragging": sortable.isDragging,
+            "data-sortable-item": true,
             onMouseDown: (event) => {
                 sortable.listeners?.onMouseDown?.(event);
+            },
+            onAuxClick: (event) => {
+                if (event.button !== 1 || !props.onRemove) {
+                    return;
+                }
+                // A removable link must not open a browser tab as it leaves the collection.
+                event.preventDefault();
+                props.onRemove();
             },
             onTouchStart: (event) => {
                 sortable.listeners?.onTouchStart?.(event);

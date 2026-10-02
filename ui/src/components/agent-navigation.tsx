@@ -316,7 +316,10 @@ function BookmarkRow(props: {
     const isActive =
         props.pathname === href || props.pathname.startsWith(`${href}/`);
     return (
-        <SortableItem id={getBookmarkKey(props.bookmark)}>
+        <SortableItem
+            id={getBookmarkKey(props.bookmark)}
+            onRemove={() => props.onRemove(props.bookmark)}
+        >
             {(item) => (
                 <li
                     {...item.dragProps}

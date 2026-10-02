@@ -5,6 +5,7 @@ import {
 } from "@playwright/test";
 import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
+import { dragReorderRow } from "./reorder";
 import {
     API_BASE_URL,
     expectTerminalFocused,
@@ -390,15 +391,39 @@ test.describe.serial("Terminal panel lifecycle", () => {
             throw new Error("second terminal socket was not created");
         }
         const secondSocketClosed = secondSocket.waitForEvent("close");
-        await page.getByRole("button", { name: "Close agent1_src 2" }).click();
+        const terminalTabs = page.getByRole("tablist", {
+            name: "Terminal tabs",
+        });
+        await dragReorderRow(
+            page,
+            page.locator(
+                '[data-sortable-item][aria-label="Terminal tab agent1_src 3"]',
+            ),
+            terminalTabs.getByRole("tab", { name: "agent1_src 1" }),
+        );
+        // Reordering changes only the strip order and retains all three live shell sessions.
+        await expect
+            .poll(() =>
+                terminalTabs
+                    .getByRole("tab")
+                    .evaluateAll((tabs) =>
+                        tabs.map((tab) => tab.getAttribute("aria-label")),
+                    ),
+            )
+            .toEqual(["agent1_src 3", "agent1_src 1", "agent1_src 2"]);
+        expect(terminalSockets).toHaveLength(3);
+        await page
+            .getByRole("tab", { name: "agent1_src 2" })
+            .click({ button: "middle" });
         await secondSocketClosed;
-        // Closing an inactive tab leaves the active tab and sibling sockets alive.
+        // Middle-clicking an inactive draggable tab closes it without opening a browser tab.
         await expect(
             page.getByRole("tab", { name: "agent1_src 3" }),
         ).toHaveAttribute("aria-selected", "true");
         await expect(
             page.getByRole("tab", { name: "agent1_src 2" }),
         ).toHaveCount(0);
+        expect(page.context().pages()).toHaveLength(1);
 
         const thirdSocket = terminalSockets[2];
         if (!thirdSocket) {
@@ -407,7 +432,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const thirdSocketClosed = thirdSocket.waitForEvent("close");
         await page.getByRole("button", { name: "Close agent1_src 3" }).click();
         await thirdSocketClosed;
-        // Closing the active rightmost tab selects its left neighbor.
+        // Closing the active reordered tab selects its nearest surviving neighbor.
         await expect(
             page.getByRole("tab", { name: "agent1_src 1" }),
         ).toHaveAttribute("aria-selected", "true");

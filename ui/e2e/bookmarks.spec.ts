@@ -102,6 +102,15 @@ test.describe.serial("Bookmarks", () => {
                 .getByRole("list", { name: `${ctx.agentName} bookmarks` })
                 .getByRole("link", { name: fileName, exact: true }),
         ).toBeVisible();
+        await agentBookmarks
+            .getByRole("link", { name: fileName, exact: true })
+            .click({ button: "middle" });
+        // Draggable bookmarks use the same middle-click removal without opening a browser tab.
+        await expect(agentBookmarks).toHaveCount(0);
+        expect(page.context().pages()).toHaveLength(1);
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ bookmarks: [] });
     });
 
     test("should bookmark and remove a file from the file actions menu", async ({

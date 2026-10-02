@@ -92,7 +92,10 @@ function EditorPin(props: {
     onClose: () => void;
 }) {
     return (
-        <SortableItem id={getPinnedFileKey(props.file)}>
+        <SortableItem
+            id={getPinnedFileKey(props.file)}
+            onRemove={props.onClose}
+        >
             {(item) => (
                 <li
                     {...item.dragProps}
@@ -110,13 +113,6 @@ function EditorPin(props: {
                             ? "bg-white/10 text-slate-100"
                             : "text-slate-300 hover:bg-white/5 hover:text-slate-100"
                     }`}
-                    onAuxClick={(event) => {
-                        if (event.button === 1) {
-                            // Suppress the link's new-tab action when middle-click closes a pin.
-                            event.preventDefault();
-                            props.onClose();
-                        }
-                    }}
                 >
                     <Tooltip
                         content={`Open ${props.file.path} on ${props.file.agentName}`}

@@ -23,7 +23,7 @@ export async function dragReorderRow(
     const start = await handle.boundingBox();
     const end = await target.boundingBox();
     const destination = await target.evaluate((element) => {
-        const row = element.closest("li");
+        const row = element.closest("[data-sortable-item]");
         return row?.parentElement
             ? Array.from(row.parentElement.children).indexOf(row) + 1
             : 0;
@@ -67,7 +67,7 @@ export async function keyboardReorder(
     },
 ) {
     let position = await handle.evaluate((element) => {
-        const row = element.closest("li");
+        const row = element.closest("[data-sortable-item]");
         return row?.parentElement
             ? Array.from(row.parentElement.children).indexOf(row) + 1
             : 0;
@@ -94,7 +94,7 @@ export async function keyboardReorder(
     await expect
         .poll(() =>
             handle.evaluate((element) => {
-                const row = element.closest("li");
+                const row = element.closest("[data-sortable-item]");
                 return row?.parentElement
                     ? Array.from(row.parentElement.children).indexOf(row) + 1
                     : 0;

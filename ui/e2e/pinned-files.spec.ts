@@ -159,15 +159,16 @@ test.describe.serial("Pinned files", () => {
             });
 
         await firstItem
-            .getByRole("button", { name: "Remove pinned file" })
-            .click();
-        // Removing one pin must leave the later pin in place.
+            .getByRole("link", { name: firstName, exact: true })
+            .click({ button: "middle" });
+        // A draggable sidebar pin must support tab-style middle-click removal without navigation.
         await expect(
             pinnedFiles.getByRole("link", { name: firstName, exact: true }),
         ).toHaveCount(0);
         await expect(
             secondItem.getByRole("link", { name: secondName, exact: true }),
         ).toBeVisible();
+        expect(page.context().pages()).toHaveLength(1);
 
         await secondItem
             .getByRole("link", { name: secondName, exact: true })

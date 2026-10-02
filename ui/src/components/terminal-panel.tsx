@@ -1,13 +1,4 @@
 import * as React from "react";
-import {
-    CircleCheck,
-    CircleX,
-    HardDrive,
-    LoaderCircle,
-    MoreHorizontal,
-    RotateCcw,
-    X,
-} from "lucide-react";
 import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import type { WTerm } from "@wterm/dom";
 import type { GhosttyCore } from "@wterm/ghostty";
@@ -24,11 +15,16 @@ import {
 import { applyTerminalTheme } from "#ui/terminal/theme";
 import { createWTerm } from "#ui/terminal/wterm";
 import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
-import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
-import { AddButton } from "#ui/components/add-button";
+import { ActionMenuButton } from "#ui/components/action-menu";
 import { ContextMenu } from "#ui/components/context-menu";
-import { IconButton } from "#ui/components/icon-button";
 import { TerminalToolbar } from "#ui/components/terminal-toolbar";
+import {
+    type ActiveTerminalTarget,
+    type TerminalCreationTarget,
+    TerminalTabActions,
+    type TerminalState,
+    type TerminalTab,
+} from "#ui/components/terminal-tabs";
 import { Toast } from "#ui/components/toast";
 import {
     isEditorInputTarget,
@@ -44,13 +40,7 @@ import {
 } from "#ui/bottom-drawer-state";
 import { queryKeys } from "#ui/queries";
 import { OneShotTerminalCommand } from "#ui/terminal/one-shot-command";
-
-type TerminalState =
-    | { type: "not_started" }
-    | { type: "initializing" }
-    | { type: "connecting" }
-    | { type: "connected" }
-    | { type: "disconnected"; message: string };
+import { moveKeyedItems, type ItemMove } from "#ui/utils/reorder";
 
 const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
     z.discriminatedUnion("type", [
@@ -65,39 +55,6 @@ const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
             signal: z.number().nullable(),
         }),
     ]);
-
-/** Keeps each tab's owning agent, creation directory, and lifecycle independent. */
-type TerminalTab = {
-    id: number;
-    agent: Agent;
-    agentTerminalNumber: number;
-    title: string;
-    cwd: string;
-    state: TerminalState;
-    restartGeneration: number;
-    startupCommand: string | null;
-    refreshTarget: BrowserListingRefreshTarget | null;
-};
-
-/** Gives each terminal tab its own concise lifecycle label and color. */
-function getTerminalStatus(state: TerminalState) {
-    if (state.type === "connected") {
-        return {
-            label: "Connected",
-            color: "text-emerald-400",
-        };
-    }
-    if (state.type === "disconnected") {
-        return {
-            label: "Disconnected",
-            color: "text-amber-400",
-        };
-    }
-    return {
-        label: "Connecting",
-        color: "text-slate-400",
-    };
-}
 
 /** Converts a server lifecycle notification into a useful terminal status. */
 function getServerDisconnectMessage(
@@ -147,18 +104,6 @@ function formatTerminalPaste(terminal: WTerm, text: string): string {
         : safeText;
 }
 
-/** Identifies the routed agent and directory used by the direct new-terminal action. */
-type ActiveTerminalTarget = {
-    agent: Agent;
-    cwd: string;
-};
-
-/** Adds one-shot shell input only for feature-created terminals. */
-type TerminalCreationTarget = ActiveTerminalTarget & {
-    startupCommand?: string;
-    refreshTarget?: BrowserListingRefreshTarget;
-};
-
 /** Reuses a live shell only when it was opened in the same directory as the current browse path. */
 function findOpenTerminalForAgent(
     tabs: TerminalTab[],
@@ -178,6 +123,14 @@ function findOpenTerminalForAgent(
         matchingTabs.find((tab) => tab.id === activeTabId) ??
         matchingTabs[matchingTabs.length - 1]
     );
+}
+
+/** Reorders tab presentation without replacing any live terminal session. */
+function useMoveTerminal(
+    setTabs: React.Dispatch<React.SetStateAction<TerminalTab[]>>,
+) {
+    return (move: ItemMove) =>
+        setTabs((tabs) => moveKeyedItems(tabs, (tab) => String(tab.id), move));
 }
 
 /** Keeps earned listing refreshes alive across tab closure but releases them with the app shell. */
@@ -256,6 +209,7 @@ export function TerminalPanel(props: {
     const activateBottomDrawerTab = useSetAtom(activateBottomDrawerTabAtom);
     const [isPickerOpen, setIsPickerOpen] = React.useState(false);
     const [tabs, setTabs] = React.useState<TerminalTab[]>([]);
+    const moveTerminal = useMoveTerminal(setTabs);
     const [activeTabId, setActiveTabId] = React.useState<number | null>(null);
     const [focusRequestId, setFocusRequestId] = React.useState(0);
     const pendingTerminalFocusRef = React.useRef(false);
@@ -433,6 +387,7 @@ export function TerminalPanel(props: {
                     onCreate={createTerminal}
                     onPickerOpenChange={setIsPickerOpen}
                     onClose={closeTerminal}
+                    onMove={moveTerminal}
                     onRestart={restartTerminal}
                     onSelect={setActiveTabId}
                     onTabKeyDown={handleTabKeyDown}
@@ -462,168 +417,6 @@ export function TerminalPanel(props: {
                 ) : null}
             </div>
         </section>
-    );
-}
-
-/** Renders terminal-tab controls while keeping panel lifecycle state local to the parent. */
-function TerminalTabActions(props: {
-    agents: Agent[];
-    activeTarget: ActiveTerminalTarget | null;
-    isPickerOpen: boolean;
-    tabs: TerminalTab[];
-    activeTabId: number | null;
-    onCreate: (target: TerminalCreationTarget) => void;
-    onPickerOpenChange: (isOpen: boolean) => void;
-    onClose: (tabId: number) => void;
-    onRestart: (tabId: number) => void;
-    onSelect: (tabId: number) => void;
-    onTabKeyDown: (
-        event: React.KeyboardEvent<HTMLButtonElement>,
-        tabIndex: number,
-    ) => void;
-}) {
-    const availableAgents = props.agents.filter(
-        (agent) => agent.status === "connected" && agent.cwd !== null,
-    );
-
-    return (
-        <div className="flex min-w-max max-w-none items-center gap-1">
-            <div
-                role="tablist"
-                aria-label="Terminal tabs"
-                className="flex min-h-8 min-w-px items-center gap-1"
-            >
-                {props.tabs.map((tab, tabIndex) => {
-                    const status = getTerminalStatus(tab.state);
-                    const isActive = tab.id === props.activeTabId;
-                    return (
-                        <div
-                            key={tab.id}
-                            className={`flex shrink-0 items-center overflow-hidden rounded-md border transition-colors ${
-                                isActive
-                                    ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
-                                    : "border-slate-700 bg-slate-900"
-                            }`}
-                            title={`${tab.title}: ${tab.cwd}`}
-                        >
-                            <button
-                                type="button"
-                                id={`terminal-tab-${tab.id}`}
-                                role="tab"
-                                aria-label={tab.title}
-                                aria-selected={isActive}
-                                aria-controls={`terminal-panel-${tab.id}`}
-                                tabIndex={isActive ? 0 : -1}
-                                onClick={() => props.onSelect(tab.id)}
-                                onKeyDown={(event) =>
-                                    props.onTabKeyDown(event, tabIndex)
-                                }
-                                className={`flex h-8 items-center gap-2 px-2.5 text-xs font-medium transition-colors ${
-                                    isActive
-                                        ? "text-slate-100"
-                                        : "text-slate-400 hover:bg-white/5 hover:text-slate-200"
-                                }`}
-                            >
-                                <span className="max-w-36 truncate whitespace-nowrap">
-                                    {tab.agent.name}
-                                </span>
-                                <span className="inline-flex min-w-5 items-center justify-center rounded-full bg-slate-950/70 px-1.5 py-0.5 text-[10px] leading-none tabular-nums text-slate-300">
-                                    {tab.agentTerminalNumber}
-                                </span>
-                                <span
-                                    role="status"
-                                    aria-label={`${tab.title}: ${status.label}`}
-                                    title={status.label}
-                                    className={status.color}
-                                >
-                                    {tab.state.type === "connected" ? (
-                                        <CircleCheck className="h-3.5 w-3.5" />
-                                    ) : tab.state.type === "disconnected" ? (
-                                        <CircleX className="h-3.5 w-3.5" />
-                                    ) : (
-                                        <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-                                    )}
-                                </span>
-                            </button>
-                            {tab.state.type === "disconnected" ? (
-                                <IconButton
-                                    type="button"
-                                    label={`Restart ${tab.title}`}
-                                    onClick={() => props.onRestart(tab.id)}
-                                    className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-blue-400 transition-colors hover:bg-blue-500/10 hover:text-blue-300"
-                                >
-                                    <RotateCcw className="h-3.5 w-3.5" />
-                                </IconButton>
-                            ) : null}
-                            <IconButton
-                                type="button"
-                                label={`Close ${tab.title}`}
-                                onClick={() => props.onClose(tab.id)}
-                                className="inline-flex h-8 w-7 items-center justify-center border-l border-slate-700 text-slate-500 transition-colors hover:bg-white/5 hover:text-slate-200"
-                            >
-                                <X className="h-3.5 w-3.5" />
-                            </IconButton>
-                        </div>
-                    );
-                })}
-            </div>
-            {props.activeTarget ? (
-                <AddButton
-                    tooltip={`New terminal in ${props.activeTarget.agent.name} (t, Alt+t)`}
-                >
-                    <button
-                        type="button"
-                        aria-label="New terminal"
-                        onClick={() => {
-                            const activeTarget = props.activeTarget;
-                            if (activeTarget) {
-                                props.onCreate(activeTarget);
-                            }
-                        }}
-                    />
-                </AddButton>
-            ) : null}
-            <ActionMenu
-                label="Choose device for new terminal"
-                title="New terminal"
-                closeAriaLabel="Close device picker"
-                hideTitle={false}
-                tooltip={
-                    props.activeTarget
-                        ? "New terminal on another device"
-                        : "Choose device for new terminal (t)"
-                }
-                icon={<MoreHorizontal className="h-4 w-4" />}
-                variant="icon"
-                isOpen={props.isPickerOpen}
-                onOpenChange={props.onPickerOpenChange}
-            >
-                {(close) => (
-                    <>
-                        {availableAgents.map((agent) => (
-                            <ActionMenuButton
-                                key={agent.id}
-                                onClick={() => {
-                                    if (agent.cwd === null) {
-                                        return;
-                                    }
-                                    props.onCreate({ agent, cwd: agent.cwd });
-                                    close();
-                                }}
-                            >
-                                <HardDrive className="h-4 w-4 text-slate-500" />
-                                <span className="truncate">{agent.name}</span>
-                            </ActionMenuButton>
-                        ))}
-                        {availableAgents.length === 0 ? (
-                            <p className="px-3 py-2 text-sm text-slate-500">
-                                No connected devices
-                            </p>
-                        ) : null}
-                    </>
-                )}
-            </ActionMenu>
-        </div>
     );
 }
 
