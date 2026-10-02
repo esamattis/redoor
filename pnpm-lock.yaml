@@ -117,11 +117,11 @@ importers:
         specifier: ^4.25.11
         version: 4.25.11(@babel/runtime@7.29.7)(@codemirror/autocomplete@6.20.3)(@codemirror/language@6.12.4)(@codemirror/lint@6.9.7)(@codemirror/search@6.7.1)(@codemirror/state@6.7.1)(@codemirror/theme-one-dark@6.1.3)(@codemirror/view@6.43.9)(codemirror@6.0.2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@wterm/dom':
-        specifier: 0.5.0
-        version: 0.5.0
+        specifier: 0.5.4
+        version: 0.5.4
       '@wterm/ghostty':
-        specifier: 0.5.0
-        version: 0.5.0
+        specifier: 0.5.4
+        version: 0.5.4
       diff2html:
         specifier: ^3.4.56
         version: 3.4.56
@@ -1802,14 +1802,14 @@ packages:
   '@vitest/utils@4.1.10':
     resolution: {integrity: sha512-fy9am/HWxbaGt/Sawrp90vt6Y6jQwf1RX77cz3uwoJwJVMli/e1IEwRPnMNJ7vKfPTwo0diXifkpPvwH9v7nGA==}
 
-  '@wterm/core@0.5.0':
-    resolution: {integrity: sha512-2bodU1AK0GmDghJ/GpkQ1v2YHC6j8CI4utXFI6NBPDJ3sU5lvzRYBAEm9fUVOCN2Gjs6fug/+6XRDtWre9lYMA==}
+  '@wterm/core@0.5.4':
+    resolution: {integrity: sha512-yIhbn27ELHDjEDtduDIycHWEEaobJGhqR+WqKgCoSPYReCIrR+skJS67PBk3Wp6+yLImfQ3Fv1CJ4hLXKLa7Fg==}
 
-  '@wterm/dom@0.5.0':
-    resolution: {integrity: sha512-vMIaca+p6uytiIL86Dxu7lFsx2eiOmg4JnL/rCnwdapAoPuVEVV24SyecdaoQXSaQg8HoAx4misKT73goYRWHQ==}
+  '@wterm/dom@0.5.4':
+    resolution: {integrity: sha512-9zxZq52BFpBtVEkBEbZF5a+9dX+eIADQdlTRq6YgGxHP/G/aDXyRja+tebQtAYqx9KY8qJVm20vNOhQxwBe/FQ==}
 
-  '@wterm/ghostty@0.5.0':
-    resolution: {integrity: sha512-MOZTFazB1g3gd2xWslE3Ua0D8opfiTBsskIMtdclE0IsoghHMn4lu0oFEbQV0ZiUNGrou8Td+dPNNm5GYjMhvQ==}
+  '@wterm/ghostty@0.5.4':
+    resolution: {integrity: sha512-W6wlGhHiGf/2tF/uZo8qHtaYqA3Ebf+6VhdPidiWuqEU37Kj+YSkuXCXP/qORSD0roec/5Z16qYRyF5HsC9XJg==}
 
   abbrev@1.1.1:
     resolution: {integrity: sha512-nne9/IiQ/hzIhY6pdDnbBtz7DjPTKrY00P/zvPSm5pOFkl6xuGrGnXn/VtTNNfNtAfZ9/1RtehkszU9qcTii0Q==}
@@ -4534,15 +4534,15 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.1.1
 
-  '@wterm/core@0.5.0': {}
+  '@wterm/core@0.5.4': {}
 
-  '@wterm/dom@0.5.0':
+  '@wterm/dom@0.5.4':
     dependencies:
-      '@wterm/core': 0.5.0
+      '@wterm/core': 0.5.4
 
-  '@wterm/ghostty@0.5.0':
+  '@wterm/ghostty@0.5.4':
     dependencies:
-      '@wterm/core': 0.5.0
+      '@wterm/core': 0.5.4
 
   abbrev@1.1.1: {}
 
