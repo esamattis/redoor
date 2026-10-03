@@ -4,7 +4,7 @@ import { expect, test, type APIRequestContext } from "@playwright/test";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
-import { WEB_BASE_URL } from "./helpers";
+import { encodeFilesystemPath, WEB_BASE_URL } from "./helpers";
 
 const VALID_AGENT = "lazy_managed";
 const FAILING_AGENT = "failing_managed";
@@ -750,6 +750,69 @@ test.describe.serial("Agent management", () => {
         const log = await fs.readFile(SERVER_LOG, "utf8");
         // Absence of registration proves the valid managed child was not launched at server startup.
         expect(log).not.toContain(`Agent registered: agent_id=${VALID_AGENT}`);
+    });
+
+    test("keeps offline file tabs at their destinations and opens them on connection", async ({
+        page,
+        context,
+    }) => {
+        const home = path.resolve(".test-playwright-home/lazy-agent");
+        const firstPath = path.join(home, "queued first.txt");
+        const secondPath = path.join(home, "queued second.txt");
+        await fs.writeFile(firstPath, "First queued file");
+        await fs.writeFile(secondPath, "Second queued file");
+        const firstUrl = `${WEB_BASE_URL}/agents/${VALID_AGENT}/browser/${encodeFilesystemPath(firstPath)}?line=1`;
+        const secondUrl = `${WEB_BASE_URL}/agents/${VALID_AGENT}/browser/${encodeFilesystemPath(secondPath)}?view=details`;
+        const secondTab = await context.newPage();
+
+        await page.goto(firstUrl);
+        await secondTab.goto(secondUrl);
+        // Each tab must keep its destination and offer explicit startup without starting on navigation.
+        await expect(page).toHaveURL(firstUrl);
+        await expect(secondTab).toHaveURL(secondUrl);
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible();
+        await expect(
+            secondTab.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible();
+        expect((await getAgent(page.request, VALID_AGENT)).status).toBe(
+            "stopped",
+        );
+
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+        // One tab's connection must resolve both queued routes without replacing their view options.
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toHaveText("First queued file");
+        await expect(
+            secondTab.getByText("queued second.txt", { exact: true }).first(),
+        ).toBeVisible({ timeout: 30_000 });
+        await expect(
+            secondTab.getByRole("button", { name: "Connect", exact: true }),
+        ).toHaveCount(0);
+        await expect(page).toHaveURL(firstUrl);
+        await expect(secondTab).toHaveURL(secondUrl);
+
+        const shutdown = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents/${VALID_AGENT}/shutdown`,
+        );
+        // Losing the connection must restore controls at the same URLs without stale startup progress.
+        expect(shutdown.ok()).toBe(true);
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(
+            secondTab.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible({ timeout: 15_000 });
+        await expect(page).toHaveURL(firstUrl);
+        await expect(secondTab).toHaveURL(secondUrl);
+        await secondTab.close();
     });
 
     test("shows optimistic starting state before the start request completes", async ({

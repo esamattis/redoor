@@ -1,4 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
+import * as React from "react";
+import { useSetAtom } from "jotai";
+import { rememberProvisioningStatusAtom } from "#ui/provisioning-status";
 import { z } from "zod";
 
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";
@@ -91,6 +94,22 @@ export const Route = createFileRoute("/agents/$agentId")({
 /** Shares one agent-details command across status and filesystem child routes. */
 function AgentRouteLayout() {
     const data = Route.useLoaderData();
+    const rememberProvisioningStatus = useSetAtom(
+        rememberProvisioningStatusAtom,
+    );
+    React.useEffect(() => {
+        if (data.agent.provisioningStatus.length === 0) {
+            return;
+        }
+        rememberProvisioningStatus({
+            agentName: data.agent.name,
+            messages: data.agent.provisioningStatus,
+        });
+    }, [
+        data.agent.name,
+        data.agent.provisioningStatus,
+        rememberProvisioningStatus,
+    ]);
     return (
         <>
             <Outlet />

@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, redirect } from "@tanstack/react-router";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { z } from "zod";
+import { useSetAtom } from "jotai";
+import { agentStartStatesAtom } from "#ui/agent-start-state";
 import {
     type ApiClient,
     type Agent,
@@ -13,6 +15,7 @@ import {
     isLsFileResponse,
 } from "#ui/ls-response";
 import { useUserState } from "#ui/user-state";
+import { AgentLifecycle } from "#ui/components/agent-lifecycle";
 import { RouteError } from "#ui/components/route-error";
 import {
     BrowserHeader,
@@ -123,10 +126,14 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
 
         const agent = agentLoaderData.agent;
         if (agentLoaderData.kind !== "connected" || agent.cwd === null) {
-            throw redirect({
-                to: "/agents/$agentId",
-                params: { agentId: params.agentId },
-            });
+            // Retain the full URL until connection events can reload the requested path.
+            return {
+                kind: "lifecycle" as const,
+                agent,
+                agentId: agent.id,
+                path: `/${params._splat ?? ""}`,
+                lsResult: null,
+            };
         }
 
         // Legacy ?view=diff bookmarks land on the unified Sync workspace.
@@ -248,6 +255,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
             }
 
             return {
+                kind: "connected" as const,
                 agent,
                 agentId: agent.id,
                 agentName: agent.name,
@@ -277,6 +285,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                     staleTime: 0,
                 });
                 return {
+                    kind: "connected" as const,
                     agent,
                     agentId: agent.id,
                     agentName: agent.name,
@@ -302,6 +311,7 @@ export const Route = createFileRoute("/agents/$agentId/browser/$")({
                 });
             }
             return {
+                kind: "connected" as const,
                 agent,
                 agentId: agent.id,
                 agentName: agent.name,
@@ -369,8 +379,33 @@ function BrowserRouteShell(props: {
     );
 }
 
+/** Shows connection controls at the bookmarked URL until filesystem commands are available. */
 function FileBrowser() {
     const data = Route.useLoaderData();
+    if (data.kind === "lifecycle") {
+        return <AgentLifecycle agent={data.agent} preserveDestination />;
+    }
+    return <ConnectedFileBrowser data={data} />;
+}
+
+/** Mounts filesystem subscriptions only after the agent can serve the requested path. */
+function ConnectedFileBrowser(props: {
+    data: Exclude<
+        ReturnType<typeof Route.useLoaderData>,
+        { kind: "lifecycle" }
+    >;
+}) {
+    const data = props.data;
+    const setStartStates = useSetAtom(agentStartStatesAtom);
+    useEffect(() => {
+        // Completing startup here must not leave a later disconnect showing optimistic progress.
+        setStartStates((states) => {
+            if (!states[data.agentId]) return states;
+            const next = { ...states };
+            delete next[data.agentId];
+            return next;
+        });
+    }, [data.agentId, setStartStates]);
     const { api } = Route.useRouteContext();
     const navigate = Route.useNavigate();
     const { agent, agentId, agentName, path, lsResult, pathError } = data;
