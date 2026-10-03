@@ -276,6 +276,48 @@ describe("Git browser REST API", () => {
         });
     });
 
+    it("deduplicates ordered paths and rejects excessive distinct-file batches", async () => {
+        const repo = tempFiles.tempDirectory({ suffix: "-git-batch-count" });
+        await initRepository(repo);
+        const first = join(repo, "first.txt");
+        const second = join(repo, "second.txt");
+        await writeFile(first, "first");
+        await writeFile(second, "second");
+        const response = await gitDiffFiles([
+            ...Array.from({ length: 200 }, () => second),
+            first,
+            second,
+        ]);
+        // Repeated paths cannot amplify work, and the first occurrence determines order.
+        expect(response.diffs.map((diff) => diff.path)).toEqual([second, first]);
+        // Distinct-file rejection happens before invalid or missing paths reach repository reads.
+        await expect(gitDiffFiles(Array.from({ length: 129 }, (_, index) =>
+            join(repo, `missing-${index}.txt`),
+        ))).rejects.toThrow(/at most 128 distinct files/);
+    });
+
+    it("caps aggregate patch text while retaining per-file results", async () => {
+        const repo = tempFiles.tempDirectory({ suffix: "-git-batch-bytes" });
+        await initRepository(repo);
+        const files = Array.from({ length: 5 }, (_, index) => join(repo, `large-${index}.txt`));
+        const content = "a".repeat(1792 * 1024);
+        await Promise.all(files.map((path) => writeFile(path, content)));
+        const small = join(repo, "small.txt");
+        await writeFile(small, "small addition");
+        const response = await gitDiffFiles([...files, small]);
+        // Batches keep one result for every distinct path even when a patch does not fit.
+        expect(response.diffs.map((diff) => diff.result.type)).toEqual([
+            "text", "text", "text", "text", "too_large", "text",
+        ]);
+        const bytes = response.diffs.reduce((total, diff) => total + (
+            diff.result.type === "text" ? Buffer.byteLength(diff.result.unified_diff) : 0
+        ), 0);
+        // The shared budget bounds the complete retained response, beyond the per-file ceiling.
+        expect(bytes).toBeLessThanOrEqual(8 * 1024 * 1024);
+        // Large patches really fill the batch; this is not merely a per-file rejection test.
+        expect(bytes).toBeGreaterThan(7 * 1024 * 1024);
+    });
+
     it("handles unborn and detached HEAD plus bounded diff outcomes", async () => {
         const repo = tempFiles.tempDirectory({ suffix: "-git-edge" });
         await initRepository(repo);

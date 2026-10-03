@@ -817,6 +817,27 @@ pub struct GitDiffRequest {
     pub mode: GitDiffMode,
 }
 
+impl GitDiffRequest {
+    /// Bounds batch work and response metadata even when no file produces a text patch.
+    pub const MAX_FILES: usize = 128;
+
+    /// Keeps first-occurrence order while preventing repeated paths from amplifying work.
+    pub fn normalize_files(&mut self) -> Result<(), &'static str> {
+        let mut seen = std::collections::HashSet::new();
+        let mut files = Vec::new();
+        for path in std::mem::take(&mut self.files) {
+            if seen.insert(path.clone()) {
+                if files.len() == Self::MAX_FILES {
+                    return Err("Git diff requests support at most 128 distinct files");
+                }
+                files.push(path);
+            }
+        }
+        self.files = files;
+        Ok(())
+    }
+}
+
 /// Represents every bounded single-file diff outcome explicitly.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

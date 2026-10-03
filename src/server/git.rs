@@ -64,8 +64,17 @@ pub(crate) async fn git_status_handler(
 pub(crate) async fn git_diff_handler(
     Path(agent): Path<String>,
     AxumState(state): AxumState<ServerState>,
-    Json(request): Json<GitDiffRequest>,
+    Json(mut request): Json<GitDiffRequest>,
 ) -> Response {
+    if let Err(error) = request.normalize_files() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse {
+                error: error.to_string(),
+            }),
+        )
+            .into_response();
+    }
     execute_git_command(
         &state,
         AgentId::from(agent),

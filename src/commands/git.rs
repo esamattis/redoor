@@ -13,14 +13,16 @@ use gix::bstr::ByteSlice;
 
 use super::{
     CommandErrorKind, CommandResult, GitChangeState, GitConflictState, GitContextResponse,
-    GitDiffMode, GitDiffResponse, GitDiffResult, GitEntryType, GitFileDiff, GitStatusEntry,
-    GitStatusEntryKind, GitStatusResponse, GitTrackingState,
+    GitDiffMode, GitDiffRequest, GitDiffResponse, GitDiffResult, GitEntryType, GitFileDiff,
+    GitStatusEntry, GitStatusEntryKind, GitStatusResponse, GitTrackingState,
 };
 
 /// Matches the editor's existing per-file safety policy for both sides of a diff.
 const MAX_DIFF_INPUT_BYTES: u64 = 2 * 1024 * 1024;
 /// Prevents a bounded pair of inputs from expanding into an unexpectedly large control frame.
 const MAX_UNIFIED_DIFF_BYTES: usize = 4 * 1024 * 1024;
+/// Caps retained patch text per batch on agents with restrained memory.
+const MAX_BATCH_DIFF_BYTES: usize = 8 * 1024 * 1024;
 /// Bounds status memory and the size of its WebSocket response.
 pub(crate) const MAX_GIT_STATUS_ENTRIES: usize = 5_000;
 
@@ -303,10 +305,20 @@ fn diff_blocking(
     mode: GitDiffMode,
     interrupt: Arc<AtomicBool>,
 ) -> Result<CommandResult, GitFailure> {
-    let diffs = files
-        .into_iter()
-        .map(|path| diff_file_blocking(path, mode, interrupt.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
+    // Agent-side validation also protects commands sent outside the REST API.
+    let mut request = GitDiffRequest { files, mode };
+    request
+        .normalize_files()
+        .map_err(|message| GitFailure::new(CommandErrorKind::InvalidInput, message))?;
+    let mut remaining = MAX_BATCH_DIFF_BYTES;
+    let mut diffs = Vec::with_capacity(request.files.len());
+    for path in request.files {
+        let diff = diff_file_blocking(path, mode, interrupt.clone(), remaining)?;
+        if let GitDiffResult::Text { unified_diff } = &diff.result {
+            remaining -= unified_diff.len();
+        }
+        diffs.push(diff);
+    }
     Ok(CommandResult::GitDiff(GitDiffResponse { diffs }))
 }
 
@@ -315,6 +327,7 @@ fn diff_file_blocking(
     path: String,
     mode: GitDiffMode,
     interrupt: Arc<AtomicBool>,
+    remaining: usize,
 ) -> Result<GitFileDiff, GitFailure> {
     let requested = validate_absolute_path(&path)?;
     let repository = discover_repository(requested.clone())?.ok_or_else(|| {
@@ -364,7 +377,7 @@ fn diff_file_blocking(
         GitDiffMode::Full => worktree_blob(&requested)?,
         GitDiffMode::Staged => index_blob(&repository.repo, relative.as_bytes())?,
     };
-    let result = compare_sources(head_source, right_source, &relative)?;
+    let result = compare_sources(head_source, right_source, &relative, remaining)?;
     Ok(GitFileDiff { path, result })
 }
 
@@ -780,6 +793,7 @@ fn compare_sources(
     left: DiffSource,
     right: DiffSource,
     relative: &str,
+    remaining: usize,
 ) -> Result<GitDiffResult, GitFailure> {
     if matches!(left, DiffSource::TooLarge) || matches!(right, DiffSource::TooLarge) {
         return Ok(GitDiffResult::TooLarge);
@@ -811,7 +825,7 @@ fn compare_sources(
     unified_diff.header(&format!("a/{relative}"), &format!("b/{relative}"));
     let mut output = LimitedWriter {
         bytes: Vec::new(),
-        limit: MAX_UNIFIED_DIFF_BYTES,
+        limit: MAX_UNIFIED_DIFF_BYTES.min(remaining),
     };
     if unified_diff.to_writer(&mut output).is_err() {
         return Ok(GitDiffResult::TooLarge);
@@ -885,7 +899,8 @@ mod tests {
             compare_sources(
                 DiffSource::Content(b"same\n".to_vec()),
                 DiffSource::Content(b"same\n".to_vec()),
-                "file.txt"
+                "file.txt",
+                MAX_BATCH_DIFF_BYTES
             )
             .unwrap(),
             GitDiffResult::NoChanges
@@ -895,7 +910,8 @@ mod tests {
             compare_sources(
                 DiffSource::Content(vec![0]),
                 DiffSource::Content(vec![1]),
-                "file.bin"
+                "file.bin",
+                MAX_BATCH_DIFF_BYTES
             )
             .unwrap(),
             GitDiffResult::Binary
@@ -904,6 +920,7 @@ mod tests {
             DiffSource::Content(b"old\n".to_vec()),
             DiffSource::Content(b"new\n".to_vec()),
             "nested/file.txt",
+            MAX_BATCH_DIFF_BYTES,
         )
         .unwrap();
         let GitDiffResult::Text { unified_diff } = result else {
@@ -916,6 +933,40 @@ mod tests {
         assert!(unified_diff.contains("-old\n+new"));
     }
 
+    /// Checks that the batch budget is applied before patch bytes are retained.
+    #[test]
+    fn formatter_respects_remaining_batch_budget() {
+        let result = compare_sources(
+            DiffSource::Missing,
+            DiffSource::Content(b"addition".to_vec()),
+            "file.txt",
+            4,
+        )
+        .unwrap();
+        // An individually valid patch must still respect the remaining shared budget.
+        assert_eq!(result, GitDiffResult::TooLarge);
+    }
+
+    /// Protects direct agent commands from duplicate work and excessive batch metadata.
+    #[test]
+    fn diff_requests_deduplicate_in_order_and_reject_excess_files() {
+        let mut request = GitDiffRequest {
+            files: vec!["/b".to_string(), "/a".to_string(), "/b".to_string()],
+            mode: GitDiffMode::Full,
+        };
+        request.normalize_files().unwrap();
+        // First-occurrence ordering keeps file rows aligned with the request.
+        assert_eq!(request.files, vec!["/b", "/a"]);
+        request.files = (0..GitDiffRequest::MAX_FILES)
+            .map(|index| format!("/{index}"))
+            .collect();
+        // Exactly the documented number of distinct files remains supported.
+        assert!(request.normalize_files().is_ok());
+        request.files.push("/overflow".to_string());
+        // Rejecting before repository reads bounds work even for direct agent commands.
+        assert!(request.normalize_files().is_err());
+    }
+
     /// Verifies the formatter preserves missing-final-newline markers needed for exact display.
     #[test]
     fn bounded_diff_formatter_marks_missing_final_newlines() {
@@ -923,6 +974,7 @@ mod tests {
             DiffSource::Content(b"old".to_vec()),
             DiffSource::Content(b"new".to_vec()),
             "file.txt",
+            MAX_BATCH_DIFF_BYTES,
         )
         .unwrap();
         let GitDiffResult::Text { unified_diff } = result else {
