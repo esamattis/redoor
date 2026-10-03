@@ -222,13 +222,25 @@ impl SessionRuntime {
                 request_id,
                 result,
             } => {
-                let _ = self
+                // Terminal responses release pending requests and transfer state, so
+                // temporary mailbox pressure must never discard their cleanup signal.
+                if let Err(error) = self
                     .router_ref
-                    .send(RouterMsg::RouteResponse(RouteResponse {
-                        agent_id,
+                    .send_async(RouterMsg::RouteResponse(RouteResponse {
+                        agent_id: agent_id.clone(),
                         request_id,
                         result,
-                    }));
+                    }))
+                    .await
+                {
+                    crate::log_failure!(
+                        Level::Error,
+                        "Failed to queue command response: agent_id={}, request_id={}, error={}",
+                        agent_id,
+                        request_id,
+                        error
+                    );
+                }
             }
             Message::UploadPublicationRequest {
                 agent_id,
@@ -468,6 +480,57 @@ pub async fn handle_websocket(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Exercises session dispatch under backpressure so completion cleanup cannot be lost.
+    #[tokio::test]
+    async fn command_response_waits_for_router_capacity_before_routing() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        let router_ref = RouterHandle::new(sender);
+        router_ref
+            .send(RouterMsg::CheckPendingUiRefresh)
+            .expect("router mailbox filled");
+        let agent_id = AgentId::from("agent");
+        let request_id = crate::types::RequestId::new(42);
+        let (outgoing_commands, _outgoing_commands_receiver) = mpsc::channel(1);
+        let (outgoing_priority, _outgoing_priority_receiver) = mpsc::channel(1);
+        let mut runtime = SessionRuntime {
+            socket_id: SocketId::new(),
+            router_ref,
+            agent_id: Some(agent_id.clone()),
+            outgoing_commands,
+            outgoing_priority,
+            watchdog: None,
+            agent_token: "token".to_string(),
+        };
+        let watchdog_registry = WatchdogRegistry::new();
+        let response = runtime.handle_control_message(
+            Message::CommandResponse {
+                agent_id: agent_id.clone(),
+                request_id,
+                result: crate::commands::CommandResult::RawUpload,
+            },
+            &watchdog_registry,
+        );
+        tokio::pin!(response);
+
+        // Poll the actual handler to distinguish backpressure from a silently dropped response.
+        assert!(futures_util::poll!(&mut response).is_pending());
+        // Only the preexisting message may occupy the mailbox while completion is waiting.
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RouterMsg::CheckPendingUiRefresh)
+        ));
+        response.await;
+        // The completion payload must survive capacity pressure unchanged for transfer cleanup.
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RouterMsg::RouteResponse(RouteResponse {
+                agent_id: received_agent_id,
+                request_id: received_request_id,
+                result: crate::commands::CommandResult::RawUpload,
+            })) if received_agent_id == agent_id && received_request_id == request_id
+        ));
+    }
 
     #[tokio::test]
     async fn shutdown_waits_for_router_capacity_before_unregistering_agent() {
