@@ -217,6 +217,11 @@ describe("Remote cp and streaming archive upload", () => {
                                   entry.path === destination),
                     ),
             });
+            // Source progress can precede destination setup; interrupt only after output staging exists.
+            await waitForValue({
+                description: `CLI ${direction} destination staging created`,
+                predicate: async () => (await fs.readdir(parent)).length > 0,
+            });
             await command.kill("SIGINT");
             const output = await command;
             // The CLI must handle the signal, report one JSON failure, and exit unsuccessfully.
@@ -359,6 +364,11 @@ describe("Remote cp and streaming archive upload", () => {
                         entry.path === destination && entry.state === "active",
                 ),
         });
+        // Admission precedes agent setup, so an empty directory alone cannot yet prove cleanup.
+        await waitForValue({
+            description: "chunked archive staging created",
+            predicate: async () => (await fs.readdir(parent)).length > 0,
+        });
         const echo = await setup.testAgent.echo("control still responsive");
         // The body remains blocked, so echo success proves control is independent of payload IO.
         expect(echo.message).toBe("control still responsive");
@@ -402,7 +412,18 @@ describe("Remote cp and streaming archive upload", () => {
         bodyController?.close();
         await waitForValue({
             description: "canceled archive staging removed",
-            predicate: async () => (await fs.readdir(parent)).length === 0,
+            predicate: async () => {
+                const state = (
+                    await setup.apiClient.getTransferProgress()
+                ).transfers.find(
+                    (entry) => entry.request_id === transfer.request_id,
+                );
+                // The canceled state acknowledges the worker; staging must also be gone before reuse.
+                return (
+                    state?.state === "canceled" &&
+                    (await fs.readdir(parent)).length === 0
+                );
+            },
         });
         // Cancellation must leave neither the result nor a partial extracted staging directory.
         expect(await fs.readdir(parent)).toEqual([]);

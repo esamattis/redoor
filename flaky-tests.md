@@ -1,5 +1,16 @@
 # Flaky tests
 
+## Investigation on 2026-10-03
+
+- Terminal focus: reproduced the recorded failure by waiting for the drawer to fully hide before reopening it with `t` (one failure in three repetitions). The drawer now reveals content in the opening render, before terminal focus effects run. All ten repetitions of the strengthened workflow passed after the fix.
+- Remote copy/archive cancellation: tests now wait for destination staging to exist before interrupting. The chunked archive test also waits for the worker's `canceled` acknowledgement before asserting cleanup, avoiding an initially empty directory being mistaken for completed cleanup. All ten tests passed in five sequential runs after these changes.
+- Pin reordering: the existing animation-frame pickup synchronization and committed-position polling already address the recorded races. The pin and content-search files passed three repetitions (42 tests including server-log dependencies).
+- Content search and agent log format: commit `bcf0f8e` already replaced request-event-count assertions and isolated the log-format server from ambient test processes. The ten agent-log tests passed in five sequential runs alongside remote copy.
+- Shared server failures: test runners already stage immutable executables and await child shutdown. Separate integration runs still share a port and must run sequentially. Overlapping integration runs during this investigation reproduced fixture collisions; those runs were stopped and rerun sequentially.
+- Full validation: `pn test` passed in 414 seconds after these changes, including integration and Playwright. The Android warning check was skipped because `cargo-ndk` is not installed.
+
+## Failure history
+
 - 2026-10-03 `pn test` Playwright (compact editor search): `terminal.spec.ts` failed in `opens or focuses the current agent terminal with t` while waiting for terminal focus at line 622. All 12 tests in the focused terminal run and its dependencies passed on immediate rerun.
 
 - 2026-10-01 `pn test` Playwright (whole-row dragging): `pinned-files.spec.ts` failed in `reorders editor pins horizontally without resetting the draft` when the next keyboard move read the DOM before the prior optimistic Query update repainted. The workflow passed three focused repetitions after waiting for the committed row position between gestures.
