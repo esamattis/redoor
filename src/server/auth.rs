@@ -35,6 +35,8 @@ const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
 const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
 /// Caps coordinated multi-source brute force against the whole process.
 const LOGIN_MAX_FAILURES_GLOBAL: u32 = 60;
+/// Bounds retained source addresses without evicting an active per-IP lockout.
+const LOGIN_MAX_TRACKED_IPS: usize = 1_024;
 const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 
 /// How browser login passwords are verified after the username check succeeds.
@@ -100,18 +102,18 @@ struct FailureWindow {
 }
 
 impl FailureWindow {
-    /// Starts an empty window at the current time.
-    fn new() -> Self {
+    /// Uses the supplied observation time so boundary behavior can be verified without sleeps.
+    fn new(now: Instant) -> Self {
         Self {
-            started_at: Instant::now(),
+            started_at: now,
             failures: 0,
         }
     }
 
     /// Resets the window when it has expired so legitimate users recover after a burst.
-    fn refresh(&mut self) {
-        if self.started_at.elapsed() >= LOGIN_RATE_WINDOW {
-            *self = Self::new();
+    fn refresh(&mut self, now: Instant) {
+        if now.duration_since(self.started_at) >= LOGIN_RATE_WINDOW {
+            *self = Self::new(now);
         }
     }
 }
@@ -121,33 +123,42 @@ impl LoginRateLimiter {
     fn new() -> Self {
         Self {
             by_ip: Mutex::new(HashMap::new()),
-            global: Mutex::new(FailureWindow::new()),
+            global: Mutex::new(FailureWindow::new(Instant::now())),
         }
     }
 
-    /// Returns whether this client is currently locked out of login attempts.
-    fn is_limited(&self, ip: IpAddr) -> bool {
+    /// Prunes expired failures and rejects untracked sources when active tracking is full.
+    fn is_limited(&self, ip: IpAddr, now: Instant) -> bool {
         let mut by_ip = self.by_ip.lock().expect("login rate limiter poisoned");
-        let entry = by_ip.entry(ip).or_insert_with(FailureWindow::new);
-        entry.refresh();
-        if entry.failures >= LOGIN_MAX_FAILURES_PER_IP {
+        by_ip.retain(|_, window| now.duration_since(window.started_at) < LOGIN_RATE_WINDOW);
+        // Successful logins and throttled checks need no entry. At capacity, preserve existing
+        // lockouts rather than letting source-address churn reset an attacker's failure count.
+        if let Some(entry) = by_ip.get(&ip) {
+            if entry.failures >= LOGIN_MAX_FAILURES_PER_IP {
+                return true;
+            }
+        } else if by_ip.len() >= LOGIN_MAX_TRACKED_IPS {
             return true;
         }
 
         let mut global = self.global.lock().expect("login rate limiter poisoned");
-        global.refresh();
+        global.refresh(now);
         global.failures >= LOGIN_MAX_FAILURES_GLOBAL
     }
 
-    /// Records one failed login so subsequent attempts can be rejected quickly.
-    fn record_failure(&self, ip: IpAddr) {
+    /// Counts all rejected credentials while retaining only a bounded set of active sources.
+    fn record_failure(&self, ip: IpAddr, now: Instant) {
         let mut by_ip = self.by_ip.lock().expect("login rate limiter poisoned");
-        let entry = by_ip.entry(ip).or_insert_with(FailureWindow::new);
-        entry.refresh();
-        entry.failures = entry.failures.saturating_add(1);
+        by_ip.retain(|_, window| now.duration_since(window.started_at) < LOGIN_RATE_WINDOW);
+        if by_ip.contains_key(&ip) || by_ip.len() < LOGIN_MAX_TRACKED_IPS {
+            let entry = by_ip.entry(ip).or_insert_with(|| FailureWindow::new(now));
+            entry.failures = entry.failures.saturating_add(1);
+        }
 
+        // Verification may finish after other requests fill the map, so an untracked failure
+        // must still contribute to the process-wide limit instead of bypassing abuse protection.
         let mut global = self.global.lock().expect("login rate limiter poisoned");
-        global.refresh();
+        global.refresh(now);
         global.failures = global.failures.saturating_add(1);
     }
 }
@@ -565,7 +576,11 @@ pub(crate) async fn login_handler(
     Json(request): Json<LoginRequest>,
 ) -> Response {
     let client_ip = addr.ip();
-    if state.auth.login_limiter.is_limited(client_ip) {
+    if state
+        .auth
+        .login_limiter
+        .is_limited(client_ip, Instant::now())
+    {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorResponse {
@@ -584,7 +599,10 @@ pub(crate) async fn login_handler(
     {
         LoginVerification::Authenticated => {}
         LoginVerification::Rejected => {
-            state.auth.login_limiter.record_failure(client_ip);
+            state
+                .auth
+                .login_limiter
+                .record_failure(client_ip, Instant::now());
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
@@ -673,8 +691,140 @@ pub(crate) async fn logout_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_one_time_token_raw_request, is_public_path};
+    use super::{
+        FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP, LOGIN_MAX_TRACKED_IPS,
+        LOGIN_RATE_WINDOW, LoginRateLimiter, is_one_time_token_raw_request, is_public_path,
+    };
     use axum::http::{Method, Uri};
+    use std::{
+        net::{IpAddr, Ipv4Addr},
+        time::Instant,
+    };
+
+    /// Ensures failed-login state expires at the boundary without sleeps or resetting active bans.
+    #[test]
+    fn login_failures_expire_without_discarding_active_lockouts() {
+        let limiter = LoginRateLimiter::new();
+        let now = Instant::now();
+        let expired_ip = IpAddr::from([192, 0, 2, 1]);
+        let active_ip = IpAddr::from([192, 0, 2, 2]);
+        for _ in 0..LOGIN_MAX_FAILURES_PER_IP {
+            limiter.record_failure(expired_ip, now);
+        }
+        for _ in 0..LOGIN_MAX_FAILURES_PER_IP {
+            limiter.record_failure(active_ip, now + LOGIN_RATE_WINDOW / 2);
+        }
+        let boundary = now + LOGIN_RATE_WINDOW;
+        // Exactly expired sources recover even while a different address still has an active ban.
+        assert!(!limiter.is_limited(expired_ip, boundary));
+        // Pruning unrelated expired sources must not weaken a still-active per-IP lockout.
+        assert!(limiter.is_limited(active_ip, boundary));
+        let by_ip = limiter
+            .by_ip
+            .lock()
+            .expect("test limiter lock must succeed");
+        // Checking a now-allowed address must not recreate an empty retained entry.
+        assert_eq!(by_ip.len(), 1);
+        drop(by_ip);
+        limiter.record_failure(expired_ip, boundary);
+        let by_ip = limiter
+            .by_ip
+            .lock()
+            .expect("test limiter lock must succeed");
+        // A new failure starts fresh instead of inheriting the previous window's ban.
+        assert_eq!(by_ip[&expired_ip].failures, 1);
+    }
+
+    /// Prevents successful or globally throttled source churn from allocating empty entries.
+    #[test]
+    fn login_checks_do_not_retain_source_addresses() {
+        let limiter = LoginRateLimiter::new();
+        let now = Instant::now();
+        let ip = IpAddr::from([192, 0, 2, 1]);
+        // An allowed check does not need tracking until credentials actually fail.
+        assert!(!limiter.is_limited(ip, now));
+        for _ in 0..LOGIN_MAX_FAILURES_GLOBAL {
+            limiter.record_failure(ip, now);
+        }
+        let fresh_ip = IpAddr::from([192, 0, 2, 2]);
+        // The process-wide limit applies to sources without their own failure history.
+        assert!(limiter.is_limited(fresh_ip, now));
+        // Rejected checks retain only the address that actually submitted invalid credentials.
+        assert_eq!(
+            limiter.by_ip.lock().expect("test lock must succeed").len(),
+            1
+        );
+        // The global throttle recovers at the same exact fixed-window boundary.
+        assert!(!limiter.is_limited(fresh_ip, now + LOGIN_RATE_WINDOW));
+        // Expiration removes the last stale source instead of retaining it for process lifetime.
+        assert!(
+            limiter
+                .by_ip
+                .lock()
+                .expect("test lock must succeed")
+                .is_empty()
+        );
+    }
+
+    /// Covers capacity independently of the earlier global limit, including in-flight failures.
+    #[test]
+    fn login_tracking_capacity_preserves_lockouts_and_global_accounting() {
+        let limiter = LoginRateLimiter::new();
+        let now = Instant::now();
+        let locked_ip = IpAddr::from([192, 0, 2, 1]);
+        {
+            let mut by_ip = limiter.by_ip.lock().expect("test lock must succeed");
+            for address in 0..LOGIN_MAX_TRACKED_IPS {
+                by_ip.insert(
+                    IpAddr::from(Ipv4Addr::from(address as u32)),
+                    FailureWindow::new(now),
+                );
+            }
+            by_ip.remove(&IpAddr::from(Ipv4Addr::from(0u32)));
+            by_ip.insert(
+                locked_ip,
+                FailureWindow {
+                    started_at: now,
+                    failures: LOGIN_MAX_FAILURES_PER_IP,
+                },
+            );
+        }
+        let fresh_ip = IpAddr::from([192, 0, 2, 2]);
+        // Unknown addresses wait for expiration rather than displacing an active lockout.
+        assert!(limiter.is_limited(fresh_ip, now));
+        // Existing low-failure addresses still use the normal throttle policy at capacity.
+        assert!(!limiter.is_limited(IpAddr::from(Ipv4Addr::from(1u32)), now));
+        limiter.record_failure(fresh_ip, now);
+        // An in-flight verification cannot grow the table after other requests fill it.
+        assert_eq!(
+            limiter.by_ip.lock().expect("test lock must succeed").len(),
+            LOGIN_MAX_TRACKED_IPS
+        );
+        // Every failed verification contributes to global brute-force protection, even at capacity.
+        assert_eq!(
+            limiter
+                .global
+                .lock()
+                .expect("test lock must succeed")
+                .failures,
+            1
+        );
+        // Source churn must never erase a tracked address's active lockout.
+        assert!(limiter.is_limited(locked_ip, now));
+        // Expiration makes admission possible again without permanent capacity rejection.
+        assert!(!limiter.is_limited(fresh_ip, now + LOGIN_RATE_WINDOW));
+        limiter
+            .by_ip
+            .lock()
+            .expect("test lock must succeed")
+            .insert(locked_ip, FailureWindow::new(now));
+        limiter.record_failure(fresh_ip, now + LOGIN_RATE_WINDOW);
+        // Failure recording also prunes stale entries without requiring a preceding login check.
+        assert_eq!(
+            limiter.by_ip.lock().expect("test lock must succeed").len(),
+            1
+        );
+    }
 
     /// Protects the dedicated agent exception without exposing browser or neighboring API routes.
     #[test]
