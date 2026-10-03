@@ -18,10 +18,11 @@ export const API_BASE_URL = WEB_BASE_URL;
 
 /** Asserts keyboard ownership through wterm's hidden textarea inside the accessible host. */
 export async function expectTerminalFocused(terminal: Locator): Promise<void> {
-    // Focus must remain inside the labeled textbox even though its input node is aria-hidden.
+    // WTerm also labels its textarea; filter to the host whose descendants own shell focus.
+    const host = terminal.filter({ has: terminal.page().locator("textarea") });
     await expect
         .poll(() =>
-            terminal.evaluate((host) =>
+            host.evaluate((host) =>
                 host.contains(host.ownerDocument.activeElement),
             ),
         )
@@ -30,10 +31,11 @@ export async function expectTerminalFocused(terminal: Locator): Promise<void> {
 
 /** Asserts that neither the terminal host nor its internal input owns keyboard focus. */
 export async function expectTerminalBlurred(terminal: Locator): Promise<void> {
+    const host = terminal.filter({ has: terminal.page().locator("textarea") });
     // Leaving the shell must move focus completely outside its accessible host.
     await expect
         .poll(() =>
-            terminal.evaluate(
+            host.evaluate(
                 (host) => !host.contains(host.ownerDocument.activeElement),
             ),
         )

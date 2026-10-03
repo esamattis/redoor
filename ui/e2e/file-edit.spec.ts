@@ -1077,9 +1077,11 @@ gamma
         await expect(
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
         ).toBeVisible();
-        const terminalInput = page.getByRole("textbox", {
-            name: `agent1_src 1 for ${ctx.agentName}`,
-        });
+        const terminalInput = page
+            .getByRole("textbox", {
+                name: `agent1_src 1 for ${ctx.agentName}`,
+            })
+            .filter({ has: page.locator("textarea") });
         // Alt+t from the editor must reuse the same open-or-focus action as t.
         await expectTerminalFocused(terminalInput);
         await expectEditorText(editor, "t");

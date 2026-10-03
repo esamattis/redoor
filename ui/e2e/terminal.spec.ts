@@ -303,8 +303,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(
             new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
         ).toBe(agentDetails.cwd);
+        // The caret style belongs to the terminal host, not its equally labeled input textarea.
         await expect(
-            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+            page
+                .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
+                .filter({ has: page.locator("textarea") }),
         ).toHaveCSS("caret-color", "rgba(0, 0, 0, 0)");
 
         await page
@@ -348,7 +351,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("tab", { name: "agent1_src 1" }),
         ).toHaveAttribute("aria-selected", "true");
         await expect(
-            page.getByLabel(`agent1_src 1 for ${ctx.agentName}`),
+            page
+                .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
+                .filter({ has: page.locator("textarea") }),
         ).toBeVisible();
         // Activating a terminal must leave focus in the tablist for keyboard navigation.
         await expect(
@@ -765,9 +770,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("status", { name: "agent1_src 1: Connected" }),
         ).toBeVisible();
 
-        const terminalHost = page.getByLabel(
-            `agent1_src 1 for ${ctx.agentName}`,
-        );
+        const terminalHost = page
+            .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
+            .filter({ has: page.locator("textarea") });
         const terminalInput = terminalHost.locator("textarea");
         await terminalHost.click({ button: "right" });
         const actions = page.getByRole("dialog", { name: "Terminal actions" });
