@@ -134,8 +134,8 @@ ${props.selection.text}
                     <ScanText className="h-4 w-4" aria-hidden="true" />
                 </ToggleButton>
             ) : null}
-            <IconButton
-                type="button"
+            <ToggleButton
+                pressed={props.isSearchOpen}
                 label="Toggle search and replace"
                 tooltip={
                     props.isSearchOpen
@@ -143,10 +143,10 @@ ${props.selection.text}
                         : "Search and replace in the file (Ctrl+F)"
                 }
                 onClick={props.onToggleSearch}
-                className="h-9 w-9 rounded-md border border-slate-700 text-slate-200 hover:bg-white/5"
+                className="h-9 w-9 aria-[pressed=false]:text-slate-200 aria-[pressed=false]:hover:bg-white/5"
             >
                 <Replace className="h-4 w-4" aria-hidden="true" />
-            </IconButton>
+            </ToggleButton>
             <Tooltip content="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.">
                 <Button
                     type="button"

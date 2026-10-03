@@ -5,7 +5,6 @@ import {
     replaceAll,
     replaceNext,
     SearchQuery,
-    selectMatches,
     setSearchQuery,
 } from "@codemirror/search";
 import type { EditorView } from "@codemirror/view";
@@ -14,12 +13,13 @@ import {
     ChevronUp,
     Replace,
     ReplaceAll,
-    TextSelect,
+    SlidersHorizontal,
 } from "lucide-react";
 import { Checkbox } from "#ui/components/checkbox";
 import { Button } from "#ui/components/button";
 import { InputControl } from "#ui/components/input-control";
 import { Tooltip } from "#ui/components/tooltip";
+import { ToggleButton } from "#ui/components/toggle-button";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
 
 export type EditorSearchHandle = {
@@ -42,6 +42,7 @@ export function EditorSearch(props: {
 }) {
     const searchInputRef = React.useRef<HTMLInputElement>(null);
     const [open, setOpen] = React.useState(false);
+    const [advanced, setAdvanced] = React.useState(false);
     const [focusNonce, setFocusNonce] = React.useState(0);
     const [search, setSearch] = React.useState("");
     const [replace, setReplace] = React.useState("");
@@ -53,14 +54,22 @@ export function EditorSearch(props: {
             new SearchQuery({
                 search,
                 replace,
-                caseSensitive,
-                regexp,
-                wholeWord,
+                caseSensitive: advanced && caseSensitive,
+                regexp: advanced && regexp,
+                wholeWord: advanced && wholeWord,
             }),
-        [search, replace, caseSensitive, regexp, wholeWord],
+        [search, replace, advanced, caseSensitive, regexp, wholeWord],
     );
     const canSearch = query.valid;
-    const canReplace = props.editable && canSearch;
+    const selection = props.view?.state.selection.main;
+    const selectedText =
+        selection === undefined
+            ? ""
+            : (props.view?.state.sliceDoc(selection.from, selection.to) ?? "");
+    const canFindNext =
+        canSearch ||
+        (search === "" && selectedText !== "" && !selectedText.includes("\n"));
+    const canReplace = props.editable && advanced && canSearch;
     const matchCount = React.useMemo(
         () => currentMatchStatus(props.view, query, open),
         [open, props.documentRevision, props.view, query],
@@ -93,17 +102,38 @@ export function EditorSearch(props: {
             return false;
         }
         setOpen(false);
+        setAdvanced(false);
         props.view?.focus();
         return true;
     }, [open, props.view]);
 
     const findNextMatch = React.useCallback(() => {
-        if (props.view === null || !query.valid) {
+        const view = props.view;
+        if (view === null) {
             return false;
         }
-        applyQuery(query);
-        return findNext(props.view);
-    }, [applyQuery, props.view, query]);
+        let nextQuery = query;
+        if (search === "") {
+            const selection = view.state.selection.main;
+            const selected = view.state.sliceDoc(selection.from, selection.to);
+            if (selected === "" || selected.includes("\n")) {
+                return false;
+            }
+            nextQuery = new SearchQuery({
+                search: selected,
+                replace: query.replace,
+                caseSensitive: query.caseSensitive,
+                regexp: query.regexp,
+                wholeWord: query.wholeWord,
+            });
+            setSearch(selected);
+        }
+        if (!nextQuery.valid) {
+            return false;
+        }
+        applyQuery(nextQuery);
+        return findNext(view);
+    }, [applyQuery, props.view, query, search]);
 
     const findPreviousMatch = React.useCallback(() => {
         if (props.view === null || !query.valid) {
@@ -163,16 +193,18 @@ export function EditorSearch(props: {
     }
 
     return (
-        <div className="shrink-0 px-3 pt-3 pb-3">
-            <section
-                aria-label="Search & Replace"
-                className="rounded-lg border border-slate-800 bg-[#0b0d12]"
-            >
-                <h2 className="px-3 py-2 text-sm font-medium text-slate-300">
-                    Search &amp; Replace
-                </h2>
-                <div className="space-y-3 border-t border-slate-800 px-3 py-3">
+        <div className="shrink-0 p-3">
+            <section aria-label="Search & Replace" className="space-y-2">
+                <div className="space-y-2">
                     <SearchReplaceFields
+                        advanced={advanced}
+                        canSearch={canSearch}
+                        canFindNext={canFindNext}
+                        canReplace={canReplace}
+                        editable={props.editable}
+                        onAdvancedChange={() =>
+                            setAdvanced((enabled) => !enabled)
+                        }
                         search={search}
                         replace={replace}
                         searchInputRef={searchInputRef}
@@ -189,29 +221,6 @@ export function EditorSearch(props: {
                             applyQuery(query);
                             replaceNext(props.view);
                         }}
-                    />
-                    <SearchReplaceActions
-                        canSearch={canSearch}
-                        canReplace={canReplace}
-                        caseSensitive={caseSensitive}
-                        regexp={regexp}
-                        wholeWord={wholeWord}
-                        onFindNext={findNextMatch}
-                        onFindPrevious={findPreviousMatch}
-                        onSelectAll={() => {
-                            if (props.view === null || !canSearch) {
-                                return;
-                            }
-                            applyQuery(query);
-                            selectMatches(props.view);
-                        }}
-                        onReplaceNext={() => {
-                            if (props.view === null || !canReplace) {
-                                return;
-                            }
-                            applyQuery(query);
-                            replaceNext(props.view);
-                        }}
                         onReplaceAll={() => {
                             if (props.view === null || !canReplace) {
                                 return;
@@ -219,10 +228,17 @@ export function EditorSearch(props: {
                             applyQuery(query);
                             replaceAll(props.view);
                         }}
-                        onCaseSensitiveChange={setCaseSensitive}
-                        onRegexpChange={setRegexp}
-                        onWholeWordChange={setWholeWord}
                     />
+                    {advanced && (
+                        <SearchOptions
+                            caseSensitive={caseSensitive}
+                            regexp={regexp}
+                            wholeWord={wholeWord}
+                            onCaseSensitiveChange={setCaseSensitive}
+                            onRegexpChange={setRegexp}
+                            onWholeWordChange={setWholeWord}
+                        />
+                    )}
                 </div>
             </section>
         </div>
@@ -291,9 +307,15 @@ function useEditorSearchWindowShortcuts(props: {
 }
 
 /**
- * Keeps query fields compact so the folding section does not crowd the editor.
+ * Keeps basic navigation on one row and replacement actions next to their input.
  */
 function SearchReplaceFields(props: {
+    advanced: boolean;
+    canSearch: boolean;
+    canFindNext: boolean;
+    canReplace: boolean;
+    editable: boolean;
+    onAdvancedChange: () => void;
     search: string;
     replace: string;
     searchInputRef: React.RefObject<HTMLInputElement | null>;
@@ -304,97 +326,39 @@ function SearchReplaceFields(props: {
     onFindNext: () => void;
     onFindPrevious: () => void;
     onReplaceNext: () => void;
-}) {
-    return (
-        <div className="grid gap-2 md:grid-cols-2">
-            <label className="min-w-0">
-                <span className="mb-1 block text-xs font-medium text-slate-400">
-                    Find
-                </span>
-                <InputControl
-                    ref={props.searchInputRef}
-                    type="search"
-                    aria-label="Find in file"
-                    value={props.search}
-                    onChange={(event) =>
-                        props.onSearchChange(event.target.value)
-                    }
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter") {
-                            return;
-                        }
-                        event.preventDefault();
-                        if (event.shiftKey) {
-                            props.onFindPrevious();
-                            return;
-                        }
-                        props.onFindNext();
-                    }}
-                    className="w-full bg-slate-900 py-1.5 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
-                />
-                <span
-                    aria-label="Search match count"
-                    className="mt-1 block text-xs text-slate-500"
-                >
-                    {props.search === ""
-                        ? "Enter a search query"
-                        : props.queryValid
-                          ? props.matchCount
-                          : "Invalid regular expression"}
-                </span>
-            </label>
-            <label className="min-w-0">
-                <span className="mb-1 block text-xs font-medium text-slate-400">
-                    Replace
-                </span>
-                <InputControl
-                    type="text"
-                    aria-label="Replace with"
-                    value={props.replace}
-                    onChange={(event) =>
-                        props.onReplaceChange(event.target.value)
-                    }
-                    onKeyDown={(event) => {
-                        if (event.key !== "Enter") {
-                            return;
-                        }
-                        event.preventDefault();
-                        props.onReplaceNext();
-                    }}
-                    className="w-full bg-slate-900 py-1.5 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
-                />
-            </label>
-        </div>
-    );
-}
-
-/**
- * Mirrors CodeMirror's search commands with the same controls the default panel exposes.
- */
-function SearchReplaceActions(props: {
-    canSearch: boolean;
-    canReplace: boolean;
-    caseSensitive: boolean;
-    regexp: boolean;
-    wholeWord: boolean;
-    onFindNext: () => void;
-    onFindPrevious: () => void;
-    onSelectAll: () => void;
-    onReplaceNext: () => void;
     onReplaceAll: () => void;
-    onCaseSensitiveChange: (checked: boolean) => void;
-    onRegexpChange: (checked: boolean) => void;
-    onWholeWordChange: (checked: boolean) => void;
 }) {
     return (
-        <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap gap-2">
+        <div className="space-y-2">
+            <div className="flex items-center gap-2">
+                <label className="min-w-0 flex-1">
+                    <InputControl
+                        ref={props.searchInputRef}
+                        type="search"
+                        aria-label="Find in file"
+                        placeholder="Find in file"
+                        value={props.search}
+                        onChange={(event) =>
+                            props.onSearchChange(event.target.value)
+                        }
+                        onKeyDown={(event) => {
+                            if (event.key !== "Enter") {
+                                return;
+                            }
+                            event.preventDefault();
+                            if (event.shiftKey) {
+                                props.onFindPrevious();
+                                return;
+                            }
+                            props.onFindNext();
+                        }}
+                        className="h-9 w-full bg-slate-900 px-3 py-0 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
+                    />
+                </label>
                 <SearchActionButton
                     label="Find previous"
                     tooltip="Find previous (Shift+Ctrl+G)"
-                    icon={
-                        <ChevronUp className="h-3.5 w-3.5" aria-hidden="true" />
-                    }
+                    icon={<ChevronUp className="h-4 w-4" aria-hidden="true" />}
                     disabled={!props.canSearch}
                     onClick={props.onFindPrevious}
                 />
@@ -402,48 +366,96 @@ function SearchReplaceActions(props: {
                     label="Find next"
                     tooltip="Find next (Ctrl+G)"
                     icon={
-                        <ChevronDown
-                            className="h-3.5 w-3.5"
-                            aria-hidden="true"
-                        />
+                        <ChevronDown className="h-4 w-4" aria-hidden="true" />
                     }
-                    disabled={!props.canSearch}
+                    disabled={!props.canFindNext}
                     onClick={props.onFindNext}
                 />
-                <SearchActionButton
-                    label="Select all"
-                    tooltip="Select all matches"
-                    icon={
-                        <TextSelect
-                            className="h-3.5 w-3.5"
-                            aria-hidden="true"
-                        />
+                <ToggleButton
+                    pressed={props.advanced}
+                    label="Advanced"
+                    tooltip={
+                        props.advanced
+                            ? "Hide advanced search options"
+                            : "Show advanced search options"
                     }
-                    disabled={!props.canSearch}
-                    onClick={props.onSelectAll}
-                />
-                <SearchActionButton
-                    label="Replace"
-                    tooltip="Replace the current match"
-                    icon={
-                        <Replace className="h-3.5 w-3.5" aria-hidden="true" />
-                    }
-                    disabled={!props.canReplace}
-                    onClick={props.onReplaceNext}
-                />
-                <SearchActionButton
-                    label="Replace all"
-                    tooltip="Replace all matches"
-                    icon={
-                        <ReplaceAll
-                            className="h-3.5 w-3.5"
-                            aria-hidden="true"
-                        />
-                    }
-                    disabled={!props.canReplace}
-                    onClick={props.onReplaceAll}
-                />
+                    onClick={props.onAdvancedChange}
+                    className="h-9 w-9 shrink-0 p-0"
+                >
+                    <SlidersHorizontal className="h-4 w-4" aria-hidden="true" />
+                </ToggleButton>
+                <span
+                    aria-label="Search match count"
+                    className="flex h-9 w-20 shrink-0 items-center justify-center text-center text-xs text-slate-500 tabular-nums"
+                >
+                    {props.search === ""
+                        ? null
+                        : props.queryValid
+                          ? props.matchCount
+                          : "Invalid regular expression"}
+                </span>
             </div>
+            {props.advanced && props.editable && (
+                <div className="flex items-center gap-2">
+                    <label className="min-w-0 flex-1">
+                        <InputControl
+                            type="text"
+                            aria-label="Replace with"
+                            placeholder="Replace with"
+                            value={props.replace}
+                            onChange={(event) =>
+                                props.onReplaceChange(event.target.value)
+                            }
+                            onKeyDown={(event) => {
+                                if (event.key !== "Enter") {
+                                    return;
+                                }
+                                event.preventDefault();
+                                props.onReplaceNext();
+                            }}
+                            className="h-9 w-full bg-slate-900 px-3 py-0 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500"
+                        />
+                    </label>
+                    <SearchActionButton
+                        label="Replace"
+                        tooltip="Replace the current match"
+                        icon={
+                            <Replace className="h-4 w-4" aria-hidden="true" />
+                        }
+                        disabled={!props.canReplace}
+                        onClick={props.onReplaceNext}
+                    />
+                    <SearchActionButton
+                        label="Replace all"
+                        tooltip="Replace all matches"
+                        icon={
+                            <ReplaceAll
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        }
+                        disabled={!props.canReplace}
+                        onClick={props.onReplaceAll}
+                    />
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
+ * Keeps optional search constraints behind Advanced so basic find stays compact.
+ */
+function SearchOptions(props: {
+    caseSensitive: boolean;
+    regexp: boolean;
+    wholeWord: boolean;
+    onCaseSensitiveChange: (checked: boolean) => void;
+    onRegexpChange: (checked: boolean) => void;
+    onWholeWordChange: (checked: boolean) => void;
+}) {
+    return (
+        <div className="flex flex-wrap items-center gap-2">
             <div className="flex flex-wrap gap-2">
                 <Tooltip
                     content={
@@ -517,10 +529,9 @@ function SearchActionButton(props: {
                 aria-label={props.label}
                 disabled={props.disabled}
                 onClick={props.onClick}
-                className="gap-1.5 rounded-md bg-slate-800/80 px-2.5 py-1.5 text-xs font-semibold hover:bg-slate-700"
+                className="h-9 w-9 shrink-0 rounded-md p-0"
             >
                 {props.icon}
-                {props.label}
             </Button>
         </Tooltip>
     );

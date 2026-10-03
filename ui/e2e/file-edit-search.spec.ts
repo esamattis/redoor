@@ -38,8 +38,65 @@ test.describe.serial("File editor search and replace", () => {
         await expect(
             page.getByRole("region", { name: "Search & Replace" }),
         ).toBeVisible();
+        // Opening search must keep replacement fields and destructive actions out of the default panel.
+        await expect(page.getByLabel("Replace with")).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Replace", exact: true }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Replace all", exact: true }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Match case", exact: true }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", {
+                name: "Regular expression",
+                exact: true,
+            }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Match whole word", exact: true }),
+        ).toBeHidden();
+        const advanced = page.getByRole("button", {
+            name: "Advanced",
+            exact: true,
+        });
+        await advanced.click();
+        // Advanced mode reveals both replacement tools and optional search constraints.
+        await expect(advanced).toHaveAttribute("aria-pressed", "true");
+        await expect(page.getByLabel("Replace with")).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Match case", exact: true }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", {
+                name: "Regular expression",
+                exact: true,
+            }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("button", { name: "Match whole word", exact: true }),
+        ).toBeVisible();
+        await advanced.click();
+        // Returning to search mode hides every replacement control again.
+        await expect(page.getByLabel("Replace with")).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Replace", exact: true }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Replace all", exact: true }),
+        ).toBeHidden();
+        await expect(
+            page.getByRole("button", { name: "Match case", exact: true }),
+        ).toBeHidden();
+        await advanced.click();
         await toggle.click();
         await expect(page.getByLabel("Find in file")).toBeHidden();
+        await toggle.click();
+        // Reopening starts in compact search mode even if replace was enabled before closing.
+        await expect(advanced).toHaveAttribute("aria-pressed", "false");
+        await expect(page.getByLabel("Replace with")).toBeHidden();
     });
 
     test("should open search from the shortcut and keep typing in the field", async ({
@@ -69,6 +126,45 @@ test.describe.serial("File editor search and replace", () => {
         );
     });
 
+    test("should use the selected text when Find next has an empty query", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "selection-search.txt");
+        await fs.writeFile(filePath, "foo beta foo gamma");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentId}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+        const editor = page.getByLabel("File editor");
+        await expect(editor).toBeVisible();
+        await page
+            .getByRole("button", { name: "Toggle search and replace" })
+            .click();
+        const findInput = page.getByLabel("Find in file");
+        await findInput.fill("");
+        await editor.click();
+        await page.keyboard.press("ControlOrMeta+Home");
+        await page.keyboard.press("Shift+ArrowRight");
+        await page.keyboard.press("Shift+ArrowRight");
+        await page.keyboard.press("Shift+ArrowRight");
+        const findNext = page.getByRole("button", {
+            name: "Find next",
+            exact: true,
+        });
+        // Selecting text makes Find next usable even though the query field is empty.
+        await expect(findNext).toBeEnabled();
+        await findNext.click();
+        // The selection becomes the visible query and navigation advances beyond the selected match.
+        await expect(findInput).toHaveValue("foo");
+        await expect(page.getByLabel("Search match count")).toHaveText(
+            "2 of 2",
+        );
+        await findNext.click();
+        // Subsequent navigation reuses the adopted query and still wraps through matches.
+        await expect(page.getByLabel("Search match count")).toHaveText(
+            "1 of 2",
+        );
+    });
+
     test("should find replace and replace all matches", async ({ page }) => {
         const filePath = path.join(ctx.testDirPath, "replace.txt");
         await fs.writeFile(filePath, "alpha foo beta foo gamma");
@@ -86,6 +182,9 @@ test.describe.serial("File editor search and replace", () => {
             "1 of 2",
         );
 
+        await page
+            .getByRole("button", { name: "Advanced", exact: true })
+            .click();
         await page.getByLabel("Replace with").fill("baz");
         await page
             .getByRole("button", { name: "Replace", exact: true })
@@ -131,6 +230,9 @@ test.describe.serial("File editor search and replace", () => {
         await expect(page.getByRole("tooltip")).toHaveText(
             "Close search and replace (Ctrl+F)",
         );
+        await page
+            .getByRole("button", { name: "Advanced", exact: true })
+            .click();
         const matchCase = page.getByRole("button", { name: "Match case" });
         await matchCase.hover();
         // Unchecked options advertise enabling the constraint.
