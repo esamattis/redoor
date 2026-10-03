@@ -59,7 +59,10 @@ async function seedLogFixtures(): Promise<void> {
 
 /** Prepares isolated state and a binary that cannot change beneath this test run. */
 async function prepareFixtures(): Promise<number> {
-    await $({ cwd: PROJECT_ROOT, stdio: "inherit" })`pnpm run build`;
+    // The full test pipeline already built these assets; standalone browser runs still build them.
+    if (process.env.REDOOR_TEST_PREBUILT !== "1") {
+        await $({ cwd: PROJECT_ROOT, stdio: "inherit" })`pnpm run build`;
+    }
     await rm(HOME_DIRECTORY, { recursive: true, force: true });
     await mkdir(join(HOME_DIRECTORY, "lazy-agent"), { recursive: true });
     await mkdir(join(PROJECT_ROOT, "dev_agents/agent2"), { recursive: true });

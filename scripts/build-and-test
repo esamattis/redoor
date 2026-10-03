@@ -1,47 +1,70 @@
 #!/bin/bash
 set -eu
 
+# Report elapsed time so slow checks remain visible even when their output is quiet.
 silent_unless_error() {
+    local started=$SECONDS
     local tmpfile=$(mktemp -t redoor-test.XXX)
-    echo -n "> $*"
+    echo "> $*"
     local exit_code=0
     "$@" >"$tmpfile" 2>&1 || exit_code=$?
     if [ $exit_code -ne 0 ]; then
-        echo "❌ failed with exit code $exit_code: $*"
+        echo "❌ failed with exit code $exit_code ($((SECONDS - started))s): $*"
         echo
         cat "$tmpfile"
-        exit $exit_code
+        echo "Full logs: $tmpfile"
+        return $exit_code
     fi
-    echo " ✅"
+    echo "> $* ✅ ($((SECONDS - started))s)"
+    rm -f "$tmpfile"
 
     return $exit_code
 }
 
+# Keep browser failures readable while reporting the cost of the entire browser stage.
 playwright_unless_error() {
+    local started=$SECONDS
     local tmpfile=$(mktemp -t redoor-playwright.XXX)
-    echo -n "> $*"
+    echo "> $*"
     local exit_code=0
     "$@" >"$tmpfile" 2>&1 || exit_code=$?
     if [ $exit_code -ne 0 ]; then
-        echo "❌ failed with exit code $exit_code: $*"
+        echo "❌ failed with exit code $exit_code ($((SECONDS - started))s): $*"
         echo
         echo "Showing the last 100 log lines:"
         tail -n 100 "$tmpfile"
         echo
         echo "Full logs: $tmpfile"
-        echo "If your changes did not change UI Typescript code or the REST APIs, it might be flaky test that should be re-run with command \`pnpm run playwright\`. This is the last step, so if it passes the second time, no need to re-run the whole build-and-test script"
-        exit $exit_code
+        echo "Re-run the browser suite with \`pnpm run playwright\`."
+        return $exit_code
     fi
-    echo " ✅"
+    echo "> $* ✅ ($((SECONDS - started))s)"
+    rm -f "$tmpfile"
 
     return $exit_code
 }
 
+# Overlap suites with independent ports, homes, logs, and staged executables.
+# Bypass lifecycle hooks here: each hook cleans BOTH ports and would kill the other suite.
+run_test_suites() {
+    silent_unless_error node scripts/test/ensure-test-ports.mts
+    silent_unless_error pn exec node scripts/test/run-integration-tests.mts &
+    local integration_pid=$!
+    playwright_unless_error env REDOOR_TEST_PREBUILT=1 pn exec playwright test --reporter=line --config ui/playwright.config.ts &
+    local playwright_pid=$!
+    local exit_code=0
+    # Wait for both suites even after a failure, so the command never leaves a suite running.
+    wait "$integration_pid" || exit_code=$?
+    wait "$playwright_pid" || exit_code=$?
+    return "$exit_code"
+}
+
+started=$SECONDS
 silent_unless_error cargo fmt
-silent_unless_error cargo test
 silent_unless_error pn format
+# Build UI assets before Rust tests so rewriting ui/dist does not invalidate their build afterwards.
 silent_unless_error pn build
-silent_unless_error cargo build
+silent_unless_error cargo test
 
 # Install fresh debug binary and restart local dev service so it picks it up
 if [ "$(uname -s)" = "Linux" ] && systemctl --user cat redoor-dev &>/dev/null; then
@@ -59,5 +82,5 @@ if cargo ndk --version &>/dev/null; then
 else
     echo "> Android warning check skipped (cargo-ndk is not installed)"
 fi
-silent_unless_error pn integration-test
-playwright_unless_error pn playwright
+run_test_suites
+echo "Tests and checks completed in $((SECONDS - started))s"
