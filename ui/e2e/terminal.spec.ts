@@ -614,6 +614,10 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await page
             .getByRole("button", { name: "Minimize bottom drawer" })
             .press("Enter");
+        // A fully closed drawer hides the shell; focusing it during expansion must still succeed.
+        await expect(
+            firstTerminal.filter({ has: page.locator("textarea") }),
+        ).toBeHidden();
         await page.keyboard.press("t");
         // A collapsed live session is restored instead of opening a duplicate.
         await expect(

@@ -228,7 +228,8 @@ function useDrawerSlideContentVisibility(props: {
         };
     }, [props.isCollapsed, props.panelRef]);
 
-    return isContentVisible;
+    // Reveal during the opening render so child focus effects never target hidden controls.
+    return !props.isCollapsed || isContentVisible;
 }
 
 /** Builds the compact tooltip from the same label and badge the wide tabs already show. */
