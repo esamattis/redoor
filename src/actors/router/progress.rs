@@ -1,11 +1,80 @@
 use super::RouterError;
-use super::state::{DirectUpload, DirectUploadKind, RouterState};
+use super::state::{DirectUpload, DirectUploadKind, RouterState, TransferProgressStore};
 use super::ui;
 use crate::commands::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
     TransferProgressState,
 };
 use crate::types::{AgentId, RequestId, TransferId, UnixTimestampSeconds};
+
+/// Recent history stays useful without growing with the server lifetime.
+const MAX_TERMINAL_HISTORY: usize = 1000;
+/// Old terminal rows expire even when fewer than the count limit have accumulated.
+const TERMINAL_HISTORY_TTL_SECONDS: i64 = 3600;
+/// Canceled downloads need the same continuation window as range restart matching.
+const DOWNLOAD_RESUME_WINDOW_SECONDS: i64 = 60;
+/// Maintenance uses the existing router tick without scanning history four times a second.
+const HISTORY_PRUNE_INTERVAL_SECONDS: i64 = 60;
+
+impl TransferProgressStore {
+    /// Bounds terminal history while leaving live workers and recent resumable downloads intact.
+    ///
+    /// Resumable downloads may temporarily exceed the count cap for their 60-second
+    /// continuation window. Active and canceling transfers are never history victims.
+    pub(crate) fn prune_terminal_history(&mut self, now: UnixTimestampSeconds) -> bool {
+        let previous_len = self.entries.len();
+        self.last_pruned_at = Some(now);
+        let mut candidates = Vec::new();
+        self.entries.retain(|id, entry| {
+            if matches!(
+                entry.state,
+                TransferProgressState::Active | TransferProgressState::Canceling
+            ) {
+                return true;
+            }
+            let ended_at = entry.ended_at.unwrap_or(entry.started_at);
+            let age = now.0.saturating_sub(ended_at.0);
+            if matches!(entry.direction, TransferDirection::Download)
+                && matches!(entry.state, TransferProgressState::Errored)
+                && entry.error.as_deref() == Some("Download canceled by client")
+                && age <= DOWNLOAD_RESUME_WINDOW_SECONDS
+            {
+                return true;
+            }
+            if age >= TERMINAL_HISTORY_TTL_SECONDS {
+                return false;
+            }
+            candidates.push((ended_at, *id));
+            true
+        });
+        candidates.sort_unstable_by_key(|(ended_at, id)| (ended_at.0, *id));
+        let excess = candidates.len().saturating_sub(MAX_TERMINAL_HISTORY);
+        for (_, id) in candidates.iter().take(excess) {
+            self.entries.remove(id);
+        }
+        self.predicted_download_totals
+            .retain(|id| self.entries.contains_key(id));
+        // Shrinking releases hash-table buckets after a burst of protected resumable rows.
+        self.entries
+            .shrink_to(self.entries.len().max(MAX_TERMINAL_HISTORY));
+        self.predicted_download_totals
+            .shrink_to(self.predicted_download_totals.len());
+        self.entries.len() != previous_len
+    }
+
+    /// Idle servers must also release expired rows after the resume window closes.
+    pub(crate) fn prune_history_if_due(&mut self, now: UnixTimestampSeconds) -> bool {
+        if self
+            .last_pruned_at
+            .is_some_and(|last| now.0.saturating_sub(last.0) < HISTORY_PRUNE_INTERVAL_SECONDS)
+        {
+            return false;
+        }
+        let previous_len = self.entries.len();
+        self.prune_terminal_history(now);
+        self.entries.len() != previous_len
+    }
+}
 
 /// Inputs needed to register a new direct download in progress tracking.
 pub(crate) struct DownloadStartContext {
@@ -84,9 +153,9 @@ pub(crate) fn record_download_start(
                     && matches!(entry.state, TransferProgressState::Errored)
                     && entry.error.as_deref() == Some("Download canceled by client")
                     && entry.total_bytes == full_size
-                    && entry
-                        .ended_at
-                        .is_some_and(|ended_at| now.0.saturating_sub(ended_at.0) <= 60)
+                    && entry.ended_at.is_some_and(|ended_at| {
+                        now.0.saturating_sub(ended_at.0) <= DOWNLOAD_RESUME_WINDOW_SECONDS
+                    })
                     && (context.resume_offset.is_none()
                         || (entry.transferred_bytes >= restart_offset
                             && entry.transferred_bytes - restart_offset
@@ -297,6 +366,9 @@ pub(crate) fn mark_transfer_completed(state: &mut RouterState, transfer_id: Tran
         );
     }
     if updated {
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         ui::notify_transfer_refresh_immediately(state);
         if routes_changed {
             ui::notify_routes_changed(state);
@@ -323,6 +395,9 @@ pub(crate) fn mark_copy_transfer_completed(
         updated = true;
     }
     if updated {
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         ui::notify_transfer_refresh_immediately(state);
         ui::notify_routes_changed(state);
     }
@@ -351,6 +426,9 @@ pub(crate) fn mark_transfer_errored(
         updated = true;
     }
     if updated {
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         ui::notify_transfer_refresh_immediately(state);
         if routes_changed {
             ui::notify_routes_changed(state);
@@ -379,6 +457,9 @@ pub(crate) fn mark_transfer_canceled(state: &mut RouterState, transfer_id: Trans
             .progress
             .predicted_download_totals
             .remove(&transfer_id);
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(chrono::Utc::now().timestamp()));
         ui::notify_transfer_refresh_immediately(state);
     }
 }
@@ -404,6 +485,179 @@ mod tests {
     use super::*;
     use crate::commands::{TransferDirection, TransferProgressState, UiEvent};
     use std::time::Instant;
+
+    /// Builds explicit terminal timestamps so history retention tests need no wall-clock waits.
+    fn terminal_entry(id: u64, ended_at: i64) -> TransferProgressEntry {
+        let mut entry = download_progress_entry(
+            TransferId::new(id),
+            4096,
+            2048,
+            TransferProgressState::Completed,
+        );
+        entry.ended_at = Some(UnixTimestampSeconds::new(ended_at));
+        entry
+    }
+
+    /// Mixed transfer domains must share one history budget while in-flight rows remain owned.
+    #[test]
+    fn terminal_history_bounds_mixed_rows_and_preserves_live_transfers() {
+        let mut store = TransferProgressStore::default();
+        for id in 1..=2000 {
+            let mut entry = terminal_entry(id, 9000 + id as i64);
+            entry.direction = match id % 5 {
+                0 => TransferDirection::Download,
+                1 => TransferDirection::Upload,
+                2 => TransferDirection::Edit,
+                3 => TransferDirection::Copy,
+                _ => TransferDirection::Move,
+            };
+            entry.state = match id % 3 {
+                0 => TransferProgressState::Completed,
+                1 => TransferProgressState::Canceled,
+                _ => TransferProgressState::Errored,
+            };
+            store.entries.insert(entry.request_id, entry);
+        }
+        for (id, state) in [
+            (2001, TransferProgressState::Active),
+            (2002, TransferProgressState::Canceling),
+        ] {
+            let mut entry = terminal_entry(id, 1);
+            entry.state = state;
+            entry.ended_at = None;
+            store.entries.insert(entry.request_id, entry);
+        }
+        store.predicted_download_totals.insert(TransferId::new(1));
+        store
+            .predicted_download_totals
+            .insert(TransferId::new(2001));
+
+        assert!(
+            store.prune_terminal_history(UnixTimestampSeconds::new(11000)),
+            "a long server lifetime must discard excess finished transfers"
+        );
+        assert_eq!(
+            store.entries.len(),
+            MAX_TERMINAL_HISTORY + 2,
+            "live worker rows must not consume or be evicted by the terminal history budget"
+        );
+        assert!(
+            !store.entries.contains_key(&TransferId::new(1000)),
+            "the oldest finished rows must be evicted first"
+        );
+        assert!(
+            store.entries.contains_key(&TransferId::new(1001)),
+            "the newest thousand finished rows must remain available to REST readers"
+        );
+        assert!(
+            store.entries.contains_key(&TransferId::new(2001))
+                && store.entries.contains_key(&TransferId::new(2002)),
+            "active and canceling transfers remain addressable even when their timestamps are old"
+        );
+        assert_eq!(
+            store.predicted_download_totals.len(),
+            1,
+            "auxiliary totals must not keep keys for evicted history"
+        );
+    }
+
+    /// Idle maintenance expires rows and ends temporary overflow after resume protection lapses.
+    #[test]
+    fn idle_pruning_releases_expired_history_and_resume_overflow() {
+        let mut store = TransferProgressStore::default();
+        for id in 1..=2000 {
+            let mut entry = terminal_entry(id, 10000);
+            entry.state = TransferProgressState::Errored;
+            entry.error = Some("Download canceled by client".to_string());
+            store.entries.insert(entry.request_id, entry);
+        }
+        store.prune_terminal_history(UnixTimestampSeconds::new(10060));
+        assert_eq!(
+            store.entries.len(),
+            2000,
+            "the inclusive 60-second continuation window must survive count pressure"
+        );
+        assert!(
+            !store.prune_history_if_due(UnixTimestampSeconds::new(10061)),
+            "the periodic UI tick must not rescan all history every 250 milliseconds"
+        );
+        assert!(
+            store.prune_history_if_due(UnixTimestampSeconds::new(10120)),
+            "the existing periodic task must remove overflow even without new transfers"
+        );
+        assert_eq!(
+            store.entries.len(),
+            MAX_TERMINAL_HISTORY,
+            "expired resume protection must return history to its normal count budget"
+        );
+        assert!(
+            store.prune_history_if_due(UnixTimestampSeconds::new(13600)),
+            "terminal rows must expire at their one-hour TTL even below the count cap"
+        );
+        assert!(
+            store.entries.is_empty(),
+            "idle servers must release all expired history"
+        );
+        assert!(
+            store.entries.capacity() < 2000,
+            "pruning must release oversized hash-table buckets after a burst"
+        );
+    }
+
+    /// Pruning must preserve logical download identity for the existing client retry workflow.
+    #[tokio::test]
+    async fn recent_download_resumes_after_history_pruning() {
+        let mut state = RouterState::new(
+            tokio::spawn(async {}),
+            crate::terminal_registry::TerminalRegistry::new(),
+            crate::log_registry::LogRegistry::new(),
+        );
+        let now = chrono::Utc::now().timestamp();
+        for id in 1..=1500 {
+            state
+                .progress
+                .entries
+                .insert(TransferId::new(id), terminal_entry(id, now - 120));
+        }
+        let mut entry = terminal_entry(1501, now);
+        entry.state = TransferProgressState::Errored;
+        entry.error = Some("Download canceled by client".to_string());
+        state.progress.entries.insert(entry.request_id, entry);
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(now));
+
+        let progress_id = record_download_start(
+            &mut state,
+            DownloadStartContext {
+                request_id: RequestId::new(2000),
+                agent_id: AgentId::from("agent-1"),
+                path: "/tmp/archive".to_string(),
+                total_bytes: 2048,
+                full_size: Some(4096),
+                resume_offset: Some(2048),
+            },
+        );
+        assert_eq!(
+            progress_id,
+            TransferId::new(1501),
+            "history pressure must not turn a resumed download into a duplicate logical transfer"
+        );
+        let resumed = &state.progress.entries[&progress_id];
+        assert!(
+            matches!(resumed.state, TransferProgressState::Active) && resumed.ended_at.is_none(),
+            "a resumed row must leave terminal retention and remain protected as active"
+        );
+        state
+            .progress
+            .prune_terminal_history(UnixTimestampSeconds::new(now + 3600));
+        assert_eq!(
+            state.progress.entries.len(),
+            1,
+            "resumed workers must survive TTL cleanup after all other finished rows expire"
+        );
+        state.ui.refresh_check_task.abort();
+    }
 
     #[tokio::test]
     async fn transfer_start_bypasses_ui_refresh_throttle() {

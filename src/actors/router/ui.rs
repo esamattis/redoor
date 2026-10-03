@@ -19,7 +19,12 @@ pub(crate) fn start_refresh_check_task(router_ref: RouterHandle) -> tokio::task:
 
         loop {
             interval.tick().await;
-            if router_ref.send(RouterMsg::CheckPendingUiRefresh).is_err() {
+            // Backpressure must not permanently disable refreshes and idle history expiry.
+            if router_ref
+                .send_async(RouterMsg::CheckPendingUiRefresh)
+                .await
+                .is_err()
+            {
                 break;
             }
         }

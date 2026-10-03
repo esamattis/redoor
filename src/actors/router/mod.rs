@@ -377,6 +377,11 @@ impl RouterState {
                     agents::open_log_stream(&self, request);
                 }
                 RouterMsg::CheckPendingUiRefresh => {
+                    if self.progress.prune_history_if_due(crate::types::UnixTimestampSeconds::new(
+                        chrono::Utc::now().timestamp(),
+                    )) {
+                        ui::notify_transfer_refresh(&mut self);
+                    }
                     ui::check_pending_refresh(&mut self);
                 }
                 RouterMsg::Shutdown => {
