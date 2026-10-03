@@ -118,6 +118,8 @@ impl RawDownloadWorker {
                     if let Err(error) = file.seek(std::io::SeekFrom::Start(start)).await {
                         let error_msg = format!("Failed to seek file: {error:#}");
                         log_error!(anyhow::Error::new(error), "Failed to seek file");
+                        // Release the cancellation handle even if reporting the error blocks.
+                        self.cleanup().await;
                         let _ = self
                             .send_chunk(
                                 StreamChunkFrameRequest::new(self.request_id, error_msg.as_bytes())
@@ -261,6 +263,51 @@ impl RawDownloadWorker {
                 self.cleanup().await;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::DownloadSessionHandle;
+    use redoor::streaming::StreamChunk;
+
+    /// Failed range seeks must not retain cancellation handles after the worker exits.
+    #[tokio::test]
+    async fn failed_seek_unregisters_raw_download() {
+        let request_id = RequestId::new(1);
+        let active_downloads = ActiveDownloads::new();
+        let (cancel_sender, cancel_receiver) = watch::channel(false);
+        active_downloads.insert(request_id, DownloadSessionHandle { cancel_sender });
+        let (write, mut frames) = mpsc::channel(1);
+
+        RawDownloadWorker {
+            path: concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml").to_owned(),
+            // Regular files cannot seek beyond the signed offset supported by the OS.
+            range_start: Some(u64::MAX),
+            range_end: None,
+            request_id,
+            write,
+            cancel_receiver,
+            active_downloads: active_downloads.clone(),
+            chunk_index: ChunkIndex::new(0),
+        }
+        .process()
+        .await;
+
+        // A failed worker must not leave its cancellation channel in the registry.
+        assert!(active_downloads.get(request_id).is_none());
+        let frame = frames
+            .recv()
+            .await
+            .expect("seek failure should send a frame");
+        let WsMessage::Binary(bytes) = frame else {
+            panic!("seek failure should use the binary stream protocol");
+        };
+        let chunk = StreamChunk::from_bytes(&bytes).expect("error frame should decode");
+        // Check the failing seek branch, rather than merely any early worker exit.
+        assert!(chunk.is_error);
+        assert!(chunk.data.starts_with(b"Failed to seek file:"));
     }
 }
 
