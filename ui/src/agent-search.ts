@@ -34,6 +34,13 @@ const searchQuerySchema = z.string().optional().catch(undefined);
 /** Treats a missing mode as path search while rejecting stale shared URL values. */
 const searchModeSchema = z.literal("content").optional().catch(undefined);
 
+/** Only absolute paths can scope a search, so a hand-edited relative one falls back to defaults. */
+const searchDirectorySchema = z
+    .string()
+    .startsWith("/")
+    .optional()
+    .catch(undefined);
+
 /** Rejects stale case values while keeping a missing value equivalent to smart case. */
 const caseSensitivitySchema = z
     .enum(["smart", "sensitive", "insensitive"])
@@ -54,6 +61,10 @@ export const agentSearchSchema = z.object({
     gitignore: optionalBooleanSchema,
     regex: optionalBooleanSchema,
     gitroot: optionalBooleanSchema,
+    /** Path search lists only directories, for picking a folder to search in. */
+    dirs: optionalBooleanSchema,
+    /** A folder the reader chose to search in, overriding the browsed folder and the Git root. */
+    dir: searchDirectorySchema,
     case: caseSensitivitySchema,
 });
 

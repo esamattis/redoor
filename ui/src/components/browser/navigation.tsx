@@ -3,8 +3,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
     ArrowLeft,
     ArrowUp,
-    Check,
-    Copy,
     File,
     Files,
     Home,
@@ -15,16 +13,13 @@ import {
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
-import { useCopyFeedback } from "#ui/components/copyable-code-row";
-import { InputControl } from "#ui/components/input-control";
-import { IconButton } from "#ui/components/icon-button";
+import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
 import { Tooltip } from "#ui/components/tooltip";
 import { SearchButton } from "#ui/components/search-button";
 import type { PathLoadError } from "#ui/components/browser/utils";
 import { browserRoute } from "#ui/browser-route";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
-import { expandHomePath } from "#ui/utils/path";
 
 /** Names the representations of a path that the view tabs switch between. */
 export type BrowserView = "files" | "details" | "view" | "sync" | "git";
@@ -39,6 +34,8 @@ function BrowserPageHeader(props: {
     banner?: React.ReactNode;
     viewToggle: React.ReactNode;
 }) {
+    const navigate = useNavigate();
+
     return (
         <header>
             <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
@@ -60,12 +57,24 @@ function BrowserPageHeader(props: {
                         className="shrink-0 [&_svg]:h-4 [&_svg]:w-4"
                     />
                     {props.navigation}
-                    <Breadcrumbs
+                    <PathBreadcrumbs
                         // A new location resets the path editor, so it starts closed (or open for a path that needs correcting).
                         key={`${props.path}:${props.startEditingPath === true}`}
-                        agent={props.agent}
                         path={props.path}
+                        home={props.agent.cwd}
                         startEditing={props.startEditingPath}
+                        renderLink={(link) => (
+                            <Link
+                                {...browserRoute(props.agent, link.path)}
+                                className={link.className}
+                            >
+                                {link.children}
+                            </Link>
+                        )}
+                        // The destination route decides whether the editor reopens for a missing path.
+                        onSubmitPath={(path) =>
+                            void navigate(browserRoute(props.agent, path))
+                        }
                     />
                 </div>
             </div>
@@ -367,185 +376,5 @@ export function UnavailablePathState(props: {
                 ) : null}
             </div>
         </section>
-    );
-}
-
-/** Shows the current path as links while allowing direct path navigation. */
-function Breadcrumbs(props: {
-    agent: Agent;
-    path: string;
-    /** Opens the path editor immediately so a missing path can be corrected in place. */
-    startEditing?: boolean;
-}) {
-    const navigate = useNavigate();
-    const pathInputRef = React.useRef<HTMLInputElement>(null);
-
-    const [isEditing, setIsEditing] = React.useState(
-        props.startEditing === true,
-    );
-
-    const [editedPath, setEditedPath] = React.useState(props.path);
-    const { isCopied, copy } = useCopyFeedback(props.path);
-
-    const parts = props.path.split("/").filter((part) => part !== "");
-    const isAtRoot = parts.length === 0;
-    let accumulatedPath = "";
-
-    // Focus after paint so keyboard correction works immediately on missing paths.
-    React.useEffect(() => {
-        if (!isEditing) {
-            return;
-        }
-
-        pathInputRef.current?.focus();
-        pathInputRef.current?.select();
-    }, [isEditing, props.path]);
-
-    /** Opens the path editor with the current route path. */
-    const startEditing = () => {
-        setEditedPath(props.path);
-        setIsEditing(true);
-    };
-
-    /** Resolves the agent's home shorthand before navigating to an entered path. */
-    const navigateToEditedPath = async (
-        event: React.FormEvent<HTMLFormElement>,
-    ) => {
-        event.preventDefault();
-
-        const expandedPath = expandHomePath(props.agent.cwd, editedPath);
-
-        const targetPath =
-            expandedPath === ""
-                ? "/"
-                : expandedPath.startsWith("/")
-                  ? expandedPath
-                  : `/${expandedPath}`;
-
-        setIsEditing(false);
-
-        if (targetPath === props.path) {
-            return;
-        }
-
-        // Destination route decides whether the editor stays open (missing path).
-        await navigate(browserRoute(props.agent, targetPath));
-    };
-
-    return (
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-            {isEditing ? (
-                <form
-                    onSubmit={navigateToEditedPath}
-                    className="flex min-w-0 flex-1 items-center gap-1"
-                >
-                    <InputControl
-                        ref={pathInputRef}
-                        type="text"
-                        value={editedPath}
-                        onChange={(event) => setEditedPath(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === "Escape") {
-                                setIsEditing(false);
-                            }
-                        }}
-                        aria-label="File path"
-                        className="min-w-0 w-full flex-1 border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm"
-                    />
-                    <IconButton
-                        type="submit"
-                        label="Navigate to path"
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0"
-                    >
-                        <Check className="h-4 w-4" />
-                    </IconButton>
-                </form>
-            ) : (
-                <>
-                    <nav
-                        aria-label="Breadcrumbs"
-                        className="flex min-w-0 flex-1 items-center gap-2 text-sm"
-                    >
-                        {isAtRoot ? (
-                            <span className="shrink-0 font-medium text-slate-100">
-                                /
-                            </span>
-                        ) : (
-                            <Link
-                                {...browserRoute(props.agent, "/")}
-                                className="-my-1 shrink-0 rounded px-1.5 py-1 text-blue-400 hover:underline"
-                            >
-                                /
-                            </Link>
-                        )}
-                        {parts.map((part, index) => {
-                            accumulatedPath = `${accumulatedPath}/${part}`;
-                            const isLast = index === parts.length - 1;
-
-                            return (
-                                <div
-                                    key={index}
-                                    className="flex shrink-0 items-center gap-2"
-                                >
-                                    {index > 0 ? (
-                                        <span className="text-slate-600">
-                                            /
-                                        </span>
-                                    ) : null}
-                                    {isLast ? (
-                                        <span className="whitespace-nowrap font-medium text-slate-100">
-                                            {part}
-                                        </span>
-                                    ) : (
-                                        <Link
-                                            {...browserRoute(
-                                                props.agent,
-                                                accumulatedPath,
-                                            )}
-                                            className={`whitespace-nowrap font-medium text-blue-400 hover:underline ${part.length < 3 ? "-my-1 rounded px-1.5 py-1" : ""}`}
-                                        >
-                                            {part}
-                                        </Link>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </nav>
-                    <IconButton
-                        type="button"
-                        onClick={() => {
-                            void copy();
-                        }}
-                        label={isCopied ? "Copied!" : "Copy file path"}
-                        tooltip="Copy file path"
-                        variant="ghost"
-                        size="sm"
-                        className={
-                            isCopied
-                                ? "shrink-0 text-emerald-300 hover:bg-transparent hover:text-emerald-300"
-                                : "shrink-0 text-slate-500"
-                        }
-                    >
-                        {isCopied ? (
-                            <Check className="h-3.5 w-3.5" />
-                        ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                        )}
-                    </IconButton>
-                    <IconButton
-                        type="button"
-                        onClick={startEditing}
-                        label="Edit file path"
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0 text-slate-500"
-                    >
-                        <Pencil className="h-3.5 w-3.5" />
-                    </IconButton>
-                </>
-            )}
-        </div>
     );
 }

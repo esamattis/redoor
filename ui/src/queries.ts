@@ -55,8 +55,8 @@ export type QueryContext = { api: ApiClient; queryClient: QueryClient };
  */
 const EDITOR_BUFFER_META = { editorBuffer: true } as const;
 
-/** Describes the filters shared by recursive file search keys and options. */
-export type FileSearchParams = {
+/** Describes the filters shared by recursive path and content search keys and options. */
+type RecursiveSearchParams = {
     query: string;
     timeoutSeconds: number;
     includeHidden: boolean;
@@ -64,8 +64,13 @@ export type FileSearchParams = {
     caseSensitivity: CaseSensitivity;
 };
 
-/** Extends file search with the line-oriented options only content grep has. */
-export type ContentGrepParams = FileSearchParams & {
+/** Extends the shared filters with the entry-type filter only path search has. */
+export type FileSearchParams = RecursiveSearchParams & {
+    directoriesOnly: boolean;
+};
+
+/** Extends the shared filters with the line-oriented options only content grep has. */
+export type ContentGrepParams = RecursiveSearchParams & {
     regex: boolean;
     contextSize: number;
 };
@@ -851,6 +856,7 @@ export function fileSearchQueryOptions(
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
                 caseSensitivity: search.caseSensitivity,
+                directoriesOnly: search.directoriesOnly,
                 signal,
             }),
         enabled: search.query.trim() !== "",
