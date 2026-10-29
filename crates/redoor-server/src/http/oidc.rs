@@ -396,6 +396,9 @@ fn safe_return_path(value: Option<&str>) -> String {
             if path.starts_with('/')
                 && !path.starts_with("//")
                 && !path.starts_with("/\\")
+                // Browsers strip tabs and newlines from URLs, so "/\t/evil" would become
+                // the protocol-relative "//evil" after the checks above.
+                && !path.chars().any(|c| c.is_ascii_control())
                 && HeaderValue::from_str(path).is_ok() =>
         {
             path.to_string()
@@ -830,9 +833,12 @@ mod tests {
             "https://evil.example",
             "//evil.example",
             "/\\evil.example",
+            "/\t/evil.example",
+            "/\n/evil.example",
             "evil",
         ] {
-            // Absolute and protocol-relative URLs fall back to the home page.
+            // Absolute and protocol-relative URLs, including ones a browser only forms after
+            // stripping control characters, fall back to the home page.
             assert_eq!(safe_return_path(Some(hostile)), "/", "{hostile}");
         }
         // Missing values go home.
