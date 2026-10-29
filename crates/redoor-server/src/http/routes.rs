@@ -294,11 +294,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route(
             "/api/v1/agents/{agent}/git/worktree-status",
-            get(git_worktree_status_handler),
-        )
-        .route(
-            "/api/v1/agents/{agent}/git/worktree-status/{*path}",
-            get(git_worktree_status_handler),
+            post(git_worktree_status_handler),
         )
         .route(
             "/api/v1/agents/{agent}/one-time-token",

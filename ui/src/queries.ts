@@ -20,6 +20,7 @@ import type {
     ManagedAgentFormConfiguration,
     ManagedAgentKind,
 } from "#ui/components/managed-agent-form";
+import { WorktreeStatusBatcher } from "#ui/worktree-status-batcher";
 
 /**
  * Keeps cache refreshes from turning an otherwise valid route load into an error.
@@ -771,9 +772,10 @@ export function gitWorktreesQueryOptions(agent: Agent, repositoryRoot: string) {
 }
 
 /**
- * The uncommitted change counts of one checkout in the worktree list. Each row asks for its
- * own so the list shows before every checkout has been walked, and the agent queues the walks
- * so a long list cannot run them all at once.
+ * The uncommitted change counts of one checkout in the worktree list. Each row has its own
+ * query so the list shows before every checkout has been walked, while the batcher sends the
+ * rows that ask together as one request, so a long list takes a single browser connection.
+ * The signal lets leaving the list cancel the request and the agent's walks.
  */
 export function gitWorktreeStatusQueryOptions(
     agent: Agent,
@@ -781,7 +783,11 @@ export function gitWorktreeStatusQueryOptions(
 ) {
     return queryOptions({
         queryKey: queryKeys.gitWorktreeStatus(agent.id, worktreePath),
-        queryFn: () => agent.gitWorktreeStatus(worktreePath),
+        queryFn: (context) =>
+            WorktreeStatusBatcher.forAgent(agent).load(
+                worktreePath,
+                context.signal,
+            ),
     });
 }
 

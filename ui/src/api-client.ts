@@ -93,6 +93,7 @@ import type { GitLogResponse } from "#bindings/GitLogResponse";
 import type { GitRefListResponse } from "#bindings/GitRefListResponse";
 import type { GitRefSort } from "#bindings/GitRefSort";
 import type { GitWorktreeListResponse } from "#bindings/GitWorktreeListResponse";
+import type { GitWorktreeStatusRequest } from "#bindings/GitWorktreeStatusRequest";
 import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
 import type { DirectorySizeResponse } from "#bindings/DirectorySizeResponse";
 import type { AgentAccountsResponse } from "#bindings/AgentAccountsResponse";
@@ -507,13 +508,25 @@ export class Agent {
     }
 
     /**
-     * Counts the uncommitted changes of the checkout containing a path. Separate from the
-     * worktree list because it walks every file of the checkout.
+     * Counts the uncommitted changes of the checkouts containing the paths in one request.
+     * Separate from the worktree list because it walks every file of each checkout, and the
+     * agent answers within a few seconds with the checkouts it managed to count, so a path
+     * missing from the response has to be asked for again.
      */
-    async gitWorktreeStatus(path: string): Promise<GitWorktreeStatusResponse> {
+    async gitWorktreeStatus(
+        paths: string[],
+        options: { signal?: AbortSignal } = {},
+    ): Promise<GitWorktreeStatusResponse> {
+        const request: GitWorktreeStatusRequest = { paths };
+
         return apiRequest<GitWorktreeStatusResponse>(
-            this.filesystemUrl("git/worktree-status", path),
-            undefined,
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/git/worktree-status`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+                signal: options.signal,
+            },
             this.requestContext,
         );
     }

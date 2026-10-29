@@ -482,10 +482,11 @@ pub struct GitWorktreeList {
     pub path: String,
 }
 
-/// Counts the uncommitted changes of the checkout containing a path.
+/// Counts the uncommitted changes of the checkouts containing the paths, as many as fit the
+/// agent's time budget.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitWorktreeStatus {
-    pub path: String,
+    pub paths: Vec<String>,
 }
 
 /// Reads the stable filesystem identity needed to delete only the source that was copied.
@@ -769,8 +770,10 @@ mod tests {
             "path": "/repo", "is_main": true, "is_current": true, "branch_name": "main",
             "head_commit": commit, "last_activity_at": 1, "locked": false, "missing": false}],
             "truncated": false}));
-        assert_round_trip::<GitWorktreeStatus>(json!({"changed": 1, "untracked": 2,
-            "truncated": false}));
+        assert_round_trip::<GitWorktreeStatus>(json!({"statuses": [
+            {"path": "/repo", "result": {"type": "counted", "changed": 1, "untracked": 2,
+                "truncated": false}},
+            {"path": "/gone", "result": {"type": "failed", "message": "not a repository"}}]}));
         assert_round_trip::<MoveMetadata>(json!({"file_size": 3, "is_file": true,
             "is_dir": false, "identity": {"device": 1, "inode": 2, "size": 3,
             "modified_seconds": 4, "modified_nanoseconds": 5, "is_directory": false}}));

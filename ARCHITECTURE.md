@@ -127,7 +127,8 @@ The agent runtime and the implementation of every command.
     `commit_diff` read committed history; `history` lists the commits that changed a path
     and `refs` lists branches and tags (see "Git history, branch and tag lists");
     `worktree_list` lists the main and linked checkouts of a repository and
-    `worktree_status` counts one checkout's uncommitted changes for its row; `export`
+    `worktree_status` counts the uncommitted changes of the visible rows' checkouts within a
+    time budget; `export`
     streams committed files and directory archives for downloads and copies (see "Git
     history downloads and copies"). All Git work runs in `spawn_blocking` and every
     response is bounded (entries, files, bytes per blob and per batch), because gix inflates
@@ -1672,15 +1673,31 @@ the Git view rather than another level of page navigation.
   never the checkout's files, so it answers quickly; it is bounded to 200 linked worktrees
   and not paged. Like refs it is listed at the resolved repository root and refetched on
   navigation.
-- **Worktree changes load per row.** Counting uncommitted work walks every file of a
-  checkout, so it is a separate request (`git/worktree-status`) that each row of the list
-  makes for itself once the list has rendered. It splits tracked changes from untracked
+- **Worktree changes load in batches for the visible rows.** Counting uncommitted work walks
+  every file of a checkout, so it is a separate request (`POST git/worktree-status` with a
+  list of paths) instead of part of the list. It splits tracked changes from untracked
   files, since `git stash` and `git worktree remove` treat the two differently, and stops
-  counting at 1000 changes, reported as lower bounds past that. A browser asks for every
-  row at once, and each gix walk already uses every core, so the agent queues the walks
-  behind a process-wide semaphore (two at a time) instead of seeking between checkouts. A
-  queued request waits before its blocking walk starts, so dropping it costs nothing, and
-  the server gives the call a longer deadline than other Git calls to cover the wait.
+  counting at 1000 changes, reported as lower bounds past that. A request per row used to
+  take every browser connection to the server (plain HTTP/1.1 allows six per origin) and
+  stall all other views behind the walks, so the browser batches instead:
+  - Each row keeps its own TanStack Query entry, but only asks once it has scrolled near
+    the viewport (an `IntersectionObserver`), so long lists do not walk checkouts nobody
+    looks at.
+  - `WorktreeStatusBatcher` (`ui/src/worktree-status-batcher.ts`) gathers the rows that ask
+    together into one request per agent and keeps at most one in flight. Rows asking
+    meanwhile wait for the next request. A row's query signal drops it from the batch, and
+    the request is aborted once no row waits for it, so leaving the list frees the
+    connection and stops the agent's walks.
+  - The agent walks the paths behind a process-wide semaphore (two at a time, since each
+    gix walk already uses every core and more only make the disk seek between checkouts)
+    and answers after a 5 second budget with the checkouts it finished. Unfinished walks are
+    dropped, which interrupts gix and frees their slots. If nothing finished by the
+    deadline it waits for the first walk anyway, so a checkout slower than the budget is
+    still counted and every request makes progress. The browser sends the unanswered paths
+    again, first, so the rows fill in every few seconds.
+  - A checkout that cannot be counted is a `failed` entry rather than a failed request, so
+    it does not hide the other rows' counts. The server gives the call a longer deadline
+    than other Git calls to cover the first walk and the queue.
 - **Pages are offsets, not cursors.** Each list returns up to 100 rows (`GitPage`, at most
   500 per request and an offset of at most a million) plus `has_more`, and the UI's
   `useInfiniteQuery` asks for the next offset from a "Load more" button. A time-ordered

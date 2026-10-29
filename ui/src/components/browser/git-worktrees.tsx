@@ -6,6 +6,7 @@ import {
     GitBranch,
     GitCommitHorizontal,
 } from "lucide-react";
+import { useRef } from "react";
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { CopyableGitRef } from "#ui/components/copyable-git-ref";
@@ -23,8 +24,9 @@ import {
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
 import { getBaseName } from "#ui/utils/path";
+import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
 import type { GitWorktree } from "#bindings/GitWorktree";
-import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
+import type { GitWorktreeChanges } from "#bindings/GitWorktreeChanges";
 
 /** The pill every worktree row uses for its flags, so they line up across rows. */
 const pill =
@@ -118,9 +120,12 @@ function WorktreeRow(props: {
     const worktree = props.worktree;
     const name = getBaseName(worktree.path) || worktree.path;
     const commit = worktree.head_commit;
+    const rowRef = useRef<HTMLLIElement>(null);
+    const visible = useHasBeenVisible(rowRef);
 
     return (
         <li
+            ref={rowRef}
             aria-current={worktree.is_current ? "true" : undefined}
             className={cn(
                 "flex min-w-0 items-center gap-3 px-3 py-2.5 transition-colors hover:bg-tint",
@@ -215,7 +220,11 @@ function WorktreeRow(props: {
                 </p>
             </div>
             <span className="flex shrink-0 flex-col items-end gap-1.5 @xl:flex-row @xl:items-center">
-                <ChangesSummary agent={props.agent} worktree={worktree} />
+                <ChangesSummary
+                    agent={props.agent}
+                    worktree={worktree}
+                    visible={visible}
+                />
                 {worktree.missing ? null : (
                     <span className="flex items-center gap-1.5">
                         <IconLinkButton
@@ -299,7 +308,12 @@ function BranchPill(props: { worktree: GitWorktree }) {
  * Says at a glance whether a checkout holds uncommitted work. A missing checkout has nothing
  * to walk, so it is flagged from the list alone without asking the agent.
  */
-function ChangesSummary(props: { agent: Agent; worktree: GitWorktree }) {
+function ChangesSummary(props: {
+    agent: Agent;
+    worktree: GitWorktree;
+    /** Whether the row has scrolled into view, so its checkout is worth walking. */
+    visible: boolean;
+}) {
     if (props.worktree.missing) {
         return (
             <span
@@ -311,18 +325,30 @@ function ChangesSummary(props: { agent: Agent; worktree: GitWorktree }) {
         );
     }
 
-    return <WorktreeStatus agent={props.agent} path={props.worktree.path} />;
+    return (
+        <WorktreeStatus
+            agent={props.agent}
+            path={props.worktree.path}
+            visible={props.visible}
+        />
+    );
 }
 
 /**
  * The uncommitted changes of one checkout, fetched apart from the list because counting them
  * walks every file: tracked changes in amber and untracked files apart from them, because
- * `git stash` and `git worktree remove` treat the two differently.
+ * `git stash` and `git worktree remove` treat the two differently. Only rows that have been
+ * scrolled into view ask, so a long list does not walk checkouts nobody looks at.
  */
-function WorktreeStatus(props: { agent: Agent; path: string }) {
-    const query = useQuery(
-        gitWorktreeStatusQueryOptions(props.agent, props.path),
-    );
+function WorktreeStatus(props: {
+    agent: Agent;
+    path: string;
+    visible: boolean;
+}) {
+    const query = useQuery({
+        ...gitWorktreeStatusQueryOptions(props.agent, props.path),
+        enabled: props.visible,
+    });
 
     if (query.isPending) {
         return (
@@ -393,7 +419,7 @@ function WorktreeStatus(props: { agent: Agent; path: string }) {
 
 /** Formats a change count, marking it as a lower bound when the agent stopped counting. */
 function countLabel(
-    changes: GitWorktreeStatusResponse,
+    changes: GitWorktreeChanges,
     count: number,
     noun: string,
 ): string {

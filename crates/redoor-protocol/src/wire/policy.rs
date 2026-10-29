@@ -423,7 +423,9 @@ mod tests {
                 page: GitPage { skip: 0, limit: 1 },
             }),
             Command::GitWorktreeList(request::GitWorktreeList { path: path() }),
-            Command::GitWorktreeStatus(request::GitWorktreeStatus { path: path() }),
+            Command::GitWorktreeStatus(request::GitWorktreeStatus {
+                paths: vec![path()],
+            }),
             Command::GitRevisionStat(request::GitRevisionStat {
                 path: path(),
                 rev: "HEAD".to_string(),
