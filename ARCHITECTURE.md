@@ -1523,8 +1523,8 @@ cache, so Back, reload and shared links all land on the same screen.
 
 ### Git revision browsing
 
-A `rev` search key (a branch, tag or commit id) turns the file browser into a read-only view
-of that revision. The URL path stays the worktree path, because a revision is only another
+A `rev` search key (a branch, tag or commit id, or a range `A..B` of them) turns the file
+browser into a read-only view of that revision. The URL path stays the worktree path, because a revision is only another
 way of looking at the same repository location, and paths deleted since are still reachable.
 
 - **The revision travels with every link.** The browser route declares
@@ -1545,10 +1545,21 @@ way of looking at the same repository location, and paths deleted since are stil
   only that subtree or file, with a link to the repository root for the whole commit, like
   the worktree Git view. A path the commit deleted has no tree at the commit, so the loader
   (`browser-revision-loader.ts`) falls back to the commit diff and shows the deletion.
+- **Ranges show several commits as one change.** The agent's `RevisionPath` splits `A..B`
+  at the first `..` (ref names cannot contain one) and resolves both sides in the same
+  repository. Every history command reads B, so browsing a range shows its newer end, and
+  `git/commit-diff` compares B with A instead of B's first parent, like `git diff A..B`,
+  reporting the start in `range` so the view heads the diff with both ends and drops the
+  prev/next stepper. An empty side means `HEAD` as in Git; the symmetric `A...B` is refused.
+  Git cannot resolve the parent of a root commit, so a left side of the form `<root>^` (or
+  `~`, `^1`, `~1`) starts the range from the empty tree instead: that keeps
+  `<oldest>^..<newest>`, the range a run of commits picked in the history list opens, valid
+  when the run reaches the first commit.
 - **Moving revisions are resolved once per navigation.** The tree query is refetched on
   every navigation because a branch can move; committed content and commit diffs are then
   fetched and cached by the commit id the tree resolved, so cached text can never belong to
-  an older commit than the banner shows. Links keep the revision as typed, so they follow
+  an older commit than the banner shows. A range's diff is cached by `A..<resolved B>`,
+  keeping A as typed; ranges from the history list name A by commit id, so it cannot move. Links keep the revision as typed, so they follow
   the branch.
 - **Nested repositories fall back outwards.** The innermost repository containing the path
   resolves the revision first, so a submodule's own history is browsable. A revision it
@@ -1688,7 +1699,10 @@ the Git view rather than another level of page navigation.
   move with HEAD, while a commit's diff is cached for good, and because the walk from HEAD
   grows with the commit's age, so it must not hold up the patches.
 - **Links open revisions.** A commit links to the same path at `view=git&rev=<id>`, showing
-  that commit's changes scoped to the path. A branch or tag links to the path at
+  that commit's changes scoped to the path. Commits also have checkboxes: the first picks one
+  end of a run and later ones move the other end, and the selection bar opens the run as
+  `rev=<oldest>^..<newest>`, so the oldest commit's own changes are included. The picked
+  ends are history-entry state, so Back from the combined diff returns to the same run. A branch or tag links to the path at
   `rev=<full ref name>`, because a short name can be ambiguous between a tag and a branch;
   the banner drops the `refs/heads/`, `refs/remotes/` and `refs/tags/` prefix for display.
 - **Caching matches revision browsing.** History is always keyed by a commit id: the
