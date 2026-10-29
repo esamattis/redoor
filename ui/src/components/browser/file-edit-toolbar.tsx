@@ -1,5 +1,4 @@
 import React from "react";
-import { useAtom, useAtomValue } from "jotai";
 import { useMutation } from "@tanstack/react-query";
 import {
     ClipboardCopy,
@@ -11,15 +10,9 @@ import {
     Save,
     Search,
     ScanText,
-    Terminal,
     Trash2,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
-import {
-    bottomDrawerActiveTabAtom,
-    bottomDrawerCollapsedAtom,
-} from "#ui/bottom-drawer-state";
-import { useActiveTerminalTarget, useTerminals } from "#ui/use-terminals";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
@@ -29,7 +22,6 @@ import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { ViewToolbar } from "#ui/components/browser/view-toolbar-slot";
 import { Checkbox } from "#ui/components/checkbox";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
-import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import { ToggleButton } from "#ui/components/toggle-button";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
@@ -345,39 +337,8 @@ function FileEditorSecondaryActions(props: {
     onReload: () => void;
     onDelete: () => void;
 }) {
-    const terminals = useTerminals();
-    const terminalTarget = useActiveTerminalTarget();
-
-    const [isDrawerCollapsed, setDrawerCollapsed] = useAtom(
-        bottomDrawerCollapsedAtom,
-    );
-
-    const activeDrawerTab = useAtomValue(bottomDrawerActiveTabAtom);
-    const isTerminalOpen = !isDrawerCollapsed && activeDrawerTab === "terminal";
-
     return (
         <div className="flex shrink-0 items-center gap-0.5">
-            <IconButton
-                type="button"
-                label="Open terminal"
-                tooltip={
-                    isTerminalOpen
-                        ? "Fold down terminal"
-                        : "Open terminal (t, Alt+t / Option+T)"
-                }
-                aria-expanded={isTerminalOpen}
-                onClick={() => {
-                    if (isTerminalOpen) {
-                        setDrawerCollapsed(true);
-                    } else {
-                        terminals.openOrFocus(terminalTarget);
-                    }
-                }}
-                variant="ghost"
-                size="lg"
-            >
-                <Terminal className="h-4 w-4" aria-hidden="true" />
-            </IconButton>
             <FullWindowToggle
                 targetName="editor"
                 isFullWindow={props.isFullWindow}

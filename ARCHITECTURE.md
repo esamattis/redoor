@@ -1310,7 +1310,7 @@ context (`useTerminals`, `useUploads`).
 
 - **`TerminalSessions` owns the tabs.** Features call it instead of queueing requests:
   `create` opens a shell, optionally with a one-shot startup command whose listing refresh
-  it schedules, and `openOrFocus` is shared by the `t` shortcut and the toolbar button. It
+  it schedules, and `openOrFocus` is shared by the `t` and Alt+t shortcuts. It
   reads the drawer atoms through the shared jotai store, which `main.tsx` creates, to know
   whether a tab is on screen and to reveal the drawer. Active tab, device picker, focus
   requests and tab order live in its snapshot.
