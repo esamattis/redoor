@@ -29,7 +29,6 @@ import {
     prefetchGitDiffs,
 } from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
-import { FileNameFilter } from "#ui/utils/file-name-filter";
 import { getBaseName } from "#ui/utils/path";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
@@ -171,6 +170,42 @@ function WorktreeDiffBody(props: {
 }
 
 /**
+ * Resolves the changed files of a worktree to the diff cards that show them, each fetching its
+ * own patch when expanded. File names link to the file in the worktree, or at HEAD for a file
+ * deleted from it.
+ */
+function worktreeDiffFiles(
+    agent: Agent,
+    diffItems: GitStatusItem[],
+): GitDiffListFile[] {
+    return diffItems.map((item) => {
+        const entry = item.entry;
+
+        return {
+            path: entry.path,
+            relativePath: entry.repository_relative_path,
+            originalPath: entry.original_path,
+            change: item.state,
+            link: {
+                agent,
+                // A file deleted from the worktree still exists at HEAD, so that is where it opens.
+                search: item.state === "deleted" ? { rev: "HEAD" } : {},
+                hasWorkingCopy: item.state !== "deleted",
+            },
+            regionLabel: `Git diff for ${entry.path}`,
+            renderBody: (view) => (
+                <WorktreeDiffBody
+                    agent={agent}
+                    path={entry.path}
+                    mode="full"
+                    view={view}
+                />
+            ),
+        };
+    });
+}
+
+/**
  * The worktree changes below a directory: a summary of what is pending and every changed
  * file under a header naming it, collapsed until its diff is wanted.
  */
@@ -185,7 +220,25 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
     // Diffs load per file on expansion, so a large change set opens without fetching any.
     const collapsed = useCollapsedGitDiffs({ scope, initiallyCollapsed: true });
 
-    const [filterQuery, setFilterQuery] = useGitDiffFilterQuery(scope);
+    const filterQuery = useGitDiffFilterQuery(scope);
+
+    const groups = React.useMemo(
+        () =>
+            statusQuery.data === undefined
+                ? null
+                : groupGitStatusEntries(statusQuery.data.entries),
+        [statusQuery.data],
+    );
+
+    // Built once per status, so the memoized diff cards keep their props while the filter
+    // or another file's state changes.
+    const files = React.useMemo(
+        () =>
+            groups === null
+                ? []
+                : worktreeDiffFiles(props.agent, groups.diffItems),
+        [props.agent, groups],
+    );
 
     if (statusQuery.isPending) {
         return (
@@ -214,8 +267,12 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
 
     const status = statusQuery.data;
 
-    const { conflicts, staged, unstaged, untracked, diffItems } =
-        groupGitStatusEntries(status.entries);
+    // Loaded status always has groups; this only narrows the memoized value's type.
+    if (groups === null) {
+        return null;
+    }
+
+    const { conflicts, staged, unstaged, untracked, diffItems } = groups;
 
     // Omitted or truncated entries are changes too, so their warnings below must stay visible.
     if (
@@ -234,33 +291,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
         );
     }
 
-    const files = diffItems.map((item): GitDiffListFile => {
-        const entry = item.entry;
-
-        return {
-            path: entry.path,
-            relativePath: entry.repository_relative_path,
-            originalPath: entry.original_path,
-            change: item.state,
-            link: {
-                agent: props.agent,
-                // A file deleted from the worktree still exists at HEAD, so that is where it opens.
-                search: item.state === "deleted" ? { rev: "HEAD" } : {},
-                hasWorkingCopy: item.state !== "deleted",
-            },
-            regionLabel: `Git diff for ${entry.path}`,
-            renderBody: (view) => (
-                <WorktreeDiffBody
-                    agent={props.agent}
-                    path={entry.path}
-                    mode="full"
-                    view={view}
-                />
-            ),
-        };
-    });
-
-    const filter = FileNameFilter.parse(filterQuery);
+    const filter = filterQuery.filter;
 
     const shownFiles = files.filter((file) =>
         filter.matches(file.relativePath),
@@ -335,16 +366,17 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                 ) : null}
                 {files.length === 0 ? null : (
                     <GitDiffFilterField
-                        query={filterQuery}
-                        onChange={setFilterQuery}
+                        query={filterQuery.query}
+                        onChange={filterQuery.setQuery}
                         filter={filter}
                         shownCount={shownFiles.length}
                         totalCount={files.length}
                     />
                 )}
                 <GitDiffList
-                    files={shownFiles}
+                    files={files}
                     collapsed={collapsed}
+                    filter={filter}
                     scope={scope}
                 />
             </div>

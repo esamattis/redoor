@@ -39,7 +39,6 @@ import {
 } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
-import { FileNameFilter } from "#ui/utils/file-name-filter";
 import type { GitChangeState } from "#bindings/GitChangeState";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";
@@ -467,7 +466,21 @@ export function GitCommitView(props: {
         initiallyCollapsed: false,
     });
 
-    const [filterQuery, setFilterQuery] = useGitDiffFilterQuery(scope);
+    const filterQuery = useGitDiffFilterQuery(scope);
+
+    // Built once per commit diff, so the memoized diff cards keep their props while the
+    // filter or another file's state changes.
+    const files = React.useMemo(
+        () =>
+            diffQuery.data === undefined
+                ? []
+                : commitDiffFiles({
+                      agent: props.agent,
+                      rev: props.rev,
+                      diff: diffQuery.data,
+                  }),
+        [props.agent, props.rev, diffQuery.data],
+    );
 
     if (diffQuery.isPending) {
         return (
@@ -498,13 +511,7 @@ export function GitCommitView(props: {
     const commit = diff.commit;
     const now = Date.now();
 
-    const files = commitDiffFiles({
-        agent: props.agent,
-        rev: props.rev,
-        diff,
-    });
-
-    const filter = FileNameFilter.parse(filterQuery);
+    const filter = filterQuery.filter;
 
     const shownFiles = files.filter((file) =>
         filter.matches(file.relativePath),
@@ -622,16 +629,17 @@ export function GitCommitView(props: {
                 ) : null}
                 {files.length === 0 ? null : (
                     <GitDiffFilterField
-                        query={filterQuery}
-                        onChange={setFilterQuery}
+                        query={filterQuery.query}
+                        onChange={filterQuery.setQuery}
                         filter={filter}
                         shownCount={shownFiles.length}
                         totalCount={files.length}
                     />
                 )}
                 <GitDiffList
-                    files={shownFiles}
+                    files={files}
                     collapsed={collapsed}
+                    filter={filter}
                     scope={scope}
                 />
             </div>

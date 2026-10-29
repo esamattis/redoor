@@ -1611,6 +1611,14 @@ the Git view rather than another level of page navigation.
   can be narrowed by file name (`utils/file-name-filter.ts`): every word must appear in the
   repository-relative path, a `-word` must not, and quotes keep a word literal (`"-test"`).
   The filter is client-side over the listed files, so it never refetches status or diffs.
+  A large change set with many expanded patches is slow to re-render, so the list follows the
+  typed query through `useDeferredValue` and typing never waits for it. Filtered-out cards
+  stay mounted with the `hidden` attribute instead of unmounting, so widening the filter
+  brings a patch back without parsing, highlighting and building its rows again; a card
+  whose patch was never shown does not mount it while hidden, so expanding all under a filter
+  fetches nothing it hides. The cards are memoized with stable props (files built in a
+  `useMemo`, per-file callbacks from `useCallback`), so a filter change re-renders only the
+  cards whose visibility changed.
 
 - **History follows the browsed path.** `git/log` lists the commits that changed the path,
   newest first by commit time, starting at HEAD in the worktree or at the browsed commit
