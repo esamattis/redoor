@@ -1,7 +1,15 @@
-import { access, mkdir, writeFile, rm, symlink } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, open, writeFile, rm, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { $ } from "zx";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
 import { Agent } from "#ui/api-client";
 import type { ErrorResponse } from "#bindings/ErrorResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -508,21 +516,41 @@ describe("Git browser REST API", () => {
                 ),
             ),
         );
+        // A status walk over these files takes only tens of milliseconds, so racing it against an
+        // echo depends on machine load. Instead the repository's exclude file becomes a FIFO:
+        // the status blocks opening it until this test opens the write end, which keeps the walk
+        // running on the agent for exactly as long as the test needs.
+        const excludeGate = join(repo, ".git", "info", "exclude");
+        await rm(excludeGate, { force: true });
+        await $`mkfifo ${excludeGate}`;
+
         const statusPromise = gitStatus(many);
-        const echoPromise = testAgent.echo("control-lane");
+        let statusSettled = false;
+        void statusPromise.then(
+            () => (statusSettled = true),
+            () => (statusSettled = true),
+        );
 
-        const firstResult = await Promise.race([
-            statusPromise.then(() => "status"),
-            echoPromise.then(() => "echo"),
+        // Opening the write end blocks until the agent opens the read end, so once it resolves the
+        // status is in flight on the agent and cannot finish until the gate is closed.
+        const gate = await Promise.race([
+            open(excludeGate, constants.O_WRONLY),
+            statusPromise.then(() => {
+                throw new Error("Git status finished without reading the gated exclude file");
+            }),
         ]);
 
-        // The lightweight control command completes before the already-started large status walk.
-        expect(firstResult).toBe("echo");
+        onTestFinished(() => gate.close());
 
-        const [boundedStatus, echo] = await Promise.all([
-            statusPromise,
-            echoPromise,
-        ]);
+        const echo = await testAgent.echo("control-lane");
+
+        // The control command completed while the large status walk was still held on the agent.
+        expect(statusSettled).toBe(false);
+
+        // Closing the only writer gives the agent an empty exclude file and lets the walk finish.
+        await gate.close();
+
+        const boundedStatus = await statusPromise;
 
         // The status response never exceeds its named authoritative entry limit.
         expect(boundedStatus.entries).toHaveLength(5_000);
