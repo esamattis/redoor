@@ -313,6 +313,26 @@ impl std::fmt::Debug for OidcConfig {
     }
 }
 
+impl OidcConfig {
+    /// Accepts HTTPS everywhere and plain HTTP only for loopback hosts. Shared by config
+    /// validation and the provider's discovered endpoints, because the unsigned ID token is
+    /// only trustworthy when codes, tokens and the client secret never cross a network
+    /// unencrypted.
+    pub fn is_secure_url(url: &url::Url) -> bool {
+        let loopback = match url.host() {
+            Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
+            Some(url::Host::Ipv4(address)) => address.is_loopback(),
+            Some(url::Host::Ipv6(address)) => address.is_loopback(),
+            None => false,
+        };
+        match url.scheme() {
+            "https" => true,
+            "http" => loopback,
+            _ => false,
+        }
+    }
+}
+
 /// Parsed `[agent]` table for a standalone `redoor agent` process.
 ///
 /// All fields are optional in the file so CLI and env can supply missing

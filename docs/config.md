@@ -100,7 +100,7 @@ Adds "Sign in with …" to the login page using any OpenID Connect provider (Poc
 | `provider_name`         | string           | `single sign-on`                 | Button label: "Sign in with {provider_name}".                                                                                       |
 | `session_lifetime_days` | integer          | `30`                             | Idle lifetime of sessions created by OIDC sign-in (1–400). Every use extends it, so it only expires after this long without use.     |
 
-The provider must support the authorization code flow with PKCE (S256). The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups`, or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS.
+The provider must support the authorization code flow with PKCE (S256), and its discovered authorization and token endpoints must follow the same `https://` rule as `issuer`. The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups`, or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS.
 
 ```toml
 [server.oidc]

@@ -441,18 +441,12 @@ pub(super) const OIDC_CALLBACK_PATH: &str = "/api/v1/auth/oidc/callback";
 fn parse_oidc_url(value: &str, key: &str) -> Result<url::Url, Invalid> {
     let url = url::Url::parse(value)
         .map_err(|error| invalid(format!("server.oidc.{key} is not a valid URL: {error}")))?;
-    let loopback = match url.host() {
-        Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-        Some(url::Host::Ipv4(address)) => address.is_loopback(),
-        Some(url::Host::Ipv6(address)) => address.is_loopback(),
-        None => false,
-    };
-    match url.scheme() {
-        "https" => Ok(url),
-        "http" if loopback => Ok(url),
-        _ => Err(invalid(format!(
+    if OidcConfig::is_secure_url(&url) {
+        Ok(url)
+    } else {
+        Err(invalid(format!(
             "server.oidc.{key} must be an https:// URL (http:// is only allowed for localhost)"
-        ))),
+        )))
     }
 }
 

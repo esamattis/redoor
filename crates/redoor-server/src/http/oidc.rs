@@ -62,6 +62,20 @@ struct Discovery {
     token_endpoint_auth_methods_supported: Option<Vec<String>>,
 }
 
+impl Discovery {
+    /// The issuer was checked at startup, but the endpoints come from the provider. The ID
+    /// token is trusted without a signature check only because it arrives over TLS, so a
+    /// plain HTTP endpoint must never receive the code, verifier or client secret.
+    fn check_endpoints(&self) -> anyhow::Result<()> {
+        for endpoint in [&self.authorization_endpoint, &self.token_endpoint] {
+            if !OidcConfig::is_secure_url(&url::Url::parse(endpoint)?) {
+                anyhow::bail!("insecure endpoint '{endpoint}'");
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Secrets of one sign-in between the redirect to the provider and its callback.
 struct PendingLogin {
     nonce: String,
@@ -186,6 +200,9 @@ impl OidcClient {
                         self.config.issuer
                     );
                 }
+                discovery
+                    .check_endpoints()
+                    .map_err(|error| anyhow::anyhow!("discovery document at {url}: {error}"))?;
                 Ok(discovery)
             })
             .await
@@ -843,6 +860,43 @@ mod tests {
         }
         // Missing values go home.
         assert_eq!(safe_return_path(None), "/");
+    }
+
+    /// Discovered endpoints must meet the same transport rule as the configured issuer.
+    #[test]
+    fn discovery_endpoints_must_be_secure() {
+        let discovery = |authorization: &str, token: &str| Discovery {
+            issuer: String::new(),
+            authorization_endpoint: authorization.to_string(),
+            token_endpoint: token.to_string(),
+            token_endpoint_auth_methods_supported: None,
+        };
+        // HTTPS endpoints and loopback test providers are accepted.
+        assert!(
+            discovery("https://id.example/authorize", "https://id.example/token")
+                .check_endpoints()
+                .is_ok()
+        );
+        assert!(
+            discovery(
+                "http://127.0.0.1:9000/authorize",
+                "http://localhost:9000/token"
+            )
+            .check_endpoints()
+            .is_ok()
+        );
+        // A plain HTTP token endpoint would expose the secret and let the token be altered.
+        assert!(
+            discovery("https://id.example/authorize", "http://id.example/token")
+                .check_endpoints()
+                .is_err()
+        );
+        // A plain HTTP authorization endpoint would expose the code and state.
+        assert!(
+            discovery("http://id.example/authorize", "https://id.example/token")
+                .check_endpoints()
+                .is_err()
+        );
     }
 
     /// Only an explicit lack of Basic support switches to secrets in the body.
