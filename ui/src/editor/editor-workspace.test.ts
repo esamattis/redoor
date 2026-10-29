@@ -19,6 +19,7 @@ import type { PutEditorBufferResponse } from "#bindings/PutEditorBufferResponse"
 import {
     EditorWorkspace,
     type ActivateRequest,
+    type CaretReport,
     type EditorBufferApi,
 } from "./editor-workspace";
 import { parseStoredBuffer, type StoredBuffer } from "./stored-buffer";
@@ -106,11 +107,15 @@ afterEach(() => {
 
 /** Creates a workspace over a fake server, dropped with its view after the test. */
 function createWorkspace(api = new FakeBufferApi()) {
-    const workspace = new EditorWorkspace(api, new QueryClient());
+    const caretLines: CaretReport[] = [];
+
+    const workspace = new EditorWorkspace(api, new QueryClient(), (caret) =>
+        caretLines.push(caret),
+    );
 
     onTestFinished(() => workspace.deactivate(container));
 
-    return { workspace, api };
+    return { workspace, api, caretLines };
 }
 
 /** Shows a file the way the editor component does. */
@@ -269,6 +274,23 @@ test("open buffers are written debounced and restored with their history on anot
     undo(restored);
     // The undo history came along.
     expect(restored.state.doc.toString()).toBe("saved draft");
+});
+
+test("each buffer write reports the caret line for the open files list", async () => {
+    const { workspace, caretLines } = createWorkspace();
+    workspace.setOpenKeys(["a"]);
+
+    const view = show(workspace, {
+        key: "a",
+        deviceContent: "one\ntwo\nthree",
+    });
+
+    view.dispatch({ selection: { anchor: 4 } });
+    // The line is reported with the debounced write, not on every caret move.
+    expect(caretLines).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1000);
+    // The write carries the line the caret is on.
+    expect(caretLines).toEqual([{ key: "a", line: 2, appliedReveal: null }]);
 });
 
 test("scrolling alone never writes, and hiding the page only writes what changed", async () => {

@@ -138,6 +138,14 @@ test.describe.serial("Open in background", () => {
                 openFiles: [{ path: filePath, reveal: { line: TARGET_LINE } }],
             });
 
+        // The list shows the chosen line right away, confirming the click before any visit.
+        await expect(
+            openFilesList(page).getByLabel(
+                `Caret line ${String(TARGET_LINE)}`,
+                { exact: true },
+            ),
+        ).toBeVisible();
+
         await openFilesList(page)
             .getByRole("link", { name: fileName, exact: true })
             .click();
@@ -158,6 +166,10 @@ test.describe.serial("Open in background", () => {
         await editor.focus();
         await page.keyboard.press("ControlOrMeta+Home");
         await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+        // The list follows the caret once its buffer is written, so it shows where the file was left.
+        await expect(
+            openFilesList(page).getByLabel("Caret line 1", { exact: true }),
+        ).toBeVisible();
         await page.goto(diffUrl);
         await expect(section).toBeVisible();
         await openFilesList(page)

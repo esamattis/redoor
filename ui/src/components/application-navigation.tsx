@@ -492,13 +492,26 @@ function OpenFileRow(props: {
 
     const label = (
         <span className={cn("block min-w-0", isOffline && "opacity-60")}>
-            <span
-                className={cn(
-                    "block truncate text-sm",
-                    isActive ? "text-slate-100" : "text-slate-200",
+            <span className="flex min-w-0 items-baseline text-sm">
+                <span
+                    className={cn(
+                        "truncate",
+                        isActive ? "text-slate-100" : "text-slate-200",
+                    )}
+                >
+                    {props.file.name}
+                </span>
+                {/* Shows where the caret is, so a line picked in a diff or search result is
+                    confirmed in the list before the file is visited. It never truncates,
+                    since the name says which file and the line is the new information. */}
+                {props.file.line === undefined ? null : (
+                    <span
+                        aria-label={`Caret line ${String(props.file.line)}`}
+                        className="shrink-0 text-slate-500"
+                    >
+                        :{props.file.line}
+                    </span>
                 )}
-            >
-                {props.file.name}
             </span>
             <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-slate-500">
                 {props.agent ? (
