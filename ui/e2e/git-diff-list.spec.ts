@@ -77,7 +77,7 @@ test.describe("Git diff list", () => {
             name: `Git diff for ${path.join(repositoryPath, "src/server.test.ts")}`,
         });
 
-        // Each file carries its own layout switch, starting from the stored inline default.
+        // Each file carries its own layout switch, starting from the fixed inline default.
         await expect(
             serverTest
                 .getByRole("group", {

@@ -397,6 +397,48 @@ function CommitStepper(props: {
 }
 
 /**
+ * Resolves a commit's changed files to the diff cards that show them. File names link to the
+ * file at the commit, or at the parent for deleted files, which no longer exist at the
+ * commit, and links keep the browsed revision so they follow a branch rather than pin it.
+ */
+function commitDiffFiles(options: {
+    agent: Agent;
+    rev: string;
+    diff: GitCommitDiffResponse;
+}): GitDiffListFile[] {
+    const parentId = options.diff.parent_id;
+
+    return options.diff.files.map((file) => ({
+        path: file.path,
+        relativePath: file.repository_relative_path,
+        originalPath: null,
+        change: file.change,
+        link: {
+            agent: options.agent,
+            search: {
+                rev:
+                    file.change === "deleted" && parentId !== null
+                        ? parentId
+                        : options.rev,
+            },
+            hasWorkingCopy: file.change !== "deleted",
+        },
+        regionLabel: `Commit diff for ${file.repository_relative_path}`,
+        renderBody: (view) => (
+            <GitDiffResultView
+                result={file.result}
+                view={view}
+                editorFile={
+                    file.change === "deleted"
+                        ? undefined
+                        : { device: options.agent, path: file.path }
+                }
+            />
+        ),
+    }));
+}
+
+/**
  * Shows what the revision's commit changed below the browsed path, compared with its first
  * parent: who made the commit and when, a way to step to the neighbouring commits, a
  * summary of the changed files, then each file's diff under a header naming it. It is laid
@@ -454,35 +496,13 @@ export function GitCommitView(props: {
 
     const diff = diffQuery.data;
     const commit = diff.commit;
-    const parentId = diff.parent_id;
     const now = Date.now();
 
-    /** Deleted files no longer exist at the commit, so they open at the parent. */
-    const fileRevision = (change: GitChangeState) =>
-        change === "deleted" && parentId !== null ? parentId : props.rev;
-
-    const files = diff.files.map((file): GitDiffListFile => ({
-        path: file.path,
-        relativePath: file.repository_relative_path,
-        originalPath: null,
-        change: file.change,
-        fileSearch: { rev: fileRevision(file.change) },
-        regionLabel: `Commit diff for ${file.repository_relative_path}`,
-        renderBody: (view) => (
-            <GitDiffResultView
-                result={file.result}
-                view={view}
-                editorFile={
-                    file.change === "deleted"
-                        ? undefined
-                        : {
-                              device: props.agent,
-                              path: file.path,
-                          }
-                }
-            />
-        ),
-    }));
+    const files = commitDiffFiles({
+        agent: props.agent,
+        rev: props.rev,
+        diff,
+    });
 
     const filter = FileNameFilter.parse(filterQuery);
 
@@ -610,7 +630,6 @@ export function GitCommitView(props: {
                     />
                 )}
                 <GitDiffList
-                    agent={props.agent}
                     files={shownFiles}
                     collapsed={collapsed}
                     scope={scope}

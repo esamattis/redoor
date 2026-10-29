@@ -34,7 +34,6 @@ test.describe.serial("User state", () => {
                 bookmarks: [],
                 vimMode: false,
                 wrapEditorLines: false,
-                wrapDiffLines: false,
                 recursiveSearchTimeoutSeconds: 5,
                 recursiveSearchIncludeHidden: false,
                 recursiveSearchRespectGitignore: true,

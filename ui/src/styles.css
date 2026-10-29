@@ -477,8 +477,3 @@ code {
 [data-touch-scrolling] .git-diff-sticky-header {
     top: calc(-1 * var(--top-chrome-height, 0px));
 }
-
-/* The diff list names each file in its own sticky header, so the diff's own would repeat it. */
-.git-diff-list-body [data-diff-file-header] {
-    display: none;
-}

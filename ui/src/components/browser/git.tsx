@@ -1,6 +1,5 @@
 import React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useAtomValue } from "jotai";
 import {
     AlertTriangle,
     CheckCircle2,
@@ -10,9 +9,6 @@ import {
 import type { Agent } from "#ui/api-client";
 import { SegmentedControl } from "#ui/components/segmented-control";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
-import { DiffLayoutControl } from "#ui/components/browser/diff-layout-control";
-import { inlineDiffChangesAtom } from "#ui/diff-preferences";
-import { useUserState } from "#ui/user-state";
 import {
     GitDiffCollapseControls,
     GitDiffFilterField,
@@ -133,17 +129,20 @@ function CleanState(props: { message: string }) {
 }
 
 /**
- * One file's patch in the worktree diff list. It mounts only when the file is expanded, so
- * a diff is fetched the first time its file is opened, and then comes from the cache, which
- * the route loader refreshes on every navigation to the list.
+ * One file's worktree patch in a diff card, for the directory list and a single file's view
+ * alike. It mounts only when the file is expanded, so a diff is fetched the first time its
+ * file is opened, and then comes from the cache, which the route loader refreshes on every
+ * navigation to the view.
  */
 function WorktreeDiffBody(props: {
     agent: Agent;
     path: string;
+    /** What the worktree is compared with HEAD by: all changes or only the staged ones. */
+    mode: GitDiffMode;
     view: GitDiffBodyView;
 }) {
     const diffQuery = useQuery(
-        gitDiffQueryOptions(props.agent, [props.path], "full"),
+        gitDiffQueryOptions(props.agent, [props.path], props.mode),
     );
 
     if (diffQuery.isPending) {
@@ -243,13 +242,18 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
             relativePath: entry.repository_relative_path,
             originalPath: entry.original_path,
             change: item.state,
-            // A file deleted from the worktree still exists at HEAD, so that is where it opens.
-            fileSearch: item.state === "deleted" ? { rev: "HEAD" } : {},
+            link: {
+                agent: props.agent,
+                // A file deleted from the worktree still exists at HEAD, so that is where it opens.
+                search: item.state === "deleted" ? { rev: "HEAD" } : {},
+                hasWorkingCopy: item.state !== "deleted",
+            },
             regionLabel: `Git diff for ${entry.path}`,
             renderBody: (view) => (
                 <WorktreeDiffBody
                     agent={props.agent}
                     path={entry.path}
+                    mode="full"
                     view={view}
                 />
             ),
@@ -339,7 +343,6 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                     />
                 )}
                 <GitDiffList
-                    agent={props.agent}
                     files={shownFiles}
                     collapsed={collapsed}
                     scope={scope}
@@ -354,7 +357,7 @@ export function GitDiffResultView(props: {
     result: GitDiffResult;
     /** Omitted when the file has no editor to open, such as a file the diff deleted. */
     editorFile?: { device: { id: string; name: string }; path: string };
-    /** Comes from the view, since lists switch it per file and single files by preference. */
+    /** The layout, wrapping and whole file chosen in the diff card's header. */
     view: GitDiffBodyView;
 }) {
     if (props.result.type === "text") {
@@ -410,8 +413,9 @@ function trackingLabel(context: GitContextResponse): string | null {
 }
 
 /**
- * One file's worktree diff against HEAD. The comparison switch sits in the panel bar,
- * where it is visible, instead of behind an overflow menu.
+ * One file's worktree diff against HEAD, as a diff card like every file of a list, so its
+ * switches sit in the same place and back restores them the same way. The comparison switch
+ * sits in the panel bar, where it is visible, instead of behind an overflow menu.
  */
 export function GitFileView(props: {
     agent: Agent;
@@ -421,44 +425,62 @@ export function GitFileView(props: {
     mode: GitDiffMode;
     onModeChange: (mode: GitDiffMode) => void;
 }) {
-    const diffQuery = useQuery(
-        gitDiffQueryOptions(props.agent, [props.path], props.mode),
-    );
-
-    // A single file follows the stored preferences, which its bar's switches set.
-    const mergeModifiedLines = useAtomValue(inlineDiffChangesAtom);
-    const [userState] = useUserState();
     const tracking = trackingLabel(props.context);
+    const context = props.context;
+    const insideWorktree = context.status === "inside_worktree";
+    const deleted = insideWorktree && context.tracking_state === "deleted";
+
+    const file: GitDiffListFile = {
+        path: props.path,
+        relativePath: insideWorktree
+            ? context.repository_relative_path
+            : getBaseName(props.path),
+        originalPath: null,
+        // Without the status walk the kind of change is unknown, so the patch names it.
+        change: null,
+        link: {
+            agent: props.agent,
+            // A file deleted from the worktree still exists at HEAD, so that is where it opens.
+            search: deleted ? { rev: "HEAD" } : {},
+            hasWorkingCopy: !deleted,
+        },
+        regionLabel: `${props.mode === "full" ? "Full" : "Staged"} Git diff`,
+        renderBody: (view) => (
+            <WorktreeDiffBody
+                agent={props.agent}
+                path={props.path}
+                mode={props.mode}
+                view={view}
+            />
+        ),
+    };
 
     return (
         <>
             <GitPanelBar
                 actions={
-                    <>
-                        <DiffLayoutControl />
-                        <SegmentedControl
-                            label="Compared changes"
-                            className="w-64"
-                            value={props.mode}
-                            onChange={props.onModeChange}
-                            options={[
-                                {
-                                    value: "full",
-                                    label: "All changes",
-                                    icon: FileDiff,
-                                    tooltip:
-                                        "Working tree and staged changes compared with HEAD",
-                                },
-                                {
-                                    value: "staged",
-                                    label: "Staged only",
-                                    icon: ListChecks,
-                                    tooltip:
-                                        "Only the changes staged in the index, compared with HEAD",
-                                },
-                            ]}
-                        />
-                    </>
+                    <SegmentedControl
+                        label="Compared changes"
+                        className="w-64"
+                        value={props.mode}
+                        onChange={props.onModeChange}
+                        options={[
+                            {
+                                value: "full",
+                                label: "All changes",
+                                icon: FileDiff,
+                                tooltip:
+                                    "Working tree and staged changes compared with HEAD",
+                            },
+                            {
+                                value: "staged",
+                                label: "Staged only",
+                                icon: ListChecks,
+                                tooltip:
+                                    "Only the changes staged in the index, compared with HEAD",
+                            },
+                        ]}
+                    />
                 }
             >
                 <span className="min-w-0 truncate font-mono font-medium text-slate-100">
@@ -470,39 +492,13 @@ export function GitFileView(props: {
                     </span>
                 )}
             </GitPanelBar>
-            <section
-                aria-label={`${props.mode === "full" ? "Full" : "Staged"} Git diff`}
-                className="w-full min-w-0 overflow-x-hidden bg-slate-950/30 [&>p]:p-4 @xl:[&>p]:p-5"
-            >
-                {diffQuery.isPending ? (
-                    <p role="status" className="p-4 text-sm text-slate-400">
-                        Loading {props.mode} Git diff...
-                    </p>
-                ) : diffQuery.isError ? (
-                    <p role="alert" className="p-4 text-sm text-red-300">
-                        {getErrorMessage(
-                            diffQuery.error,
-                            "Failed to load Git diff",
-                        )}
-                    </p>
-                ) : (
-                    <GitDiffResultView
-                        result={
-                            diffQuery.data.diffs[0]?.result ?? {
-                                type: "no_changes",
-                            }
-                        }
-                        editorFile={{
-                            device: props.agent,
-                            path: props.path,
-                        }}
-                        view={{
-                            mergeModifiedLines,
-                            wrapLines: userState.wrapDiffLines,
-                        }}
-                    />
-                )}
-            </section>
+            <div className="grid grid-cols-[minmax(0,1fr)] px-2 py-3 @xl:px-5 @xl:py-4">
+                {/* Both comparisons of the file share its choices, since they show the same file. */}
+                <GitDiffList
+                    files={[file]}
+                    scope={`${props.agent.id}:${props.path}`}
+                />
+            </div>
         </>
     );
 }

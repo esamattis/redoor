@@ -1597,13 +1597,17 @@ the Git view rather than another level of page navigation.
   happens in the browser without another request. Reveals are keyed on the file's hunk
   layout, so switching the inline layout keeps them. Highlighting covers every row the
   patch carries, so a folded line keeps the colours of a string or comment opened above it.
-  Single-diff views toggle the whole file in the patch's own header; diff lists put the
-  toggle in each file's sticky header. Whether edited lines pair into
-  inline rows or stay separate -/+ rows is chosen per file: single-diff views (a file's Git
-  diff, Sync) switch the browser-wide preference (`inlineDiffChangesAtom`, stored in
-  localStorage) from their bar, and diff lists (worktree changes, commits) put a switch in
-  every file header whose choice lives in memory for that list and defaults to the
-  preference. Line wrapping stays one user-wide setting in every diff view's bar. Diff lists
+- **One diff card everywhere.** Every diff (the worktree and commit lists, a file's worktree
+  diff and Sync compare) is a card of `GitDiffList` (`git-diff-list.tsx`); a single file's
+  diff and Sync are a list of one without the collapse chevron, filter and collapse-all
+  controls, and Git-only parts (change badge, link, copy-path menu) are optional. Its sticky
+  header holds the layout (inline rows or separate -/+ rows), wrap and whole-file switches,
+  which apply to that file only. The choices are kept per file and per history entry
+  (`useHistoryEntryState`), so back restores every diff the same way. Every file starts
+  inline, unwrapped and folded, and no choice is saved as a preference, so nothing on screen
+  changes because of a choice made in another diff. `UnifiedDiff` renders only the rows and
+  puts the +/- counts (and the change's kind, where no badge names it) into the card header
+  through a portal slot, since the body parses the patch it may have fetched itself. Diff lists
   can be narrowed by file name (`utils/file-name-filter.ts`): every word must appear in the
   repository-relative path, a `-word` must not, and quotes keep a word literal (`"-test"`).
   The filter is client-side over the listed files, so it never refetches status or diffs.
