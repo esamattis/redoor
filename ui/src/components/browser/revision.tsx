@@ -33,6 +33,7 @@ import {
     shortCommitId,
 } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
+import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     gitCommitDiffQueryOptions,
     gitCommitNeighborsQueryOptions,
@@ -521,15 +522,18 @@ export function GitCommitView(props: {
         <>
             <header className="grid gap-3 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
                 <div className="min-w-0">
-                    <h2 className="break-words text-base font-semibold leading-snug text-slate-50">
-                        {commit.summary || "(no message)"}
-                    </h2>
-                    {/* The body keeps its own line breaks, since commit messages are wrapped by hand. */}
-                    {diff.body ? (
-                        <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
-                            {diff.body}
-                        </p>
-                    ) : null}
+                    {/* Names in a commit message are often worth looking up in the repository. */}
+                    <SelectionSearch>
+                        <h2 className="break-words text-base font-semibold leading-snug text-slate-50">
+                            {commit.summary || "(no message)"}
+                        </h2>
+                        {/* The body keeps its own line breaks, since commit messages are wrapped by hand. */}
+                        {diff.body ? (
+                            <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
+                                {diff.body}
+                            </p>
+                        ) : null}
+                    </SelectionSearch>
                     <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-400">
                         <AuthorAvatar name={commit.author_name} size="xs" />
                         <span

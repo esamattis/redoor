@@ -29,6 +29,7 @@ import {
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
+import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
@@ -630,22 +631,25 @@ export function GitDiffList(props: {
     const collapsed = props.collapsed;
     const filter = props.filter;
 
+    // Names in a patch are often worth looking up elsewhere in the repository.
     return (
-        <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-            {props.files.map((file) => (
-                <GitDiffSection
-                    key={file.path}
-                    file={file}
-                    collapsed={collapsed?.isCollapsed(file.path) ?? false}
-                    onToggle={collapsed?.toggle ?? null}
-                    choice={fileChoices.choices.get(file.path)}
-                    onChoose={fileChoices.choose}
-                    filteredOut={
-                        filter !== undefined &&
-                        !filter.matches(file.relativePath)
-                    }
-                />
-            ))}
-        </div>
+        <SelectionSearch>
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+                {props.files.map((file) => (
+                    <GitDiffSection
+                        key={file.path}
+                        file={file}
+                        collapsed={collapsed?.isCollapsed(file.path) ?? false}
+                        onToggle={collapsed?.toggle ?? null}
+                        choice={fileChoices.choices.get(file.path)}
+                        onChoose={fileChoices.choose}
+                        filteredOut={
+                            filter !== undefined &&
+                            !filter.matches(file.relativePath)
+                        }
+                    />
+                ))}
+            </div>
+        </SelectionSearch>
     );
 }
