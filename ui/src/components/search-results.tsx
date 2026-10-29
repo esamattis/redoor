@@ -11,7 +11,7 @@ import {
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
 import { IconButton } from "#ui/components/icon-button";
-import { getBaseName } from "#ui/utils/path";
+import { getBaseName, getParentPath } from "#ui/utils/path";
 
 /** Names where a search result leads, with the line a content match should reveal. */
 export type SearchResultTarget = { path: string; line?: number };
@@ -42,7 +42,7 @@ function SearchResultRow(props: {
     );
 
     return (
-        <div className="flex w-max min-w-full items-start border-b border-slate-800">
+        <div className="flex w-max min-w-full items-start border-b border-slate-800 last:border-b-0">
             {props.children}
             {background === null ? null : (
                 <div className="sticky right-0 shrink-0 self-stretch bg-surface px-2 py-2">
@@ -156,8 +156,15 @@ function ContentResult(props: {
                     )
                 }
             >
-                <span className="block text-xs text-blue-300 sm:text-sm">
-                    {props.result.path}:{props.result.line_number}
+                {/* The file name leads, so a narrow screen that cuts the row still shows it. */}
+                <span className="flex items-baseline gap-2 whitespace-nowrap">
+                    <span className="text-sm font-medium text-blue-300">
+                        {getBaseName(props.result.path)}:
+                        {props.result.line_number}
+                    </span>
+                    <span className="font-mono text-[11px] text-slate-500 sm:text-xs">
+                        {getParentPath(props.result.path)}
+                    </span>
                 </span>
                 <span className="mt-1 block font-mono text-xs font-normal sm:text-sm">
                     {props.result.before_context.map((line) => (
@@ -220,7 +227,8 @@ export function SearchResultList(props: {
         <div
             ref={props.resultsRef}
             aria-label="Search results"
-            className="overflow-x-auto rounded-lg border border-slate-800"
+            // An empty list would otherwise draw a stray border line under the status.
+            className="overflow-x-auto rounded-lg border border-slate-800 empty:hidden"
         >
             {props.isContentSearch
                 ? props.contentResults?.map((result, index) => (
