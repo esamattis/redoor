@@ -158,6 +158,7 @@ last line`,
                 include_hidden: true,
                 respect_gitignore: false,
                 case_sensitivity: "smart",
+                directories_only: false,
             }),
         );
         // Default mode enables only the fuzzy path endpoint.

@@ -135,6 +135,7 @@ async function searchAgentFiles(
         includeHidden?: boolean;
         respectGitignore?: boolean;
         caseSensitivity?: CaseSensitivity;
+        directoriesOnly?: boolean;
     },
 ): Promise<FileSearchResponse> {
     const url = getAgentSearchUrl(agent, root);
@@ -151,6 +152,7 @@ async function searchAgentFiles(
             include_hidden: search.includeHidden,
             respect_gitignore: search.respectGitignore,
             case_sensitivity: search.caseSensitivity,
+            directories_only: search.directoriesOnly,
         }),
     });
 
@@ -510,6 +512,41 @@ describe("Agents API", () => {
                 (entry) => entry.name === "unrelated-document.txt",
             ),
         ).toBe(false);
+    });
+
+    it("should search only directories when requested", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const searchRoot = tempFiles.tempDirectory({ suffix: "-dir-search" });
+        const matchingDirectory = path.join(searchRoot, "dironly-folder");
+        const nestedDirectory = path.join(matchingDirectory, "dironly-nested");
+        await fs.mkdir(nestedDirectory, { recursive: true });
+        await fs.writeFile(
+            path.join(matchingDirectory, "dironly-file.txt"),
+            "file",
+            "utf-8",
+        );
+
+        const everything = await searchAgentFiles(testAgent, searchRoot, {
+            query: "dironly",
+        });
+
+        // Without the option, matching files are part of the results.
+        expect(everything.results.map((entry) => entry.type)).toContain("file");
+
+        const directories = await searchAgentFiles(testAgent, searchRoot, {
+            query: "dironly",
+            directoriesOnly: true,
+        });
+
+        // Only directories are returned, including one nested below a matching file's folder.
+        expect(
+            [...directories.results]
+                .sort((left, right) => left.path.localeCompare(right.path))
+                .map((entry) => [entry.path, entry.type]),
+        ).toEqual([
+            [matchingDirectory, "directory"],
+            [nestedDirectory, "directory"],
+        ]);
     });
 
     it("should apply every case sensitivity mode to path and content search", async () => {
@@ -1285,7 +1322,8 @@ describe("Agents API", () => {
             predicate: async () =>
                 (await apiClient.listAgents()).find(
                     (agent) =>
-                        agent.name === targetName && agent.connectionId !== null,
+                        agent.name === targetName &&
+                        agent.connectionId !== null,
                 ),
         });
 

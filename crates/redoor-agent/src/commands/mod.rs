@@ -173,6 +173,7 @@ impl RunCommand for Command {
                 include_hidden,
                 respect_gitignore,
                 case_sensitivity,
+                directories_only,
             }) => Reply::of::<request::FileSearch>(
                 file_search::execute(
                     file_search::FileSearchRequest {
@@ -182,6 +183,7 @@ impl RunCommand for Command {
                         include_hidden,
                         respect_gitignore,
                         case_sensitivity,
+                        directories_only,
                     },
                     &ctx.cancel,
                 )

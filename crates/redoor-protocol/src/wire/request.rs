@@ -194,6 +194,10 @@ pub struct FileSearch {
     pub respect_gitignore: bool,
     /// Smart case keeps lowercase searches forgiving while uppercase remains intentional.
     pub case_sensitivity: CaseSensitivity,
+    /// Filtering during traversal keeps the result limit for directories. Defaults to false so
+    /// a server of this release can still talk to an agent of the previous one.
+    #[serde(default)]
+    pub directories_only: bool,
 }
 
 /// Searches physical file lines without making the server read remote content.

@@ -4,4 +4,9 @@ import type { CaseSensitivity } from "./CaseSensitivity";
 /**
  * Carries bounded filename-search controls while the route identifies the agent and root path.
  */
-export type FindRequest = { query: string, timeout: number, include_hidden: boolean, respect_gitignore: boolean, case_sensitivity: CaseSensitivity, };
+export type FindRequest = { query: string, timeout: number, include_hidden: boolean, respect_gitignore: boolean, case_sensitivity: CaseSensitivity, 
+/**
+ * Skips files on the agent, so the result limit is spent on directories when only a
+ * folder is wanted, for example to pick a narrower search scope.
+ */
+directories_only: boolean, };

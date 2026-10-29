@@ -166,6 +166,7 @@ pub(crate) fn file_search(path: String, request: FindRequest) -> FileSearch {
         include_hidden: request.include_hidden,
         respect_gitignore: request.respect_gitignore,
         case_sensitivity: request.case_sensitivity,
+        directories_only: request.directories_only,
     }
 }
 

@@ -302,6 +302,7 @@ mod tests {
                 include_hidden: false,
                 respect_gitignore: true,
                 case_sensitivity: CaseSensitivity::Smart,
+                directories_only: false,
             }),
             Command::ContentGrep(request::ContentGrep {
                 path: path(),

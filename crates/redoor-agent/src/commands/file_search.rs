@@ -33,6 +33,7 @@ pub(crate) struct FileSearchRequest {
     pub(crate) include_hidden: bool,
     pub(crate) respect_gitignore: bool,
     pub(crate) case_sensitivity: CaseSensitivity,
+    pub(crate) directories_only: bool,
 }
 
 /// Separates fuzzy terms from path fragments that must be skipped during traversal.
@@ -154,6 +155,7 @@ pub(crate) async fn execute(
         include_hidden,
         respect_gitignore,
         case_sensitivity,
+        directories_only,
     } = request;
     if query.trim().is_empty() {
         return Err(CommandError::new(
@@ -171,6 +173,7 @@ pub(crate) async fn execute(
             &expression,
             include_hidden,
             respect_gitignore,
+            directories_only,
             &mut matches,
         );
         tokio::pin!(traversal);
@@ -212,6 +215,7 @@ async fn collect_matches(
     expression: &SearchExpression,
     include_hidden: bool,
     respect_gitignore: bool,
+    directories_only: bool,
     matches: &mut Vec<RankedEntry>,
 ) -> std::io::Result<()> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
@@ -285,7 +289,8 @@ async fn collect_matches(
             continue;
         }
 
-        if !relative_path.is_empty() {
+        // Files are still traversed past, never ranked, so they cannot crowd out directories.
+        if !relative_path.is_empty() && (is_directory || !directories_only) {
             let score = expression
                 .include_patterns
                 .iter()
@@ -464,6 +469,7 @@ mod tests {
                 include_hidden,
                 respect_gitignore,
                 case_sensitivity,
+                directories_only: false,
             },
             &CancellationToken::new(),
         )
@@ -487,6 +493,7 @@ mod tests {
                 include_hidden: false,
                 respect_gitignore: true,
                 case_sensitivity: CaseSensitivity::Smart,
+                directories_only: false,
             },
             &cancel,
         )
@@ -501,6 +508,58 @@ mod tests {
         assert!(response.timed_out);
         // Even immediately cancelled searches report their agent-side execution duration.
         assert!(response.duration_ms < 5_000);
+    }
+
+    /// Verifies a directories-only search skips matching files but still finds directories
+    /// nested below them, so the filter does not stop traversal.
+    #[tokio::test]
+    async fn directories_only_search_skips_files() {
+        let temp = TempDir::create();
+        let root = temp.path().join("search-root");
+        let parent = root.join("match-parent");
+        let nested = parent.join("match-nested");
+        tokio::fs::create_dir_all(&nested)
+            .await
+            .expect("nested test directory should be created");
+        tokio::fs::write(parent.join("match-file.txt"), b"file")
+            .await
+            .expect("matching file should be created");
+
+        let result = execute(
+            FileSearchRequest {
+                path: root.to_string_lossy().into_owned(),
+                query: "match".to_string(),
+                timeout_seconds: 5,
+                include_hidden: false,
+                respect_gitignore: true,
+                case_sensitivity: CaseSensitivity::Smart,
+                directories_only: true,
+            },
+            &CancellationToken::new(),
+        )
+        .await;
+
+        let Ok(response) = result else {
+            panic!("a directories-only search should succeed");
+        };
+        let mut paths: Vec<&str> = response
+            .results
+            .iter()
+            .map(|entry| entry.path.as_str())
+            .collect();
+        paths.sort_unstable();
+        // The matching file is left out while both matching directories, nested too, are found.
+        assert_eq!(
+            paths,
+            vec![parent.to_string_lossy(), nested.to_string_lossy()]
+        );
+        // Every result is reported as a directory.
+        assert!(
+            response
+                .results
+                .iter()
+                .all(|entry| entry.file_type == "directory")
+        );
     }
 
     /// Verifies one inaccessible subtree does not prevent traversal of its readable siblings.

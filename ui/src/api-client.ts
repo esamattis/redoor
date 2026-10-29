@@ -551,6 +551,7 @@ export class Agent {
             includeHidden: boolean;
             respectGitignore: boolean;
             caseSensitivity?: FindRequest["case_sensitivity"];
+            directoriesOnly?: boolean;
             signal?: AbortSignal;
         },
     ): Promise<FileSearchResponse> {
@@ -560,6 +561,7 @@ export class Agent {
             include_hidden: options.includeHidden,
             respect_gitignore: options.respectGitignore,
             case_sensitivity: options.caseSensitivity ?? "smart",
+            directories_only: options.directoriesOnly ?? false,
         };
 
         return apiRequest<FileSearchResponse>(

@@ -525,6 +525,7 @@ mod tests {
                     include_hidden: true,
                     respect_gitignore: false,
                     case_sensitivity: Default::default(),
+                    directories_only: false,
                 }),
             )
             .await;

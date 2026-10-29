@@ -92,6 +92,7 @@ pub(crate) async fn find(store: CredentialStore, args: FindArgs) -> Result<()> {
         include_hidden: args.options.hidden,
         respect_gitignore: !args.options.no_ignore,
         case_sensitivity: args.options.case.into(),
+        directories_only: false,
     };
     let response = client
         .send(client.json_request(Method::POST, &client.agent_path(&root, "find")?, &request)?)

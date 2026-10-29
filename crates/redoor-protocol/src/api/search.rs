@@ -55,6 +55,10 @@ pub struct FindRequest {
     pub respect_gitignore: bool,
     #[serde(default)]
     pub case_sensitivity: CaseSensitivity,
+    /// Skips files on the agent, so the result limit is spent on directories when only a
+    /// folder is wanted, for example to pick a narrower search scope.
+    #[serde(default)]
+    pub directories_only: bool,
 }
 
 /// Returns the best paths discovered before traversal completed or reached its deadline.

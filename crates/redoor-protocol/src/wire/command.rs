@@ -79,13 +79,14 @@ impl Command {
                 None => "Ls path=.".to_string(),
             },
             Self::FileSearch(request) => format!(
-                "FileSearch path={} query={} timeout={}s include_hidden={} respect_gitignore={} case_sensitivity={:?}",
+                "FileSearch path={} query={} timeout={}s include_hidden={} respect_gitignore={} case_sensitivity={:?} directories_only={}",
                 request.path,
                 request.query,
                 request.timeout_seconds,
                 request.include_hidden,
                 request.respect_gitignore,
-                request.case_sensitivity
+                request.case_sensitivity,
+                request.directories_only
             ),
             Self::ContentGrep(request) => format!(
                 "ContentGrep path={} query={} timeout={}s include_hidden={} respect_gitignore={} fixed_string={} case_sensitivity={:?} before_context={} after_context={}",
