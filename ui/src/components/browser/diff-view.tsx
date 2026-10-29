@@ -11,12 +11,12 @@ import {
     ArrowDownFromLine,
     ArrowUpFromLine,
     ChevronsUpDown,
+    SquarePen,
     UnfoldVertical,
 } from "lucide-react";
 import type { browserRoute } from "#ui/browser-route";
 import { HighlightedTokens } from "#ui/components/highlighted-tokens";
-import { IconButton } from "#ui/components/icon-button";
-import { LinkButton } from "#ui/components/link-button";
+import { IconButton, IconLinkButton } from "#ui/components/icon-button";
 import {
     OpenInBackgroundButton,
     type BackgroundOpen,
@@ -427,7 +427,7 @@ const Line = React.memo(function Line(props: {
                 data-line-kind={line.kind}
                 data-line-old={line.oldLineNumber ?? undefined}
                 data-line-new={line.newLineNumber ?? undefined}
-                // A wrapped line spans several visual rows, so its number and Open link
+                // A wrapped line spans several visual rows, so its number and open links
                 // stay beside its first one.
                 className={cn(
                     ROW_CLASSES[line.kind],
@@ -475,25 +475,30 @@ const Line = React.memo(function Line(props: {
                 </td>
                 <td
                     className={cn(
-                        "select-none whitespace-nowrap py-px pr-2 text-right",
+                        // Sticky with the row's own opaque background, so the actions stay
+                        // in view over long lines instead of sitting at the far end of them.
+                        "sticky right-0 select-none whitespace-nowrap py-px pr-2 pl-1 text-right",
+                        ROW_CLASSES[line.kind],
                         !props.wrapLines && "align-middle",
                     )}
                 >
                     {props.editorRoute === null || openLine === null ? null : (
                         // Only new-side lines exist in the current file, so only they open.
                         <span className="inline-flex items-center gap-1">
-                            <LinkButton
+                            {/* Tighter than the button's own padding, so rows keep their height. */}
+                            <IconLinkButton
                                 {...props.editorRoute}
                                 search={{ line: openLine }}
-                                variant="secondary"
-                                size="sm"
-                                aria-label={`Open line ${String(openLine)} in editor`}
-                                className="px-1.5 py-0 font-sans text-[length:inherit] leading-[inherit]"
+                                variant="ghost"
+                                label={`Open line ${String(openLine)} in editor`}
+                                className="p-0.5"
                             >
-                                Open
-                            </LinkButton>
+                                <SquarePen
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                />
+                            </IconLinkButton>
                             {props.background === null ? null : (
-                                // Tighter than the button's own padding, so rows keep their height.
                                 <OpenInBackgroundButton
                                     target={props.background}
                                     line={openLine}
