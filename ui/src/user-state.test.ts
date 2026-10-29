@@ -7,6 +7,7 @@ import {
     reorderBookmarks,
     reorderOpenFiles,
     resolveDeviceOrder,
+    setOpenFileLine,
     userStateSchema,
     type Bookmark,
     type OpenFile,
@@ -179,11 +180,68 @@ test("opens a file at a line without moving an already open file", () => {
     // An open file keeps its place and only gets the new line.
     expect(moved.map((file) => file.name)).toEqual(["one", "two"]);
     expect(moved[0]?.reveal).toEqual(reveal);
+    // The shown caret line moves at once, confirming the click before the file is visited.
+    expect(moved[0]?.line).toBe(42);
+    expect(appended[2]?.line).toBe(42);
     // The other files are untouched, so React keeps their rows.
     expect(moved[1]).toBe(files[1]);
 
     // Without a line, opening an open file changes nothing, so no settings write follows.
     expect(openFileAtLine(files, openEntry("a", "two"), undefined)).toBe(files);
+});
+
+test("records an open file's caret line without rewriting an unchanged list", () => {
+    const files = [openEntry("a", "one"), openEntry("a", "two")];
+
+    const moved = setOpenFileLine(files, {
+        key: "a:/two",
+        line: 7,
+        appliedReveal: null,
+    });
+
+    // Only the file whose buffer was written gets the line.
+    expect(moved[1]?.line).toBe(7);
+    // The other rows keep their objects, so React keeps them.
+    expect(moved[0]).toBe(files[0]);
+
+    // The same line again keeps the list, so a write within a line sends no settings write.
+    expect(
+        setOpenFileLine(moved, { key: "a:/two", line: 7, appliedReveal: null }),
+    ).toBe(moved);
+    // A buffer of a file no longer open changes nothing.
+    expect(
+        setOpenFileLine(files, {
+            key: "a:/gone",
+            line: 3,
+            appliedReveal: null,
+        }),
+    ).toBe(files);
+});
+
+test("a caret written before a line request is shown keeps the requested line", () => {
+    const requested = openFileAtLine(
+        [{ ...openEntry("a", "one"), line: 5 }],
+        openEntry("a", "one"),
+        { line: 42, id: "r2" },
+    );
+
+    // A write still carrying the old caret must not undo a request the file has not shown.
+    expect(
+        setOpenFileLine(requested, {
+            key: "a:/one",
+            line: 5,
+            appliedReveal: "r1",
+        }),
+    ).toBe(requested);
+
+    const shown = setOpenFileLine(requested, {
+        key: "a:/one",
+        line: 43,
+        appliedReveal: "r2",
+    });
+
+    // Once the request is applied, the caret is followed again.
+    expect(shown[0]?.line).toBe(43);
 });
 
 test("a malformed line request keeps the open file", () => {

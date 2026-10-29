@@ -3,8 +3,6 @@ import { Link, useNavigate } from "@tanstack/react-router";
 import {
     ArrowLeft,
     ArrowUp,
-    Check,
-    Copy,
     File,
     Files,
     Home,
@@ -15,16 +13,14 @@ import {
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
-import { useCopyFeedback } from "#ui/components/copyable-code-row";
-import { InputControl } from "#ui/components/input-control";
-import { IconButton } from "#ui/components/icon-button";
-import { Tooltip } from "#ui/components/tooltip";
+import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
+import { IconLinkButton } from "#ui/components/icon-button";
 import { SearchButton } from "#ui/components/search-button";
+import { useViewToolbarSlotRef } from "#ui/components/browser/view-toolbar-slot";
 import type { PathLoadError } from "#ui/components/browser/utils";
 import { browserRoute } from "#ui/browser-route";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
-import { expandHomePath } from "#ui/utils/path";
 
 /** Names the representations of a path that the view tabs switch between. */
 export type BrowserView = "files" | "details" | "view" | "sync" | "git";
@@ -39,40 +35,64 @@ function BrowserPageHeader(props: {
     banner?: React.ReactNode;
     viewToggle: React.ReactNode;
 }) {
+    const navigate = useNavigate();
+    const setToolbarSlot = useViewToolbarSlotRef();
+
     return (
         <header>
-            <div className="mb-3 min-w-0 overflow-x-auto overscroll-x-contain">
-                <div className="flex w-max min-w-full items-center gap-3">
-                    <Tooltip content="Open device home directory">
-                        <Link
-                            {...browserRoute(
-                                props.agent,
-                                props.agent.cwd ?? "/",
-                            )}
-                            aria-label="Device home"
-                            className="inline-flex shrink-0 items-center rounded-md p-1.5 text-slate-400 transition-colors hover:bg-tint hover:text-slate-100"
-                        >
-                            <Home className="h-4 w-4" aria-hidden="true" />
-                        </Link>
-                    </Tooltip>
+            <div className="mb-2 flex min-w-0 items-center gap-1">
+                <div className="flex shrink-0 items-center gap-0.5">
+                    <IconLinkButton
+                        {...browserRoute(props.agent, props.agent.cwd ?? "/")}
+                        label="Device home"
+                        tooltip="Open device home directory"
+                        variant="ghost"
+                        size="lg"
+                    >
+                        <Home className="h-4 w-4" aria-hidden="true" />
+                    </IconLinkButton>
                     <SearchButton
-                        size="sm"
-                        className="shrink-0 [&_svg]:h-4 [&_svg]:w-4"
+                        size="lg"
+                        className="[&_svg]:h-4 [&_svg]:w-4"
                     />
                     {props.navigation}
-                    <Breadcrumbs
-                        // A new location resets the path editor, so it starts closed (or open for a path that needs correcting).
-                        key={`${props.path}:${props.startEditingPath === true}`}
-                        agent={props.agent}
-                        path={props.path}
-                        startEditing={props.startEditingPath}
-                    />
                 </div>
+                <span
+                    aria-hidden="true"
+                    className="mx-1 h-5 w-px shrink-0 bg-slate-700"
+                />
+                <PathBreadcrumbs
+                    // A new location resets the path editor, so it starts closed (or open for a path that needs correcting).
+                    key={`${props.path}:${props.startEditingPath === true}`}
+                    path={props.path}
+                    home={props.agent.cwd}
+                    startEditing={props.startEditingPath}
+                    renderLink={(link) => (
+                        <Link
+                            {...browserRoute(props.agent, link.path)}
+                            className={link.className}
+                        >
+                            {link.children}
+                        </Link>
+                    )}
+                    // The destination route decides whether the editor reopens for a missing path.
+                    onSubmitPath={(path) =>
+                        void navigate(browserRoute(props.agent, path))
+                    }
+                />
             </div>
-            {props.banner ? <div className="mb-3">{props.banner}</div> : null}
+            {props.banner ? <div className="mb-2">{props.banner}</div> : null}
             {props.viewToggle ? (
-                <div className="-mx-2 min-w-0 overflow-x-auto overscroll-x-contain border-b border-slate-800 px-2 @4xl:-mx-4 @4xl:px-4">
-                    {props.viewToggle}
+                // Wide columns put the view's toolbar on the tab row; narrow ones give it a row
+                // of its own under the tabs, since both would not fit side by side on a phone.
+                <div className="-mx-2 flex flex-col border-b border-slate-800 @2xl:flex-row @2xl:items-stretch @2xl:gap-4 @4xl:-mx-4">
+                    <div className="scrollbar-hidden min-w-0 overflow-x-auto overscroll-x-contain px-2 @4xl:px-4 @2xl:pr-0">
+                        {props.viewToggle}
+                    </div>
+                    <div
+                        ref={setToolbarSlot}
+                        className="flex min-w-0 items-center border-t border-slate-800 px-2 py-1 empty:hidden @2xl:ml-auto @2xl:border-t-0 @2xl:py-0.5 @4xl:px-4 @2xl:pl-0"
+                    />
                 </div>
             ) : null}
         </header>
@@ -185,8 +205,8 @@ export function ViewSwitch(props: {
 }) {
     const stripClass =
         props.variant === "page"
-            ? "top-tab-strip flex w-full min-w-0 items-stretch gap-0 overflow-x-auto overscroll-x-contain"
-            : "top-tab-strip flex w-full min-w-0 items-end gap-1 overflow-x-auto overscroll-x-contain";
+            ? "scrollbar-hidden flex w-full min-w-0 items-stretch gap-0 overflow-x-auto overscroll-x-contain"
+            : "scrollbar-hidden flex w-full min-w-0 items-end gap-1 overflow-x-auto overscroll-x-contain";
 
     return (
         <div aria-label={props.label} className={stripClass}>
@@ -200,9 +220,11 @@ export function getViewSwitchItemClass(isActive: boolean) {
     const baseClass =
         "inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-t-lg border border-b-0 px-4 py-2 text-sm font-medium transition-colors";
 
+    // A phone cannot fit every label, so only the active tab keeps its label and the others
+    // show their icon. The label stays for assistive technology, which still names each tab.
     return isActive
-        ? `${baseClass} border-slate-700 bg-surface-active text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset] [&_svg]:text-blue-400`
-        : `${baseClass} border-transparent text-slate-400 hover:bg-tint hover:text-slate-100`;
+        ? `${baseClass} border-slate-700 bg-surface-active text-slate-100 shadow-[0_-2px_0_0_rgb(59,130,246)_inset] [&_svg]:text-blue-400 @max-xl/main:px-3`
+        : `${baseClass} border-transparent text-slate-400 hover:bg-tint hover:text-slate-100 @max-xl/main:px-3 @max-xl/main:[&>span]:sr-only`;
 }
 
 /** Uses an underline so file and directory views read as in-page switches, not a second top bar. */
@@ -274,21 +296,17 @@ export function BrowserHeader(props: {
                 pathUnavailable && props.startEditingPath !== false
             }
             navigation={
-                <>
-                    <Tooltip content="Go to the parent directory (Backspace)">
-                        <Link
-                            {...browserRoute(
-                                props.agent,
-                                props.parentPath ?? "/",
-                            )}
-                            aria-label="Go to the parent directory"
-                            className="inline-flex items-center rounded-md p-2 text-slate-200 transition-colors hover:bg-tint hover:text-slate-100 disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
-                            disabled={props.parentPath === null}
-                        >
-                            <ArrowUp className="h-4 w-4" aria-hidden="true" />
-                        </Link>
-                    </Tooltip>
-                </>
+                <IconLinkButton
+                    {...browserRoute(props.agent, props.parentPath ?? "/")}
+                    label="Go to the parent directory"
+                    tooltip="Go to the parent directory (Backspace)"
+                    variant="ghost"
+                    size="lg"
+                    disabled={props.parentPath === null}
+                    className="disabled:cursor-not-allowed disabled:text-slate-600 disabled:hover:bg-transparent"
+                >
+                    <ArrowUp className="h-4 w-4" aria-hidden="true" />
+                </IconLinkButton>
             }
             banner={props.banner}
             viewToggle={
@@ -367,185 +385,5 @@ export function UnavailablePathState(props: {
                 ) : null}
             </div>
         </section>
-    );
-}
-
-/** Shows the current path as links while allowing direct path navigation. */
-function Breadcrumbs(props: {
-    agent: Agent;
-    path: string;
-    /** Opens the path editor immediately so a missing path can be corrected in place. */
-    startEditing?: boolean;
-}) {
-    const navigate = useNavigate();
-    const pathInputRef = React.useRef<HTMLInputElement>(null);
-
-    const [isEditing, setIsEditing] = React.useState(
-        props.startEditing === true,
-    );
-
-    const [editedPath, setEditedPath] = React.useState(props.path);
-    const { isCopied, copy } = useCopyFeedback(props.path);
-
-    const parts = props.path.split("/").filter((part) => part !== "");
-    const isAtRoot = parts.length === 0;
-    let accumulatedPath = "";
-
-    // Focus after paint so keyboard correction works immediately on missing paths.
-    React.useEffect(() => {
-        if (!isEditing) {
-            return;
-        }
-
-        pathInputRef.current?.focus();
-        pathInputRef.current?.select();
-    }, [isEditing, props.path]);
-
-    /** Opens the path editor with the current route path. */
-    const startEditing = () => {
-        setEditedPath(props.path);
-        setIsEditing(true);
-    };
-
-    /** Resolves the agent's home shorthand before navigating to an entered path. */
-    const navigateToEditedPath = async (
-        event: React.FormEvent<HTMLFormElement>,
-    ) => {
-        event.preventDefault();
-
-        const expandedPath = expandHomePath(props.agent.cwd, editedPath);
-
-        const targetPath =
-            expandedPath === ""
-                ? "/"
-                : expandedPath.startsWith("/")
-                  ? expandedPath
-                  : `/${expandedPath}`;
-
-        setIsEditing(false);
-
-        if (targetPath === props.path) {
-            return;
-        }
-
-        // Destination route decides whether the editor stays open (missing path).
-        await navigate(browserRoute(props.agent, targetPath));
-    };
-
-    return (
-        <div className="flex min-w-0 flex-1 items-center gap-1">
-            {isEditing ? (
-                <form
-                    onSubmit={navigateToEditedPath}
-                    className="flex min-w-0 flex-1 items-center gap-1"
-                >
-                    <InputControl
-                        ref={pathInputRef}
-                        type="text"
-                        value={editedPath}
-                        onChange={(event) => setEditedPath(event.target.value)}
-                        onKeyDown={(event) => {
-                            if (event.key === "Escape") {
-                                setIsEditing(false);
-                            }
-                        }}
-                        aria-label="File path"
-                        className="min-w-0 w-full flex-1 border-slate-600 bg-slate-950 px-2 py-1 font-mono text-sm"
-                    />
-                    <IconButton
-                        type="submit"
-                        label="Navigate to path"
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0"
-                    >
-                        <Check className="h-4 w-4" />
-                    </IconButton>
-                </form>
-            ) : (
-                <>
-                    <nav
-                        aria-label="Breadcrumbs"
-                        className="flex min-w-0 flex-1 items-center gap-2 text-sm"
-                    >
-                        {isAtRoot ? (
-                            <span className="shrink-0 font-medium text-slate-100">
-                                /
-                            </span>
-                        ) : (
-                            <Link
-                                {...browserRoute(props.agent, "/")}
-                                className="-my-1 shrink-0 rounded px-1.5 py-1 text-blue-400 hover:underline"
-                            >
-                                /
-                            </Link>
-                        )}
-                        {parts.map((part, index) => {
-                            accumulatedPath = `${accumulatedPath}/${part}`;
-                            const isLast = index === parts.length - 1;
-
-                            return (
-                                <div
-                                    key={index}
-                                    className="flex shrink-0 items-center gap-2"
-                                >
-                                    {index > 0 ? (
-                                        <span className="text-slate-600">
-                                            /
-                                        </span>
-                                    ) : null}
-                                    {isLast ? (
-                                        <span className="whitespace-nowrap font-medium text-slate-100">
-                                            {part}
-                                        </span>
-                                    ) : (
-                                        <Link
-                                            {...browserRoute(
-                                                props.agent,
-                                                accumulatedPath,
-                                            )}
-                                            className={`whitespace-nowrap font-medium text-blue-400 hover:underline ${part.length < 3 ? "-my-1 rounded px-1.5 py-1" : ""}`}
-                                        >
-                                            {part}
-                                        </Link>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </nav>
-                    <IconButton
-                        type="button"
-                        onClick={() => {
-                            void copy();
-                        }}
-                        label={isCopied ? "Copied!" : "Copy file path"}
-                        tooltip="Copy file path"
-                        variant="ghost"
-                        size="sm"
-                        className={
-                            isCopied
-                                ? "shrink-0 text-emerald-300 hover:bg-transparent hover:text-emerald-300"
-                                : "shrink-0 text-slate-500"
-                        }
-                    >
-                        {isCopied ? (
-                            <Check className="h-3.5 w-3.5" />
-                        ) : (
-                            <Copy className="h-3.5 w-3.5" />
-                        )}
-                    </IconButton>
-                    <IconButton
-                        type="button"
-                        onClick={startEditing}
-                        label="Edit file path"
-                        variant="ghost"
-                        size="sm"
-                        className="shrink-0 text-slate-500"
-                    >
-                        <Pencil className="h-3.5 w-3.5" />
-                    </IconButton>
-                </>
-            )}
-        </div>
     );
 }

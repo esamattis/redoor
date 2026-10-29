@@ -6,35 +6,25 @@ import {
     type UseQueryResult,
 } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
-import {
-    CaseLower,
-    CaseSensitive,
-    Eye,
-    EyeOff,
-    File,
-    Folder,
-    FolderGit2,
-    GitBranch,
-    Regex,
-} from "lucide-react";
+import { FolderOpen } from "lucide-react";
 
-import type { CaseSensitivity } from "#bindings/CaseSensitivity";
-import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
-import type { FileSearchEntry } from "#bindings/FileSearchEntry";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import { type Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
-import {
-    OpenInBackgroundButton,
-    useBackgroundOpen,
-} from "#ui/components/browser/open-file-actions";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { Dialog } from "#ui/components/dialog";
-import { IconButton } from "#ui/components/icon-button";
-import { InputControl } from "#ui/components/input-control";
-import { ToggleButton } from "#ui/components/toggle-button";
+import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
+import {
+    SearchResultList,
+    type SearchResultTarget,
+} from "#ui/components/search-results";
+import {
+    GitRootToggle,
+    SearchFilters,
+    SearchQueryBar,
+} from "#ui/components/search-controls";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     contentGrepQueryOptions,
@@ -55,31 +45,10 @@ import {
 import { useUserState } from "#ui/user-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
+import { cn } from "#ui/utils/cn";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
-import { getBaseName } from "#ui/utils/path";
 
 const agentRoute = getRouteApi("/_app/agents/$deviceName");
-
-/** Cycles smart → sensitive → insensitive so the control can name the next click. */
-const nextCaseSensitivity = {
-    smart: "sensitive",
-    sensitive: "insensitive",
-    insensitive: "smart",
-} satisfies Record<CaseSensitivity, CaseSensitivity>;
-
-/** Accessible name stays on the current mode so screen readers can hear the applied rule. */
-const caseSensitivityLabel = {
-    smart: "Case: smart",
-    sensitive: "Case: sensitive",
-    insensitive: "Case: insensitive",
-} satisfies Record<CaseSensitivity, string>;
-
-/** Tooltip copy names the mode the next click will select. */
-const caseSensitivityNextTooltip = {
-    smart: "Click to match exact letter case",
-    sensitive: "Click to ignore letter case",
-    insensitive: "Click to use smart case",
-} satisfies Record<CaseSensitivity, string>;
 
 /** Reads worktree root from already-loaded browser context so searching never probes git again. */
 function gitRootFromContext(gitContext: GitContextResponse | undefined) {
@@ -337,6 +306,7 @@ function useSearchQueries(options: {
     isContentSearch: boolean;
     canSearch: boolean;
     params: ContentGrepParams;
+    directoriesOnly: boolean;
     view: SearchView | undefined;
 }) {
     const view = options.view;
@@ -353,6 +323,7 @@ function useSearchQueries(options: {
             includeHidden: options.params.includeHidden,
             respectGitignore: options.params.respectGitignore,
             caseSensitivity: options.params.caseSensitivity,
+            directoriesOnly: options.directoriesOnly,
         },
     );
 
@@ -396,64 +367,31 @@ function useSearchQueries(options: {
     };
 }
 
-/** Names where a search result leads, with the line a content match should reveal. */
-type SearchResultTarget = { path: string; line?: number };
-
 /**
- * One result row: the link fills it and the open-in-background button stays at its right
- * edge, also while a wide preview scrolls sideways. The button sits beside the link, never
- * inside it, and arrow-key focus only walks the links.
+ * Focuses and selects the query once a requested switch to content search has mounted its
+ * field, so the reader can type what to find in a picked folder at once. The switch remounts
+ * the field, which is why the request waits for the mode instead of acting immediately.
  */
-function SearchResultRow(props: {
-    agent: Agent;
-    target: SearchResultTarget;
-    /** Directories have nothing to open in the editor. */
-    canOpenInBackground: boolean;
-    children: React.ReactNode;
-}) {
-    const background = useBackgroundOpen(
-        props.canOpenInBackground
-            ? {
-                  agentId: props.agent.id,
-                  agentName: props.agent.name,
-                  path: props.target.path,
-                  name: getBaseName(props.target.path),
-              }
-            : null,
-    );
+function useQuerySelectionOnContentSearch(isContentSearch: boolean) {
+    const inputRef = React.useRef<HTMLInputElement>(null);
+    const requested = React.useRef(false);
 
-    return (
-        <div className="flex w-max min-w-full items-start border-b border-slate-800">
-            {props.children}
-            {background === null ? null : (
-                <div className="sticky right-0 shrink-0 self-stretch bg-surface px-2 py-2">
-                    <OpenInBackgroundButton
-                        target={background}
-                        line={props.target.line}
-                    />
-                </div>
-            )}
-        </div>
-    );
-}
+    React.useEffect(() => {
+        if (!isContentSearch || !requested.current) {
+            return;
+        }
 
-/** Leaves modified clicks on the real href so middle-click and new-tab still work. */
-function handleSearchResultClick(
-    event: React.MouseEvent<HTMLAnchorElement>,
-    openSelectedResult: () => void,
-) {
-    if (
-        event.button !== 0 ||
-        event.metaKey ||
-        event.ctrlKey ||
-        event.shiftKey ||
-        event.altKey
-    ) {
-        return;
-    }
+        requested.current = false;
+        inputRef.current?.focus();
+        inputRef.current?.select();
+    }, [isContentSearch]);
 
-    event.preventDefault();
-    openSelectedResult();
+    return {
+        inputRef,
+        request: () => {
+            requested.current = true;
+        },
+    };
 }
 
 /** Owns the single route-wide path and content search workflow. */
@@ -488,11 +426,28 @@ function OpenSearchDialog(props: { agent: Agent }) {
         search.gitignore ?? userState.recursiveSearchRespectGitignore;
 
     const regex = search.regex ?? false;
+    const directoriesOnly = search.dirs ?? false;
     const contextSize = search.context ?? 2;
     const caseSensitivity = search.case ?? "smart";
-    const searchFromGitRoot = gitRoot !== null && (search.gitroot ?? false);
-    const searchDirectory = searchFromGitRoot ? gitRoot : directory;
+    const chosenDirectory = search.dir ?? null;
+
+    // A folder the reader picked wins over the Git root, which wins over the browsed folder.
+    const searchFromGitRoot =
+        chosenDirectory === null &&
+        gitRoot !== null &&
+        (search.gitroot ?? false);
+
+    const searchDirectory =
+        chosenDirectory ?? (searchFromGitRoot ? gitRoot : directory);
+
     const resultsRef = React.useRef<HTMLDivElement>(null);
+
+    // Phones fold the filters away so the results keep room above the on-screen keyboard.
+    // Plain state is enough: the dialog remounts on Back, and folded is the right default.
+    const [showsOptions, setShowsOptions] = React.useState(false);
+    const optionsId = React.useId();
+
+    const queryFocus = useQuerySelectionOnContentSearch(isContentSearch);
 
     const canSearch =
         props.agent.status === "connected" &&
@@ -527,6 +482,7 @@ function OpenSearchDialog(props: { agent: Agent }) {
             contextSize,
             caseSensitivity,
         },
+        directoriesOnly,
         view: restored.view,
     });
 
@@ -573,8 +529,26 @@ function OpenSearchDialog(props: { agent: Agent }) {
             regex: undefined,
             context: undefined,
             gitroot: undefined,
+            dir: undefined,
+            dirs: undefined,
             case: undefined,
         });
+
+    /** Replaces the search scope with a folder the reader chose, keeping the query. */
+    const searchInFolder = (folder: string) =>
+        void changeSearch({ dir: folder, gitroot: undefined });
+
+    /**
+     * A folder picked from path results is where the reader wants to look inside files next.
+     * The new entry lets Back return to the folder list.
+     */
+    const searchContentsOfFolder = (folder: string) => {
+        queryFocus.request();
+        void changeSearch(
+            { dir: folder, gitroot: undefined, mode: "content" },
+            false,
+        );
+    };
 
     /** Persists common traversal defaults while keeping the current URL shareable. */
     const updateOption = (
@@ -590,34 +564,25 @@ function OpenSearchDialog(props: { agent: Agent }) {
             isOpen
             title="Search device"
             description={
-                searchDirectory ? (
-                    <span>
-                        Current folder:{" "}
-                        <span className="break-all font-mono text-slate-300">
-                            {searchDirectory}
-                        </span>
-                    </span>
-                ) : (
-                    "Search is unavailable while this device is disconnected."
-                )
+                searchDirectory
+                    ? undefined
+                    : "Search is unavailable while this device is disconnected."
             }
             closeAriaLabel="Close search"
             size="search"
             onClose={close}
         >
-            <div className="mt-4 grid gap-4">
-                <SearchControls
+            <div className="mt-4 grid gap-3">
+                <SearchQueryBar
                     query={query}
                     isContentSearch={isContentSearch}
-                    timeoutSeconds={timeoutSeconds}
-                    includeHidden={includeHidden}
-                    respectGitignore={respectGitignore}
                     regex={regex}
-                    contextSize={contextSize}
                     caseSensitivity={caseSensitivity}
-                    gitRoot={gitRoot}
-                    searchFromGitRoot={searchFromGitRoot}
                     disabled={directory === null}
+                    queryInputRef={queryFocus.inputRef}
+                    optionsId={optionsId}
+                    showsOptions={showsOptions}
+                    onShowOptionsChange={setShowsOptions}
                     onModeChange={(checked) =>
                         void changeSearch(
                             { mode: checked ? "content" : undefined },
@@ -629,8 +594,33 @@ function OpenSearchDialog(props: { agent: Agent }) {
                         setQuery(next);
                     }}
                     onUpdate={changeSearch}
-                    onUpdateOption={updateOption}
                 />
+                {/* Where and how to search share one quiet panel, so the query stays the focus. */}
+                <div className="grid divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-900/40">
+                    {searchDirectory ? (
+                        <SearchScope
+                            agent={props.agent}
+                            directory={searchDirectory}
+                            gitRoot={gitRoot}
+                            searchFromGitRoot={searchFromGitRoot}
+                            onDismissRestoredView={restored.dismiss}
+                            onChange={searchInFolder}
+                            onUpdate={changeSearch}
+                        />
+                    ) : null}
+                    <SearchFilters
+                        id={optionsId}
+                        className={cn(!showsOptions && "max-sm:hidden")}
+                        isContentSearch={isContentSearch}
+                        timeoutSeconds={timeoutSeconds}
+                        includeHidden={includeHidden}
+                        respectGitignore={respectGitignore}
+                        directoriesOnly={directoriesOnly}
+                        contextSize={contextSize}
+                        onUpdate={changeSearch}
+                        onUpdateOption={updateOption}
+                    />
+                </div>
                 <SearchStatus
                     isContentSearch={isContentSearch}
                     query={query}
@@ -638,418 +628,83 @@ function OpenSearchDialog(props: { agent: Agent }) {
                     pathSearch={pathSearch}
                     contentSearch={contentSearch}
                 />
-                <div
-                    ref={resultsRef}
-                    aria-label="Search results"
-                    className="overflow-x-auto rounded-lg border border-slate-800"
-                >
-                    {isContentSearch
-                        ? contentSearch.data?.results.map((result, index) => (
-                              <ContentResult
-                                  key={`${result.path}:${result.line_number}:${result.line}`}
-                                  result={result}
-                                  agent={props.agent}
-                                  target={{
-                                      path: result.path,
-                                      line: result.line_number,
-                                  }}
-                                  onOpen={(target) =>
-                                      openSelectedResult(target, index)
-                                  }
-                              />
-                          ))
-                        : pathSearch.data?.results.map((result, index) => (
-                              <PathResult
-                                  key={result.path}
-                                  result={result}
-                                  agent={props.agent}
-                                  target={{ path: result.path }}
-                                  onOpen={(target) =>
-                                      openSelectedResult(target, index)
-                                  }
-                              />
-                          ))}
-                </div>
+                <SearchResultList
+                    agent={props.agent}
+                    resultsRef={resultsRef}
+                    isContentSearch={isContentSearch}
+                    pathResults={pathSearch.data?.results}
+                    contentResults={contentSearch.data?.results}
+                    onOpen={openSelectedResult}
+                    onSearchInFolder={searchContentsOfFolder}
+                />
             </div>
         </Dialog>
     );
 }
 
-/** Groups search controls while exposing content-only options only in grep mode. */
-function SearchControls(props: {
-    query: string;
-    isContentSearch: boolean;
-    timeoutSeconds: number;
-    includeHidden: boolean;
-    respectGitignore: boolean;
-    regex: boolean;
-    contextSize: number;
-    caseSensitivity: CaseSensitivity;
+/**
+ * Shows the folder being searched as breadcrumbs, so the reader can widen the search to an
+ * ancestor or type another folder without leaving the dialog. Segments are links that keep
+ * the rest of the search, so a modified click opens the same search in a new tab.
+ */
+function SearchScope(props: {
+    agent: Agent;
+    directory: string;
     gitRoot: string | null;
     searchFromGitRoot: boolean;
-    disabled: boolean;
-    onModeChange: (checked: boolean) => void;
-    onQueryChange: (query: string) => void;
+    /** A changed scope must search again instead of showing a restored result list. */
+    onDismissRestoredView: () => void;
+    onChange: (directory: string) => void;
     onUpdate: (changes: AgentSearch) => Promise<void>;
-    onUpdateOption: (
-        changes: AgentSearch,
-        preferences: Record<string, number | boolean>,
-    ) => void;
-}) {
-    const queryLabel = props.isContentSearch
-        ? "Text to find"
-        : "File or folder name";
-
-    const caseSensitivityIcon = {
-        smart: <SmartCaseIcon className="h-4 w-4" />,
-        sensitive: <CaseSensitive className="h-4 w-4" />,
-        insensitive: <CaseLower className="h-4 w-4" />,
-    } satisfies Record<CaseSensitivity, React.ReactNode>;
-
-    return (
-        <div className="grid gap-4">
-            <fieldset className="grid gap-1.5">
-                <legend className="text-xs font-medium text-slate-400">
-                    Search by
-                </legend>
-                <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-950/70 p-1 sm:w-80">
-                    <ToggleButton
-                        label="Search file paths"
-                        pressed={!props.isContentSearch}
-                        size="sm"
-                        variant="subtle"
-                        className="w-full"
-                        onClick={() => props.onModeChange(false)}
-                    >
-                        File paths
-                    </ToggleButton>
-                    <ToggleButton
-                        label="Search file contents"
-                        pressed={props.isContentSearch}
-                        size="sm"
-                        variant="subtle"
-                        className="w-full"
-                        onClick={() => props.onModeChange(true)}
-                    >
-                        File contents
-                    </ToggleButton>
-                </div>
-            </fieldset>
-
-            <label className="grid gap-1.5 text-xs font-medium text-slate-400">
-                {queryLabel}
-                <InputControl
-                    key={props.isContentSearch ? "content" : "path"}
-                    autoFocus
-                    type="search"
-                    aria-label={
-                        props.isContentSearch
-                            ? "Search file contents"
-                            : "Search file paths"
-                    }
-                    value={props.query}
-                    disabled={props.disabled}
-                    onChange={(event) =>
-                        props.onQueryChange(event.target.value)
-                    }
-                    placeholder={
-                        props.isContentSearch
-                            ? "Text inside files"
-                            : "Name or path pattern"
-                    }
-                    className="h-10 w-full text-sm font-normal"
-                />
-            </label>
-
-            <div className="grid gap-2">
-                <p className="text-xs font-medium text-slate-400">Options</p>
-                <div className="grid gap-2 sm:flex sm:items-end">
-                    <div className="flex flex-wrap gap-2">
-                        <ToggleButton
-                            label="Include hidden files and directories"
-                            pressed={props.includeHidden}
-                            tooltip={
-                                props.includeHidden
-                                    ? "Exclude hidden files and directories"
-                                    : "Include hidden files and directories"
-                            }
-                            size="lg"
-                            onClick={() =>
-                                props.onUpdateOption(
-                                    { hidden: !props.includeHidden },
-                                    {
-                                        recursiveSearchIncludeHidden:
-                                            !props.includeHidden,
-                                    },
-                                )
-                            }
-                        >
-                            {props.includeHidden ? (
-                                <Eye className="h-4 w-4" />
-                            ) : (
-                                <EyeOff className="h-4 w-4" />
-                            )}
-                        </ToggleButton>
-                        <ToggleButton
-                            label="Respect .gitignore files"
-                            pressed={props.respectGitignore}
-                            tooltip={
-                                props.respectGitignore
-                                    ? "Include files ignored by .gitignore"
-                                    : "Respect .gitignore files"
-                            }
-                            size="lg"
-                            onClick={() =>
-                                props.onUpdateOption(
-                                    { gitignore: !props.respectGitignore },
-                                    {
-                                        recursiveSearchRespectGitignore:
-                                            !props.respectGitignore,
-                                    },
-                                )
-                            }
-                        >
-                            <GitBranch className="h-4 w-4" />
-                        </ToggleButton>
-                        {props.isContentSearch ? (
-                            <ToggleButton
-                                label="Use regular expressions"
-                                pressed={props.regex}
-                                tooltip={
-                                    props.regex
-                                        ? "Search as literal text"
-                                        : "Use regular expressions"
-                                }
-                                size="lg"
-                                onClick={() =>
-                                    void props.onUpdate({ regex: !props.regex })
-                                }
-                            >
-                                <Regex className="h-4 w-4" />
-                            </ToggleButton>
-                        ) : null}
-                        <IconButton
-                            label={caseSensitivityLabel[props.caseSensitivity]}
-                            tooltip={
-                                caseSensitivityNextTooltip[
-                                    props.caseSensitivity
-                                ]
-                            }
-                            variant="outline"
-                            size="xl"
-                            className="bg-slate-900 hover:bg-transparent hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                            onClick={() =>
-                                void props.onUpdate({
-                                    case: nextCaseSensitivity[
-                                        props.caseSensitivity
-                                    ],
-                                })
-                            }
-                        >
-                            {caseSensitivityIcon[props.caseSensitivity]}
-                        </IconButton>
-                        {props.gitRoot ? (
-                            <ToggleButton
-                                label="Search from git root"
-                                pressed={props.searchFromGitRoot}
-                                tooltip={
-                                    props.searchFromGitRoot
-                                        ? "Search the current directory only"
-                                        : "Search the entire Git repository instead of the current directory"
-                                }
-                                size="lg"
-                                onClick={() =>
-                                    void props.onUpdate({
-                                        gitroot: !props.searchFromGitRoot,
-                                    })
-                                }
-                            >
-                                <FolderGit2 className="h-4 w-4" />
-                            </ToggleButton>
-                        ) : null}
-                    </div>
-                    <SearchNumberInputs
-                        isContentSearch={props.isContentSearch}
-                        timeoutSeconds={props.timeoutSeconds}
-                        contextSize={props.contextSize}
-                        onUpdate={props.onUpdate}
-                        onUpdateOption={props.onUpdateOption}
-                    />
-                </div>
-            </div>
-        </div>
-    );
-}
-
-/** Keeps bounded numeric controls compact so mobile does not stretch a gap between them. */
-function SearchNumberInputs(props: {
-    isContentSearch: boolean;
-    timeoutSeconds: number;
-    contextSize: number;
-    onUpdate: (changes: AgentSearch) => Promise<void>;
-    onUpdateOption: (
-        changes: AgentSearch,
-        preferences: Record<string, number | boolean>,
-    ) => void;
 }) {
     return (
-        <div className="flex gap-2 sm:ml-auto">
-            <label className="grid gap-1 text-xs text-slate-400">
-                Timeout
-                <InputControl
-                    aria-label="Search timeout in seconds"
-                    type="number"
-                    min={1}
-                    max={60}
-                    value={props.timeoutSeconds}
-                    onChange={(event) => {
-                        const value = event.target.valueAsNumber;
-
-                        if (Number.isInteger(value)) {
-                            const timeout = Math.min(60, Math.max(1, value));
-                            props.onUpdateOption(
-                                { timeout },
-                                { recursiveSearchTimeoutSeconds: timeout },
-                            );
-                        }
-                    }}
-                    className="h-9 w-16 py-1 text-sm font-normal"
+        <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm text-slate-400">
+            <FolderOpen
+                className="h-4 w-4 shrink-0 text-slate-500"
+                aria-hidden="true"
+            />
+            {/* Phones need the width for the path; the folder icon still marks the row. */}
+            <span className="sr-only shrink-0 text-xs sm:not-sr-only">
+                Search in{" "}
+            </span>
+            <PathBreadcrumbs
+                // A changed scope closes an open editor.
+                key={props.directory}
+                path={props.directory}
+                home={props.agent.cwd}
+                labels={{
+                    navigation: "Search folder",
+                    input: "Search folder path",
+                    submit: "Search in this folder",
+                    copy: "Copy search folder path",
+                    edit: "Edit search folder",
+                }}
+                renderLink={(link) => (
+                    <Link
+                        to="."
+                        hash
+                        replace
+                        search={(previous) => ({
+                            ...previous,
+                            dir: link.path,
+                            gitroot: undefined,
+                        })}
+                        aria-label={`Search in ${link.path}`}
+                        className={link.className}
+                        onClick={props.onDismissRestoredView}
+                    >
+                        {link.children}
+                    </Link>
+                )}
+                onSubmitPath={props.onChange}
+            />
+            {props.gitRoot ? (
+                <GitRootToggle
+                    pressed={props.searchFromGitRoot}
+                    onUpdate={props.onUpdate}
                 />
-            </label>
-            {props.isContentSearch ? (
-                <label className="grid gap-1 text-xs text-slate-400">
-                    Context
-                    <InputControl
-                        aria-label="Context lines above and below"
-                        type="number"
-                        min={0}
-                        max={20}
-                        value={props.contextSize}
-                        onChange={(event) => {
-                            const value = event.target.valueAsNumber;
-
-                            if (Number.isInteger(value)) {
-                                void props.onUpdate({
-                                    context: Math.min(20, Math.max(0, value)),
-                                });
-                            }
-                        }}
-                        className="h-9 w-16 py-1 text-sm font-normal"
-                    />
-                </label>
             ) : null}
         </div>
-    );
-}
-
-/** Presents one fuzzy path match with enough context to distinguish duplicate names. */
-function PathResult(props: {
-    result: FileSearchEntry;
-    agent: Agent;
-    target: SearchResultTarget;
-    onOpen: (target: SearchResultTarget) => void;
-}) {
-    const ResultIcon = props.result.type === "directory" ? Folder : File;
-
-    return (
-        <SearchResultRow
-            agent={props.agent}
-            target={props.target}
-            canOpenInBackground={props.result.type !== "directory"}
-        >
-            <Link
-                {...browserRoute(props.agent, props.target.path)}
-                search={{ line: props.target.line }}
-                className="flex min-w-0 flex-1 items-start gap-3 rounded-none px-3 py-2 text-left focus:bg-blue-500/10 focus:outline-none"
-                aria-label={`Open path ${props.result.path}`}
-                onClick={(event) =>
-                    handleSearchResultClick(event, () =>
-                        props.onOpen(props.target),
-                    )
-                }
-            >
-                <ResultIcon className="mt-0.5 h-5 w-5 shrink-0 text-blue-400" />
-                <span className="min-w-0">
-                    <span className="block text-sm font-medium text-blue-300 sm:text-base">
-                        {props.result.name}
-                    </span>
-                    <span className="block whitespace-nowrap font-mono text-[11px] font-normal text-slate-500 sm:text-xs">
-                        {props.result.path}
-                    </span>
-                </span>
-            </Link>
-        </SearchResultRow>
-    );
-}
-
-/** Presents a grep match with its line preview and exact navigation destination. */
-function ContentResult(props: {
-    result: ContentGrepMatch;
-    agent: Agent;
-    target: SearchResultTarget;
-    onOpen: (target: SearchResultTarget) => void;
-}) {
-    return (
-        <SearchResultRow
-            agent={props.agent}
-            target={props.target}
-            canOpenInBackground
-        >
-            <Link
-                {...browserRoute(props.agent, props.target.path)}
-                search={{ line: props.target.line }}
-                className="block min-w-0 flex-1 rounded-none px-3 py-2 text-left focus:bg-blue-500/10 focus:outline-none"
-                aria-label={`Open ${props.result.path} at line ${props.result.line_number}`}
-                onClick={(event) =>
-                    handleSearchResultClick(event, () =>
-                        props.onOpen(props.target),
-                    )
-                }
-            >
-                <span className="block text-xs text-blue-300 sm:text-sm">
-                    {props.result.path}:{props.result.line_number}
-                </span>
-                <span className="mt-1 block font-mono text-xs font-normal sm:text-sm">
-                    {props.result.before_context.map((line) => (
-                        <span
-                            key={line.line_number}
-                            className="grid grid-cols-[3rem_minmax(0,1fr)] text-slate-500"
-                        >
-                            <span className="pr-3 text-right select-none">
-                                {line.line_number}
-                            </span>
-                            <span className="whitespace-pre">
-                                {line.line}
-                                {line.line_truncated ? "…" : ""}
-                            </span>
-                        </span>
-                    ))}
-                    <span className="grid grid-cols-[3rem_minmax(0,1fr)] bg-blue-500/10 text-slate-200">
-                        <span className="pr-3 text-right text-blue-300 select-none">
-                            {props.result.line_number}
-                        </span>
-                        <span className="whitespace-pre">
-                            {props.result.line}
-                            {props.result.line_truncated ? "…" : ""}
-                        </span>
-                    </span>
-                    {props.result.after_context.map((line) => (
-                        <span
-                            key={line.line_number}
-                            className="grid grid-cols-[3rem_minmax(0,1fr)] text-slate-500"
-                        >
-                            <span className="pr-3 text-right select-none">
-                                {line.line_number}
-                            </span>
-                            <span className="whitespace-pre">
-                                {line.line}
-                                {line.line_truncated ? "…" : ""}
-                            </span>
-                        </span>
-                    ))}
-                </span>
-            </Link>
-        </SearchResultRow>
     );
 }
 
@@ -1067,7 +722,7 @@ function SearchStatus(props: {
 
     if (props.query.trim() === "") {
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 {props.isContentSearch
                     ? "Enter text to search file contents."
                     : "Enter text to search file paths."}
@@ -1077,7 +732,7 @@ function SearchStatus(props: {
 
     if (props.query !== props.debouncedQuery || activeSearch.isFetching) {
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 Searching…
             </p>
         );
@@ -1085,7 +740,7 @@ function SearchStatus(props: {
 
     if (activeSearch.isError) {
         return (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="px-1 text-xs text-red-300">
                 {props.isContentSearch
                     ? "Content search failed."
                     : "Path search failed."}
@@ -1108,7 +763,7 @@ function SearchStatus(props: {
         ].filter((notice): notice is string => notice !== null);
 
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 {data.results.length} results. {notices.join(" ")}
             </p>
         );
@@ -1119,7 +774,7 @@ function SearchStatus(props: {
     if (!data) return null;
 
     return (
-        <p role="status" className="text-sm text-slate-400">
+        <p role="status" className="px-1 text-xs text-slate-500">
             Found{" "}
             <Tooltip content="100 is the maximum number of results a search can return.">
                 <span>{data.results.length}</span>
@@ -1130,31 +785,5 @@ function SearchStatus(props: {
             </Tooltip>
             . {data.timed_out ? "Search timed out." : ""}
         </p>
-    );
-}
-
-/**
- * Lucide has Aa and aa glyphs, but nothing for smart case, so this keeps the
- * same letterforms and adds a sparkle to show automatic case matching.
- */
-function SmartCaseIcon(props: { className?: string }) {
-    return (
-        <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-            aria-hidden="true"
-        >
-            <path d="m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16" />
-            <path d="M3.304 13h6.392" />
-            <path d="M22 11v5" />
-            <circle cx="18.5" cy="13.5" r="3.5" />
-            <path d="M19 3v4" />
-            <path d="M17 5h4" />
-        </svg>
     );
 }

@@ -1,59 +1,28 @@
 import React from "react";
-import { useAtom, useAtomValue } from "jotai";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import {
-    ClipboardCopy,
-    Download,
-    Image as ImageIcon,
-    LoaderCircle,
-    MoreHorizontal,
-    RefreshCw,
-    Replace,
-    Save,
-    Search,
-    ScanText,
-    Terminal,
-    Trash2,
-    X,
-} from "lucide-react";
+import { Image as ImageIcon, X } from "lucide-react";
 import type { Agent } from "#ui/api-client";
-import {
-    bottomDrawerActiveTabAtom,
-    bottomDrawerCollapsedAtom,
-} from "#ui/bottom-drawer-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
-import { useActiveTerminalTarget, useTerminals } from "#ui/use-terminals";
-import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { Button } from "#ui/components/button";
-import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import { useKeepFileOpen } from "#ui/components/browser/open-file-actions";
 import {
     CodeEditor,
     type EditorSelection,
 } from "#ui/components/browser/code-editor";
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
-import {
-    PersistentPathActions,
-    SelectPathMenuButton,
-} from "#ui/components/browser/path-actions";
-import { getImmediateParentPath } from "#ui/components/browser/utils";
+import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
 import { DeletePathDialog } from "#ui/components/browser/delete-path-dialog";
-import { Checkbox } from "#ui/components/checkbox";
-import { FullWindowToggle } from "#ui/components/full-window-toggle";
 import { EditorOpenFiles } from "#ui/components/browser/editor-open-files";
 import { useEditorFullWindow } from "#ui/components/browser/editor-full-window";
 import { IconButton } from "#ui/components/icon-button";
-import { Toast } from "#ui/components/toast";
-import { ToggleButton } from "#ui/components/toggle-button";
 import {
     fileContentQueryOptions,
     gitRevisionContentQueryOptions,
 } from "#ui/queries";
-import { useAgentSearchNavigation } from "#ui/search-navigation";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
 import {
@@ -67,289 +36,9 @@ import {
 } from "#ui/editor/stored-buffer";
 import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
+import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
 
 const rootRouteApi = getRouteApi("__root__");
-
-/** Keeps save state and editor mutations inside the representation they affect. */
-function FileEditActions(props: {
-    /** A committed revision cannot be saved. */
-    readOnly: boolean;
-    statusMessage: string | null;
-    hasError: boolean;
-    isSaved: boolean;
-    canEdit: boolean;
-    isDirty: boolean;
-    isSaving: boolean;
-    bookmark: {
-        agentId: string;
-        path: string;
-        name: string;
-        entryType: "file";
-    };
-    selection: EditorSelection | null;
-    preview?: boolean;
-    isSearchOpen: boolean;
-    onSave: () => void;
-    onToggleSearch: () => void;
-    onPreviewChange?: (preview: boolean) => void;
-}) {
-    const { updateSearch } = useAgentSearchNavigation();
-
-    const copyMutation = useMutation({
-        mutationFn: async () => {
-            if (props.selection === null) {
-                throw new Error("Select text in the editor before copying");
-            }
-
-            const reference = `\`\`\`${props.bookmark.path}#L${props.selection.startLine}
-${props.selection.text}
-\`\`\``;
-
-            await navigator.clipboard.writeText(reference);
-        },
-    });
-
-    return (
-        <>
-            {props.readOnly ? null : (
-                <Button
-                    tooltip="Save file (Ctrl+S)"
-                    type="button"
-                    aria-label="Save file"
-                    onClick={props.onSave}
-                    disabled={!props.canEdit || !props.isDirty}
-                    isLoading={props.isSaving}
-                    size="sm"
-                    className="h-9 w-9 rounded-md p-0 font-semibold shadow-sm shadow-blue-950/30"
-                >
-                    <Save className="h-4 w-4" aria-hidden="true" />
-                </Button>
-            )}
-            {props.preview !== undefined && props.onPreviewChange ? (
-                <ToggleButton
-                    pressed={props.preview}
-                    label="Preview"
-                    tooltip={
-                        props.preview
-                            ? "Show the markdown editor"
-                            : "Preview rendered markdown"
-                    }
-                    onClick={() => props.onPreviewChange?.(!props.preview)}
-                >
-                    <ScanText className="h-4 w-4" aria-hidden="true" />
-                </ToggleButton>
-            ) : null}
-            <ToggleButton
-                pressed={props.isSearchOpen}
-                label="Toggle search and replace"
-                tooltip={
-                    props.isSearchOpen
-                        ? "Close search and replace (Ctrl+F)"
-                        : "Search and replace in the file (Ctrl+F)"
-                }
-                onClick={props.onToggleSearch}
-                size="lg"
-                className="aria-[pressed=false]:text-slate-200 aria-[pressed=false]:hover:bg-tint"
-            >
-                <Replace className="h-4 w-4" aria-hidden="true" />
-            </ToggleButton>
-            <Button
-                tooltip="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents."
-                type="button"
-                variant="secondary"
-                size="sm"
-                aria-label="Copy selection with file reference"
-                disabled={props.selection === null}
-                isLoading={copyMutation.isPending}
-                onClick={() => copyMutation.mutate()}
-                className="h-9 w-9 rounded-md p-0 font-semibold"
-            >
-                <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            <Button
-                tooltip="Search the selected text from the git repository root when the file is in a worktree."
-                type="button"
-                variant="secondary"
-                size="sm"
-                aria-label="Search selected text"
-                disabled={props.selection === null}
-                onClick={() => {
-                    if (props.selection === null) {
-                        return;
-                    }
-
-                    void updateSearch({
-                        q: props.selection.text,
-                        mode: "content",
-                        gitroot: true,
-                    });
-                }}
-                className="h-9 w-9 rounded-md p-0 font-semibold"
-            >
-                <Search className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            {props.statusMessage ? (
-                <span
-                    role="status"
-                    aria-label="File edit status"
-                    aria-live="polite"
-                    className={`px-2 text-sm ${
-                        props.hasError
-                            ? "text-red-300"
-                            : props.isSaved
-                              ? "text-emerald-300"
-                              : "text-slate-400"
-                    }`}
-                >
-                    {props.statusMessage}
-                </span>
-            ) : null}
-            {copyMutation.isSuccess || copyMutation.isError ? (
-                <Toast
-                    tone={copyMutation.isError ? "error" : "success"}
-                    icon={<ClipboardCopy className="h-4 w-4" />}
-                    dismissAriaLabel="Dismiss copy reference message"
-                    onDismiss={() => copyMutation.reset()}
-                >
-                    {copyMutation.isError
-                        ? getErrorMessage(
-                              copyMutation.error,
-                              "Could not copy the file reference",
-                          )
-                        : "Copied selection with file reference"}
-                </Toast>
-            ) : null}
-        </>
-    );
-}
-
-/** Keeps file operations and editor preferences close to the surface they affect. */
-function EditorActionsMenu(props: {
-    agent: Agent;
-    path: string;
-    fileName: string;
-    /** Hides file operations, which would act on the working file rather than the revision. */
-    readOnly: boolean;
-    canEdit: boolean;
-    isReloading: boolean;
-    isSaving: boolean;
-    downloadUrl: string | null;
-    onReload: () => void;
-    onDelete: () => void;
-}) {
-    const [userState, setUserState] = useUserState();
-
-    return (
-        <ActionMenu
-            label="Editor actions"
-            title="Editor actions"
-            closeAriaLabel="Close editor actions"
-            hideTitle={false}
-            icon={<MoreHorizontal className="h-4 w-4" />}
-            variant="icon"
-        >
-            {(close) => (
-                <>
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                disabled={!props.canEdit || props.isSaving}
-                                onClick={() => {
-                                    close();
-                                    props.onReload();
-                                }}
-                            >
-                                {props.isReloading ? (
-                                    <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
-                                ) : (
-                                    <RefreshCw className="h-4 w-4 text-slate-400" />
-                                )}
-                                {props.isReloading ? "Reloading..." : "Reload"}
-                            </ActionMenuButton>
-                        </>
-                    )}
-                    {props.downloadUrl === null ? null : (
-                        <ActionMenuButton asChild>
-                            <a
-                                href={props.downloadUrl}
-                                download={props.fileName}
-                                onClick={close}
-                            >
-                                <Download className="h-4 w-4 text-slate-400" />
-                                Download
-                            </a>
-                        </ActionMenuButton>
-                    )}
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                tone="danger"
-                                disabled={
-                                    !props.canEdit ||
-                                    props.isSaving ||
-                                    getImmediateParentPath(props.path) === null
-                                }
-                                onClick={() => {
-                                    close();
-                                    props.onDelete();
-                                }}
-                            >
-                                <Trash2 className="h-4 w-4" />
-                                Delete file
-                            </ActionMenuButton>
-                            <div className="my-1 border-t border-slate-800" />
-                            <SelectPathMenuButton
-                                agent={props.agent}
-                                path={props.path}
-                                fileName={props.fileName}
-                                entryType="file"
-                                close={close}
-                            />
-                            <BookmarkMenuButton
-                                bookmark={{
-                                    agentId: props.agent.id,
-                                    path: props.path,
-                                    name: props.fileName,
-                                    entryType: "file",
-                                }}
-                                close={close}
-                            />
-                            <div className="my-1 border-t border-slate-800" />
-                        </>
-                    )}
-                    <Checkbox
-                        checked={userState.wrapEditorLines}
-                        label="Wrap lines"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                wrapEditorLines: checked,
-                            }));
-                        }}
-                    >
-                        Wrap lines
-                    </Checkbox>
-                    <Checkbox
-                        checked={userState.vimMode}
-                        label="Vim mode"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                vimMode: checked,
-                            }));
-                        }}
-                    >
-                        Vim mode
-                    </Checkbox>
-                </>
-            )}
-        </ActionMenu>
-    );
-}
 
 /** Puts the editor exit on the rendered page so it stays with the markdown, not the toolbar. */
 function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
@@ -365,75 +54,6 @@ function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
         >
             <X className="h-4 w-4" aria-hidden="true" />
         </IconButton>
-    );
-}
-
-/** Groups secondary editor controls at the trailing edge of the file card. */
-function FileEditorSecondaryActions(props: {
-    agent: Agent;
-    path: string;
-    fileName: string;
-    readOnly: boolean;
-    canEdit: boolean;
-    isReloading: boolean;
-    isSaving: boolean;
-    downloadUrl: string | null;
-    isFullWindow: boolean;
-    onToggleFullWindow: () => void;
-    onReload: () => void;
-    onDelete: () => void;
-}) {
-    const terminals = useTerminals();
-    const terminalTarget = useActiveTerminalTarget();
-
-    const [isDrawerCollapsed, setDrawerCollapsed] = useAtom(
-        bottomDrawerCollapsedAtom,
-    );
-
-    const activeDrawerTab = useAtomValue(bottomDrawerActiveTabAtom);
-    const isTerminalOpen = !isDrawerCollapsed && activeDrawerTab === "terminal";
-
-    return (
-        <div className="flex shrink-0 items-center gap-1">
-            <IconButton
-                type="button"
-                label="Open terminal"
-                tooltip={
-                    isTerminalOpen
-                        ? "Fold down terminal"
-                        : "Open terminal (t, Alt+t / Option+T)"
-                }
-                aria-expanded={isTerminalOpen}
-                onClick={() => {
-                    if (isTerminalOpen) {
-                        setDrawerCollapsed(true);
-                    } else {
-                        terminals.openOrFocus(terminalTarget);
-                    }
-                }}
-                variant="ghost"
-                size="xl"
-            >
-                <Terminal className="h-4 w-4" aria-hidden="true" />
-            </IconButton>
-            <FullWindowToggle
-                targetName="editor"
-                isFullWindow={props.isFullWindow}
-                onToggle={props.onToggleFullWindow}
-            />
-            <EditorActionsMenu
-                agent={props.agent}
-                path={props.path}
-                fileName={props.fileName}
-                readOnly={props.readOnly}
-                canEdit={props.canEdit}
-                isReloading={props.isReloading}
-                isSaving={props.isSaving}
-                downloadUrl={props.downloadUrl}
-                onReload={props.onReload}
-                onDelete={props.onDelete}
-            />
-        </div>
     );
 }
 
@@ -666,79 +286,6 @@ type FileEditViewProps = {
     preview: boolean;
     onPreviewChange: (preview: boolean) => void;
 };
-
-/** Groups editor toolbar actions so the edit view can stay focused on buffer state. */
-function FileEditHeader(props: {
-    readOnly: boolean;
-    fileName: string;
-    statusMessage: string | null;
-    hasError: boolean;
-    isSaved: boolean;
-    canEdit: boolean;
-    isDirty: boolean;
-    isSaving: boolean;
-    agent: Agent;
-    filePath: string;
-    selection: EditorSelection | null;
-    preview: boolean | undefined;
-    isSearchOpen: boolean;
-    isReloading: boolean;
-    downloadUrl: string | null;
-    isFullWindow: boolean;
-    onSave: () => void;
-    onToggleSearch: () => void;
-    onPreviewChange: ((preview: boolean) => void) | undefined;
-    onToggleFullWindow: () => void;
-    onReload: () => void;
-    onDelete: () => void;
-}) {
-    return (
-        <header className="shrink-0 border-b border-slate-800 p-3">
-            <h1 aria-label="File name" className="sr-only">
-                {props.fileName}
-            </h1>
-            <div className="flex flex-wrap items-center justify-between gap-1">
-                <div className="flex flex-wrap items-center justify-start gap-2">
-                    <FileEditActions
-                        readOnly={props.readOnly}
-                        statusMessage={props.statusMessage}
-                        hasError={props.hasError}
-                        isSaved={props.isSaved}
-                        canEdit={props.canEdit}
-                        isDirty={props.isDirty}
-                        isSaving={props.isSaving}
-                        bookmark={{
-                            agentId: props.agent.id,
-                            path: props.filePath,
-                            name: props.fileName,
-                            entryType: "file",
-                        }}
-                        selection={props.selection}
-                        preview={props.preview}
-                        isSearchOpen={props.isSearchOpen}
-                        onSave={props.onSave}
-                        onToggleSearch={props.onToggleSearch}
-                        onPreviewChange={props.onPreviewChange}
-                    />
-                </div>
-                <FileEditorSecondaryActions
-                    agent={props.agent}
-                    path={props.filePath}
-                    fileName={props.fileName}
-                    readOnly={props.readOnly}
-                    canEdit={props.canEdit}
-                    isReloading={props.isReloading}
-                    isSaving={props.isSaving}
-                    downloadUrl={props.downloadUrl}
-                    isFullWindow={props.isFullWindow}
-                    onToggleFullWindow={props.onToggleFullWindow}
-                    onReload={props.onReload}
-                    onDelete={props.onDelete}
-                />
-            </div>
-        </header>
-    );
-}
 
 /**
  * Joins a file's device text, its server copy and its buffer in the editor workspace. The

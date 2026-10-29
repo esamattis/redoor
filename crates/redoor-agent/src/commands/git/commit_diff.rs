@@ -1,4 +1,5 @@
-//! What one commit changed: its tree compared with its first parent's, below one path.
+//! What one commit changed: its tree compared with its first parent's, below one path. A
+//! range compares its newer end with its start instead, so several commits read as one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -7,7 +8,7 @@ use gix::bstr::ByteSlice;
 use redoor_protocol::{
     api::git::{
         GitChangeState, GitDiffResult,
-        commit::{GitCommitDiffResponse, GitCommitFileChange},
+        commit::{GitCommitDiffResponse, GitCommitFileChange, GitCommitRange},
         worktree::GitDiffRequest,
     },
     wire::{command::CommandErrorKind, request::CommandError},
@@ -17,7 +18,7 @@ use super::{
     GitFailure,
     diff::{DiffBudget, DiffSource, read_object_blob},
     internal_failure,
-    revision::{RevisionPath, commit_summary, tree_entry},
+    revision::{RevisionBase, RevisionPath, commit_summary, tree_entry},
     run_blocking,
 };
 
@@ -31,7 +32,8 @@ struct FileChange {
     new: Side,
 }
 
-/// Diffs the commit a revision names against its first parent, below one path.
+/// Diffs the commit a revision names against its first parent, or a range's newer end
+/// against its start, below one path.
 pub(crate) async fn commit_diff(
     path: String,
     rev: String,
@@ -51,10 +53,14 @@ fn commit_diff_blocking(
     let new_root = commit
         .tree()
         .map_err(|error| internal_failure("read Git commit tree", error))?;
-    // Merges are shown against their first parent, the branch they were merged into.
-    let parent = commit
-        .parent_ids()
-        .next()
+    // Merges are shown against their first parent, the branch they were merged into, and a
+    // range against its start, so its commits read as one change.
+    let parent_id = match target.base {
+        RevisionBase::FirstParent => commit.parent_ids().next().map(gix::Id::detach),
+        RevisionBase::Commit(id) => Some(id),
+        RevisionBase::Empty => None,
+    };
+    let parent = parent_id
         .map(|id| {
             repo.find_commit(id)
                 .map_err(|error| internal_failure("read Git parent commit", error))
@@ -108,10 +114,19 @@ fn commit_diff_blocking(
         });
     }
 
+    let range = if target.base.is_range() {
+        Some(GitCommitRange {
+            base: parent.as_ref().map(commit_summary).transpose()?,
+        })
+    } else {
+        None
+    };
+
     Ok(GitCommitDiffResponse {
         commit: commit_summary(&commit)?,
         body: commit_body(&commit)?,
         parent_id: parent.map(|parent| parent.id.to_string()),
+        range,
         repository_root: target.repository.root.display().to_string(),
         repository_relative_path: target.relative.clone(),
         files,

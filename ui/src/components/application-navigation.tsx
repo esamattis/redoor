@@ -484,21 +484,36 @@ function OpenFileRow(props: {
     // Dimming tells the user before clicking that the file cannot be read right now.
     const isOffline = props.agent?.status !== "connected";
 
+    // An open file is the working file, so the same path viewed at a Git revision is not it.
     const isActive =
         browser?.agentId === props.file.agentId &&
-        browser.path === props.file.path;
+        browser.path === props.file.path &&
+        browser.revision === null;
 
     const itemId = getOpenFileKey(props.file);
 
     const label = (
         <span className={cn("block min-w-0", isOffline && "opacity-60")}>
-            <span
-                className={cn(
-                    "block truncate text-sm",
-                    isActive ? "text-slate-100" : "text-slate-200",
+            <span className="flex min-w-0 items-baseline text-sm">
+                <span
+                    className={cn(
+                        "truncate",
+                        isActive ? "text-slate-100" : "text-slate-200",
+                    )}
+                >
+                    {props.file.name}
+                </span>
+                {/* Shows where the caret is, so a line picked in a diff or search result is
+                    confirmed in the list before the file is visited. It never truncates,
+                    since the name says which file and the line is the new information. */}
+                {props.file.line === undefined ? null : (
+                    <span
+                        aria-label={`Caret line ${String(props.file.line)}`}
+                        className="shrink-0 text-slate-500"
+                    >
+                        :{props.file.line}
+                    </span>
                 )}
-            >
-                {props.file.name}
             </span>
             <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-slate-500">
                 {props.agent ? (
@@ -551,6 +566,10 @@ function OpenFileRow(props: {
                         {props.agent ? (
                             <Link
                                 {...browserRoute(props.agent, props.file.path)}
+                                // The route keeps `rev` across navigations, which would open the
+                                // file read-only at the revision being browsed, where its buffer
+                                // and line request do not apply.
+                                search={{ rev: undefined }}
                                 aria-label={props.file.name}
                                 aria-current={isActive ? "page" : undefined}
                                 onClick={closeMenu}

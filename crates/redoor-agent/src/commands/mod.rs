@@ -173,6 +173,7 @@ impl RunCommand for Command {
                 include_hidden,
                 respect_gitignore,
                 case_sensitivity,
+                directories_only,
             }) => Reply::of::<request::FileSearch>(
                 file_search::execute(
                     file_search::FileSearchRequest {
@@ -182,6 +183,7 @@ impl RunCommand for Command {
                         include_hidden,
                         respect_gitignore,
                         case_sensitivity,
+                        directories_only,
                     },
                     &ctx.cancel,
                 )
@@ -401,8 +403,8 @@ impl RunCommand for Command {
             Command::GitWorktreeList(request::GitWorktreeList { path }) => {
                 Reply::of::<request::GitWorktreeList>(git::worktree_list::list(path).await)
             }
-            Command::GitWorktreeStatus(request::GitWorktreeStatus { path }) => {
-                Reply::of::<request::GitWorktreeStatus>(git::worktree_status::status(path).await)
+            Command::GitWorktreeStatus(request::GitWorktreeStatus { paths }) => {
+                Reply::of::<request::GitWorktreeStatus>(git::worktree_status::statuses(paths).await)
             }
             Command::GitRevisionStat(request::GitRevisionStat {
                 path,

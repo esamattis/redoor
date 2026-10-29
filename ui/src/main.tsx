@@ -15,6 +15,7 @@ import { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import { findCachedAgent, invalidateAllAgentData } from "#ui/queries";
 import { UploadQueue } from "#ui/upload-queue";
 import { EditorWorkspace } from "#ui/editor/editor-workspace";
+import { setOpenFileLine, updateUserState } from "#ui/user-state";
 
 // The API lives on the same origin as the page: the redoor binary
 // embeds the UI alongside the API on a single port, and during local
@@ -46,7 +47,16 @@ const uploads = new UploadQueue({
 
 // Open files keep their editor buffers (caret, scroll, undo history, unsaved text) while the
 // user moves between pages, and one CodeMirror view serves them all for the page's lifetime.
-const editor = new EditorWorkspace(api, queryClient);
+// The open files list mirrors each caret line, so the menu can show it.
+const editor = new EditorWorkspace(api, queryClient, (caret) => {
+    updateUserState(api, queryClient, (current) => {
+        const openFiles = setOpenFileLine(current.openFiles, caret);
+
+        return openFiles === current.openFiles
+            ? current
+            : { ...current, openFiles };
+    });
+});
 
 editor.start(window);
 

@@ -194,6 +194,10 @@ pub struct FileSearch {
     pub respect_gitignore: bool,
     /// Smart case keeps lowercase searches forgiving while uppercase remains intentional.
     pub case_sensitivity: CaseSensitivity,
+    /// Filtering during traversal keeps the result limit for directories. Defaults to false so
+    /// a server of this release can still talk to an agent of the previous one.
+    #[serde(default)]
+    pub directories_only: bool,
 }
 
 /// Searches physical file lines without making the server read remote content.
@@ -413,7 +417,8 @@ pub struct GitRevisionContent {
     pub rev: String,
 }
 
-/// Diffs the commit a revision names against its first parent, below one path.
+/// Diffs the commit a revision names against its first parent, or a range `A..B` against its
+/// start, below one path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommitDiff {
     pub path: String,
@@ -477,10 +482,11 @@ pub struct GitWorktreeList {
     pub path: String,
 }
 
-/// Counts the uncommitted changes of the checkout containing a path.
+/// Counts the uncommitted changes of the checkouts containing the paths, as many as fit the
+/// agent's time budget.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitWorktreeStatus {
-    pub path: String,
+    pub paths: Vec<String>,
 }
 
 /// Reads the stable filesystem identity needed to delete only the source that was copied.
@@ -751,6 +757,7 @@ mod tests {
         assert_round_trip::<GitRevisionContent>(json!({"path": "/repo/a", "commit_id": "abc",
             "content": "a\n"}));
         assert_round_trip::<GitCommitDiff>(json!({"commit": commit, "body": "", "parent_id": null,
+            "range": {"base": null},
             "repository_root": "/repo", "repository_relative_path": "", "files": [],
             "truncated": false}));
         assert_round_trip::<GitLog>(json!({"repository_root": "/repo",
@@ -763,8 +770,10 @@ mod tests {
             "path": "/repo", "is_main": true, "is_current": true, "branch_name": "main",
             "head_commit": commit, "last_activity_at": 1, "locked": false, "missing": false}],
             "truncated": false}));
-        assert_round_trip::<GitWorktreeStatus>(json!({"changed": 1, "untracked": 2,
-            "truncated": false}));
+        assert_round_trip::<GitWorktreeStatus>(json!({"statuses": [
+            {"path": "/repo", "result": {"type": "counted", "changed": 1, "untracked": 2,
+                "truncated": false}},
+            {"path": "/gone", "result": {"type": "failed", "message": "not a repository"}}]}));
         assert_round_trip::<MoveMetadata>(json!({"file_size": 3, "is_file": true,
             "is_dir": false, "identity": {"device": 1, "inode": 2, "size": 3,
             "modified_seconds": 4, "modified_nanoseconds": 5, "is_directory": false}}));

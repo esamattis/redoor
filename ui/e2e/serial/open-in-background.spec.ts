@@ -138,6 +138,14 @@ test.describe.serial("Open in background", () => {
                 openFiles: [{ path: filePath, reveal: { line: TARGET_LINE } }],
             });
 
+        // The list shows the chosen line right away, confirming the click before any visit.
+        await expect(
+            openFilesList(page).getByLabel(
+                `Caret line ${String(TARGET_LINE)}`,
+                { exact: true },
+            ),
+        ).toBeVisible();
+
         await openFilesList(page)
             .getByRole("link", { name: fileName, exact: true })
             .click();
@@ -158,6 +166,10 @@ test.describe.serial("Open in background", () => {
         await editor.focus();
         await page.keyboard.press("ControlOrMeta+Home");
         await expect(page.getByLabel("Editor caret line")).toHaveText("1");
+        // The list follows the caret once its buffer is written, so it shows where the file was left.
+        await expect(
+            openFilesList(page).getByLabel("Caret line 1", { exact: true }),
+        ).toBeVisible();
         await page.goto(diffUrl);
         await expect(section).toBeVisible();
         await openFilesList(page)
@@ -211,6 +223,65 @@ fourth line
         await expect(page.getByLabel("Editor caret line")).toHaveText("3");
         await expect(page.getByLabel("Editor selected text")).toHaveText(
             "background-search-needle",
+        );
+    });
+
+    test("opens the working file at the chosen line from a commit diff in history", async ({
+        page,
+    }) => {
+        const repositoryPath = path.join(ctx.testDirPath, "history-repository");
+        const fileName = "history.txt";
+        const filePath = path.join(repositoryPath, fileName);
+        await fs.mkdir(repositoryPath);
+
+        const lines = Array.from(
+            { length: 500 },
+            (_, index) => `line ${String(index + 1)}`,
+        );
+
+        await fs.writeFile(filePath, `${lines.join("\n")}\n`);
+        await $`git -C ${repositoryPath} init`;
+        await $`git -C ${repositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${repositoryPath} config user.name Playwright`;
+        await $`git -C ${repositoryPath} add ${fileName}`;
+        await $`git -C ${repositoryPath} commit -m baseline`;
+        lines[TARGET_LINE - 1] = "committed target line";
+        await fs.writeFile(filePath, `${lines.join("\n")}\n`);
+        await $`git -C ${repositoryPath} commit -am ${"Change the target line"}`;
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(repositoryPath)}?view=git&rev=HEAD`,
+        );
+
+        await page
+            .getByRole("button", {
+                name: `Open ${fileName} at line ${String(TARGET_LINE)} in the background`,
+                exact: true,
+            })
+            .click();
+        await expect(
+            openFilesList(page).getByLabel(
+                `Caret line ${String(TARGET_LINE)}`,
+                { exact: true },
+            ),
+        ).toBeVisible();
+
+        await openFilesList(page)
+            .getByRole("link", { name: fileName, exact: true })
+            .click();
+
+        // The browsed revision is dropped, so the open file is the editable working file
+        // rather than the read-only committed one, which never takes a line request.
+        await expect(
+            page.getByRole("region", { name: "Git revision" }),
+        ).toHaveCount(0);
+        await expect(page).not.toHaveURL(/[?&]rev=/);
+        // The working file shows the line chosen in the commit diff.
+        await expect(page.getByLabel("Editor caret line")).toHaveText(
+            String(TARGET_LINE),
+        );
+        await expect(page.getByLabel("Editor selected text")).toHaveText(
+            "committed target line",
         );
     });
 });

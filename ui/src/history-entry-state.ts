@@ -140,10 +140,18 @@ export function useHistoryEntryState<T>(options: {
         }
     }, [options.store, key, current.seed]);
 
-    const update = (change: (previous: T) => T) => {
-        options.store.set(key, change(options.store.get(key) ?? current.seed));
-        rerender();
-    };
+    // Stable while the entry and scope stay, so memoized children handed a callback built on
+    // it, such as a diff list's per-file toggles, do not re-render on every unrelated update.
+    const update = React.useCallback(
+        (change: (previous: T) => T) => {
+            options.store.set(
+                key,
+                change(options.store.get(key) ?? current.seed),
+            );
+            rerender();
+        },
+        [options.store, key, current.seed],
+    );
 
     return [value, update];
 }

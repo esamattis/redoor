@@ -1153,6 +1153,7 @@ async fn search_paths(
                 .and_then(Value::as_bool)
                 .unwrap_or(true),
             case_sensitivity: case_sensitivity(args, id)?,
+            directories_only: false,
         },
     );
     let mut result = state

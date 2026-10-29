@@ -22,8 +22,9 @@ use std::time::Duration;
 pub(crate) const STANDARD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadline for process control that answers immediately or not at all.
 pub(crate) const QUICK_TIMEOUT: Duration = Duration::from_secs(5);
-/// Deadline for counting one worktree's changes, which may first wait for the walks of other
-/// checkouts the agent queues ahead of it.
+/// Deadline for counting worktree changes. The agent answers after a few seconds with what it
+/// has counted, but waits for at least one checkout, which may be slower than its budget or
+/// queue behind the walks of other requests.
 pub(crate) const GIT_WORKTREE_STATUS_TIMEOUT: Duration = Duration::from_secs(120);
 /// Deadline for permanently deleting every trash entry, which can touch many files.
 pub(crate) const EMPTY_TRASH_TIMEOUT: Duration = Duration::from_secs(300);
@@ -106,8 +107,8 @@ impl AgentCall for DirectorySize {
 impl AgentCall for GitWorktreeStatus {
     const OPERATION: &'static str = "counting git worktree changes";
 
-    /// One status walk fits the standard deadline, but the agent runs only a few at a time,
-    /// so a row of a long list may queue behind the walks of the rows before it.
+    /// The agent bounds a request to a few seconds, but always counts at least one checkout,
+    /// and that one may queue behind the walks of other requests first.
     fn timeout(&self) -> Option<Duration> {
         Some(GIT_WORKTREE_STATUS_TIMEOUT)
     }
@@ -166,6 +167,7 @@ pub(crate) fn file_search(path: String, request: FindRequest) -> FileSearch {
         include_hidden: request.include_hidden,
         respect_gitignore: request.respect_gitignore,
         case_sensitivity: request.case_sensitivity,
+        directories_only: request.directories_only,
     }
 }
 

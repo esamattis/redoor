@@ -357,6 +357,83 @@ test.describe.serial("Git history browsing", () => {
         ).toContainText("Bump version");
     });
 
+    test("shows a range that created and deleted the browsed file as no change", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, path.join(repositoryPath, "src", "retired.ts"))}?view=git&rev=${firstCommit}^..${secondCommit}`,
+        );
+
+        // The file is missing at the range's end, yet the range is shown rather than a
+        // missing path, because its commits added and removed the file.
+        await expect(
+            page.getByRole("heading", { name: "Changes of a commit range" }),
+        ).toBeVisible();
+        await expect(
+            page.getByText("These commits changed nothing below this path."),
+        ).toBeVisible();
+    });
+
+    test("shows a run of commits picked in the history as one diff", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?view=git&gitTab=commits`,
+        );
+
+        const history = page.getByRole("group", { name: "Commit history" });
+        const selection = page.getByRole("group", { name: "Selected commits" });
+
+        await history
+            .getByRole("checkbox", {
+                name: `Select commit ${secondCommit.slice(0, 12)}`,
+            })
+            .click();
+
+        // One picked commit asks for the other end of the run.
+        await expect(selection).toContainText("1 commit selected");
+
+        await history
+            .getByRole("checkbox", {
+                name: `Select commit ${firstCommit.slice(0, 12)}`,
+            })
+            .click();
+
+        // The second pick closes the run, counting both ends.
+        await expect(selection).toContainText("2 commits selected");
+
+        await selection.getByRole("link", { name: "Show changes" }).click();
+
+        // The run opens as a range from the oldest commit's parent, so its changes are included.
+        await expect
+            .poll(() => new URL(page.url()).searchParams.get("rev"))
+            .toBe(`${firstCommit}^..${secondCommit}`);
+        await expect(
+            page.getByRole("heading", { name: "Changes of a commit range" }),
+        ).toBeVisible();
+        // The run reaches the root commit, so it starts from an empty tree.
+        await expect(page.getByText("Before the first commit")).toBeVisible();
+        // The combined diff shows the end state of a file changed by both commits.
+        await expect(
+            page.getByRole("region", { name: "Commit diff for src/app.ts" }),
+        ).toContainText("second");
+        // A file added and removed inside the run is not part of the combined change.
+        await expect(
+            page.getByRole("region", {
+                name: "Commit diff for src/retired.ts",
+            }),
+        ).toHaveCount(0);
+        // A range has no single neighbouring commit to step to.
+        await expect(
+            page.getByRole("navigation", { name: "Commit navigation" }),
+        ).toHaveCount(0);
+
+        await page.goBack();
+
+        // Back returns to the history with the same run still picked.
+        await expect(selection).toContainText("2 commits selected");
+    });
+
     test("explains a revision that does not exist", async ({ page }) => {
         await page.goto(
             `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?rev=no-such-branch`,

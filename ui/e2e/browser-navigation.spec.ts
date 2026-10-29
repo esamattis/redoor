@@ -832,6 +832,57 @@ test.describe.serial("File Browser Navigation", () => {
         ).toBeVisible();
     });
 
+    test("should scroll long breadcrumbs sideways with the mouse wheel", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${ctx.testDirUrlPath}`,
+        );
+
+        const breadcrumbs = page.getByRole("navigation", {
+            name: "Breadcrumbs",
+        });
+
+        await expect(breadcrumbs).toContainText(ctx.testDirName);
+
+        const wheelIsCaptured = () =>
+            breadcrumbs.evaluate((element) => {
+                const event = new WheelEvent("wheel", {
+                    deltaY: -100,
+                    bubbles: true,
+                    cancelable: true,
+                });
+
+                element.dispatchEvent(event);
+
+                return event.defaultPrevented;
+            });
+
+        // A path that fits must leave the wheel to the page instead of trapping its scroll.
+        expect(await wheelIsCaptured()).toBe(false);
+
+        // A phone-narrow column cannot fit the deep path, so the crumbs overflow.
+        await page.setViewportSize({ width: 360, height: 700 });
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir2/deep`)}`,
+        );
+        await expect(breadcrumbs).toContainText("deep");
+
+        const rootLink = breadcrumbs.getByRole("link", {
+            name: "/",
+            exact: true,
+        });
+
+        // The crumbs start scrolled to the current folder, hiding the root behind the overflow.
+        await expect(rootLink).not.toBeInViewport();
+
+        await breadcrumbs.hover();
+        await page.mouse.wheel(0, -2000);
+
+        // A plain vertical wheel reaches the start of the path despite the hidden scrollbar.
+        await expect(rootLink).toBeInViewport();
+    });
+
     test("should copy the current path from breadcrumbs", async ({
         page,
         context,

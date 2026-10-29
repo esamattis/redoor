@@ -1,6 +1,5 @@
 import React from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { useAtomValue } from "jotai";
 import { Link } from "@tanstack/react-router";
 import {
     Copy,
@@ -23,9 +22,10 @@ import { Tooltip } from "#ui/components/tooltip";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { DestinationConflictDialog } from "#ui/components/browser/destination-conflict";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
-import { DiffLayoutControl } from "#ui/components/browser/diff-layout-control";
-import { inlineDiffChangesAtom } from "#ui/diff-preferences";
-import { useUserState } from "#ui/user-state";
+import {
+    GitDiffList,
+    type GitDiffListFile,
+} from "#ui/components/browser/git-diff-list";
 import { getPathLoadError } from "#ui/components/browser/utils";
 import {
     WATCHED_TRANSFER_POLL_MS,
@@ -910,11 +910,21 @@ function SyncTransferStatus(props: { workspace: SyncWorkspace }) {
     );
 }
 
-/** Keeps the rendered hunks under the form so Copy/Move chrome stays interactive. */
+/** Names an endpoint with its device, since the compared files can be on two devices. */
+function endpointName(endpoint: SyncEndpoint | null, fallback: string) {
+    return endpoint === null
+        ? fallback
+        : `${endpoint.agent.name}:${endpoint.path}`;
+}
+
+/**
+ * Keeps the rendered hunks under the form so Copy/Move chrome stays interactive. The compare
+ * is a diff card like every other diff, so it has the same switches in the same place.
+ */
 function SyncDiffSection(props: { workspace: SyncWorkspace }) {
-    const diff = props.workspace.diff;
-    const mergeModifiedLines = useAtomValue(inlineDiffChangesAtom);
-    const [userState] = useUserState();
+    const workspace = props.workspace;
+    const diff = workspace.diff;
+    const unifiedDiff = diff.unifiedDiff;
 
     if (diff.errorMessage !== null) {
         return (
@@ -927,25 +937,44 @@ function SyncDiffSection(props: { workspace: SyncWorkspace }) {
         );
     }
 
-    if (diff.unifiedDiff === null) {
+    if (unifiedDiff === null) {
         return null;
     }
 
-    return (
-        <section
-            aria-label="File diff"
-            className="w-full min-w-0 overflow-x-auto border-t border-slate-800 p-4 @xl:p-5"
-        >
-            <div className="mb-3 flex justify-end">
-                <DiffLayoutControl />
-            </div>
+    const source = endpointName(workspace.sourceEndpoint, "source");
+
+    const destination = endpointName(
+        workspace.destinationEndpoint,
+        "destination",
+    );
+
+    // The two files are on two devices, so the card neither links nor copies a path, and the
+    // source is named like the origin of a rename.
+    const file: GitDiffListFile = {
+        path: destination,
+        relativePath: destination,
+        originalPath: source,
+        change: null,
+        link: null,
+        regionLabel: "File diff",
+        renderBody: (view) => (
             <UnifiedDiff
-                unifiedDiff={diff.unifiedDiff}
+                unifiedDiff={unifiedDiff}
                 fullContext={diff.fullContext}
-                mergeModifiedLines={mergeModifiedLines}
-                wrapLines={userState.wrapDiffLines}
+                mergeModifiedLines={view.mergeModifiedLines}
+                wrapLines={view.wrapLines}
+                wholeFile={view.wholeFile}
             />
-        </section>
+        ),
+    };
+
+    return (
+        <div className="grid grid-cols-[minmax(0,1fr)] border-t border-slate-800 p-4 @xl:p-5">
+            <GitDiffList
+                files={[file]}
+                scope={`sync:${source}:${destination}`}
+            />
+        </div>
     );
 }
 

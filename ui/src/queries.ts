@@ -20,6 +20,7 @@ import type {
     ManagedAgentFormConfiguration,
     ManagedAgentKind,
 } from "#ui/components/managed-agent-form";
+import { WorktreeStatusBatcher } from "#ui/worktree-status-batcher";
 
 /**
  * Keeps cache refreshes from turning an otherwise valid route load into an error.
@@ -55,8 +56,8 @@ export type QueryContext = { api: ApiClient; queryClient: QueryClient };
  */
 const EDITOR_BUFFER_META = { editorBuffer: true } as const;
 
-/** Describes the filters shared by recursive file search keys and options. */
-export type FileSearchParams = {
+/** Describes the filters shared by recursive path and content search keys and options. */
+type RecursiveSearchParams = {
     query: string;
     timeoutSeconds: number;
     includeHidden: boolean;
@@ -64,8 +65,13 @@ export type FileSearchParams = {
     caseSensitivity: CaseSensitivity;
 };
 
-/** Extends file search with the line-oriented options only content grep has. */
-export type ContentGrepParams = FileSearchParams & {
+/** Extends the shared filters with the entry-type filter only path search has. */
+export type FileSearchParams = RecursiveSearchParams & {
+    directoriesOnly: boolean;
+};
+
+/** Extends the shared filters with the line-oriented options only content grep has. */
+export type ContentGrepParams = RecursiveSearchParams & {
     regex: boolean;
     contextSize: number;
 };
@@ -653,17 +659,18 @@ export function gitRevisionContentQueryOptions(
 }
 
 /**
- * The changes of a commit, scoped to the browsed path. Keyed by commit id like the content,
- * so the cached diff can never belong to an older commit than the banner shows.
+ * The changes of a commit or a range, scoped to the browsed path. Keyed by the revision
+ * `commitDiffRevision` pins to the resolved commit, like the content, so the cached diff can
+ * never belong to an older commit than the banner shows.
  */
 export function gitCommitDiffQueryOptions(
     agent: Agent,
     path: string,
-    commitId: string,
+    diffRevision: string,
 ) {
     return queryOptions({
-        queryKey: queryKeys.gitCommitDiff(agent.id, path, commitId),
-        queryFn: () => agent.gitCommitDiff(path, commitId),
+        queryKey: queryKeys.gitCommitDiff(agent.id, path, diffRevision),
+        queryFn: () => agent.gitCommitDiff(path, diffRevision),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }
@@ -765,9 +772,10 @@ export function gitWorktreesQueryOptions(agent: Agent, repositoryRoot: string) {
 }
 
 /**
- * The uncommitted change counts of one checkout in the worktree list. Each row asks for its
- * own so the list shows before every checkout has been walked, and the agent queues the walks
- * so a long list cannot run them all at once.
+ * The uncommitted change counts of one checkout in the worktree list. Each row has its own
+ * query so the list shows before every checkout has been walked, while the batcher sends the
+ * rows that ask together as one request, so a long list takes a single browser connection.
+ * The signal lets leaving the list cancel the request and the agent's walks.
  */
 export function gitWorktreeStatusQueryOptions(
     agent: Agent,
@@ -775,7 +783,11 @@ export function gitWorktreeStatusQueryOptions(
 ) {
     return queryOptions({
         queryKey: queryKeys.gitWorktreeStatus(agent.id, worktreePath),
-        queryFn: () => agent.gitWorktreeStatus(worktreePath),
+        queryFn: (context) =>
+            WorktreeStatusBatcher.forAgent(agent).load(
+                worktreePath,
+                context.signal,
+            ),
     });
 }
 
@@ -851,6 +863,7 @@ export function fileSearchQueryOptions(
                 includeHidden: search.includeHidden,
                 respectGitignore: search.respectGitignore,
                 caseSensitivity: search.caseSensitivity,
+                directoriesOnly: search.directoriesOnly,
                 signal,
             }),
         enabled: search.query.trim() !== "",

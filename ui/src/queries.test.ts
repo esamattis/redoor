@@ -204,7 +204,7 @@ test("every agent-scoped key lives under the agent's prefix", () => {
         queryKeys.gitContext("a", "/p"),
         queryKeys.gitStatus("a", "/p"),
         queryKeys.gitDiff("a", ["/p"], "full"),
-        queryKeys.fileSearch("a", "/p", search),
+        queryKeys.fileSearch("a", "/p", { ...search, directoriesOnly: false }),
         queryKeys.contentGrep("a", "/p", {
             ...search,
             regex: false,

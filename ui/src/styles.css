@@ -274,12 +274,16 @@ code {
     }
 }
 
-/* Keep overflowing tabs scrollable without letting a scrollbar change the header height. */
-.top-tab-strip {
+/*
+ * Keeps an overflowing row, such as tabs or breadcrumbs, scrollable without a scrollbar that
+ * would change its height when it appears and make the layout jump between pages. It stays a
+ * plain class, not a Tailwind utility, so it outranks the unlayered global scrollbar rules.
+ */
+.scrollbar-hidden {
     scrollbar-width: none;
 }
 
-.top-tab-strip::-webkit-scrollbar {
+.scrollbar-hidden::-webkit-scrollbar {
     display: none;
 }
 
@@ -476,9 +480,4 @@ code {
 /* Touch scrolling slides the top bar away, so the header moves up into its place. */
 [data-touch-scrolling] .git-diff-sticky-header {
     top: calc(-1 * var(--top-chrome-height, 0px));
-}
-
-/* The diff list names each file in its own sticky header, so the diff's own would repeat it. */
-.git-diff-list-body [data-diff-file-header] {
-    display: none;
 }

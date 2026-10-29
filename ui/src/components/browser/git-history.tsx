@@ -11,8 +11,11 @@ import {
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { Button } from "#ui/components/button";
+import { Checkbox } from "#ui/components/checkbox";
 import { CopyableGitRef } from "#ui/components/copyable-git-ref";
 import { IconLinkButton } from "#ui/components/icon-button";
+import { LinkButton } from "#ui/components/link-button";
+import { Tooltip } from "#ui/components/tooltip";
 import {
     SegmentedControl,
     type SegmentedControlOption,
@@ -22,8 +25,13 @@ import {
     CommitAge,
     GitPanelBar,
     ListMessage,
+    commitRunRevision,
     shortCommitId,
 } from "#ui/components/browser/git-parts";
+import {
+    HistoryEntryStore,
+    useHistoryEntryState,
+} from "#ui/history-entry-state";
 import {
     GIT_LIST_PAGE_SIZE,
     gitLogQueryOptions,
@@ -85,6 +93,55 @@ function LoadMore(props: {
 }
 
 /**
+ * The ends of the run of commits picked in a history list, kept per history entry so Back
+ * returns to the same selection after its changes were opened.
+ */
+const commitSelections = new HistoryEntryStore<string[]>();
+
+/**
+ * Picks the ends of a run of commits. The first click starts the run and every later click
+ * moves its other end, so two clicks pick any run and a third adjusts it without starting
+ * over. Clicking an end drops it.
+ */
+function toggleCommitSelection(ends: string[], commitId: string): string[] {
+    if (ends.includes(commitId)) {
+        return ends.filter((id) => id !== commitId);
+    }
+
+    const first = ends[0];
+
+    return first === undefined ? [commitId] : [first, commitId];
+}
+
+/**
+ * The run of listed commits between the picked ends, newest first like the list. An end no
+ * longer listed, such as one on a page that was not loaded again, is ignored.
+ */
+function selectedRun(commits: GitCommitSummary[], ends: string[]) {
+    const indices = ends.flatMap((id) => {
+        const index = commits.findIndex((commit) => commit.id === id);
+
+        return index === -1 ? [] : [index];
+    });
+
+    const run = commits.slice(Math.min(...indices), Math.max(...indices) + 1);
+
+    const newest = run[0];
+    const oldest = run.at(-1);
+
+    if (newest === undefined || oldest === undefined) {
+        return null;
+    }
+
+    return {
+        newest,
+        oldest,
+        count: run.length,
+        ids: new Set(run.map((commit) => commit.id)),
+    };
+}
+
+/**
  * Groups consecutive commits by the local day they were authored, keeping the walk's order.
  * The walk is ordered by commit time, so a rebased or cherry-picked commit can bring a day
  * back after another one; each group is therefore identified by its first commit, not its day.
@@ -117,7 +174,8 @@ function groupByDay(commits: GitCommitSummary[]) {
 /**
  * The commits that changed the browsed path, newest first and grouped by day like a
  * timeline. Each opens the same path at that commit's changes, so stepping through
- * history keeps the scope the user chose.
+ * history keeps the scope the user chose. A run of them can be picked to show as one diff,
+ * the range from the oldest's parent to the newest.
  */
 export function GitCommitList(props: {
     agent: Agent;
@@ -143,6 +201,12 @@ export function GitCommitList(props: {
         ),
     );
 
+    const [selectionEnds, setSelectionEnds] = useHistoryEntryState({
+        store: commitSelections,
+        scope: `${props.agent.id}:${props.path}:${props.commitId ?? props.headCommitId}`,
+        initial: () => [],
+    });
+
     if (query.isPending) {
         return <ListMessage role="status">Loading commits...</ListMessage>;
     }
@@ -163,6 +227,7 @@ export function GitCommitList(props: {
     // is one; otherwise the commit itself is the most precise description.
     const startCommitId = props.commitId ?? props.headCommitId;
     const branchName = props.commitId === null ? props.branchName : null;
+    const run = selectedRun(commits, selectionEnds);
 
     return (
         <>
@@ -199,6 +264,16 @@ export function GitCommitList(props: {
                     )}
                 </span>
             </GitPanelBar>
+            {run === null ? null : (
+                <CommitSelectionBar
+                    agent={props.agent}
+                    path={props.path}
+                    newest={run.newest}
+                    oldest={run.oldest}
+                    count={run.count}
+                    onClear={() => setSelectionEnds(() => [])}
+                />
+            )}
             {commits.length === 0 ? (
                 <ListMessage role="status">
                     {relativePath === ""
@@ -224,6 +299,17 @@ export function GitCommitList(props: {
                                         path={props.path}
                                         commit={commit}
                                         current={commit.id === props.commitId}
+                                        selected={
+                                            run?.ids.has(commit.id) ?? false
+                                        }
+                                        onToggleSelected={() =>
+                                            setSelectionEnds((ends) =>
+                                                toggleCommitSelection(
+                                                    ends,
+                                                    commit.id,
+                                                ),
+                                            )
+                                        }
                                         now={now}
                                     />
                                 ))}
@@ -244,8 +330,67 @@ export function GitCommitList(props: {
 }
 
 /**
+ * Opens the picked run of commits as one diff. The range starts at the parent of the oldest,
+ * so the oldest commit's own changes are included; a single picked commit opens as itself.
+ */
+function CommitSelectionBar(props: {
+    agent: Agent;
+    path: string;
+    newest: GitCommitSummary;
+    oldest: GitCommitSummary;
+    count: number;
+    onClear: () => void;
+}) {
+    const rev =
+        props.count === 1
+            ? props.newest.id
+            : commitRunRevision(props.oldest.id, props.newest.id);
+
+    return (
+        <div
+            role="group"
+            aria-label="Selected commits"
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-slate-800 bg-blue-400/5 px-4 py-2 text-sm @xl:px-5"
+        >
+            <span role="status" className="min-w-0 flex-1 text-slate-300">
+                {props.count === 1
+                    ? "1 commit selected. Select another to pick a range."
+                    : `${props.count} commits selected`}
+            </span>
+            <div className="flex items-center gap-2">
+                <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    tooltip="Clear the selected commits"
+                    onClick={props.onClear}
+                >
+                    Clear
+                </Button>
+                <Tooltip
+                    content={
+                        props.count === 1
+                            ? "Show the changes of this commit"
+                            : "Show the changes of the selected commits as one diff"
+                    }
+                >
+                    <LinkButton
+                        {...browserRoute(props.agent, props.path)}
+                        search={{ view: "git", rev }}
+                        size="sm"
+                    >
+                        Show changes
+                    </LinkButton>
+                </Tooltip>
+            </div>
+        </div>
+    );
+}
+
+/**
  * One commit of the history. Its message and id open what it changed below the browsed
- * path, and the folder opens the path's files at that commit.
+ * path, the folder opens the path's files at that commit, and the checkbox picks it as an
+ * end of a run to show as one diff.
  */
 function CommitRow(props: {
     agent: Agent;
@@ -253,6 +398,9 @@ function CommitRow(props: {
     commit: GitCommitSummary;
     /** True for the commit the page is browsing, so the list shows where the user is. */
     current: boolean;
+    /** True for commits inside the picked run, its ends included. */
+    selected: boolean;
+    onToggleSelected: () => void;
     now: number;
 }) {
     const commit = props.commit;
@@ -263,9 +411,25 @@ function CommitRow(props: {
             aria-current={props.current ? "true" : undefined}
             className={cn(
                 "flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 px-3 py-2.5 transition-colors @xl:flex-nowrap",
-                props.current ? "bg-blue-400/10" : "hover:bg-tint",
+                props.current
+                    ? "bg-blue-400/10"
+                    : props.selected
+                      ? "bg-blue-400/5"
+                      : "hover:bg-tint",
             )}
         >
+            <Checkbox
+                role="checkbox"
+                checked={props.selected}
+                onCheckedChange={props.onToggleSelected}
+                label={`Select commit ${shortId}`}
+                title={
+                    props.selected
+                        ? "Selected for a combined diff"
+                        : "Select to show this and other commits as one diff"
+                }
+                className="-ml-1 shrink-0"
+            />
             <AuthorAvatar name={commit.author_name} />
             <div className="min-w-0 flex-1">
                 <Link

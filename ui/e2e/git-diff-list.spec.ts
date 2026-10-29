@@ -77,7 +77,7 @@ test.describe("Git diff list", () => {
             name: `Git diff for ${path.join(repositoryPath, "src/server.test.ts")}`,
         });
 
-        // Each file carries its own layout switch, starting from the stored inline default.
+        // Each file carries its own layout switch, starting from the fixed inline default.
         await expect(
             serverTest
                 .getByRole("group", {
@@ -225,6 +225,83 @@ test.describe("Git diff list", () => {
 
         // Clearing the filter lists every file again.
         await expect(headers).toHaveCount(3);
+    });
+
+    test("brings filtered-out files back expanded when the filter is widened", async ({
+        page,
+    }) => {
+        // The request bodies name the files whose patches were fetched.
+        const diffRequests: string[] = [];
+
+        page.on("request", (request) => {
+            if (request.url().endsWith("/git/diff")) {
+                diffRequests.push(request.postData() ?? "");
+            }
+        });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${agentName}/browser/${encodeFilesystemPath(repositoryPath)}?view=git`,
+        );
+
+        const filter = page.getByRole("textbox", {
+            name: "Filter files by name",
+        });
+
+        const serverTest = page.getByRole("region", {
+            name: `Git diff for ${path.join(repositoryPath, "src/server.test.ts")}`,
+        });
+
+        const helpers = page.getByRole("region", {
+            name: `Git diff for ${path.join(repositoryPath, "src/my-test/helpers.ts")}`,
+        });
+
+        await page
+            .getByRole("button", { name: "Expand diff for src/server.test.ts" })
+            .click();
+        // The patch is on screen before the filter hides it.
+        await expect(serverTest).toContainText("edited");
+
+        await filter.fill("server -test");
+
+        // The excluded file leaves the list, patch and all.
+        await expect(serverTest).toBeHidden();
+        await expect(page.getByText("Showing 1 of 3 files")).toBeVisible();
+
+        await page.getByRole("button", { name: "Expand all" }).click();
+        await expect(
+            page.getByRole("region", {
+                name: `Git diff for ${path.join(repositoryPath, "src/server.ts")}`,
+            }),
+        ).toContainText("edited");
+
+        // Deleting the exclusion one key at a time widens the filter like a reader would.
+        // Focusing the field from outside puts the caret at its start, so move it to the end.
+        await filter.press("End");
+
+        for (const _ of " -test") {
+            await filter.press("Backspace");
+        }
+
+        await expect(filter).toHaveValue("server");
+        // The file comes back as it was left: expanded, with its patch.
+        await expect(
+            page.getByRole("button", {
+                name: "Collapse diff for src/server.test.ts",
+            }),
+        ).toHaveAttribute("aria-expanded", "true");
+        await expect(serverTest).toContainText("edited");
+        // The widened filter still leaves out a file without the word.
+        await expect(helpers).toBeHidden();
+        await expect(page.getByText("Showing 2 of 3 files")).toBeVisible();
+        // Expanding all under a filter must not fetch the patches the filter hides.
+        expect(
+            diffRequests.some((body) => body.includes("my-test/helpers.ts")),
+        ).toBe(false);
+
+        await page.getByRole("button", { name: "Clear file filter" }).click();
+
+        // A file first shown after expanding all loads its patch once the filter lets it in.
+        await expect(helpers).toContainText("edited");
     });
 
     test("copies the file name, repository path or absolute path of a diff", async ({

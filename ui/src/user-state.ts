@@ -1,8 +1,14 @@
 import * as React from "react";
 import { getRouteApi } from "@tanstack/react-router";
-import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+    queryOptions,
+    useQuery,
+    useQueryClient,
+    type QueryClient,
+} from "@tanstack/react-query";
 import { z } from "zod";
 import type { ApiClient } from "#ui/api-client";
+import type { CaretReport } from "#ui/editor/editor-workspace";
 import { queryKeys } from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
 import {
@@ -45,6 +51,11 @@ export const openFileSchema = z.object({
     path: z.string(),
     name: z.string(),
     agentName: z.string(),
+    /**
+     * The caret line, so the menu can show where the file was left without loading its
+     * buffer, which may be megabytes. It follows the buffer's writes and a line request.
+     */
+    line: z.number().int().min(1).optional().catch(undefined),
     // A malformed request only loses the line, never the open file itself.
     reveal: openFileRevealSchema.optional().catch(undefined),
 });
@@ -59,7 +70,6 @@ export const userStateSchema = z.object({
     openFiles: z.array(openFileSchema).catch([]),
     vimMode: z.boolean().catch(false),
     wrapEditorLines: z.boolean().catch(false),
-    wrapDiffLines: z.boolean().catch(false),
     recursiveSearchTimeoutSeconds: z.number().int().min(1).max(60).catch(5),
     recursiveSearchIncludeHidden: z.boolean().catch(false),
     recursiveSearchRespectGitignore: z.boolean().catch(true),
@@ -123,7 +133,8 @@ export function openFile(openFiles: OpenFile[], file: OpenFile) {
 /**
  * Opens a file without going to it, from a diff or search result. With a line, the file is
  * also asked to show that line the next time it is shown; an already open file keeps its
- * place in the list and only gets the new line, since the user asked to look there now.
+ * place in the list and only gets the new line, since the user asked to look there now. The
+ * shown caret line moves along at once, so the menu confirms the click before any visit.
  */
 export function openFileAtLine(
     openFiles: OpenFile[],
@@ -135,13 +146,38 @@ export function openFileAtLine(
     }
 
     if (!isFileOpen(openFiles, file)) {
-        return [...openFiles, { ...file, reveal }];
+        return [...openFiles, { ...file, reveal, line: reveal.line }];
     }
 
     const targetKey = getOpenFileKey(file);
 
     return openFiles.map((entry) =>
-        getOpenFileKey(entry) === targetKey ? { ...entry, reveal } : entry,
+        getOpenFileKey(entry) === targetKey
+            ? { ...entry, reveal, line: reveal.line }
+            : entry,
+    );
+}
+
+/**
+ * Records where an open file's caret is, as its buffer is written. An unchanged line keeps
+ * the same list, so moving within a line or retyping it sends no settings write. While a
+ * line request the buffer has not applied is pending, the caret has not gone there yet, so
+ * the requested line stays listed.
+ */
+export function setOpenFileLine(openFiles: OpenFile[], caret: CaretReport) {
+    const target = openFiles.find((file) => getOpenFileKey(file) === caret.key);
+
+    if (
+        target === undefined ||
+        target.line === caret.line ||
+        (target.reveal !== undefined &&
+            target.reveal.id !== caret.appliedReveal)
+    ) {
+        return openFiles;
+    }
+
+    return openFiles.map((file) =>
+        file === target ? { ...file, line: caret.line } : file,
     );
 }
 
@@ -327,10 +363,7 @@ function persistErrorMessage(cause: unknown) {
 }
 
 /** Serializes writes so rapid updates converge on the last visible cache value. */
-function persistLatestUserState(
-    api: ApiClient,
-    queryClient: ReturnType<typeof useQueryClient>,
-) {
+function persistLatestUserState(api: ApiClient, queryClient: QueryClient) {
     persistPending += 1;
 
     const run = persistChain.then(async () => {
@@ -384,6 +417,30 @@ function nextUserState(
 }
 
 /**
+ * Paints a change at once and writes it in the background. Code outside React, such as the
+ * editor workspace recording caret lines, updates the settings through this too, so its
+ * writes are serialized with the ones made from components.
+ */
+export function updateUserState(
+    api: ApiClient,
+    queryClient: QueryClient,
+    update: UserState | UserStateUpdater,
+) {
+    const current =
+        queryClient.getQueryData<UserState>(queryKeys.userState()) ??
+        defaultUserState;
+
+    const next = nextUserState(current, update);
+
+    if (next === current) {
+        return;
+    }
+
+    queryClient.setQueryData(queryKeys.userState(), next);
+    persistLatestUserState(api, queryClient);
+}
+
+/**
  * Mirrors useState so toggles paint immediately while the server write stays in the background.
  */
 export function useUserState(): [
@@ -396,20 +453,8 @@ export function useUserState(): [
     const userState = data ?? defaultUserState;
 
     const setUserState = React.useCallback(
-        (update: UserState | UserStateUpdater) => {
-            const current =
-                queryClient.getQueryData<UserState>(queryKeys.userState()) ??
-                defaultUserState;
-
-            const next = nextUserState(current, update);
-
-            if (next === current) {
-                return;
-            }
-
-            queryClient.setQueryData(queryKeys.userState(), next);
-            persistLatestUserState(api, queryClient);
-        },
+        (update: UserState | UserStateUpdater) =>
+            updateUserState(api, queryClient, update),
         [api, queryClient],
     );
 

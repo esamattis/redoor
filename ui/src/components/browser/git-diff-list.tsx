@@ -1,6 +1,5 @@
 import React from "react";
 import { Link } from "@tanstack/react-router";
-import { useAtomValue } from "jotai";
 import {
     Check,
     ChevronDown,
@@ -29,42 +28,61 @@ import {
     OpenInBackgroundButton,
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
-import { inlineDiffChangesAtom } from "#ui/diff-preferences";
+import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
+import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
 } from "#ui/history-entry-state";
 import { cn } from "#ui/utils/cn";
-import type { FileNameFilter } from "#ui/utils/file-name-filter";
+import { FileNameFilter } from "#ui/utils/file-name-filter";
 
-/** How one file of a diff list shows its patch, as chosen in the file's header. */
+/** How one diff card shows its patch, as chosen in the card's header. */
 export type GitDiffBodyView = {
     /** Whether a similar removed and added line show as one row with inline changes. */
     mergeModifiedLines: boolean;
     /** Whether long lines wrap instead of scrolling the patch sideways. */
     wrapLines: boolean;
-    /**
-     * Whether the patch shows its whole file. Lists set it from the file's header; a single
-     * file's view leaves it unset so the patch's own header offers the toggle.
-     */
-    wholeFile?: boolean;
+    /** Whether the patch shows its whole file instead of the changes with a little context. */
+    wholeFile: boolean;
 };
 
-/** One changed file in a diff list, already resolved to what its header and body show. */
+/** How a diff card's file name opens the file it shows, on the device it is on. */
+export type GitDiffFileLink = {
+    agent: Agent;
+    /**
+     * The search the link opens the file with, such as the revision a committed file exists
+     * at. The link always opens the file itself, never its diff, because the diff is already
+     * on screen.
+     */
+    search: { rev?: string };
+    /**
+     * Whether the file exists in the working tree. A deleted file only exists in history, so
+     * it has nothing to open in the background.
+     */
+    hasWorkingCopy: boolean;
+};
+
+/** One file's diff, already resolved to what its card's header and body show. */
 export type GitDiffListFile = {
-    /** The absolute path, which is also the file's identity for collapsing. */
+    /** The absolute path, which is also the file's identity for collapsing and choices. */
     path: string;
     /** The repository-relative path, which names the file in its header. */
     relativePath: string;
     /** The path a rename or copy came from, shown beside the name. */
     originalPath: string | null;
-    change: GitChangeKind;
     /**
-     * The search the header link opens the file with, such as the revision a committed file
-     * exists at. The link always opens the file itself, never its diff, because the diff is
-     * already on screen.
+     * The Git change badge. It is null where the kind of change is not known, such as a
+     * single file's worktree diff or a Sync compare, whose header then names the change from
+     * the patch instead.
      */
-    fileSearch: { rev?: string };
+    change: GitChangeKind | null;
+    /**
+     * Opens the file from its name. It is null for a diff that is not one file on one
+     * device, such as a Sync compare of two devices' files, which then has neither a link
+     * nor a path to copy.
+     */
+    link: GitDiffFileLink | null;
     /** Names the file's region, so tests and assistive technology can find one patch. */
     regionLabel: string;
     /**
@@ -103,10 +121,9 @@ export function useCollapsedGitDiffs(options: {
         }),
     });
 
-    return {
-        isCollapsed: (path: string) =>
-            state.collapsedByDefault !== state.toggled.has(path),
-        toggle: (path: string) =>
+    // Stable, so toggling one file re-renders only that file's memoized card.
+    const toggle = React.useCallback(
+        (path: string) =>
             update((previous) => {
                 const toggled = new Set(previous.toggled);
 
@@ -116,6 +133,13 @@ export function useCollapsedGitDiffs(options: {
 
                 return { ...previous, toggled };
             }),
+        [update],
+    );
+
+    return {
+        isCollapsed: (path: string) =>
+            state.collapsedByDefault !== state.toggled.has(path),
+        toggle,
         collapseAll: () =>
             update(() => ({ collapsedByDefault: true, toggled: new Set() })),
         expandAll: () =>
@@ -126,12 +150,26 @@ export function useCollapsedGitDiffs(options: {
 /** The collapse state a diff list and its controls share. */
 export type CollapsedGitDiffs = ReturnType<typeof useCollapsedGitDiffs>;
 
-/** What the reader chose in one file's header. Unset choices follow the defaults. */
+/** What the reader chose in one file's header. Unset choices follow the fixed defaults. */
 type GitDiffFileChoices = {
     inline?: boolean;
     wrapLines?: boolean;
     wholeFile?: boolean;
 };
+
+/**
+ * Resolves a file's choices against the fixed defaults. Files without a choice start inline,
+ * unwrapped and folded.
+ */
+function gitDiffBodyView(
+    choice: GitDiffFileChoices | undefined,
+): GitDiffBodyView {
+    return {
+        mergeModifiedLines: choice?.inline ?? true,
+        wrapLines: choice?.wrapLines ?? false,
+        wholeFile: choice?.wholeFile ?? false,
+    };
+}
 
 const fileChoiceStates = new HistoryEntryStore<
     ReadonlyMap<string, GitDiffFileChoices>
@@ -140,14 +178,17 @@ const fileChoiceStates = new HistoryEntryStore<
 /**
  * Remembers how each file of a list is shown, because one file's edits read best as inline
  * word changes while a rewritten file reads best as separate lines, and only a file with long
- * lines needs to wrap. Files without a choice follow the stored layout preference, and the
- * choices start over with the scope, like the collapse state, since the same paths in another
- * commit are other edits. They are kept per history entry because wrapping and whole files
- * change the list's height, which the restored scroll position depends on.
+ * lines needs to wrap. The defaults are fixed rather than a saved preference, so a choice made
+ * in one diff never changes another one on screen. The choices start over with the scope, like
+ * the collapse state, since the same paths in another commit are other edits. They are kept
+ * per history entry because wrapping and whole files change the list's height, which the
+ * restored scroll position depends on, and so back restores every diff the way the reader
+ * left it.
+ *
+ * The map keeps the same choice object for every file but the one just changed, and `choose`
+ * is stable, so a choice re-renders only its own memoized card.
  */
-function useGitDiffFileViews(scope: string) {
-    const inlineByDefault = useAtomValue(inlineDiffChangesAtom);
-
+function useGitDiffFileChoices(scope: string) {
     const [choices, update] = useHistoryEntryState<
         ReadonlyMap<string, GitDiffFileChoices>
     >({
@@ -156,24 +197,18 @@ function useGitDiffFileViews(scope: string) {
         initial: () => new Map(),
     });
 
-    return {
-        view: (path: string): GitDiffBodyView => {
-            const choice = choices.get(path);
-
-            return {
-                mergeModifiedLines: choice?.inline ?? inlineByDefault,
-                wrapLines: choice?.wrapLines ?? false,
-                wholeFile: choice?.wholeFile ?? false,
-            };
-        },
-        choose: (path: string, choice: GitDiffFileChoices) =>
+    const choose = React.useCallback(
+        (path: string, choice: GitDiffFileChoices) =>
             update((previous) =>
                 new Map(previous).set(path, {
                     ...previous.get(path),
                     ...choice,
                 }),
             ),
-    };
+        [update],
+    );
+
+    return { choices, choose };
 }
 
 const filterQueries = new HistoryEntryStore<string>();
@@ -182,6 +217,10 @@ const filterQueries = new HistoryEntryStore<string>();
  * The file name filter of a diff list. It carries over to the next scope, so `-test` keeps
  * hiding tests while browsing directories or stepping through commits, and it is kept per
  * history entry because a filtered list has another height than the full one.
+ *
+ * The input shows `query` as typed, while the list is narrowed by `filter`, which follows it
+ * through `useDeferredValue`. Narrowing a long list of expanded patches is slow, so typing
+ * must not wait for it, and React can drop a list render that a newer keystroke made stale.
  */
 export function useGitDiffFilterQuery(scope: string) {
     const [query, update] = useHistoryEntryState<string>({
@@ -190,7 +229,18 @@ export function useGitDiffFilterQuery(scope: string) {
         initial: (previous) => previous ?? "",
     });
 
-    return [query, (next: string) => update(() => next)] as const;
+    const shownQuery = React.useDeferredValue(query);
+
+    const filter = React.useMemo(
+        () => FileNameFilter.parse(shownQuery),
+        [shownQuery],
+    );
+
+    return {
+        query,
+        filter,
+        setQuery: (next: string) => update(() => next),
+    };
 }
 
 /**
@@ -349,30 +399,67 @@ function GitDiffCopyPathMenu(props: { file: GitDiffListFile; name: string }) {
 }
 
 /**
- * One file's diff. Its header sticks to the top of the viewport while the patch scrolls
- * under it, so a long patch never leaves the reader guessing which file it belongs to. The
- * section clips instead of hiding overflow, because a hidden overflow would become the
- * header's scroll container and stop it from sticking.
+ * One file's diff card, the only way the app shows a diff, so the switches mean the same
+ * everywhere. Its header sticks to the top of the viewport while the patch scrolls under it,
+ * so a long patch never leaves the reader guessing which file it belongs to. The section
+ * clips instead of hiding overflow, because a hidden overflow would become the header's
+ * scroll container and stop it from sticking.
+ *
+ * It is memoized and takes only stable props, so narrowing the list or changing another file
+ * re-renders just the cards whose own state changed, instead of every expanded patch's rows.
  */
-function GitDiffSection(props: {
-    agent: Agent;
+const GitDiffSection = React.memo(function GitDiffSection(props: {
     file: GitDiffListFile;
     collapsed: boolean;
-    onToggle: () => void;
-    view: GitDiffBodyView;
-    onChoose: (choice: GitDiffFileChoices) => void;
+    /** Null for a lone file, which has no list to fold it into and is always shown. */
+    onToggle: ((path: string) => void) | null;
+    /** Undefined until the reader picks a layout, wrapping or whole file for this file. */
+    choice: GitDiffFileChoices | undefined;
+    onChoose: (path: string, choice: GitDiffFileChoices) => void;
+    /** Whether the list's file filter leaves the file out. */
+    filteredOut: boolean;
 }) {
     const file = props.file;
+    const link = file.link;
+    const collapsed = props.collapsed;
+    const onToggle = props.onToggle;
+    const view = gitDiffBodyView(props.choice);
     const parts = splitRelativePath(file.relativePath);
     const bodyId = React.useId();
 
-    // A deleted file has no working copy to open; every other diff shows one that exists.
+    // A filtered-out card stays mounted but hidden, so when the filter is widened again its
+    // patch comes back without parsing, highlighting and building its rows anew. A body that
+    // has never been shown is not mounted while filtered out, though, so expanding all files
+    // under a filter neither fetches nor renders the patches it hides.
+    const [bodyMounted, setBodyMounted] = React.useState(false);
+    const showsBody = !collapsed && (!props.filteredOut || bodyMounted);
+
+    if (showsBody !== bodyMounted) {
+        // Adjusting state while rendering keeps the decision in this render.
+        setBodyMounted(showsBody);
+    }
+
+    // The body parses the patch, so it fills the header's counts in through this slot.
+    const [summaryElement, setSummaryElement] =
+        React.useState<HTMLElement | null>(null);
+
+    const namesChange = file.change === null;
+
+    const summarySlot = React.useMemo(
+        () =>
+            summaryElement === null
+                ? null
+                : { element: summaryElement, namesChange },
+        [summaryElement, namesChange],
+    );
+
+    // Only a file in the working tree can be opened without leaving the diff.
     const background = useBackgroundOpen(
-        file.change === "deleted"
+        link === null || !link.hasWorkingCopy
             ? null
             : {
-                  agentId: props.agent.id,
-                  agentName: props.agent.name,
+                  agentId: link.agent.id,
+                  agentName: link.agent.name,
                   path: file.path,
                   name: parts.name,
               },
@@ -381,46 +468,66 @@ function GitDiffSection(props: {
     return (
         <section
             aria-label={file.regionLabel}
+            hidden={props.filteredOut}
             className="overflow-clip rounded-lg border border-slate-800 bg-slate-950/30"
         >
             <div
                 className={cn(
                     "git-diff-sticky-header sticky z-10 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2 bg-surface px-3 py-2 @xl:flex-nowrap",
-                    !props.collapsed && "border-b border-slate-800",
+                    !collapsed && "border-b border-slate-800",
                 )}
             >
-                <IconButton
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    label={
-                        props.collapsed
-                            ? `Expand diff for ${file.relativePath}`
-                            : `Collapse diff for ${file.relativePath}`
-                    }
-                    tooltip={props.collapsed ? "Show patch" : "Hide patch"}
-                    aria-expanded={!props.collapsed}
-                    aria-controls={bodyId}
-                    onClick={props.onToggle}
-                >
-                    {props.collapsed ? (
-                        <ChevronRight className="h-4 w-4" aria-hidden="true" />
-                    ) : (
-                        <ChevronDown className="h-4 w-4" aria-hidden="true" />
-                    )}
-                </IconButton>
-                <ChangeBadge kind={file.change} />
+                {onToggle === null ? null : (
+                    <IconButton
+                        type="button"
+                        variant="ghost"
+                        size="xs"
+                        label={
+                            collapsed
+                                ? `Expand diff for ${file.relativePath}`
+                                : `Collapse diff for ${file.relativePath}`
+                        }
+                        tooltip={collapsed ? "Show patch" : "Hide patch"}
+                        aria-expanded={!collapsed}
+                        aria-controls={bodyId}
+                        onClick={() => onToggle(file.path)}
+                    >
+                        {collapsed ? (
+                            <ChevronRight
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        ) : (
+                            <ChevronDown
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        )}
+                    </IconButton>
+                )}
+                {file.change === null ? null : (
+                    <ChangeBadge kind={file.change} />
+                )}
                 {/* The directory sits below the name, so in a narrow column it gets the full
                     width left of the controls instead of being cut off right after the name. */}
                 <h3 className="flex min-w-0 flex-1 flex-col text-sm">
-                    <Link
-                        {...browserRoute(props.agent, file.path)}
-                        search={file.fileSearch}
-                        title={file.relativePath}
-                        className="truncate font-medium text-slate-100 hover:text-blue-300 hover:underline"
-                    >
-                        {parts.name}
-                    </Link>
+                    {link === null ? (
+                        <span
+                            title={file.relativePath}
+                            className="truncate font-medium text-slate-100"
+                        >
+                            {parts.name}
+                        </span>
+                    ) : (
+                        <Link
+                            {...browserRoute(link.agent, file.path)}
+                            search={link.search}
+                            title={file.relativePath}
+                            className="truncate font-medium text-slate-100 hover:text-blue-300 hover:underline"
+                        >
+                            {parts.name}
+                        </Link>
+                    )}
                     {parts.directory === "" ? null : (
                         <span className="break-all font-mono text-xs text-slate-500">
                             {parts.directory}
@@ -438,9 +545,15 @@ function GitDiffSection(props: {
                 <div
                     className={cn(
                         "flex shrink-0 items-center justify-end gap-3",
-                        !props.collapsed && "basis-full @xl:basis-auto",
+                        !collapsed && "basis-full @xl:basis-auto",
                     )}
                 >
+                    {/* Empty until the body has parsed its patch; on its own row in a narrow
+                        column the counts lead and the switches stay at the right edge. */}
+                    <span
+                        ref={setSummaryElement}
+                        className="mr-auto flex items-center gap-2 empty:hidden @xl:mr-0"
+                    />
                     {background === null ? null : (
                         <OpenInBackgroundButton
                             target={background}
@@ -448,77 +561,95 @@ function GitDiffSection(props: {
                             className="h-7 w-7"
                         />
                     )}
-                    <GitDiffCopyPathMenu file={file} name={parts.name} />
+                    {link === null ? null : (
+                        <GitDiffCopyPathMenu file={file} name={parts.name} />
+                    )}
                     {/* A collapsed file shows no patch, so it has no layout or wrapping to switch. */}
-                    {props.collapsed ? null : (
+                    {collapsed ? null : (
                         <div className="flex shrink-0 items-center gap-2">
                             <DiffLayoutSwitch
                                 label={`Diff layout for ${file.relativePath}`}
-                                iconOnly
-                                inline={props.view.mergeModifiedLines}
+                                inline={view.mergeModifiedLines}
                                 onChange={(inline) =>
-                                    props.onChoose({ inline })
+                                    props.onChoose(file.path, { inline })
                                 }
                             />
                             <WrapDiffLinesToggle
                                 label={`Wrap diff lines for ${file.relativePath}`}
-                                wrap={props.view.wrapLines}
+                                wrap={view.wrapLines}
                                 onChange={(wrapLines) =>
-                                    props.onChoose({ wrapLines })
+                                    props.onChoose(file.path, { wrapLines })
                                 }
-                                // Matches the height of the icon-only layout switch beside it.
-                                className="h-7 w-7"
                             />
                             <WholeFileToggle
                                 label={`Show whole file ${file.relativePath}`}
-                                shown={props.view.wholeFile === true}
+                                shown={view.wholeFile}
                                 onChange={(wholeFile) =>
-                                    props.onChoose({ wholeFile })
+                                    props.onChoose(file.path, { wholeFile })
                                 }
-                                className="h-7 w-7"
                             />
                         </div>
                     )}
                 </div>
             </div>
-            {props.collapsed ? null : (
+            {showsBody ? (
                 <div
                     id={bodyId}
-                    className="git-diff-list-body w-full min-w-0 overflow-x-hidden [&>p]:p-3"
+                    className="w-full min-w-0 overflow-x-hidden [&>p]:p-3"
                 >
-                    {file.renderBody(props.view)}
+                    <DiffSummarySlotContext.Provider value={summarySlot}>
+                        {file.renderBody(view)}
+                    </DiffSummarySlotContext.Provider>
                 </div>
-            )}
+            ) : null}
         </section>
     );
-}
+});
 
 /**
- * Every changed file's diff in one scrolling list. The headers replace the separate file
- * list, so each file is named exactly once, right above its own patch.
+ * Every file's diff in one scrolling list of cards. The headers replace a separate file list,
+ * so each file is named exactly once, right above its own patch. A view of one file, such as
+ * a file's worktree diff or a Sync compare, is a list of one without collapsing, so its diff
+ * has the same switches in the same place and back restores them the same way.
+ *
+ * Every file is rendered, and the ones the filter leaves out are hidden. Hidden cards keep
+ * their patch, so widening the filter again is instant, and `hidden` also takes them out of
+ * layout, the tab order and the accessibility tree. The files should keep their identity
+ * between renders, such as by being built in a `useMemo`, so the memoized cards can skip
+ * re-rendering.
  */
 export function GitDiffList(props: {
-    agent: Agent;
     files: GitDiffListFile[];
-    collapsed: CollapsedGitDiffs;
+    /** Omitted for a lone file, which is always shown and has no chevron to fold it. */
+    collapsed?: CollapsedGitDiffs;
+    /** Omitted where the list has no filter field, which then shows every file. */
+    filter?: FileNameFilter;
     /** The list's identity for remembering each file's layout, such as one commit. */
     scope: string;
 }) {
-    const fileViews = useGitDiffFileViews(props.scope);
+    const fileChoices = useGitDiffFileChoices(props.scope);
+    const collapsed = props.collapsed;
+    const filter = props.filter;
 
+    // Names in a patch are often worth looking up elsewhere in the repository.
     return (
-        <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-            {props.files.map((file) => (
-                <GitDiffSection
-                    key={file.path}
-                    agent={props.agent}
-                    file={file}
-                    collapsed={props.collapsed.isCollapsed(file.path)}
-                    onToggle={() => props.collapsed.toggle(file.path)}
-                    view={fileViews.view(file.path)}
-                    onChoose={(choice) => fileViews.choose(file.path, choice)}
-                />
-            ))}
-        </div>
+        <SelectionSearch>
+            <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+                {props.files.map((file) => (
+                    <GitDiffSection
+                        key={file.path}
+                        file={file}
+                        collapsed={collapsed?.isCollapsed(file.path) ?? false}
+                        onToggle={collapsed?.toggle ?? null}
+                        choice={fileChoices.choices.get(file.path)}
+                        onChoose={fileChoices.choose}
+                        filteredOut={
+                            filter !== undefined &&
+                            !filter.matches(file.relativePath)
+                        }
+                    />
+                ))}
+            </div>
+        </SelectionSearch>
     );
 }

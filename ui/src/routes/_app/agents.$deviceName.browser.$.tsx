@@ -32,6 +32,7 @@ import {
     UnavailablePathState,
     type BrowserView,
 } from "#ui/components/browser/navigation";
+import { ViewToolbarSlotProvider } from "#ui/components/browser/view-toolbar-slot";
 import { MissingPathCreationForm } from "#ui/components/browser/missing-path";
 import { DirectoryFilesActions } from "#ui/components/browser/directory-actions";
 import { SelectedFilesCard } from "#ui/components/browser/selected-files-card";
@@ -349,36 +350,39 @@ function BrowserRouteShell(props: {
     children: ReactNode;
 }) {
     return (
-        <div
-            className={
-                props.fillAvailableHeight === true
-                    ? "absolute inset-x-0 top-[var(--top-chrome-height,0px)] bottom-[var(--bottom-chrome-height,0px)] flex min-h-0 flex-col overflow-hidden p-2 @4xl:p-4"
-                    : "flex min-h-full flex-col p-2 @4xl:p-4"
-            }
-        >
-            <BrowserHeader
-                agent={props.agent}
-                path={props.path}
-                parentPath={props.parentPath}
-                entryType={props.entryType}
-                activeView={props.activeView}
-                editable={props.editable}
-                gitAvailable={props.gitAvailable}
-                pathUnavailable={props.pathUnavailable}
-                startEditingPath={props.startEditingPath}
-                banner={props.banner}
-                readOnly={props.readOnly}
-            />
+        // The header and the view are siblings, so the toolbar slot they share sits above both.
+        <ViewToolbarSlotProvider>
             <div
                 className={
                     props.fillAvailableHeight === true
-                        ? "-mx-2 -mb-2 flex min-h-0 flex-1 flex-col overflow-hidden @4xl:-mx-4 @4xl:-mb-4"
-                        : "-mx-2 -mb-2 @4xl:-mx-4 @4xl:-mb-4"
+                        ? "absolute inset-x-0 top-[var(--top-chrome-height,0px)] bottom-[var(--bottom-chrome-height,0px)] flex min-h-0 flex-col overflow-hidden p-2 @4xl:p-4"
+                        : "flex min-h-full flex-col p-2 @4xl:p-4"
                 }
             >
-                {props.children}
+                <BrowserHeader
+                    agent={props.agent}
+                    path={props.path}
+                    parentPath={props.parentPath}
+                    entryType={props.entryType}
+                    activeView={props.activeView}
+                    editable={props.editable}
+                    gitAvailable={props.gitAvailable}
+                    pathUnavailable={props.pathUnavailable}
+                    startEditingPath={props.startEditingPath}
+                    banner={props.banner}
+                    readOnly={props.readOnly}
+                />
+                <div
+                    className={
+                        props.fillAvailableHeight === true
+                            ? "-mx-2 -mb-2 flex min-h-0 flex-1 flex-col overflow-hidden @4xl:-mx-4 @4xl:-mb-4"
+                            : "-mx-2 -mb-2 @4xl:-mx-4 @4xl:-mb-4"
+                    }
+                >
+                    {props.children}
+                </div>
             </div>
-        </div>
+        </ViewToolbarSlotProvider>
     );
 }
 

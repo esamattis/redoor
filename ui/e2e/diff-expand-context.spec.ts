@@ -157,4 +157,64 @@ test.describe("Diff context expansion", () => {
         await expect(row(6)).toHaveCount(0);
         await expect(topFold).toHaveText(/6 unchanged lines hidden/);
     });
+
+    test("restores the whole file and layout choices of a file's diff on back, but not on a new visit", async ({
+        page,
+    }) => {
+        const { ctx, filePath } = await setupEditedRepository();
+        const diffUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}?view=git`;
+
+        await page.goto(diffUrl);
+
+        const diff = page.getByRole("region", { name: "Full Git diff" });
+        const folds = diff.locator("tr[data-skip-block]");
+
+        const row = (line: number) =>
+            diff.locator(`tr[data-line-new="${line}"]`);
+
+        const wholeFile = diff.getByRole("button", {
+            name: "Show whole file notes.txt",
+        });
+
+        const separate = diff
+            .getByRole("group", { name: "Diff layout for notes.txt" })
+            .getByRole("button", { name: "Separate lines" });
+
+        // Every diff starts from the fixed defaults: folded and with inline changes.
+        await expect(wholeFile).toHaveAttribute("aria-pressed", "false");
+        await expect(separate).toHaveAttribute("aria-pressed", "false");
+        await expect(folds).toHaveCount(2);
+
+        await wholeFile.click();
+        await separate.click();
+
+        // The whole file shows every line, so nothing is folded.
+        await expect(separate).toHaveAttribute("aria-pressed", "true");
+        await expect(row(60)).toBeVisible();
+        await expect(folds).toHaveCount(0);
+
+        await diff
+            .getByRole("link", { name: "Open line 30 in editor" })
+            .click();
+        // Opening the editor leaves the diff, which unmounts it with its choices.
+        await expect(page).not.toHaveURL(/\bview=git\b/);
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toBeVisible();
+
+        await page.goBack();
+
+        // The choices belong to the history entry, so back shows the diff as it was left.
+        await expect(wholeFile).toHaveAttribute("aria-pressed", "true");
+        await expect(separate).toHaveAttribute("aria-pressed", "true");
+        await expect(row(60)).toBeVisible();
+        await expect(folds).toHaveCount(0);
+
+        await page.goto(diffUrl);
+
+        // Nothing is saved as a preference, so a new visit starts from the defaults again.
+        await expect(wholeFile).toHaveAttribute("aria-pressed", "false");
+        await expect(separate).toHaveAttribute("aria-pressed", "false");
+        await expect(folds).toHaveCount(2);
+    });
 });

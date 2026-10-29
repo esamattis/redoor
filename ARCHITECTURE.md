@@ -127,7 +127,8 @@ The agent runtime and the implementation of every command.
     `commit_diff` read committed history; `history` lists the commits that changed a path
     and `refs` lists branches and tags (see "Git history, branch and tag lists");
     `worktree_list` lists the main and linked checkouts of a repository and
-    `worktree_status` counts one checkout's uncommitted changes for its row; `export`
+    `worktree_status` counts the uncommitted changes of the visible rows' checkouts within a
+    time budget; `export`
     streams committed files and directory archives for downloads and copies (see "Git
     history downloads and copies"). All Git work runs in `spawn_blocking` and every
     response is bounded (entries, files, bytes per blob and per batch), because gix inflates
@@ -1277,6 +1278,14 @@ The route tree separates the authenticated application from the public login for
   way, so back from a result shows the search as it was without asking the agent again. It
   scrolls inside its own `<dialog>`, which the router cannot restore, and it mounts only
   while open, so its entry is the one it opened on and never the result's that follows.
+- **A view's toolbar shares the browser header's tab row.** `BrowserRouteShell` renders the
+  header and the view as siblings, so it holds a `ViewToolbarSlotProvider` above both. The
+  header registers an element in its tab row, and the file editor portals its toolbar there
+  (`ViewToolbar`) instead of stacking a toolbar row of its own; the portal keeps the toolbar
+  in the editor's React tree, so its state and shortcuts stay with the editor. A wide content
+  column lays the tabs and the toolbar out on one row, a narrow one puts the toolbar on a row
+  under the tabs. In full window the editor covers the header, so it renders the toolbar in
+  place.
 - **Menus own their open state.** `SideMenu` reads and closes the `openSideMenuAtom` itself
   and returns focus to whatever opened it, so the shell passes no props, refs or callbacks
   to the menus or the top bar.
@@ -1302,7 +1311,7 @@ context (`useTerminals`, `useUploads`).
 
 - **`TerminalSessions` owns the tabs.** Features call it instead of queueing requests:
   `create` opens a shell, optionally with a one-shot startup command whose listing refresh
-  it schedules, and `openOrFocus` is shared by the `t` shortcut and the toolbar button. It
+  it schedules, and `openOrFocus` is shared by the `t` and Alt+t shortcuts. It
   reads the drawer atoms through the shared jotai store, which `main.tsx` creates, to know
   whether a tab is on screen and to reveal the drawer. Active tab, device picker, focus
   requests and tab order live in its snapshot.
@@ -1515,8 +1524,8 @@ cache, so Back, reload and shared links all land on the same screen.
 
 ### Git revision browsing
 
-A `rev` search key (a branch, tag or commit id) turns the file browser into a read-only view
-of that revision. The URL path stays the worktree path, because a revision is only another
+A `rev` search key (a branch, tag or commit id, or a range `A..B` of them) turns the file
+browser into a read-only view of that revision. The URL path stays the worktree path, because a revision is only another
 way of looking at the same repository location, and paths deleted since are still reachable.
 
 - **The revision travels with every link.** The browser route declares
@@ -1537,10 +1546,21 @@ way of looking at the same repository location, and paths deleted since are stil
   only that subtree or file, with a link to the repository root for the whole commit, like
   the worktree Git view. A path the commit deleted has no tree at the commit, so the loader
   (`browser-revision-loader.ts`) falls back to the commit diff and shows the deletion.
+- **Ranges show several commits as one change.** The agent's `RevisionPath` splits `A..B`
+  at the first `..` (ref names cannot contain one) and resolves both sides in the same
+  repository. Every history command reads B, so browsing a range shows its newer end, and
+  `git/commit-diff` compares B with A instead of B's first parent, like `git diff A..B`,
+  reporting the start in `range` so the view heads the diff with both ends and drops the
+  prev/next stepper. An empty side means `HEAD` as in Git; the symmetric `A...B` is refused.
+  Git cannot resolve the parent of a root commit, so a left side of the form `<root>^` (or
+  `~`, `^1`, `~1`) starts the range from the empty tree instead: that keeps
+  `<oldest>^..<newest>`, the range a run of commits picked in the history list opens, valid
+  when the run reaches the first commit.
 - **Moving revisions are resolved once per navigation.** The tree query is refetched on
   every navigation because a branch can move; committed content and commit diffs are then
   fetched and cached by the commit id the tree resolved, so cached text can never belong to
-  an older commit than the banner shows. Links keep the revision as typed, so they follow
+  an older commit than the banner shows. A range's diff is cached by `A..<resolved B>`,
+  keeping A as typed; ranges from the history list name A by commit id, so it cannot move. Links keep the revision as typed, so they follow
   the branch.
 - **Nested repositories fall back outwards.** The innermost repository containing the path
   resolves the revision first, so a submodule's own history is browsable. A revision it
@@ -1597,16 +1617,28 @@ the Git view rather than another level of page navigation.
   happens in the browser without another request. Reveals are keyed on the file's hunk
   layout, so switching the inline layout keeps them. Highlighting covers every row the
   patch carries, so a folded line keeps the colours of a string or comment opened above it.
-  Single-diff views toggle the whole file in the patch's own header; diff lists put the
-  toggle in each file's sticky header. Whether edited lines pair into
-  inline rows or stay separate -/+ rows is chosen per file: single-diff views (a file's Git
-  diff, Sync) switch the browser-wide preference (`inlineDiffChangesAtom`, stored in
-  localStorage) from their bar, and diff lists (worktree changes, commits) put a switch in
-  every file header whose choice lives in memory for that list and defaults to the
-  preference. Line wrapping stays one user-wide setting in every diff view's bar. Diff lists
+- **One diff card everywhere.** Every diff (the worktree and commit lists, a file's worktree
+  diff and Sync compare) is a card of `GitDiffList` (`git-diff-list.tsx`); a single file's
+  diff and Sync are a list of one without the collapse chevron, filter and collapse-all
+  controls, and Git-only parts (change badge, link, copy-path menu) are optional. Its sticky
+  header holds the layout (inline rows or separate -/+ rows), wrap and whole-file switches,
+  which apply to that file only. The choices are kept per file and per history entry
+  (`useHistoryEntryState`), so back restores every diff the same way. Every file starts
+  inline, unwrapped and folded, and no choice is saved as a preference, so nothing on screen
+  changes because of a choice made in another diff. `UnifiedDiff` renders only the rows and
+  puts the +/- counts (and the change's kind, where no badge names it) into the card header
+  through a portal slot, since the body parses the patch it may have fetched itself. Diff lists
   can be narrowed by file name (`utils/file-name-filter.ts`): every word must appear in the
   repository-relative path, a `-word` must not, and quotes keep a word literal (`"-test"`).
   The filter is client-side over the listed files, so it never refetches status or diffs.
+  A large change set with many expanded patches is slow to re-render, so the list follows the
+  typed query through `useDeferredValue` and typing never waits for it. Filtered-out cards
+  stay mounted with the `hidden` attribute instead of unmounting, so widening the filter
+  brings a patch back without parsing, highlighting and building its rows again; a card
+  whose patch was never shown does not mount it while hidden, so expanding all under a filter
+  fetches nothing it hides. The cards are memoized with stable props (files built in a
+  `useMemo`, per-file callbacks from `useCallback`), so a filter change re-renders only the
+  cards whose visibility changed.
 
 - **History follows the browsed path.** `git/log` lists the commits that changed the path,
   newest first by commit time, starting at HEAD in the worktree or at the browsed commit
@@ -1641,15 +1673,31 @@ the Git view rather than another level of page navigation.
   never the checkout's files, so it answers quickly; it is bounded to 200 linked worktrees
   and not paged. Like refs it is listed at the resolved repository root and refetched on
   navigation.
-- **Worktree changes load per row.** Counting uncommitted work walks every file of a
-  checkout, so it is a separate request (`git/worktree-status`) that each row of the list
-  makes for itself once the list has rendered. It splits tracked changes from untracked
+- **Worktree changes load in batches for the visible rows.** Counting uncommitted work walks
+  every file of a checkout, so it is a separate request (`POST git/worktree-status` with a
+  list of paths) instead of part of the list. It splits tracked changes from untracked
   files, since `git stash` and `git worktree remove` treat the two differently, and stops
-  counting at 1000 changes, reported as lower bounds past that. A browser asks for every
-  row at once, and each gix walk already uses every core, so the agent queues the walks
-  behind a process-wide semaphore (two at a time) instead of seeking between checkouts. A
-  queued request waits before its blocking walk starts, so dropping it costs nothing, and
-  the server gives the call a longer deadline than other Git calls to cover the wait.
+  counting at 1000 changes, reported as lower bounds past that. A request per row used to
+  take every browser connection to the server (plain HTTP/1.1 allows six per origin) and
+  stall all other views behind the walks, so the browser batches instead:
+  - Each row keeps its own TanStack Query entry, but only asks once it has scrolled near
+    the viewport (an `IntersectionObserver`), so long lists do not walk checkouts nobody
+    looks at.
+  - `WorktreeStatusBatcher` (`ui/src/worktree-status-batcher.ts`) gathers the rows that ask
+    together into one request per agent and keeps at most one in flight. Rows asking
+    meanwhile wait for the next request. A row's query signal drops it from the batch, and
+    the request is aborted once no row waits for it, so leaving the list frees the
+    connection and stops the agent's walks.
+  - The agent walks the paths behind a process-wide semaphore (two at a time, since each
+    gix walk already uses every core and more only make the disk seek between checkouts)
+    and answers after a 5 second budget with the checkouts it finished. Unfinished walks are
+    dropped, which interrupts gix and frees their slots. If nothing finished by the
+    deadline it waits for the first walk anyway, so a checkout slower than the budget is
+    still counted and every request makes progress. The browser sends the unanswered paths
+    again, first, so the rows fill in every few seconds.
+  - A checkout that cannot be counted is a `failed` entry rather than a failed request, so
+    it does not hide the other rows' counts. The server gives the call a longer deadline
+    than other Git calls to cover the first walk and the queue.
 - **Pages are offsets, not cursors.** Each list returns up to 100 rows (`GitPage`, at most
   500 per request and an offset of at most a million) plus `has_more`, and the UI's
   `useInfiniteQuery` asks for the next offset from a "Load more" button. A time-ordered
@@ -1668,7 +1716,10 @@ the Git view rather than another level of page navigation.
   move with HEAD, while a commit's diff is cached for good, and because the walk from HEAD
   grows with the commit's age, so it must not hold up the patches.
 - **Links open revisions.** A commit links to the same path at `view=git&rev=<id>`, showing
-  that commit's changes scoped to the path. A branch or tag links to the path at
+  that commit's changes scoped to the path. Commits also have checkboxes: the first picks one
+  end of a run and later ones move the other end, and the selection bar opens the run as
+  `rev=<oldest>^..<newest>`, so the oldest commit's own changes are included. The picked
+  ends are history-entry state, so Back from the combined diff returns to the same run. A branch or tag links to the path at
   `rev=<full ref name>`, because a short name can be ambiguous between a tag and a branch;
   the banner drops the `refs/heads/`, `refs/remotes/` and `refs/tags/` prefix for display.
 - **Caching matches revision browsing.** History is always keyed by a commit id: the

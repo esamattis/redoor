@@ -63,6 +63,17 @@ export type LineTargets = {
     reveal: LineTarget | null;
 };
 
+/**
+ * Where an open file's caret was when its buffer was written. `appliedReveal` is the line
+ * request the buffer has already shown, so a caret written before a newer request is shown
+ * cannot replace that request in the open files list.
+ */
+export type CaretReport = {
+    key: string;
+    line: number;
+    appliedReveal: string | null;
+};
+
 /** Everything needed to show one file in the shared view. */
 export type ActivateRequest = {
     container: HTMLElement;
@@ -173,8 +184,17 @@ export class EditorWorkspace extends ExternalStore<
         string
     >;
 
-    /** Wires CodeMirror callbacks to whichever editor component is mounted at call time. */
-    constructor(api: EditorBufferApi, queryClient: QueryClient) {
+    /**
+     * Wires CodeMirror callbacks to whichever editor component is mounted at call time.
+     * `onCaretLine` hears an open file's caret line whenever its buffer is written, so the
+     * open files list can show where each file was left without loading the buffers.
+     */
+    constructor(
+        api: EditorBufferApi,
+        queryClient: QueryClient,
+        private readonly onCaretLine: (caret: CaretReport) => void = () =>
+            undefined,
+    ) {
         super(new Map());
 
         this.writes = new MutationObserver(queryClient, {
@@ -871,6 +891,12 @@ export class EditorWorkspace extends ExternalStore<
             return;
         }
 
+        const state = this.currentState(buffer);
+        this.onCaretLine({
+            key,
+            line: state.doc.lineAt(state.selection.main.head).number,
+            appliedReveal: buffer.revealEntry,
+        });
         const data = this.serialize(buffer);
         buffer.unsynced = false;
 
