@@ -484,9 +484,11 @@ function OpenFileRow(props: {
     // Dimming tells the user before clicking that the file cannot be read right now.
     const isOffline = props.agent?.status !== "connected";
 
+    // An open file is the working file, so the same path viewed at a Git revision is not it.
     const isActive =
         browser?.agentId === props.file.agentId &&
-        browser.path === props.file.path;
+        browser.path === props.file.path &&
+        browser.revision === null;
 
     const itemId = getOpenFileKey(props.file);
 
@@ -564,6 +566,10 @@ function OpenFileRow(props: {
                         {props.agent ? (
                             <Link
                                 {...browserRoute(props.agent, props.file.path)}
+                                // The route keeps `rev` across navigations, which would open the
+                                // file read-only at the revision being browsed, where its buffer
+                                // and line request do not apply.
+                                search={{ rev: undefined }}
                                 aria-label={props.file.name}
                                 aria-current={isActive ? "page" : undefined}
                                 onClick={closeMenu}
