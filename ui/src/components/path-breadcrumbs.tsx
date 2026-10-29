@@ -67,6 +67,7 @@ export function PathBreadcrumbs(props: {
 }) {
     const labels = props.labels ?? defaultLabels;
     const pathInputRef = React.useRef<HTMLInputElement>(null);
+    const crumbsRef = React.useRef<HTMLElement>(null);
 
     const [isEditing, setIsEditing] = React.useState(
         props.startEditing === true,
@@ -87,6 +88,25 @@ export function PathBreadcrumbs(props: {
 
         pathInputRef.current?.focus();
         pathInputRef.current?.select();
+    }, [isEditing, props.path]);
+
+    // A long path overflows a narrow column, and its last segment is the one the reader is
+    // at, so the crumbs show their end. A resize observer waits for the crumbs to have a
+    // width, since a dialog may open only after this effect runs, and follows later resizes.
+    React.useEffect(() => {
+        const crumbs = crumbsRef.current;
+
+        if (isEditing || !crumbs) {
+            return;
+        }
+
+        const observer = new ResizeObserver(() => {
+            crumbs.scrollLeft = crumbs.scrollWidth;
+        });
+
+        observer.observe(crumbs);
+
+        return () => observer.disconnect();
     }, [isEditing, props.path]);
 
     /** Opens the path editor with the current path. */
@@ -143,9 +163,14 @@ export function PathBreadcrumbs(props: {
 
     return (
         <div className="flex min-w-0 flex-1 items-center gap-1">
+            {/* Only the crumbs scroll, so copy and edit stay in reach on a long path. The
+                scrollbar is hidden, since the crumbs start scrolled to the end anyway. Padded
+                tap targets of short segments overhang the row, so the y axis is padded and
+                clipped. */}
             <nav
+                ref={crumbsRef}
                 aria-label={labels.navigation}
-                className="flex min-w-0 flex-1 items-center gap-2 text-sm"
+                className="scrollbar-hidden flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1 text-sm"
             >
                 {isAtRoot ? (
                     <span className="shrink-0 font-medium text-slate-100">

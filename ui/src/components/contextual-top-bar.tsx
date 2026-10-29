@@ -62,7 +62,7 @@ export function ContextualTopBar() {
                     <PanelLeftOpen className="h-5 w-5" aria-hidden="true" />
                 </IconButton>
             )}
-            <div className="flex min-w-0 flex-1 self-stretch items-end overflow-x-auto overscroll-x-contain">
+            <div className="scrollbar-hidden flex min-w-0 flex-1 self-stretch items-end overflow-x-auto overscroll-x-contain">
                 <ContextualViewSwitch context={context} />
             </div>
             {context && !isFilesystemContext ? (
@@ -135,7 +135,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                 active={kind === "agent"}
             >
                 <HardDrive className="h-4 w-4" aria-hidden="true" />
-                {agent.name}
+                <span>{agent.name}</span>
             </ViewSwitchLink>
             {canBrowse ? (
                 browseHome === null ? (
@@ -144,7 +144,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                         active={isFilesystemContext}
                     >
                         {filesIcon}
-                        Files
+                        <span>Files</span>
                     </ViewSwitchLink>
                 ) : (
                     <ViewSwitchLink
@@ -155,7 +155,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                         active={isFilesystemContext}
                     >
                         {filesIcon}
-                        Files
+                        <span>Files</span>
                     </ViewSwitchLink>
                 )
             ) : null}
@@ -165,7 +165,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                     active={kind === "trash"}
                 >
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    Trash
+                    <span>Trash</span>
                 </ViewSwitchLink>
             ) : null}
             {agent.configurationEditable ? (
@@ -174,7 +174,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                     active={kind === "configuration"}
                 >
                     <Settings className="h-4 w-4" aria-hidden="true" />
-                    Configuration
+                    <span>Configuration</span>
                 </ViewSwitchLink>
             ) : null}
             {canBrowse ? (
@@ -183,7 +183,7 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                     active={kind === "logs"}
                 >
                     <ScrollText className="h-4 w-4" aria-hidden="true" />
-                    Logs
+                    <span>Logs</span>
                 </ViewSwitchLink>
             ) : null}
         </ViewSwitch>

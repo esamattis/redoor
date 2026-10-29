@@ -1277,6 +1277,14 @@ The route tree separates the authenticated application from the public login for
   way, so back from a result shows the search as it was without asking the agent again. It
   scrolls inside its own `<dialog>`, which the router cannot restore, and it mounts only
   while open, so its entry is the one it opened on and never the result's that follows.
+- **A view's toolbar shares the browser header's tab row.** `BrowserRouteShell` renders the
+  header and the view as siblings, so it holds a `ViewToolbarSlotProvider` above both. The
+  header registers an element in its tab row, and the file editor portals its toolbar there
+  (`ViewToolbar`) instead of stacking a toolbar row of its own; the portal keeps the toolbar
+  in the editor's React tree, so its state and shortcuts stay with the editor. A wide content
+  column lays the tabs and the toolbar out on one row, a narrow one puts the toolbar on a row
+  under the tabs. In full window the editor covers the header, so it renders the toolbar in
+  place.
 - **Menus own their open state.** `SideMenu` reads and closes the `openSideMenuAtom` itself
   and returns focus to whatever opened it, so the shell passes no props, refs or callbacks
   to the menus or the top bar.

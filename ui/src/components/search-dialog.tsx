@@ -657,27 +657,6 @@ function SearchScope(props: {
     onChange: (directory: string) => void;
     onUpdate: (changes: AgentSearch) => Promise<void>;
 }) {
-    const crumbsRef = React.useRef<HTMLDivElement>(null);
-
-    // A long path overflows a phone, and the deepest folder is the one being searched, so the
-    // row shows its end. A resize observer waits for the row to have a width, since the dialog
-    // only opens after this component's effects run, and it follows later width changes too.
-    React.useEffect(() => {
-        const crumbs = crumbsRef.current;
-
-        if (!crumbs) {
-            return;
-        }
-
-        const observer = new ResizeObserver(() => {
-            crumbs.scrollLeft = crumbs.scrollWidth;
-        });
-
-        observer.observe(crumbs);
-
-        return () => observer.disconnect();
-    }, [props.directory]);
-
     return (
         <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm text-slate-400">
             <FolderOpen
@@ -688,45 +667,37 @@ function SearchScope(props: {
             <span className="sr-only shrink-0 text-xs sm:not-sr-only">
                 Search in{" "}
             </span>
-            {/* Padded tap targets of short segments overhang the row, so only the x axis scrolls. */}
-            <div
-                ref={crumbsRef}
-                className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1"
-            >
-                <div className="flex w-max min-w-full items-center">
-                    <PathBreadcrumbs
-                        // A changed scope closes an open editor.
-                        key={props.directory}
-                        path={props.directory}
-                        home={props.agent.cwd}
-                        labels={{
-                            navigation: "Search folder",
-                            input: "Search folder path",
-                            submit: "Search in this folder",
-                            copy: "Copy search folder path",
-                            edit: "Edit search folder",
-                        }}
-                        renderLink={(link) => (
-                            <Link
-                                to="."
-                                hash
-                                replace
-                                search={(previous) => ({
-                                    ...previous,
-                                    dir: link.path,
-                                    gitroot: undefined,
-                                })}
-                                aria-label={`Search in ${link.path}`}
-                                className={link.className}
-                                onClick={props.onDismissRestoredView}
-                            >
-                                {link.children}
-                            </Link>
-                        )}
-                        onSubmitPath={props.onChange}
-                    />
-                </div>
-            </div>
+            <PathBreadcrumbs
+                // A changed scope closes an open editor.
+                key={props.directory}
+                path={props.directory}
+                home={props.agent.cwd}
+                labels={{
+                    navigation: "Search folder",
+                    input: "Search folder path",
+                    submit: "Search in this folder",
+                    copy: "Copy search folder path",
+                    edit: "Edit search folder",
+                }}
+                renderLink={(link) => (
+                    <Link
+                        to="."
+                        hash
+                        replace
+                        search={(previous) => ({
+                            ...previous,
+                            dir: link.path,
+                            gitroot: undefined,
+                        })}
+                        aria-label={`Search in ${link.path}`}
+                        className={link.className}
+                        onClick={props.onDismissRestoredView}
+                    >
+                        {link.children}
+                    </Link>
+                )}
+                onSubmitPath={props.onChange}
+            />
             {props.gitRoot ? (
                 <GitRootToggle
                     pressed={props.searchFromGitRoot}
