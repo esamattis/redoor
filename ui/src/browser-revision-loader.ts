@@ -174,7 +174,8 @@ export async function loadRevision(options: {
 /**
  * Loads the commit's changes for a path missing at the revision. Only a commit that deleted
  * the path has any; for other missing paths the diff is empty and the page reports the path
- * as missing instead.
+ * as missing instead. A range is always shown, since a run of commits that created and then
+ * deleted the path rightly adds up to no change.
  */
 async function loadDeletion(options: {
     context: QueryContext;
@@ -189,7 +190,10 @@ async function loadDeletion(options: {
             options.rev,
         );
 
-        if (!diff.files.some((file) => file.change === "deleted")) {
+        if (
+            diff.range === null &&
+            !diff.files.some((file) => file.change === "deleted")
+        ) {
             return null;
         }
 

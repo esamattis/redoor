@@ -357,6 +357,23 @@ test.describe.serial("Git history browsing", () => {
         ).toContainText("Bump version");
     });
 
+    test("shows a range that created and deleted the browsed file as no change", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, path.join(repositoryPath, "src", "retired.ts"))}?view=git&rev=${firstCommit}^..${secondCommit}`,
+        );
+
+        // The file is missing at the range's end, yet the range is shown rather than a
+        // missing path, because its commits added and removed the file.
+        await expect(
+            page.getByRole("heading", { name: "Changes of a commit range" }),
+        ).toBeVisible();
+        await expect(
+            page.getByText("These commits changed nothing below this path."),
+        ).toBeVisible();
+    });
+
     test("shows a run of commits picked in the history as one diff", async ({
         page,
     }) => {
