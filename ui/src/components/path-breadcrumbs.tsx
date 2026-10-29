@@ -109,6 +109,40 @@ export function PathBreadcrumbs(props: {
         return () => observer.disconnect();
     }, [isEditing, props.path]);
 
+    // The crumbs hide their scrollbar and a plain mouse wheel only scrolls vertically, so a
+    // mouse user could not reach the start of a long path. The wheel scrolls the crumbs
+    // sideways only while they overflow, so a short path does not swallow page scrolling.
+    // React registers wheel handlers as passive, which cannot prevent the page scroll.
+    React.useEffect(() => {
+        const crumbs = crumbsRef.current;
+
+        if (isEditing || !crumbs) {
+            return;
+        }
+
+        const scrollSideways = (event: WheelEvent) => {
+            const overflows = crumbs.scrollWidth > crumbs.clientWidth;
+            const isVertical = Math.abs(event.deltaY) > Math.abs(event.deltaX);
+
+            // Trackpads already scroll sideways, and Shift+wheel is the browser's own way.
+            if (!overflows || !isVertical || event.shiftKey) {
+                return;
+            }
+
+            event.preventDefault();
+
+            // Firefox reports mouse wheels in lines, which would barely move the crumbs.
+            const lineHeight =
+                event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : 1;
+
+            crumbs.scrollLeft += event.deltaY * lineHeight;
+        };
+
+        crumbs.addEventListener("wheel", scrollSideways, { passive: false });
+
+        return () => crumbs.removeEventListener("wheel", scrollSideways);
+    }, [isEditing]);
+
     /** Opens the path editor with the current path. */
     const startEditing = () => {
         setEditedPath(props.path);
