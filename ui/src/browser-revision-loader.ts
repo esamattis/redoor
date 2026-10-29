@@ -2,6 +2,7 @@
 import { redirect } from "@tanstack/react-router";
 import type { Agent } from "#ui/api-client";
 import type { BrowserSearch } from "#ui/browser-search";
+import { commitDiffRevision } from "#ui/components/browser/git-parts";
 import {
     getPathLoadError,
     type PathLoadError,
@@ -159,7 +160,11 @@ export async function loadRevision(options: {
     } else if (view === "git") {
         await fetchQueryUncancelled(
             context.queryClient,
-            gitCommitDiffQueryOptions(agent, path, tree.commit.id),
+            gitCommitDiffQueryOptions(
+                agent,
+                path,
+                commitDiffRevision(rev, tree.commit.id),
+            ),
         );
     }
 
@@ -188,12 +193,12 @@ async function loadDeletion(options: {
             return null;
         }
 
-        // The view reads the diff by commit id, like every other commit diff.
+        // The view reads the diff by the pinned revision, like every other commit diff.
         options.context.queryClient.setQueryData(
             gitCommitDiffQueryOptions(
                 options.agent,
                 options.path,
-                diff.commit.id,
+                commitDiffRevision(options.rev, diff.commit.id),
             ).queryKey,
             diff,
         );

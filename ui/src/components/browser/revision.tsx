@@ -28,7 +28,9 @@ import {
     CommitAge,
     GitPanelBar,
     changeLabel,
+    commitDiffRevision,
     displayRevision,
+    revisionRange,
     revisionRefKind,
     shortCommitId,
 } from "#ui/components/browser/git-parts";
@@ -42,6 +44,7 @@ import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
 import type { GitChangeState } from "#bindings/GitChangeState";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
+import type { GitCommitRange } from "#bindings/GitCommitRange";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";
 import type { GitRevisionEntry } from "#bindings/GitRevisionEntry";
 import type { GitTreeEntry } from "#bindings/GitTreeEntry";
@@ -132,7 +135,13 @@ export function RevisionBanner(props: {
             </span>
             <div className="ml-auto flex shrink-0 items-center gap-1">
                 {commit === null ? null : (
-                    <Tooltip content="Show the changes this commit made">
+                    <Tooltip
+                        content={
+                            revisionRange(props.rev) === null
+                                ? "Show the changes this commit made"
+                                : "Show the changes of these commits as one diff"
+                        }
+                    >
                         <Link
                             {...browserRoute(props.agent, props.path)}
                             search={{ view: "git", rev: props.rev }}
@@ -445,7 +454,7 @@ function commitDiffFiles(options: {
  * out for phones first: the header is a title over one line of facts, and the summary and
  * diff controls share one bar, so the first patch starts high on a small screen. File names
  * link to the file at the commit, or at the parent for deleted files, which no longer exist
- * at the commit.
+ * at the commit. A range `A..B` shows the same way, with both of its ends heading the diff.
  */
 export function GitCommitView(props: {
     agent: Agent;
@@ -455,11 +464,13 @@ export function GitCommitView(props: {
     /** The commit `rev` resolved to, which the diff is fetched and cached by. */
     commitId: string;
 }) {
+    const diffRevision = commitDiffRevision(props.rev, props.commitId);
+
     const diffQuery = useQuery(
-        gitCommitDiffQueryOptions(props.agent, props.path, props.commitId),
+        gitCommitDiffQueryOptions(props.agent, props.path, diffRevision),
     );
 
-    const scope = `${props.agent.id}:${props.path}:${props.commitId}`;
+    const scope = `${props.agent.id}:${props.path}:${diffRevision}`;
 
     // The commit's patches arrive in one response anyway, so they start expanded.
     const collapsed = useCollapsedGitDiffs({
@@ -509,8 +520,8 @@ export function GitCommitView(props: {
     }
 
     const diff = diffQuery.data;
-    const commit = diff.commit;
     const now = Date.now();
+    const subject = diff.range === null ? "This commit" : "These commits";
 
     const filter = filterQuery.filter;
 
@@ -520,69 +531,23 @@ export function GitCommitView(props: {
 
     return (
         <>
-            <header className="grid gap-3 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
-                <div className="min-w-0">
-                    {/* Names in a commit message are often worth looking up in the repository. */}
-                    <SelectionSearch>
-                        <h2 className="break-words text-base font-semibold leading-snug text-slate-50">
-                            {commit.summary || "(no message)"}
-                        </h2>
-                        {/* The body keeps its own line breaks, since commit messages are wrapped by hand. */}
-                        {diff.body ? (
-                            <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
-                                {diff.body}
-                            </p>
-                        ) : null}
-                    </SelectionSearch>
-                    <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-400">
-                        <AuthorAvatar name={commit.author_name} size="xs" />
-                        <span
-                            className="font-medium text-slate-200"
-                            title={commit.author_email}
-                        >
-                            {commit.author_name}
-                        </span>
-                        <span>
-                            <span className="hidden @xl:inline">
-                                committed{" "}
-                            </span>
-                            <CommitAge
-                                authoredAt={commit.authored_at}
-                                now={now}
-                            />
-                        </span>
-                        {/* The dot wraps with the id, so no line ends in a dangling separator. */}
-                        <span className="whitespace-nowrap">
-                            <span aria-hidden="true" className="text-slate-600">
-                                ·{" "}
-                            </span>
-                            <CopyableGitRef
-                                kind="commit"
-                                value={commit.id}
-                                className="align-middle"
-                            >
-                                <code
-                                    aria-label="Commit id"
-                                    title={commit.id}
-                                    className="font-mono text-slate-300"
-                                >
-                                    {shortCommitId(commit.id)}
-                                </code>
-                            </CopyableGitRef>
-                        </span>
-                    </p>
-                    <CommitNotes
-                        agent={props.agent}
-                        path={props.path}
-                        diff={diff}
-                    />
-                </div>
-                <CommitStepper
+            {diff.range === null ? (
+                <CommitHeader
                     agent={props.agent}
                     path={props.path}
                     commitId={props.commitId}
+                    diff={diff}
+                    now={now}
                 />
-            </header>
+            ) : (
+                <CommitRangeHeader
+                    agent={props.agent}
+                    path={props.path}
+                    diff={diff}
+                    range={diff.range}
+                    now={now}
+                />
+            )}
             <GitPanelBar
                 actions={
                     <>
@@ -618,7 +583,7 @@ export function GitCommitView(props: {
                         role="status"
                         className="px-2 text-sm text-slate-300 @xl:px-0"
                     >
-                        This commit changed nothing below this path.
+                        {subject} changed nothing below this path.
                     </p>
                 ) : null}
                 {diff.truncated ? (
@@ -627,7 +592,7 @@ export function GitCommitView(props: {
                         className="flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-300"
                     >
                         <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                        The commit changed more files than can be shown. Open a
+                        {subject} changed more files than can be shown. Open a
                         subdirectory to see the rest.
                     </p>
                 ) : null}
@@ -652,6 +617,174 @@ export function GitCommitView(props: {
 }
 
 /**
+ * Heads the changes of a range `A..B` with both of its ends instead of a commit message. The
+ * diff is the sum of every commit after A up to B, so B's message alone would only explain
+ * the last of them. Each end links to that commit's own changes, and there is no stepper,
+ * since a range has no single neighbouring commit.
+ */
+function CommitRangeHeader(props: {
+    agent: Agent;
+    path: string;
+    diff: GitCommitDiffResponse;
+    range: GitCommitRange;
+    now: number;
+}) {
+    return (
+        <header className="grid gap-2 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
+            <h2 className="text-base font-semibold leading-snug text-slate-50">
+                Changes of a commit range
+            </h2>
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 text-xs">
+                <dt className="font-medium text-slate-400">From</dt>
+                <dd className="min-w-0">
+                    {props.range.base === null ? (
+                        <span className="text-slate-300">
+                            Before the first commit
+                        </span>
+                    ) : (
+                        <CommitRangeEnd
+                            agent={props.agent}
+                            path={props.path}
+                            commit={props.range.base}
+                            now={props.now}
+                        />
+                    )}
+                </dd>
+                <dt className="font-medium text-slate-400">To</dt>
+                <dd className="min-w-0">
+                    <CommitRangeEnd
+                        agent={props.agent}
+                        path={props.path}
+                        commit={props.diff.commit}
+                        now={props.now}
+                    />
+                </dd>
+            </dl>
+            <CommitNotes
+                agent={props.agent}
+                path={props.path}
+                diff={props.diff}
+            />
+        </header>
+    );
+}
+
+/** One end of a range: its id, linking to the commit's own changes, then its summary. */
+function CommitRangeEnd(props: {
+    agent: Agent;
+    path: string;
+    commit: GitCommitSummary;
+    now: number;
+}) {
+    const commit = props.commit;
+
+    return (
+        <span className="flex min-w-0 items-center gap-1.5">
+            <CopyableGitRef
+                kind="commit"
+                value={commit.id}
+                className="shrink-0 align-middle"
+            >
+                <Link
+                    {...browserRoute(props.agent, props.path)}
+                    search={{ view: "git", rev: commit.id }}
+                    aria-label={`Changes of commit ${shortCommitId(commit.id)}`}
+                    className="font-mono text-blue-300 hover:underline"
+                >
+                    {shortCommitId(commit.id)}
+                </Link>
+            </CopyableGitRef>
+            <span
+                className="min-w-0 truncate text-slate-200"
+                title={commit.summary}
+            >
+                {commit.summary || "(no message)"}
+            </span>
+            <span className="shrink-0 text-slate-500 @max-xl:hidden">
+                <CommitAge authoredAt={commit.authored_at} now={props.now} />
+            </span>
+        </span>
+    );
+}
+
+/**
+ * Heads a single commit's changes: its message, who made it and when, and a way to step to
+ * the neighbouring commits in the browsed path's history.
+ */
+function CommitHeader(props: {
+    agent: Agent;
+    path: string;
+    commitId: string;
+    diff: GitCommitDiffResponse;
+    now: number;
+}) {
+    const diff = props.diff;
+    const commit = diff.commit;
+    const now = props.now;
+
+    return (
+        <header className="grid gap-3 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
+            <div className="min-w-0">
+                {/* Names in a commit message are often worth looking up in the repository. */}
+                <SelectionSearch>
+                    <h2 className="break-words text-base font-semibold leading-snug text-slate-50">
+                        {commit.summary || "(no message)"}
+                    </h2>
+                    {/* The body keeps its own line breaks, since commit messages are wrapped by hand. */}
+                    {diff.body ? (
+                        <p className="mt-1.5 whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
+                            {diff.body}
+                        </p>
+                    ) : null}
+                </SelectionSearch>
+                <p className="mt-1.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-slate-400">
+                    <AuthorAvatar name={commit.author_name} size="xs" />
+                    <span
+                        className="font-medium text-slate-200"
+                        title={commit.author_email}
+                    >
+                        {commit.author_name}
+                    </span>
+                    <span>
+                        <span className="hidden @xl:inline">committed </span>
+                        <CommitAge authoredAt={commit.authored_at} now={now} />
+                    </span>
+                    {/* The dot wraps with the id, so no line ends in a dangling separator. */}
+                    <span className="whitespace-nowrap">
+                        <span aria-hidden="true" className="text-slate-600">
+                            ·{" "}
+                        </span>
+                        <CopyableGitRef
+                            kind="commit"
+                            value={commit.id}
+                            className="align-middle"
+                        >
+                            <code
+                                aria-label="Commit id"
+                                title={commit.id}
+                                className="font-mono text-slate-300"
+                            >
+                                {shortCommitId(commit.id)}
+                            </code>
+                        </CopyableGitRef>
+                    </span>
+                </p>
+                <CommitNotes
+                    agent={props.agent}
+                    path={props.path}
+                    diff={diff}
+                />
+            </div>
+            <CommitStepper
+                agent={props.agent}
+                path={props.path}
+                commitId={props.commitId}
+            />
+        </header>
+    );
+}
+
+/**
  * The facts about a commit that only some commits have: that it is the root, a merge
  * compared with one of its parents, or that the view leaves out changes outside the
  * browsed path. They read as small print under the header instead of crowding its line.
@@ -663,18 +796,21 @@ function CommitNotes(props: {
 }) {
     const diff = props.diff;
     const parentId = diff.parent_id;
-    const isMerge = diff.commit.parent_ids.length > 1;
+    // A range is compared with its start, whatever the parents of its newest commit are.
+    const isRange = diff.range !== null;
+    const isRoot = parentId === null && !isRange;
+    const isMerge = diff.commit.parent_ids.length > 1 && !isRange;
     const isScoped = diff.repository_relative_path !== "";
 
-    if (parentId !== null && !isMerge && !isScoped) {
+    if (!isRoot && !isMerge && !isScoped) {
         return null;
     }
 
     return (
         <ul className="mt-1.5 grid gap-0.5 text-xs text-slate-500">
-            {parentId === null ? (
+            {isRoot ? (
                 <li>Root commit: every file was added.</li>
-            ) : isMerge ? (
+            ) : isMerge && parentId !== null ? (
                 // The stepper follows the path's history, so the compared parent gets its own link.
                 <li>
                     Merge, compared with first parent{" "}

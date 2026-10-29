@@ -30,19 +30,36 @@ pub struct GitCommitFileChange {
     pub result: GitDiffResult,
 }
 
-/// Shows what one commit changed below a path, compared with its first parent.
+/// Shows what one commit changed below a path, compared with its first parent, or what a
+/// range `A..B` of commits changed together, compared with A.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct GitCommitDiffResponse {
+    /// The commit the revision names; for a range, its newer end B.
     pub commit: GitCommitSummary,
     /// The message after the summary line, empty when there is none. It lives here rather
     /// than in the summary because history lists repeat summaries and never show bodies.
     pub body: String,
-    /// The compared parent; absent for a root commit, whose files all count as added.
+    /// The compared commit: the first parent, or a range's start. Absent for a root commit
+    /// or a range starting before one, whose files all count as added.
     pub parent_id: Option<String>,
+    /// Set when the revision was a range, so the view can describe several commits instead
+    /// of presenting the newest one's message as if it explained every change. Defaults to
+    /// absent for agents that predate ranges.
+    #[serde(default)]
+    pub range: Option<GitCommitRange>,
     pub repository_root: String,
     pub repository_relative_path: String,
     pub files: Vec<GitCommitFileChange>,
     /// True when the commit changed more files than one response carries.
     pub truncated: bool,
+}
+
+/// The start of a revision range `A..B` a commit diff compared with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitCommitRange {
+    /// The commit A names, absent when the range starts at the parent of a root commit and
+    /// the diff starts from the empty tree.
+    pub base: Option<GitCommitSummary>,
 }

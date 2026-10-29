@@ -9,13 +9,60 @@ export function shortCommitId(id: string): string {
 }
 
 /**
- * Full commit ids are unreadable in a banner, so they are shortened. Branch and tag lists
- * link by full ref name to stay unambiguous, so the ref namespace is dropped the way
- * `git branch -a` shows names; anything else stays as typed.
+ * Splits a revision range `A..B` into its sides, or returns null for a single revision. Ref
+ * names cannot contain `..`, so the first one always separates the sides. An empty side
+ * stays empty, which the agent reads as `HEAD` like Git does.
+ */
+export function revisionRange(
+    rev: string,
+): { base: string; head: string } | null {
+    const separator = rev.indexOf("..");
+
+    if (separator === -1) {
+        return null;
+    }
+
+    return { base: rev.slice(0, separator), head: rev.slice(separator + 2) };
+}
+
+/**
+ * The revision a commit diff is fetched and cached by. A single revision is pinned to the
+ * commit the tree resolved, so a moved branch is a new diff. A range is pinned at its newer
+ * end the same way and keeps its start as typed; ranges picked from the history list name
+ * both ends by commit id, so their diff never changes.
+ */
+export function commitDiffRevision(rev: string, commitId: string): string {
+    const range = revisionRange(rev);
+
+    return range === null ? commitId : `${range.base}..${commitId}`;
+}
+
+/**
+ * The range that shows a run of consecutive commits as one change: from the parent of the
+ * oldest to the newest. The agent reads the parent of a root commit as the empty tree, so a
+ * run reaching the first commit still has a start.
+ */
+export function commitRunRevision(oldestId: string, newestId: string): string {
+    return `${oldestId}^..${newestId}`;
+}
+
+/**
+ * Full commit ids are unreadable in a banner, so they are shortened, also when followed by
+ * a parent suffix such as `^`. Branch and tag lists link by full ref name to stay
+ * unambiguous, so the ref namespace is dropped the way `git branch -a` shows names; anything
+ * else stays as typed. A range shows both of its sides that way.
  */
 export function displayRevision(rev: string): string {
-    if (/^[0-9a-f]{40,64}$/i.test(rev)) {
-        return shortCommitId(rev);
+    const range = revisionRange(rev);
+
+    if (range !== null) {
+        return `${displayRevision(range.base)}..${displayRevision(range.head)}`;
+    }
+
+    const commit = /^([0-9a-f]{40,64})([~^].*)?$/i.exec(rev);
+
+    if (commit !== null) {
+        return `${shortCommitId(commit[1] ?? "")}${commit[2] ?? ""}`;
     }
 
     const namespace = ["refs/heads/", "refs/remotes/", "refs/tags/"].find(

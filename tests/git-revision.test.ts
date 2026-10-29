@@ -60,7 +60,9 @@ describe("Git revision REST API", () => {
         await rm(join(repo, "docs", "removed.txt"));
         await writeFile(join(repo, "docs", "added.txt"), "new file\n");
         await $({ cwd: repo })`git add -A`;
-        await $({ cwd: repo })`git commit -m ${"Second commit"} -m ${secondCommitBody}`;
+        await $({
+            cwd: repo,
+        })`git commit -m ${"Second commit"} -m ${secondCommitBody}`;
         secondCommit = (
             await $({ cwd: repo })`git rev-parse HEAD`
         ).stdout.trim();
@@ -284,6 +286,115 @@ describe("Git revision REST API", () => {
 
         // Binary content has an explicit outcome instead of a garbled patch.
         expect(binary?.result).toEqual({ type: "binary" });
+    });
+
+    it("diffs a range of commits as one change compared with its start", async () => {
+        const range: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            repo,
+            `${firstCommit}..${secondCommit}`,
+        );
+
+        // The range names its newer end and is compared with its start.
+        expect(range.commit.id).toBe(secondCommit);
+        expect(range.parent_id).toBe(firstCommit);
+        // The start is described, so the view can name both ends instead of one message.
+        expect(range.range?.base?.id).toBe(firstCommit);
+        expect(range.range?.base?.summary).toBe("First commit");
+        // A one-commit range has exactly that commit's changes.
+        expect(
+            range.files.map((file) => [
+                file.repository_relative_path,
+                file.change,
+            ]),
+        ).toEqual([
+            ["docs/added.txt", "added"],
+            ["docs/removed.txt", "deleted"],
+            ["readme.txt", "modified"],
+        ]);
+
+        const single = await testAgent.gitCommitDiff(repo, secondCommit);
+
+        // A single revision is not a range, so the view keeps the commit's own header.
+        expect(single.range).toBeNull();
+
+        const fromRoot: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            repo,
+            `${firstCommit}^..${secondCommit}`,
+        );
+
+        // The parent of a root commit starts the range at the empty tree, so a run of
+        // commits reaching the first one still has a base.
+        expect(fromRoot.parent_id).toBeNull();
+        expect(fromRoot.range).toEqual({ base: null });
+        // The commits combine: a file added and removed inside the range is not listed, and
+        // everything else counts as added.
+        expect(
+            fromRoot.files.map((file) => [
+                file.repository_relative_path,
+                file.change,
+            ]),
+        ).toEqual([
+            ["binary.dat", "added"],
+            ["docs/added.txt", "added"],
+            ["docs/guide.md", "added"],
+            ["readme.txt", "added"],
+        ]);
+
+        const readme = fromRoot.files.find(
+            (file) => file.repository_relative_path === "readme.txt",
+        );
+
+        // The combined patch shows the end state, not the intermediate first version.
+        expect(
+            readme?.result.type === "text" ? readme.result.unified_diff : "",
+        ).toContain("+second version");
+
+        const scoped = await testAgent.gitCommitDiff(
+            join(repo, "docs"),
+            `v1..${secondCommit}`,
+        );
+
+        // A range is scoped to the browsed path like a single commit, and takes ref names.
+        expect(
+            scoped.files.map((file) => file.repository_relative_path),
+        ).toEqual(["docs/added.txt", "docs/removed.txt"]);
+
+        const tree = await testAgent.gitRevisionTree(
+            repo,
+            `${firstCommit}..${secondCommit}`,
+        );
+
+        // Browsing a range shows the files at its newer end.
+        expect(tree.commit.id).toBe(secondCommit);
+
+        const symmetric = await revisionRequest(
+            "commit-diff",
+            repo,
+            `${firstCommit}...${secondCommit}`,
+        );
+
+        // A symmetric range is refused rather than misread as a plain range.
+        expect(symmetric.status).toBe(400);
+        expect(await symmetric.text()).toContain("not supported");
+
+        const unknownStart = await revisionRequest(
+            "commit-diff",
+            repo,
+            `no-such-branch..${secondCommit}`,
+        );
+
+        // Both sides must resolve; an unknown start is bad input like any unknown revision.
+        expect(unknownStart.status).toBe(400);
+
+        const beyondRoot = await revisionRequest(
+            "commit-diff",
+            repo,
+            `${secondCommit}~3..${secondCommit}`,
+        );
+
+        // Only the parent of a root commit means the empty tree; an ancestor further back
+        // than that is still an unknown revision.
+        expect(beyondRoot.status).toBe(400);
     });
 
     /** Creates a repository with a test identity, so each scenario owns its history. */

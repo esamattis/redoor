@@ -23,11 +23,36 @@ const MAX_TAG_DEPTH: usize = 16;
 
 /// A repository path resolved together with the commit a revision names, so history commands
 /// read one consistent commit instead of resolving the revision repeatedly.
+///
+/// A range `A..B` names B, so browsing a range shows the files at its newer end, and keeps A
+/// as the base a commit diff compares with. That lets several consecutive commits be read as
+/// one change, the way `git diff A..B` shows them.
 pub(super) struct RevisionPath {
     pub(super) repository: RepositoryPath,
     /// The repository-relative path in `/` form, empty for the repository root.
     pub(super) relative: String,
     pub(super) commit_id: gix::ObjectId,
+    pub(super) base: RevisionBase,
+}
+
+/// What a commit diff compares the resolved commit with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RevisionBase {
+    /// A single revision: the commit's first parent, the branch a merge was merged into.
+    FirstParent,
+    /// A range: the commit its left side names.
+    Commit(gix::ObjectId),
+    /// A range starting at the parent of a root commit, which has none, so the diff starts
+    /// from the empty tree and the root commit's files count as added. This is how a range
+    /// that includes the very first commit is spelled as `<root>^..B`.
+    Empty,
+}
+
+impl RevisionBase {
+    /// True when the revision was a range rather than a single commit.
+    pub(super) fn is_range(self) -> bool {
+        self != Self::FirstParent
+    }
 }
 
 impl RevisionPath {
@@ -40,9 +65,9 @@ impl RevisionPath {
             .map_err(|message| GitFailure::new(CommandErrorKind::InvalidInput, message))?;
         let mut repository = discover_required_repository(path)?;
         let requested = repository.requested.clone();
-        let commit_id = loop {
-            if let Some(id) = resolve_commit(&repository.repo, rev)? {
-                break id;
+        let (commit_id, base) = loop {
+            if let Some(resolved) = resolve_revision(&repository.repo, rev)? {
+                break resolved;
             }
             // A checked-out submodule or other nested repository shadows the repository that
             // contains it. Opening a submodule while browsing a superproject commit must show
@@ -64,6 +89,7 @@ impl RevisionPath {
             repository,
             relative,
             commit_id,
+            base,
         })
     }
 
@@ -84,6 +110,62 @@ impl RevisionPath {
             self.repository.root.join(Path::new(relative))
         }
     }
+}
+
+/// Resolves a single revision or a range `A..B` to the commit it names and the base a commit
+/// diff compares it with, or `None` when the repository does not know either side.
+///
+/// Ref names cannot contain `..`, so the first `..` always separates a range. An empty side
+/// means `HEAD`, as in Git. The symmetric `A...B` would compare with a merge base and is
+/// refused rather than misread as `A..` and `.B`.
+fn resolve_revision(
+    repo: &gix::Repository,
+    rev: &str,
+) -> Result<Option<(gix::ObjectId, RevisionBase)>, GitFailure> {
+    let Some((left, right)) = rev.split_once("..") else {
+        return Ok(resolve_commit(repo, rev)?.map(|id| (id, RevisionBase::FirstParent)));
+    };
+    if right.starts_with('.') {
+        return Err(GitFailure::new(
+            CommandErrorKind::InvalidInput,
+            "Symmetric Git revision ranges (A...B) are not supported",
+        ));
+    }
+    let left = if left.is_empty() { "HEAD" } else { left };
+    let right = if right.is_empty() { "HEAD" } else { right };
+    let Some(commit_id) = resolve_commit(repo, right)? else {
+        return Ok(None);
+    };
+    Ok(resolve_range_base(repo, left)?.map(|base| (commit_id, base)))
+}
+
+/// Resolves the left side of a range. When it names the parent of a root commit, which Git
+/// cannot resolve, the range starts from the empty tree instead, so a selection of commits
+/// reaching back to the first one still has a base.
+fn resolve_range_base(
+    repo: &gix::Repository,
+    left: &str,
+) -> Result<Option<RevisionBase>, GitFailure> {
+    if let Some(id) = resolve_commit(repo, left)? {
+        return Ok(Some(RevisionBase::Commit(id)));
+    }
+    let Some(child) = ["^1", "~1", "^", "~"]
+        .iter()
+        .find_map(|suffix| left.strip_suffix(suffix))
+    else {
+        return Ok(None);
+    };
+    let Some(child_id) = resolve_commit(repo, child)? else {
+        return Ok(None);
+    };
+    let child = repo
+        .find_commit(child_id)
+        .map_err(|error| internal_failure("read Git commit", error))?;
+    Ok(child
+        .parent_ids()
+        .next()
+        .is_none()
+        .then_some(RevisionBase::Empty))
 }
 
 /// Resolves branches, tags, abbreviated ids and other revision expressions to a commit, or

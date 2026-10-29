@@ -658,17 +658,18 @@ export function gitRevisionContentQueryOptions(
 }
 
 /**
- * The changes of a commit, scoped to the browsed path. Keyed by commit id like the content,
- * so the cached diff can never belong to an older commit than the banner shows.
+ * The changes of a commit or a range, scoped to the browsed path. Keyed by the revision
+ * `commitDiffRevision` pins to the resolved commit, like the content, so the cached diff can
+ * never belong to an older commit than the banner shows.
  */
 export function gitCommitDiffQueryOptions(
     agent: Agent,
     path: string,
-    commitId: string,
+    diffRevision: string,
 ) {
     return queryOptions({
-        queryKey: queryKeys.gitCommitDiff(agent.id, path, commitId),
-        queryFn: () => agent.gitCommitDiff(path, commitId),
+        queryKey: queryKeys.gitCommitDiff(agent.id, path, diffRevision),
+        queryFn: () => agent.gitCommitDiff(path, diffRevision),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

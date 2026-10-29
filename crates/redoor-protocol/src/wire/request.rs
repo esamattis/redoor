@@ -417,7 +417,8 @@ pub struct GitRevisionContent {
     pub rev: String,
 }
 
-/// Diffs the commit a revision names against its first parent, below one path.
+/// Diffs the commit a revision names against its first parent, or a range `A..B` against its
+/// start, below one path.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitCommitDiff {
     pub path: String,
@@ -755,6 +756,7 @@ mod tests {
         assert_round_trip::<GitRevisionContent>(json!({"path": "/repo/a", "commit_id": "abc",
             "content": "a\n"}));
         assert_round_trip::<GitCommitDiff>(json!({"commit": commit, "body": "", "parent_id": null,
+            "range": {"base": null},
             "repository_root": "/repo", "repository_relative_path": "", "files": [],
             "truncated": false}));
         assert_round_trip::<GitLog>(json!({"repository_root": "/repo",
