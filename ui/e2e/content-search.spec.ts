@@ -335,9 +335,7 @@ last line`,
         });
 
         // Directory metadata must scope grep to the directory currently being browsed.
-        await expect(dialog).toContainText(
-            `Current folder: ${ctx.testDirPath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${ctx.testDirPath}`);
         const desktopBounds = await dialog.boundingBox();
         const desktopViewport = page.viewportSize();
         // Desktop search remains modal while using most of the available workspace.
@@ -468,7 +466,7 @@ last line`,
         await expect(
             dialog.getByRole("searchbox", { name: "Search file paths" }),
         ).toBeFocused();
-        await expect(dialog).toContainText(`Current folder: ${ctx.agentHome}`);
+        await expect(dialog).toContainText(`Search in ${ctx.agentHome}`);
     });
 
     test("uses recursive search preferences when URL options are absent", async ({
@@ -563,9 +561,7 @@ last line`,
 
         // A directly loaded q opens search and a file route searches its parent.
         await expect(dialog).toBeVisible();
-        await expect(dialog).toContainText(
-            `Current folder: ${ctx.testDirPath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${ctx.testDirPath}`);
         await expect(
             dialog.getByRole("button", { name: "Use regular expressions" }),
         ).toHaveAttribute("aria-pressed", "false");
@@ -635,16 +631,14 @@ last line`,
         // Nested worktree views expose the git-root control from loader git context.
         await expect(gitRootButton).toBeVisible();
         await expect(gitRootButton).toHaveAttribute("aria-pressed", "false");
-        await expect(dialog).toContainText(
-            `Current folder: ${gitRootNestedPath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${gitRootNestedPath}`);
         // Default scope stays on the browsed directory so sibling root files are excluded.
         await expect(dialog.getByText("0 results.")).toBeVisible();
 
         await gitRootButton.click();
         await expect(page).toHaveURL(/gitroot=true/);
         await expect(dialog).toContainText(
-            `Current folder: ${gitRootRepositoryPath}`,
+            `Search in ${gitRootRepositoryPath}`,
         );
         await expect(gitRootButton).toHaveAttribute("aria-pressed", "true");
         await expect(
@@ -660,9 +654,7 @@ last line`,
         await expect(
             dialog.getByRole("button", { name: "Search from git root" }),
         ).toHaveCount(0);
-        await expect(dialog).toContainText(
-            `Current folder: ${gitRootOutsidePath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${gitRootOutsidePath}`);
     });
 
     test("restores results and the place in them on back without searching again", async ({
@@ -823,22 +815,19 @@ test.describe("Mobile agent search", () => {
         expect(bounds?.width).toBe(390);
         expect(bounds?.height).toBe(844);
 
-        await dialog
-            .getByRole("button", { name: "Search file contents" })
-            .click();
+        const hiddenToggle = dialog.getByRole("button", {
+            name: "Include hidden files and directories",
+        });
 
-        const timeoutBox = await dialog
-            .getByLabel("Search timeout in seconds")
-            .boundingBox();
+        const optionsButton = dialog.getByRole("button", {
+            name: "Search options",
+        });
 
-        const contextBox = await dialog
-            .getByLabel("Context lines above and below")
-            .boundingBox();
-
-        // A two-column grid stretched these compact inputs across the full phone width.
-        expect(
-            (contextBox?.x ?? 0) -
-                ((timeoutBox?.x ?? 0) + (timeoutBox?.width ?? 0)),
-        ).toBeLessThan(24);
+        // Phones fold the filters so results keep room above the on-screen keyboard.
+        await expect(hiddenToggle).toBeHidden();
+        await optionsButton.click();
+        // The options button reveals the folded filters on demand.
+        await expect(hiddenToggle).toBeVisible();
+        await expect(optionsButton).toHaveAttribute("aria-expanded", "true");
     });
 });

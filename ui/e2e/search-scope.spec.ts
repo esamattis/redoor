@@ -54,7 +54,7 @@ test.describe("Search scope", () => {
         });
 
         // The scope starts at the browsed folder, so the file above it is not found.
-        await expect(dialog).toContainText(`Current folder: ${nestedPath}`);
+        await expect(dialog).toContainText(`Search in ${nestedPath}`);
         await expect(siblingResult).toBeVisible();
         await expect(outsideResult).toHaveCount(0);
 
@@ -63,9 +63,7 @@ test.describe("Search scope", () => {
             .click();
         // An ancestor breadcrumb widens the search and keeps it shareable in the URL.
         await expect(page).toHaveURL(/[?&]dir=/);
-        await expect(dialog).toContainText(
-            `Current folder: ${ctx.testDirPath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${ctx.testDirPath}`);
         await expect(outsideResult).toBeVisible();
 
         const directoriesOnly = dialog.getByRole("button", {
@@ -91,7 +89,7 @@ test.describe("Search scope", () => {
 
         // A picked folder becomes the scope of a content search inside it.
         await expect(page).toHaveURL(/[?&]mode=content/);
-        await expect(dialog).toContainText(`Current folder: ${folderPath}`);
+        await expect(dialog).toContainText(`Search in ${folderPath}`);
         // The carried-over query is focused and selected, so typing replaces it.
         await expect(contentInput).toBeFocused();
         await expect(contentInput).toHaveValue(TOKEN);
@@ -115,9 +113,7 @@ test.describe("Search scope", () => {
 
         // Picking the folder added a history entry, so Back returns to the folder list.
         await expect(pathInput).toBeVisible();
-        await expect(dialog).toContainText(
-            `Current folder: ${ctx.testDirPath}`,
-        );
+        await expect(dialog).toContainText(`Search in ${ctx.testDirPath}`);
         // The typed query is shared by both modes, like switching modes by hand.
         await expect(pathInput).toHaveValue("inside");
         await pathInput.fill(TOKEN);
@@ -144,7 +140,7 @@ test.describe("Search scope", () => {
         await folderInput.fill(nestedPath);
         await folderInput.press("Enter");
         // A typed folder becomes the scope.
-        await expect(dialog).toContainText(`Current folder: ${nestedPath}`);
+        await expect(dialog).toContainText(`Search in ${nestedPath}`);
         await expect(siblingResult).toBeVisible();
         await expect(outsideResult).toHaveCount(0);
 
@@ -156,6 +152,6 @@ test.describe("Search scope", () => {
         await page.getByRole("button", { name: "Search device" }).click();
         // A chosen folder belongs to one search, so reopening starts from the browsed folder.
         await expect(page).not.toHaveURL(/[?&]dir=/);
-        await expect(dialog).toContainText(`Current folder: ${nestedPath}`);
+        await expect(dialog).toContainText(`Search in ${nestedPath}`);
     });
 });

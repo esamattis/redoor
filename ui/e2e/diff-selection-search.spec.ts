@@ -71,7 +71,7 @@ test.describe("Diff selection search", () => {
         await expect(page).toHaveURL(/[?&]mode=content(?:&|$)/);
         await expect(page).toHaveURL(/[?&]gitroot=true(?:&|$)/);
         // The scope is the repository root rather than the diffed file's folder.
-        await expect(dialog).toContainText(`Current folder: ${repositoryPath}`);
+        await expect(dialog).toContainText(`Search in ${repositoryPath}`);
         await expect(
             dialog.getByRole("link", { name: /Open .*README at line 1/ }),
         ).toBeVisible();
@@ -116,6 +116,6 @@ test.describe("Diff selection search", () => {
         ).toHaveValue(TOKEN);
         await expect(page).toHaveURL(/[?&]mode=content(?:&|$)/);
         await expect(page).toHaveURL(/[?&]gitroot=true(?:&|$)/);
-        await expect(dialog).toContainText(`Current folder: ${repositoryPath}`);
+        await expect(dialog).toContainText(`Search in ${repositoryPath}`);
     });
 });

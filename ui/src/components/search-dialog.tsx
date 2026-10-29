@@ -6,18 +6,8 @@ import {
     type UseQueryResult,
 } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
-import {
-    CaseLower,
-    CaseSensitive,
-    Eye,
-    EyeOff,
-    Folder,
-    FolderGit2,
-    GitBranch,
-    Regex,
-} from "lucide-react";
+import { FolderOpen } from "lucide-react";
 
-import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -25,14 +15,16 @@ import { type Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { Dialog } from "#ui/components/dialog";
-import { IconButton } from "#ui/components/icon-button";
-import { InputControl } from "#ui/components/input-control";
 import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
 import {
     SearchResultList,
     type SearchResultTarget,
 } from "#ui/components/search-results";
-import { ToggleButton } from "#ui/components/toggle-button";
+import {
+    GitRootToggle,
+    SearchFilters,
+    SearchQueryBar,
+} from "#ui/components/search-controls";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     contentGrepQueryOptions,
@@ -53,30 +45,10 @@ import {
 import { useUserState } from "#ui/user-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
+import { cn } from "#ui/utils/cn";
 import { useArrayKeyboardFocus } from "#ui/utils/use-array-keyboard-focus";
 
 const agentRoute = getRouteApi("/_app/agents/$deviceName");
-
-/** Cycles smart → sensitive → insensitive so the control can name the next click. */
-const nextCaseSensitivity = {
-    smart: "sensitive",
-    sensitive: "insensitive",
-    insensitive: "smart",
-} satisfies Record<CaseSensitivity, CaseSensitivity>;
-
-/** Accessible name stays on the current mode so screen readers can hear the applied rule. */
-const caseSensitivityLabel = {
-    smart: "Case: smart",
-    sensitive: "Case: sensitive",
-    insensitive: "Case: insensitive",
-} satisfies Record<CaseSensitivity, string>;
-
-/** Tooltip copy names the mode the next click will select. */
-const caseSensitivityNextTooltip = {
-    smart: "Click to match exact letter case",
-    sensitive: "Click to ignore letter case",
-    insensitive: "Click to use smart case",
-} satisfies Record<CaseSensitivity, string>;
 
 /** Reads worktree root from already-loaded browser context so searching never probes git again. */
 function gitRootFromContext(gitContext: GitContextResponse | undefined) {
@@ -469,6 +441,12 @@ function OpenSearchDialog(props: { agent: Agent }) {
         chosenDirectory ?? (searchFromGitRoot ? gitRoot : directory);
 
     const resultsRef = React.useRef<HTMLDivElement>(null);
+
+    // Phones fold the filters away so the results keep room above the on-screen keyboard.
+    // Plain state is enough: the dialog remounts on Back, and folded is the right default.
+    const [showsOptions, setShowsOptions] = React.useState(false);
+    const optionsId = React.useId();
+
     const queryFocus = useQuerySelectionOnContentSearch(isContentSearch);
 
     const canSearch =
@@ -594,29 +572,17 @@ function OpenSearchDialog(props: { agent: Agent }) {
             size="search"
             onClose={close}
         >
-            <div className="mt-4 grid gap-4">
-                {searchDirectory ? (
-                    <SearchScope
-                        agent={props.agent}
-                        directory={searchDirectory}
-                        onDismissRestoredView={restored.dismiss}
-                        onChange={searchInFolder}
-                    />
-                ) : null}
-                <SearchControls
+            <div className="mt-4 grid gap-3">
+                <SearchQueryBar
                     query={query}
                     isContentSearch={isContentSearch}
-                    timeoutSeconds={timeoutSeconds}
-                    includeHidden={includeHidden}
-                    respectGitignore={respectGitignore}
                     regex={regex}
-                    directoriesOnly={directoriesOnly}
-                    contextSize={contextSize}
                     caseSensitivity={caseSensitivity}
-                    gitRoot={gitRoot}
-                    searchFromGitRoot={searchFromGitRoot}
                     disabled={directory === null}
                     queryInputRef={queryFocus.inputRef}
+                    optionsId={optionsId}
+                    showsOptions={showsOptions}
+                    onShowOptionsChange={setShowsOptions}
                     onModeChange={(checked) =>
                         void changeSearch(
                             { mode: checked ? "content" : undefined },
@@ -628,8 +594,33 @@ function OpenSearchDialog(props: { agent: Agent }) {
                         setQuery(next);
                     }}
                     onUpdate={changeSearch}
-                    onUpdateOption={updateOption}
                 />
+                {/* Where and how to search share one quiet panel, so the query stays the focus. */}
+                <div className="grid divide-y divide-slate-800 rounded-lg border border-slate-800 bg-slate-900/40">
+                    {searchDirectory ? (
+                        <SearchScope
+                            agent={props.agent}
+                            directory={searchDirectory}
+                            gitRoot={gitRoot}
+                            searchFromGitRoot={searchFromGitRoot}
+                            onDismissRestoredView={restored.dismiss}
+                            onChange={searchInFolder}
+                            onUpdate={changeSearch}
+                        />
+                    ) : null}
+                    <SearchFilters
+                        id={optionsId}
+                        className={cn(!showsOptions && "max-sm:hidden")}
+                        isContentSearch={isContentSearch}
+                        timeoutSeconds={timeoutSeconds}
+                        includeHidden={includeHidden}
+                        respectGitignore={respectGitignore}
+                        directoriesOnly={directoriesOnly}
+                        contextSize={contextSize}
+                        onUpdate={changeSearch}
+                        onUpdateOption={updateOption}
+                    />
+                </div>
                 <SearchStatus
                     isContentSearch={isContentSearch}
                     query={query}
@@ -659,15 +650,49 @@ function OpenSearchDialog(props: { agent: Agent }) {
 function SearchScope(props: {
     agent: Agent;
     directory: string;
+    gitRoot: string | null;
+    searchFromGitRoot: boolean;
     /** A changed scope must search again instead of showing a restored result list. */
     onDismissRestoredView: () => void;
     onChange: (directory: string) => void;
+    onUpdate: (changes: AgentSearch) => Promise<void>;
 }) {
+    const crumbsRef = React.useRef<HTMLDivElement>(null);
+
+    // A long path overflows a phone, and the deepest folder is the one being searched, so the
+    // row shows its end. A resize observer waits for the row to have a width, since the dialog
+    // only opens after this component's effects run, and it follows later width changes too.
+    React.useEffect(() => {
+        const crumbs = crumbsRef.current;
+
+        if (!crumbs) {
+            return;
+        }
+
+        const observer = new ResizeObserver(() => {
+            crumbs.scrollLeft = crumbs.scrollWidth;
+        });
+
+        observer.observe(crumbs);
+
+        return () => observer.disconnect();
+    }, [props.directory]);
+
     return (
-        <div className="flex min-w-0 items-center gap-2 text-sm text-slate-400">
-            <span className="shrink-0">Current folder: </span>
+        <div className="flex min-w-0 items-center gap-2 px-3 py-1.5 text-sm text-slate-400">
+            <FolderOpen
+                className="h-4 w-4 shrink-0 text-slate-500"
+                aria-hidden="true"
+            />
+            {/* Phones need the width for the path; the folder icon still marks the row. */}
+            <span className="sr-only shrink-0 text-xs sm:not-sr-only">
+                Search in{" "}
+            </span>
             {/* Padded tap targets of short segments overhang the row, so only the x axis scrolls. */}
-            <div className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1">
+            <div
+                ref={crumbsRef}
+                className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1"
+            >
                 <div className="flex w-max min-w-full items-center">
                     <PathBreadcrumbs
                         // A changed scope closes an open editor.
@@ -702,325 +727,11 @@ function SearchScope(props: {
                     />
                 </div>
             </div>
-        </div>
-    );
-}
-
-/** Groups search controls while exposing content-only options only in grep mode. */
-function SearchControls(props: {
-    query: string;
-    isContentSearch: boolean;
-    timeoutSeconds: number;
-    includeHidden: boolean;
-    respectGitignore: boolean;
-    regex: boolean;
-    directoriesOnly: boolean;
-    contextSize: number;
-    caseSensitivity: CaseSensitivity;
-    gitRoot: string | null;
-    searchFromGitRoot: boolean;
-    disabled: boolean;
-    queryInputRef: React.RefObject<HTMLInputElement | null>;
-    onModeChange: (checked: boolean) => void;
-    onQueryChange: (query: string) => void;
-    onUpdate: (changes: AgentSearch) => Promise<void>;
-    onUpdateOption: (
-        changes: AgentSearch,
-        preferences: Record<string, number | boolean>,
-    ) => void;
-}) {
-    const queryLabel = props.isContentSearch
-        ? "Text to find"
-        : "File or folder name";
-
-    const caseSensitivityIcon = {
-        smart: <SmartCaseIcon className="h-4 w-4" />,
-        sensitive: <CaseSensitive className="h-4 w-4" />,
-        insensitive: <CaseLower className="h-4 w-4" />,
-    } satisfies Record<CaseSensitivity, React.ReactNode>;
-
-    return (
-        <div className="grid gap-4">
-            <fieldset className="grid gap-1.5">
-                <legend className="text-xs font-medium text-slate-400">
-                    Search by
-                </legend>
-                <div className="grid grid-cols-2 gap-1 rounded-lg bg-slate-950/70 p-1 sm:w-80">
-                    <ToggleButton
-                        label="Search file paths"
-                        pressed={!props.isContentSearch}
-                        size="sm"
-                        variant="subtle"
-                        className="w-full"
-                        onClick={() => props.onModeChange(false)}
-                    >
-                        File paths
-                    </ToggleButton>
-                    <ToggleButton
-                        label="Search file contents"
-                        pressed={props.isContentSearch}
-                        size="sm"
-                        variant="subtle"
-                        className="w-full"
-                        onClick={() => props.onModeChange(true)}
-                    >
-                        File contents
-                    </ToggleButton>
-                </div>
-            </fieldset>
-
-            <label className="grid gap-1.5 text-xs font-medium text-slate-400">
-                {queryLabel}
-                <InputControl
-                    key={props.isContentSearch ? "content" : "path"}
-                    ref={props.queryInputRef}
-                    autoFocus
-                    type="search"
-                    aria-label={
-                        props.isContentSearch
-                            ? "Search file contents"
-                            : "Search file paths"
-                    }
-                    value={props.query}
-                    disabled={props.disabled}
-                    onChange={(event) =>
-                        props.onQueryChange(event.target.value)
-                    }
-                    placeholder={
-                        props.isContentSearch
-                            ? "Text inside files"
-                            : "Name or path pattern"
-                    }
-                    className="h-10 w-full text-sm font-normal"
+            {props.gitRoot ? (
+                <GitRootToggle
+                    pressed={props.searchFromGitRoot}
+                    onUpdate={props.onUpdate}
                 />
-            </label>
-
-            <div className="grid gap-2">
-                <p className="text-xs font-medium text-slate-400">Options</p>
-                <div className="grid gap-2 sm:flex sm:items-end">
-                    <div className="flex flex-wrap gap-2">
-                        <ToggleButton
-                            label="Include hidden files and directories"
-                            pressed={props.includeHidden}
-                            tooltip={
-                                props.includeHidden
-                                    ? "Exclude hidden files and directories"
-                                    : "Include hidden files and directories"
-                            }
-                            size="lg"
-                            onClick={() =>
-                                props.onUpdateOption(
-                                    { hidden: !props.includeHidden },
-                                    {
-                                        recursiveSearchIncludeHidden:
-                                            !props.includeHidden,
-                                    },
-                                )
-                            }
-                        >
-                            {props.includeHidden ? (
-                                <Eye className="h-4 w-4" />
-                            ) : (
-                                <EyeOff className="h-4 w-4" />
-                            )}
-                        </ToggleButton>
-                        <ToggleButton
-                            label="Respect .gitignore files"
-                            pressed={props.respectGitignore}
-                            tooltip={
-                                props.respectGitignore
-                                    ? "Include files ignored by .gitignore"
-                                    : "Respect .gitignore files"
-                            }
-                            size="lg"
-                            onClick={() =>
-                                props.onUpdateOption(
-                                    { gitignore: !props.respectGitignore },
-                                    {
-                                        recursiveSearchRespectGitignore:
-                                            !props.respectGitignore,
-                                    },
-                                )
-                            }
-                        >
-                            <GitBranch className="h-4 w-4" />
-                        </ToggleButton>
-                        <ModeOptionToggle
-                            isContentSearch={props.isContentSearch}
-                            regex={props.regex}
-                            directoriesOnly={props.directoriesOnly}
-                            onUpdate={props.onUpdate}
-                        />
-                        <IconButton
-                            label={caseSensitivityLabel[props.caseSensitivity]}
-                            tooltip={
-                                caseSensitivityNextTooltip[
-                                    props.caseSensitivity
-                                ]
-                            }
-                            variant="outline"
-                            size="xl"
-                            className="bg-slate-900 hover:bg-transparent hover:text-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                            onClick={() =>
-                                void props.onUpdate({
-                                    case: nextCaseSensitivity[
-                                        props.caseSensitivity
-                                    ],
-                                })
-                            }
-                        >
-                            {caseSensitivityIcon[props.caseSensitivity]}
-                        </IconButton>
-                        {props.gitRoot ? (
-                            <GitRootToggle
-                                pressed={props.searchFromGitRoot}
-                                onUpdate={props.onUpdate}
-                            />
-                        ) : null}
-                    </div>
-                    <SearchNumberInputs
-                        isContentSearch={props.isContentSearch}
-                        timeoutSeconds={props.timeoutSeconds}
-                        contextSize={props.contextSize}
-                        onUpdate={props.onUpdate}
-                        onUpdateOption={props.onUpdateOption}
-                    />
-                </div>
-            </div>
-        </div>
-    );
-}
-
-/** The option only one search mode has: regular expressions for content, directories for paths. */
-function ModeOptionToggle(props: {
-    isContentSearch: boolean;
-    regex: boolean;
-    directoriesOnly: boolean;
-    onUpdate: (changes: AgentSearch) => Promise<void>;
-}) {
-    if (props.isContentSearch) {
-        return (
-            <ToggleButton
-                label="Use regular expressions"
-                pressed={props.regex}
-                tooltip={
-                    props.regex
-                        ? "Search as literal text"
-                        : "Use regular expressions"
-                }
-                size="lg"
-                onClick={() => void props.onUpdate({ regex: !props.regex })}
-            >
-                <Regex className="h-4 w-4" />
-            </ToggleButton>
-        );
-    }
-
-    return (
-        <ToggleButton
-            label="Search directories only"
-            pressed={props.directoriesOnly}
-            tooltip={
-                props.directoriesOnly
-                    ? "Search files and directories"
-                    : "Search directories only"
-            }
-            size="lg"
-            onClick={() =>
-                void props.onUpdate({
-                    dirs: props.directoriesOnly ? undefined : true,
-                })
-            }
-        >
-            <Folder className="h-4 w-4" />
-        </ToggleButton>
-    );
-}
-
-/** Switches between the Git repository root and the browsed folder. */
-function GitRootToggle(props: {
-    pressed: boolean;
-    onUpdate: (changes: AgentSearch) => Promise<void>;
-}) {
-    return (
-        <ToggleButton
-            label="Search from git root"
-            pressed={props.pressed}
-            tooltip={
-                props.pressed
-                    ? "Search the current directory only"
-                    : "Search the entire Git repository instead of the current directory"
-            }
-            size="lg"
-            // Leaves a chosen folder too, so the toggle always lands on the root or the browsed folder.
-            onClick={() =>
-                void props.onUpdate({
-                    gitroot: !props.pressed,
-                    dir: undefined,
-                })
-            }
-        >
-            <FolderGit2 className="h-4 w-4" />
-        </ToggleButton>
-    );
-}
-
-/** Keeps bounded numeric controls compact so mobile does not stretch a gap between them. */
-function SearchNumberInputs(props: {
-    isContentSearch: boolean;
-    timeoutSeconds: number;
-    contextSize: number;
-    onUpdate: (changes: AgentSearch) => Promise<void>;
-    onUpdateOption: (
-        changes: AgentSearch,
-        preferences: Record<string, number | boolean>,
-    ) => void;
-}) {
-    return (
-        <div className="flex gap-2 sm:ml-auto">
-            <label className="grid gap-1 text-xs text-slate-400">
-                Timeout
-                <InputControl
-                    aria-label="Search timeout in seconds"
-                    type="number"
-                    min={1}
-                    max={60}
-                    value={props.timeoutSeconds}
-                    onChange={(event) => {
-                        const value = event.target.valueAsNumber;
-
-                        if (Number.isInteger(value)) {
-                            const timeout = Math.min(60, Math.max(1, value));
-                            props.onUpdateOption(
-                                { timeout },
-                                { recursiveSearchTimeoutSeconds: timeout },
-                            );
-                        }
-                    }}
-                    className="h-9 w-16 py-1 text-sm font-normal"
-                />
-            </label>
-            {props.isContentSearch ? (
-                <label className="grid gap-1 text-xs text-slate-400">
-                    Context
-                    <InputControl
-                        aria-label="Context lines above and below"
-                        type="number"
-                        min={0}
-                        max={20}
-                        value={props.contextSize}
-                        onChange={(event) => {
-                            const value = event.target.valueAsNumber;
-
-                            if (Number.isInteger(value)) {
-                                void props.onUpdate({
-                                    context: Math.min(20, Math.max(0, value)),
-                                });
-                            }
-                        }}
-                        className="h-9 w-16 py-1 text-sm font-normal"
-                    />
-                </label>
             ) : null}
         </div>
     );
@@ -1040,7 +751,7 @@ function SearchStatus(props: {
 
     if (props.query.trim() === "") {
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 {props.isContentSearch
                     ? "Enter text to search file contents."
                     : "Enter text to search file paths."}
@@ -1050,7 +761,7 @@ function SearchStatus(props: {
 
     if (props.query !== props.debouncedQuery || activeSearch.isFetching) {
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 Searching…
             </p>
         );
@@ -1058,7 +769,7 @@ function SearchStatus(props: {
 
     if (activeSearch.isError) {
         return (
-            <p role="alert" className="text-sm text-red-300">
+            <p role="alert" className="px-1 text-xs text-red-300">
                 {props.isContentSearch
                     ? "Content search failed."
                     : "Path search failed."}
@@ -1081,7 +792,7 @@ function SearchStatus(props: {
         ].filter((notice): notice is string => notice !== null);
 
         return (
-            <p role="status" className="text-sm text-slate-400">
+            <p role="status" className="px-1 text-xs text-slate-500">
                 {data.results.length} results. {notices.join(" ")}
             </p>
         );
@@ -1092,7 +803,7 @@ function SearchStatus(props: {
     if (!data) return null;
 
     return (
-        <p role="status" className="text-sm text-slate-400">
+        <p role="status" className="px-1 text-xs text-slate-500">
             Found{" "}
             <Tooltip content="100 is the maximum number of results a search can return.">
                 <span>{data.results.length}</span>
@@ -1103,31 +814,5 @@ function SearchStatus(props: {
             </Tooltip>
             . {data.timed_out ? "Search timed out." : ""}
         </p>
-    );
-}
-
-/**
- * Lucide has Aa and aa glyphs, but nothing for smart case, so this keeps the
- * same letterforms and adds a sparkle to show automatic case matching.
- */
-function SmartCaseIcon(props: { className?: string }) {
-    return (
-        <svg
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            className={props.className}
-            aria-hidden="true"
-        >
-            <path d="m2 16 4.039-9.69a.5.5 0 0 1 .923 0L11 16" />
-            <path d="M3.304 13h6.392" />
-            <path d="M22 11v5" />
-            <circle cx="18.5" cy="13.5" r="3.5" />
-            <path d="M19 3v4" />
-            <path d="M17 5h4" />
-        </svg>
     );
 }
