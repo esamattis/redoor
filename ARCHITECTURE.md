@@ -1557,7 +1557,9 @@ way of looking at the same repository location, and paths deleted since are stil
   only its own work instead of also reverting what A gained since they split. The response
   marks the range `merge_base`, so the header reads "What B adds to A" and labels the start
   as the merge base. Histories without a common ancestor are invalid input rather than a
-  diff from the empty tree. Such a header also carries a base and a compare picker and a
+  diff from the empty tree. Its base is usually a branch that moves while HEAD stays put
+  (pulling or merging into main), so the loader fetches a symmetric diff again on every
+  navigation instead of trusting the cache key, which only pins HEAD. Such a header also carries a base and a compare picker and a
   swap link (`git-compare-picker.tsx`), so any two branches can be compared without typing
   a range. They are native selects, which phones open as their own full-screen pickers,
   stacked beside the swap button in a narrow column. They offer the checkout as `HEAD`

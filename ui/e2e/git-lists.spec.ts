@@ -333,6 +333,40 @@ test.describe.serial("Git commit, branch and tag lists", () => {
         ).toBeVisible();
     });
 
+    test("shows a comparison again when its base branch moves", async ({
+        page,
+    }) => {
+        // Relies on the side branch the earlier tests created next to main.
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?view=git&rev=${encodeURIComponent("refs/heads/side...HEAD")}`,
+        );
+
+        await expect(
+            page.getByRole("region", { name: "Commit diff for notes.txt" }),
+        ).toBeVisible();
+
+        // Moving the base onto the checkout, as merging it would, leaves nothing to compare
+        // while HEAD stays the same commit the cached diff was pinned to.
+        await $`git -C ${repositoryPath} branch -f side main`;
+
+        await page
+            .getByLabel("Git view")
+            .getByRole("link", { name: "Branches" })
+            .click();
+        await page
+            .getByRole("list", { name: "Branches" })
+            .getByRole("link", { name: "Compare checkout with side" })
+            .click();
+
+        // The comparison is fetched again rather than served from the cache of the old base.
+        await expect(
+            page.getByText("These commits changed nothing below this path."),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("region", { name: "Commit diff for notes.txt" }),
+        ).toHaveCount(0);
+    });
+
     test("loads more commits beyond the first page", async ({ page }) => {
         await page.goto(
             `${deviceBrowserUrl(ctx.agentName, manyCommitsPath)}?view=git&gitTab=commits`,
