@@ -153,6 +153,9 @@ pub(crate) async fn execute(
             }
         }
     };
+    if cancelled {
+        super::file_search::log_canceled_search("Content grep", &path, &query, started_at);
+    }
     if let Some(Err(error)) = io_result {
         if error.kind() == std::io::ErrorKind::InvalidInput {
             return Err(CommandError::new(

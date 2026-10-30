@@ -71,6 +71,14 @@ impl CommandPolicy {
         cancel_scope: CancelScope::Connection,
         exclusive: false,
     };
+    /// Request/response work that can run far longer than its caller cares (searches, status
+    /// walks), so an abandoned REST call must stop it on the agent instead of letting it hold
+    /// CPU, disk and command slots until its own timeout.
+    const CANCELABLE_CONTROL: Self = Self {
+        lane: CommandLane::Control,
+        cancel_scope: CancelScope::Request,
+        exclusive: false,
+    };
     /// Same-agent work that owns staging output and must clean it up when canceled.
     const LOCAL_TRANSFER: Self = Self {
         lane: CommandLane::Control,
@@ -136,14 +144,15 @@ impl Command {
             // Restore is a move that reports progress and owns staging, so it stays cancelable.
             Self::RestoreTrash { .. } => CommandPolicy::trash_mutation(CancelScope::Request),
             Self::HashSegments(_) => CommandPolicy::LOCAL_TRANSFER,
+            Self::FileSearch { .. } | Self::ContentGrep { .. } | Self::GitWorktreeStatus { .. } => {
+                CommandPolicy::CANCELABLE_CONTROL
+            }
             Self::ListPartials(_)
             | Self::ProbePartial(_)
             | Self::ReadPartial(_)
             | Self::DeletePartial(_)
             | Self::PersistPartial(_)
             | Self::Ls { .. }
-            | Self::FileSearch { .. }
-            | Self::ContentGrep { .. }
             | Self::RawDelete { .. }
             | Self::ListTrash(_)
             | Self::CreateDirectory { .. }
@@ -163,7 +172,6 @@ impl Command {
             | Self::GitCommitNeighbors { .. }
             | Self::GitRefList { .. }
             | Self::GitWorktreeList { .. }
-            | Self::GitWorktreeStatus { .. }
             | Self::GitRevisionStat { .. }
             | Self::MoveMetadata { .. }
             | Self::DeleteMoveSource { .. }
@@ -482,6 +490,26 @@ mod tests {
                     policy.cancel_scope,
                     CancelScope::Request,
                     "{} streams bytes but cannot be canceled by request id",
+                    command.summary()
+                );
+            }
+        }
+    }
+
+    /// Verifies the long-running read commands stop on the agent when their caller gives up.
+    #[test]
+    fn searches_and_status_walks_are_request_cancelable() {
+        for command in every_command() {
+            if matches!(
+                command,
+                Command::FileSearch(_) | Command::ContentGrep(_) | Command::GitWorktreeStatus(_)
+            ) {
+                // Without a request-scoped token an abandoned search keeps its slots until its
+                // own timeout, so superseded UI searches would queue behind stale ones.
+                assert_eq!(
+                    command.policy().cancel_scope,
+                    CancelScope::Request,
+                    "{} cannot be canceled by request id",
                     command.summary()
                 );
             }

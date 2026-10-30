@@ -876,6 +876,14 @@ sequenceDiagram
   drops the flow. If the command can be cancelled on the agent, the router also cancels it
   (see the request lifecycle below). A few commands, such as trash restore, are allowed to
   run to completion on purpose.
+- File search, content grep and Git worktree status are cancellable on the agent
+  (`CancelScope::Request`) even though they carry no stream, because they can run for many
+  seconds after their caller stopped caring. The browser aborts a query when the search
+  term changes or the view closes, and the agent then stops the walk and frees its grep or
+  status-walk slot at once, so newer searches do not queue behind stale ones. This is per
+  caller, not per user: parallel MCP or CLI searches do not cancel each other. The agent
+  logs each one at debug level (`File search canceled`, `Content grep canceled`,
+  `Git worktree status canceled`).
 
 ## Request lifecycle
 

@@ -407,7 +407,9 @@ impl RunCommand for Command {
                 Reply::of::<request::GitWorktreeList>(git::worktree_list::list(path).await)
             }
             Command::GitWorktreeStatus(request::GitWorktreeStatus { paths }) => {
-                Reply::of::<request::GitWorktreeStatus>(git::worktree_status::statuses(paths).await)
+                Reply::of::<request::GitWorktreeStatus>(
+                    git::worktree_status::statuses(paths, &ctx.cancel).await,
+                )
             }
             Command::GitRevisionStat(request::GitRevisionStat {
                 path,

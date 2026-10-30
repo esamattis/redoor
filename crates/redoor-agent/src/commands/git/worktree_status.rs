@@ -7,7 +7,9 @@ use std::{future::Future, time::Duration};
 
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tokio::{sync::Semaphore, time::Instant};
+use tokio_util::sync::CancellationToken;
 
+use redoor_core::log;
 use redoor_protocol::{
     api::git::{
         GitChangeState,
@@ -16,7 +18,7 @@ use redoor_protocol::{
             GitWorktreeStatusResult, MAX_GIT_WORKTREE_CHANGES,
         },
     },
-    wire::{command::CommandErrorKind, request::CommandError},
+    wire::{command::CommandErrorKind, log::Level, request::CommandError},
 };
 
 use super::{
@@ -41,10 +43,16 @@ const WORKTREE_STATUS_BUDGET: Duration = Duration::from_secs(5);
 /// Counts the checkouts containing `paths` until the time budget runs out.
 ///
 /// A checkout that cannot be counted is reported as failed instead of failing the request,
-/// so it does not hide the counts of the others.
+/// so it does not hide the counts of the others. When `cancel` fires (the browser left the
+/// list or the connection ended) the walks are dropped at once, which interrupts gix and
+/// frees their queue slots for requests someone still waits for; the empty answer goes to
+/// nobody.
 pub(crate) async fn statuses(
     paths: Vec<String>,
+    cancel: &CancellationToken,
 ) -> Result<GitWorktreeStatusResponse, CommandError> {
+    let requested = paths.len();
+    let started_at = Instant::now();
     let walks: FuturesUnordered<_> = paths
         .into_iter()
         .map(|path| async move {
@@ -57,7 +65,23 @@ pub(crate) async fn statuses(
             GitWorktreeStatusEntry { path, result }
         })
         .collect();
-    let statuses = collect_within_budget(walks, Instant::now() + WORKTREE_STATUS_BUDGET).await;
+    let Some(statuses) = cancel
+        .run_until_cancelled(collect_within_budget(
+            walks,
+            started_at + WORKTREE_STATUS_BUDGET,
+        ))
+        .await
+    else {
+        // Lets an operator confirm that leaving the worktree list stops the walks on the agent.
+        log!(
+            Level::Debug,
+            "Git worktree status canceled: paths={requested} elapsed_ms={}",
+            started_at.elapsed().as_millis()
+        );
+        return Ok(GitWorktreeStatusResponse {
+            statuses: Vec::new(),
+        });
+    };
     Ok(GitWorktreeStatusResponse { statuses })
 }
 
@@ -174,6 +198,23 @@ mod tests {
         assert_eq!(finished, [2]);
         // Only the first walk past the deadline is awaited, not the slower one after it.
         assert_eq!(started.elapsed(), Duration::from_secs(8));
+    }
+
+    /// A canceled request answers at once without starting any walk.
+    #[tokio::test]
+    async fn canceled_request_answers_without_walking() {
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+
+        let response = statuses(vec!["/".to_string()], &cancel).await.unwrap();
+
+        // Nobody waits for the answer, so no checkout is counted or reported.
+        assert!(response.statuses.is_empty());
+        // The queue is untouched, so requests someone still waits for get every slot.
+        assert_eq!(
+            WORKTREE_STATUS_PERMITS.available_permits(),
+            WORKTREE_STATUS_SLOTS
+        );
     }
 
     /// A request whose walks all finish early answers without waiting for the deadline.

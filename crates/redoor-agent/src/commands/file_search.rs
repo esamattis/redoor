@@ -6,6 +6,8 @@ use nucleo_matcher::{
     Config, Matcher, Utf32Str,
     pattern::{AtomKind, CaseMatching, Normalization, Pattern},
 };
+use redoor_core::log;
+use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::request::CommandError;
 use redoor_protocol::{
     api::search::{CaseSensitivity, FileSearchEntry, FileSearchResponse},
@@ -181,7 +183,10 @@ pub(crate) async fn execute(
         tokio::pin!(timeout);
         tokio::select! {
             biased;
-            _ = cancel.cancelled() => None,
+            _ = cancel.cancelled() => {
+                log_canceled_search("File search", &path, &query, started_at);
+                None
+            }
             result = &mut traversal => Some(result),
             _ = &mut timeout => None,
         }
@@ -444,6 +449,16 @@ fn retain_match(matches: &mut Vec<RankedEntry>, candidate: RankedEntry) {
             matches[weakest_index] = candidate;
         }
     }
+}
+
+/// Records a search stopped because its caller gave up, so an operator can confirm that
+/// abandoned UI searches free the agent instead of running until their timeout.
+pub(crate) fn log_canceled_search(kind: &str, path: &str, query: &str, started_at: Instant) {
+    log!(
+        Level::Debug,
+        "{kind} canceled: path={path} query={query} elapsed_ms={}",
+        started_at.elapsed().as_millis()
+    );
 }
 
 #[cfg(test)]

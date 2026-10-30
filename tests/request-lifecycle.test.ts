@@ -1,7 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
 
+import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
+import type { FileSearchResponse } from "#bindings/FileSearchResponse";
+import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
-import type { ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 import { FakeAgent, type StreamFrame } from "./fake-agent";
 import {
     ProcessManager,
@@ -226,4 +229,77 @@ describe("request lifecycle on the multiplexed connection", () => {
         // The history row carries the agent's reason.
         expect(settled.error).toBe("Failed to read file: disk gone");
     });
+
+    /** Long-running reads that should stop on the agent once their caller gives up. */
+    const abandonableReads: {
+        command: string;
+        start: (
+            agent: Agent,
+            signal: AbortSignal,
+        ) => Promise<
+            FileSearchResponse | ContentGrepResponse | GitWorktreeStatusResponse
+        >;
+    }[] = [
+        {
+            command: "FileSearch",
+            start: (agent, signal) =>
+                agent.searchFiles("/tmp", "abandoned", {
+                    timeoutSeconds: 60,
+                    includeHidden: false,
+                    respectGitignore: true,
+                    signal,
+                }),
+        },
+        {
+            command: "ContentGrep",
+            start: (agent, signal) =>
+                agent.grepContent("/tmp", "abandoned", {
+                    timeoutSeconds: 60,
+                    includeHidden: false,
+                    respectGitignore: true,
+                    fixedString: true,
+                    signal,
+                }),
+        },
+        {
+            command: "GitWorktreeStatus",
+            start: (agent, signal) =>
+                agent.gitWorktreeStatus(["/tmp"], { signal }),
+        },
+    ];
+
+    it.each(abandonableReads)(
+        "cancels an abandoned $command on the agent",
+        async (read) => {
+            const agentName = `request-lifecycle-abandon-${read.command.toLowerCase()}`;
+            const fake = await connectFake(agentName);
+
+            const agent = (await api.listAgents()).find(
+                (candidate) => candidate.id === fake.agentId,
+            );
+
+            if (agent === undefined) {
+                throw new Error(`Fake agent ${agentName} is not listed`);
+            }
+
+            const controller = new AbortController();
+            const request = read.start(agent, controller.signal);
+            // The aborted request rejects by design; keep it from surfacing as unhandled.
+            request.catch(() => undefined);
+
+            const command = await fake.nextCommand(read.command);
+
+            // The fake never answers, so the command is still running when the browser leaves.
+            controller.abort();
+
+            const cancel = await fake.waitForFrame(
+                (frame) => frame.type === "cancel" && frame.id === command.id,
+            );
+
+            // The server must tell the agent to stop exactly the abandoned request, or the
+            // search keeps its slots until its own timeout and newer searches queue behind it.
+            expect(cancel).toMatchObject({ type: "cancel", id: command.id });
+            await expect(request).rejects.toThrow();
+        },
+    );
 });
