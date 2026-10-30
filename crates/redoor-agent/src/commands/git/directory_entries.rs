@@ -135,7 +135,89 @@ fn entries_blocking(
     if children.wholly_untracked {
         return untracked_directory_entries(&repository, &directory, &interrupt);
     }
-    Ok(children.into_response(&repository.root))
+    let response = children.into_response(&repository.root);
+    settle_untracked_directories(&repository, &directory, response, &interrupt)
+}
+
+/// Turns an untracked directory that holds nothing Git could ever add into an ignored one.
+/// Git does not track empty directories, so one whose files are all ignored shows as ignored
+/// in `git status --ignored`, but gix still reports it as untracked because of the empty
+/// directories inside it.
+fn settle_untracked_directories(
+    repository: &RepositoryPath,
+    directory: &str,
+    mut response: GitDirectoryEntriesResponse,
+    interrupt: &AtomicBool,
+) -> Result<GitDirectoryEntriesResponse, GitFailure> {
+    let GitDirectoryEntriesResponse::Entries { entries } = &mut response else {
+        return Ok(response);
+    };
+    if !entries
+        .iter()
+        .any(|entry| entry.state == GitDirectoryEntryState::Untracked)
+    {
+        return Ok(response);
+    }
+    let index = open_index(repository)?;
+    let mut excludes = ignore_rules(repository, &index)?;
+    for entry in entries
+        .iter_mut()
+        .filter(|entry| entry.state == GitDirectoryEntryState::Untracked)
+    {
+        let relative = format!("{directory}/{}", entry.name);
+        let path = repository.requested.join(&entry.name);
+        if holds_only_ignored_or_empty(&path, &relative, &mut excludes, interrupt)? {
+            entry.state = GitDirectoryEntryState::Ignored;
+        }
+    }
+    Ok(response)
+}
+
+/// True when `path` is a directory with no file that is not ignored. Stops at the first such
+/// file, and never opens an ignored directory, so the cost is bounded by what Git would walk.
+fn holds_only_ignored_or_empty(
+    path: &Path,
+    relative: &str,
+    excludes: &mut gix::AttributeStack<'_>,
+    interrupt: &AtomicBool,
+) -> Result<bool, GitFailure> {
+    let mut pending = vec![(path.to_path_buf(), relative.to_string())];
+    while let Some((directory, relative)) = pending.pop() {
+        let listing = match std::fs::read_dir(&directory) {
+            Ok(listing) => listing,
+            // Not a directory, or gone: a plain untracked file stays untracked.
+            Err(_) => return Ok(false),
+        };
+        for entry in listing {
+            check_interrupt(interrupt, "Git directory entries")?;
+            let entry = entry.map_err(|error| io_failure("read untracked directory", error))?;
+            let Ok(name) = entry.file_name().into_string() else {
+                return Ok(false);
+            };
+            let is_directory = entry
+                .file_type()
+                .map_err(|error| io_failure("inspect untracked entry", error))?
+                .is_dir();
+            let child = format!("{relative}/{name}");
+            let mode = if is_directory {
+                gix::index::entry::Mode::DIR
+            } else {
+                gix::index::entry::Mode::FILE
+            };
+            let excluded = excludes
+                .at_entry(child.as_str(), Some(mode))
+                .map_err(|error| internal_failure("match Git ignore rules", error))?
+                .is_excluded();
+            if excluded {
+                continue;
+            }
+            if !is_directory {
+                return Ok(false);
+            }
+            pending.push((entry.path(), child));
+        }
+    }
+    Ok(true)
 }
 
 /// Classifies the entries of a directory Git does not track at all. gix reports such a
@@ -181,7 +263,8 @@ fn untracked_directory_entries(
         entries.push(GitDirectoryEntry { name, state });
     }
     entries.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(GitDirectoryEntriesResponse::Entries { entries })
+    let response = GitDirectoryEntriesResponse::Entries { entries };
+    settle_untracked_directories(repository, directory, response, interrupt)
 }
 
 /// Opens the index, which an unborn repository may not have yet.
@@ -761,6 +844,30 @@ mod tests {
         // An ignored file inside the untracked directory is still told apart.
         assert_eq!(
             state_of(&response, "skip.log"),
+            Some(GitDirectoryEntryState::Ignored)
+        );
+    }
+
+    /// A directory whose files are all ignored by its own `.gitignore`, next to empty
+    /// directories, is ignored as a whole like `git status --ignored` shows it.
+    #[test]
+    fn directory_holding_only_ignored_files_and_empty_directories_is_ignored() {
+        let repo = fixture();
+        write(
+            repo.path(),
+            "tool/.gitignore",
+            "package.json
+.gitignore
+",
+        );
+        write(repo.path(), "tool/package.json", "{}");
+        std::fs::create_dir_all(repo.path().join("tool/skills/empty")).unwrap();
+
+        let response = entries_of(repo.path(), "");
+
+        // Git ignores empty directories, so nothing in it is left to be untracked.
+        assert_eq!(
+            state_of(&response, "tool"),
             Some(GitDirectoryEntryState::Ignored)
         );
     }
