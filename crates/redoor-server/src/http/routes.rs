@@ -33,6 +33,7 @@ use super::{
     files::{create_directory_handler, raw_agent_delete_handler, rename_path_handler},
     git::{
         commit::git_commit_diff_handler,
+        directory_entries::git_directory_entries_handler,
         download::git_download_handler,
         history::{git_commit_neighbors_handler, git_log_handler},
         refs::{git_branches_handler, git_tags_handler},
@@ -236,6 +237,14 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/git/status/{*path}",
             get(git_status_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/git/entries",
+            get(git_directory_entries_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/git/entries/{*path}",
+            get(git_directory_entries_handler),
         )
         .route("/api/v1/agents/{agent}/git/diff", post(git_diff_handler))
         .route(

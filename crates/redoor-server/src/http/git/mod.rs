@@ -2,6 +2,7 @@
 //! module. Path, revision and page validation shared by every area lives here.
 
 pub(crate) mod commit;
+pub(crate) mod directory_entries;
 pub(crate) mod download;
 pub(crate) mod history;
 pub(crate) mod refs;

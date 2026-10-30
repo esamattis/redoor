@@ -42,6 +42,7 @@ pub enum Command {
     DirectorySize(request::DirectorySize),
     GitContext(request::GitContext),
     GitStatus(request::GitStatus),
+    GitDirectoryEntries(request::GitDirectoryEntries),
     GitDiff(request::GitDiff),
     GitRevisionTree(request::GitRevisionTree),
     GitRevisionContent(request::GitRevisionContent),
@@ -169,6 +170,9 @@ impl Command {
             ),
             Self::GitContext(request) => format!("GitContext path={}", request.path),
             Self::GitStatus(request) => format!("GitStatus path={}", request.path),
+            Self::GitDirectoryEntries(request) => {
+                format!("GitDirectoryEntries path={}", request.path)
+            }
             Self::GitDiff(request) => format!(
                 "GitDiff files={} mode={:?}",
                 request.files.len(),

@@ -4,6 +4,7 @@
 
 pub(crate) mod commit_diff;
 pub(crate) mod diff;
+pub(crate) mod directory_entries;
 pub(crate) mod export;
 pub(crate) mod history;
 pub(crate) mod refs;

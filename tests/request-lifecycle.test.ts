@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vites
 
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
+import type { GitDirectoryEntriesResponse } from "#bindings/GitDirectoryEntriesResponse";
 import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
@@ -241,6 +242,7 @@ describe("request lifecycle on the multiplexed connection", () => {
             | FileSearchResponse
             | ContentGrepResponse
             | GitStatusResponse
+            | GitDirectoryEntriesResponse
             | GitWorktreeStatusResponse
         >;
     }[] = [
@@ -268,6 +270,11 @@ describe("request lifecycle on the multiplexed connection", () => {
         {
             command: "GitStatus",
             start: (agent, signal) => agent.gitStatus("/tmp", { signal }),
+        },
+        {
+            command: "GitDirectoryEntries",
+            start: (agent, signal) =>
+                agent.gitDirectoryEntries("/tmp", { signal }),
         },
         {
             command: "GitWorktreeStatus",

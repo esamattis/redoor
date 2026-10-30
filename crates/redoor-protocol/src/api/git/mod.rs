@@ -2,6 +2,7 @@
 //! module instead of growing a single file. Vocabulary shared by several areas lives here.
 
 pub mod commit;
+pub mod directory_entries;
 pub mod history;
 pub mod refs;
 pub mod revision;

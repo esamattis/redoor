@@ -1514,6 +1514,32 @@ cache, so Back, reload and shared links all land on the same screen.
 - **The loader identifies, the cache supplies data.** The loader resolves what lives at the
   path (directory, file, missing, unreadable) and applies redirects. The page then reads the
   live listing from the query cache, so a refresh reaches it without reloading the route.
+- **Git state per entry is a background request.** The file list's Git column comes from
+  `GET git/entries/{path}` (the agent's `GitDirectoryEntries` command), not from `ls`: a
+  status walk can take far longer than reading one directory, so listing latency stays the
+  same inside a repository and the column fills in afterwards.
+  - The agent walks only the browsed directory (`:(top,literal)<dir>/`), with ignored paths
+    emitted collapsed to the directory a rule matched, so an ignored `node_modules/` costs
+    one entry rather than a walk through it, and wholly untracked directories collapsed the
+    same way. Staged renames are paired so a row can name where it came from.
+  - Every reported path is folded into the direct child it lies in, so the answer is bounded
+    by the listing size, not by how many changes the tree holds. A file gets its index and
+    worktree state, conflict flag and rename source. A directory gets its own state when Git
+    has one for it as a whole (ignored, untracked, a changed submodule), otherwise its most
+    severe descendant change (conflict, then changed, then untracked) with counts for the
+    tooltip. Ignored descendants are not counted. Counting stops telling paths apart after
+    5000, and the counts are then flagged as lower bounds while the mark stays right.
+  - When the browsed directory itself is ignored (a rule on it or a parent) and the index
+    tracks nothing below it, the agent answers `ignored` without walking. A wholly untracked
+    directory is reported by gix as one entry naming no children, so the agent then reads
+    the directory and classifies each entry against the ignore rules instead.
+  - Walks share a process-wide semaphore of two slots, separate from the worktree list's,
+    and have a 30 second budget covering the wait for a slot; past it gix is interrupted and
+    the agent answers `timed_out`. Outside a repository the answer is `outside_worktree`
+    rather than an error, since the browser may ask for any directory.
+  - The command is request-scoped (`CancelScope::Request`), so leaving the directory aborts
+    the query and the agent drops the walk at once (`Git directory entries canceled` in its
+    debug log).
 - **One workflow per path operation.** Four dialogs that ask for a name (rename, duplicate,
   new file, new directory) share `PathNameDialog` and `validatePathComponent`, which rejects
   empty names, `.` and `..`, and separators. Directory creation alone opts in to nested names

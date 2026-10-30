@@ -103,6 +103,7 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
             | "/api/v1/agents/{agent}/metadata"
             | "/api/v1/agents/{agent}/git/context"
             | "/api/v1/agents/{agent}/git/status"
+            | "/api/v1/agents/{agent}/git/entries"
             | "/api/v1/agents/{agent}/git/tree"
             | "/api/v1/agents/{agent}/git/blob"
             | "/api/v1/agents/{agent}/git/download"
@@ -218,6 +219,11 @@ mod tests {
             (
                 Method::GET,
                 "/api/v1/agents/{agent}/git/tree/{*path}",
+                Access::Device(&[FilesRead]),
+            ),
+            (
+                Method::GET,
+                "/api/v1/agents/{agent}/git/entries/{*path}",
                 Access::Device(&[FilesRead]),
             ),
             (

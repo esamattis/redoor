@@ -15,6 +15,7 @@ use crate::api::files::{
 };
 use crate::api::git::GitPage;
 use crate::api::git::commit::GitCommitDiffResponse;
+use crate::api::git::directory_entries::GitDirectoryEntriesResponse;
 use crate::api::git::history::{GitCommitNeighborsResponse, GitLogResponse};
 use crate::api::git::refs::{GitBranchScope, GitRefListKind, GitRefListResponse, GitRefSort};
 use crate::api::git::revision::{GitRevisionContentResponse, GitRevisionTreeResponse};
@@ -396,6 +397,13 @@ pub struct GitStatus {
     pub path: String,
 }
 
+/// Reads the Git state of each direct child of one browser directory for the file list's
+/// status column.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitDirectoryEntries {
+    pub path: String,
+}
+
 /// Compares ordered files with HEAD using the selected Git source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDiff {
@@ -637,6 +645,7 @@ agent_requests! {
     DirectorySize => DirectorySizeResponse,
     GitContext => GitContextResponse,
     GitStatus => GitStatusResponse,
+    GitDirectoryEntries => GitDirectoryEntriesResponse,
     GitDiff => GitDiffResponse,
     GitRevisionTree => GitRevisionTreeResponse,
     GitRevisionContent => GitRevisionContentResponse,
@@ -751,6 +760,14 @@ mod tests {
             "branch_name": "main", "detached_head_id": null, "upstream": null, "ahead": null,
             "behind": null, "entries": [], "truncated": false,
             "omitted_non_utf8_entries": 0}));
+        assert_round_trip::<GitDirectoryEntries>(json!({"status": "entries", "entries": [
+            {"name": "a.txt", "state": {"type": "changed", "index_state": "renamed",
+                "worktree_state": "modified", "conflicted": false,
+                "original_path": "/repo/b.txt"}},
+            {"name": "dir", "state": {"type": "contains_changes", "most_severe": "changed",
+                "changed": 1, "untracked": 2, "conflicted": 0, "truncated": false}},
+            {"name": "build", "state": {"type": "ignored"}}]}));
+        assert_round_trip::<GitDirectoryEntries>(json!({"status": "timed_out"}));
         assert_round_trip::<GitDiff>(json!({"diffs": []}));
         let commit = json!({"id": "abc", "summary": "first", "author_name": "A",
             "author_email": "a@example.invalid", "authored_at": 1, "parent_ids": []});

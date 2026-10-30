@@ -11,10 +11,10 @@ use redoor_protocol::api::search::{FindRequest, GrepRequest};
 pub(crate) use redoor_protocol::wire::request::{
     ChmodPath, ChownPath, ContentGrep, CreateDirectory, DeletePartial, DirectorySize, Echo,
     EmptyTrash, FileSearch, GetAgentDetails, GetLoggingLevel, GitCommitDiff, GitCommitNeighbors,
-    GitContext, GitDiff, GitLog, GitRefList, GitRevisionContent, GitRevisionStat, GitRevisionTree,
-    GitStatus, GitWorktreeList, GitWorktreeStatus, ListAccounts, ListPartials, ListTrash, Ls,
-    Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete, ReadPartial, RenamePath, Restart,
-    RestoreTrash, SelfExec, SetLoggingLevel, Trash,
+    GitContext, GitDiff, GitDirectoryEntries, GitLog, GitRefList, GitRevisionContent,
+    GitRevisionStat, GitRevisionTree, GitStatus, GitWorktreeList, GitWorktreeStatus, ListAccounts,
+    ListPartials, ListTrash, Ls, Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete,
+    ReadPartial, RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
 };
 use std::time::Duration;
 
@@ -26,6 +26,10 @@ pub(crate) const QUICK_TIMEOUT: Duration = Duration::from_secs(5);
 /// has counted, but waits for at least one checkout, which may be slower than its budget or
 /// queue behind the walks of other requests.
 pub(crate) const GIT_WORKTREE_STATUS_TIMEOUT: Duration = Duration::from_secs(120);
+/// Deadline for reading the Git state of a directory's entries. The agent answers
+/// `timed_out` itself after its 30 second walk budget, so this only needs to outlast that
+/// with room for the reply.
+pub(crate) const GIT_DIRECTORY_ENTRIES_TIMEOUT: Duration = Duration::from_secs(45);
 /// Deadline for permanently deleting every trash entry, which can touch many files.
 pub(crate) const EMPTY_TRASH_TIMEOUT: Duration = Duration::from_secs(300);
 /// Extra wait beyond an agent-enforced limit so the agent's own timeout result arrives first.
@@ -111,6 +115,16 @@ impl AgentCall for GitWorktreeStatus {
     /// and that one may queue behind the walks of other requests first.
     fn timeout(&self) -> Option<Duration> {
         Some(GIT_WORKTREE_STATUS_TIMEOUT)
+    }
+}
+
+impl AgentCall for GitDirectoryEntries {
+    const OPERATION: &'static str = "reading the git state of directory entries";
+
+    /// Longer than the standard deadline, so the agent's own `timed_out` answer arrives
+    /// instead of a gateway timeout when the walk runs to its budget.
+    fn timeout(&self) -> Option<Duration> {
+        Some(GIT_DIRECTORY_ENTRIES_TIMEOUT)
     }
 }
 

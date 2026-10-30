@@ -429,10 +429,28 @@ impl StatusAccumulator {
             gix::status::Item::IndexWorktree(change) => apply_index_worktree(self, change),
         }
     }
+
+    /// True when Git ignores the path, so it is neither tracked nor offered for adding.
+    pub(super) fn is_ignored(&self) -> bool {
+        self.ignored
+    }
+
+    /// True for a path Git does not track and does not ignore.
+    pub(super) fn is_untracked(&self) -> bool {
+        !self.ignored
+            && self.index_state == GitChangeState::Unmodified
+            && self.worktree_state == GitChangeState::Added
+            && self.conflict_state.is_none()
+    }
+
+    /// Where a staged rename or copy came from, repository-relative.
+    pub(super) fn original_path(&self) -> Option<&str> {
+        self.original_path.as_deref()
+    }
 }
 
 /// Identifies ignored dirwalk items before they consume bounded status capacity.
-fn is_ignored_item(item: &gix::status::Item) -> bool {
+pub(super) fn is_ignored_item(item: &gix::status::Item) -> bool {
     matches!(
         item,
         gix::status::Item::IndexWorktree(

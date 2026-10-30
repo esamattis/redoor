@@ -376,6 +376,11 @@ impl RunCommand for Command {
             Command::GitStatus(request::GitStatus { path }) => {
                 Reply::of::<request::GitStatus>(git::status::status(path, &ctx.cancel).await)
             }
+            Command::GitDirectoryEntries(request::GitDirectoryEntries { path }) => {
+                Reply::of::<request::GitDirectoryEntries>(
+                    git::directory_entries::entries(path, &ctx.cancel).await,
+                )
+            }
             Command::GitDiff(request::GitDiff { files, mode }) => {
                 Reply::of::<request::GitDiff>(git::diff::diff(files, mode).await)
             }

@@ -83,6 +83,7 @@ import type { DeleteEditorBufferResponse } from "#bindings/DeleteEditorBufferRes
 import type { UserStateResponse } from "#bindings/UserStateResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitStatusResponse } from "#bindings/GitStatusResponse";
+import type { GitDirectoryEntriesResponse } from "#bindings/GitDirectoryEntriesResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";
 import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
@@ -428,6 +429,22 @@ export class Agent {
     ): Promise<GitStatusResponse> {
         return apiRequest<GitStatusResponse>(
             this.filesystemUrl("git/status", path),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Reads the Git state of each entry of one directory for the file list's status column.
+     * Separate from the listing because the status walk can take much longer than listing,
+     * and the signal lets leaving the directory stop the walk on the agent.
+     */
+    async gitDirectoryEntries(
+        path: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<GitDirectoryEntriesResponse> {
+        return apiRequest<GitDirectoryEntriesResponse>(
+            this.filesystemUrl("git/entries", path),
             { signal: options.signal },
             this.requestContext,
         );
