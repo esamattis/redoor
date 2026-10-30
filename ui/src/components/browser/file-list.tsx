@@ -489,7 +489,8 @@ function SortableFileColumnHeader(props: {
     /**
      * Shows an icon instead of the label, for columns whose cells are a single icon, so the
      * header does not make the column wider than its content. The label stays in the tooltip
-     * and the accessible name.
+     * and the accessible name. The sort arrow is only drawn while sorted by the column, since
+     * an idle arrow next to the icon crowds the narrow header.
      */
     icon?: React.ReactNode;
     /** Explains a column that is empty for a reason, in place of the sort tooltip. */
@@ -518,11 +519,13 @@ function SortableFileColumnHeader(props: {
                 "flex w-full justify-start text-left text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
                 props.icon === undefined
                     ? "gap-1.5 px-1.5 py-1.5"
-                    : "gap-0.5 px-1 py-1.5",
+                    : "gap-1 px-1.5 py-1.5",
             )}
         >
             {props.icon ?? props.label}
-            <SortIcon className="h-3.5 w-3.5" />
+            {props.icon !== undefined && direction === null ? null : (
+                <SortIcon className="h-3.5 w-3.5" />
+            )}
         </Button>
     );
 
