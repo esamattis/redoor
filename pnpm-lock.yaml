@@ -284,11 +284,11 @@ importers:
         specifier: ^4.25.12
         version: 4.25.12(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)
       '@wterm/dom':
-        specifier: 0.5.6
-        version: 0.5.6
+        specifier: 0.5.7
+        version: 0.5.7
       '@wterm/ghostty':
-        specifier: 0.5.6
-        version: 0.5.6
+        specifier: 0.5.7
+        version: 0.5.7
       cn:
         specifier: ^0.5.0
         version: 0.5.0
@@ -1668,14 +1668,14 @@ packages:
   '@vitest/utils@4.1.12':
     resolution: {integrity: sha512-Q3awXrwOfEV+qc3WmO5ONyE0yO7Q1gQ9/oyHxGLZ/pl7N3NO/ZztqQwKLuwMkV+CA1JYSIeO3gkHnRDIo4AVaA==}
 
-  '@wterm/core@0.5.6':
-    resolution: {integrity: sha512-etAO8J2U4/XYI2XAp5/inns//d2nJHLn3r9ua2fk6liX38ZK8mjslrTOyqlw56VTO5g6Dh5wDWAqyiU8cxXjyA==}
+  '@wterm/core@0.5.7':
+    resolution: {integrity: sha512-Dc12KwlWaCrTLABYNqm2OIxlC8vFsTejcJb8uql9oNucn5hj/YVldNOuBDddtSXJCasLBTPJQxdCnhnGZRYHKg==}
 
-  '@wterm/dom@0.5.6':
-    resolution: {integrity: sha512-4YuGpfm1bXkoSWN/odgFMHyKBOkGt7B94UexGlyB6h2S7GqvMV/Qd01Xsx0WLAv/oFYOLPwsx1i59mEGzJ+Maw==}
+  '@wterm/dom@0.5.7':
+    resolution: {integrity: sha512-yqnn43PnPdexno0ZHEC94iYIOBhximQBTVDr3qhRuhO3IQ69TjbFHNf7d5+ooRaXcEmPYz38bDNV7OXG+qzV/A==}
 
-  '@wterm/ghostty@0.5.6':
-    resolution: {integrity: sha512-I057CKoNj0K0dO9jp4QZhznyDx8CZfm3q64X1Tq5Gout9VJ//aCUt/k5fmba1jqaaH4fE+gR8yyb29ZMu25+iQ==}
+  '@wterm/ghostty@0.5.7':
+    resolution: {integrity: sha512-shvpcqzIaz5QuLoTqZ0miotG9GU6/cWPm/7ntjwylhozDRX+wt7DYwvXQenJJ2WtaSSn+wmoMJYplHXDFLjHIQ==}
 
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
@@ -4206,15 +4206,15 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
 
-  '@wterm/core@0.5.6': {}
+  '@wterm/core@0.5.7': {}
 
-  '@wterm/dom@0.5.6':
+  '@wterm/dom@0.5.7':
     dependencies:
-      '@wterm/core': 0.5.6
+      '@wterm/core': 0.5.7
 
-  '@wterm/ghostty@0.5.6':
+  '@wterm/ghostty@0.5.7':
     dependencies:
-      '@wterm/core': 0.5.6
+      '@wterm/core': 0.5.7
 
   ansi-regex@5.0.1: {}
 
