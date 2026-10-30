@@ -110,7 +110,9 @@ test.describe("Agent view navigation", () => {
         );
         const fileView = page.getByLabel("File view");
         // Workspace fixtures are inside the repository, so Git follows the unified Sync workspace.
-        await expect(fileView.getByRole("link").last()).toHaveText("Git");
+        await expect(fileView.getByRole("link").last()).toHaveAccessibleName(
+            /^Git, /,
+        );
         await expect(
             fileView.getByRole("link", { name: "Diff", exact: true }),
         ).toHaveCount(0);
@@ -125,7 +127,8 @@ test.describe("Agent view navigation", () => {
             fileView.getByRole("link", { name: "Sync", exact: true }),
         ).toBeVisible();
         await expect(
-            fileView.getByRole("link", { name: "Git", exact: true }),
+            // The Git tab is named "Git, <branch or commit>", whichever HEAD the checkout is on.
+            fileView.getByRole("link", { name: /^Git, / }),
         ).toBeVisible();
         await browserAgentView
             .getByRole("link", { name: context.agentName, exact: true })

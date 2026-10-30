@@ -1605,7 +1605,11 @@ the Git view rather than another level of page navigation.
 
 - **HEAD comes with the context.** `git/context` reports the checked-out branch and HEAD
   commit next to the repository root, because every worktree Git page renders the header
-  and the context is already loaded on navigation; reading HEAD costs no status walk.
+  and the context is already loaded on navigation; reading HEAD costs no status walk. The
+  same context names the browser's Git tab (`gitTabHead` in `navigation.tsx`): the branch,
+  or in amber the commit of a detached HEAD, so every view of a repository path shows where
+  new commits would land. While browsing a revision the tab stays "Git", since the revision
+  banner names the commit.
 - **Panels share one vocabulary.** Changed files carry the `git status --short` letter as a
   colored badge (`git-parts.tsx`), whether they come from worktree status or a commit, and
   every panel opens with the same summary bar instead of a second card header.

@@ -10,20 +10,49 @@ import {
     Pencil,
     RefreshCw,
     GitBranch,
+    GitCommitHorizontal,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import type { GitContextResponse } from "#bindings/GitContextResponse";
 import { Button } from "#ui/components/button";
 import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
 import { IconLinkButton } from "#ui/components/icon-button";
 import { SearchButton } from "#ui/components/search-button";
+import { Tooltip } from "#ui/components/tooltip";
+import { shortCommitId } from "#ui/components/browser/git-parts";
 import { useViewToolbarSlotRef } from "#ui/components/browser/view-toolbar-slot";
 import type { PathLoadError } from "#ui/components/browser/utils";
 import { browserRoute } from "#ui/browser-route";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
+import { cn } from "#ui/utils/cn";
 
 /** Names the representations of a path that the view tabs switch between. */
 export type BrowserView = "files" | "details" | "view" | "sync" | "git";
+
+/**
+ * What the Git tab names. The tab is already the sign that a path is in a repository, so it
+ * also says where new commits would land, without opening the Git view to find out.
+ */
+export type GitTabHead =
+    | { type: "branch"; name: string }
+    /** No branch is checked out; the id is absent only if HEAD names no commit at all. */
+    | { type: "detached"; commitId: string | null }
+    /** A browsed revision, which its banner already names, so the tab stays plain "Git". */
+    | { type: "revision" };
+
+/** Reads the Git tab from the worktree context, or null to hide the tab outside a worktree. */
+export function gitTabHead(context: GitContextResponse): GitTabHead | null {
+    if (context.status === "outside_worktree") {
+        return null;
+    }
+
+    if (context.branch_name !== null) {
+        return { type: "branch", name: context.branch_name };
+    }
+
+    return { type: "detached", commitId: context.head_commit_id };
+}
 
 /** Keeps location, navigation, view state, and object actions in a stable frame. */
 function BrowserPageHeader(props: {
@@ -107,7 +136,8 @@ export function ViewToggle(props: {
     activeView: BrowserView;
     /** Names the content tab Edit only after the agent marks the file writable. */
     editable?: boolean;
-    gitAvailable: boolean;
+    /** What the Git tab names, or null to hide it outside a worktree. */
+    gitHead: GitTabHead | null;
     /** Hides views that change files, and never names the content tab Edit. */
     readOnly?: boolean;
 }) {
@@ -159,17 +189,86 @@ export function ViewToggle(props: {
                     active={props.activeView === "sync"}
                 />
             )}
-            {props.gitAvailable ? (
-                <ViewToggleLink
+            {props.gitHead === null ? null : (
+                <GitViewToggleLink
                     agent={props.agent}
                     path={props.path}
-                    view="git"
-                    label="Git"
-                    icon={<GitBranch className="h-4 w-4" aria-hidden="true" />}
+                    head={props.gitHead}
                     active={props.activeView === "git"}
                 />
-            ) : null}
+            )}
         </ViewSwitch>
+    );
+}
+
+/**
+ * Names the Git tab by the checked-out branch, or in amber by the commit of a detached HEAD,
+ * which is not where new commits would go. The accessible name keeps "Git" first, so the
+ * tab is still announced and found as the Git view when its visible text is a branch name.
+ */
+function GitViewToggleLink(props: {
+    agent: Agent;
+    path: string;
+    head: GitTabHead;
+    active: boolean;
+}) {
+    const head = props.head;
+    const branchIcon = <GitBranch className="h-4 w-4" aria-hidden="true" />;
+
+    if (head.type === "revision") {
+        return (
+            <ViewToggleLink
+                agent={props.agent}
+                path={props.path}
+                view="git"
+                label="Git"
+                icon={branchIcon}
+                active={props.active}
+            />
+        );
+    }
+
+    const description =
+        head.type === "branch"
+            ? `branch ${head.name}`
+            : head.commitId === null
+              ? "detached HEAD"
+              : `detached at ${shortCommitId(head.commitId)}`;
+
+    return (
+        <ViewToggleLink
+            agent={props.agent}
+            path={props.path}
+            view="git"
+            label={
+                // Long branch names would push the other tabs off a phone-narrow strip.
+                <span className="max-w-48 truncate @max-xl/main:max-w-32">
+                    {head.type === "branch"
+                        ? head.name
+                        : head.commitId === null
+                          ? "Detached"
+                          : shortCommitId(head.commitId)}
+                </span>
+            }
+            ariaLabel={`Git, ${description}`}
+            tooltip={`Git view, on ${description}`}
+            icon={
+                head.type === "branch" ? (
+                    branchIcon
+                ) : (
+                    <GitCommitHorizontal
+                        className="h-4 w-4"
+                        aria-hidden="true"
+                    />
+                )
+            }
+            active={props.active}
+            className={
+                head.type === "detached"
+                    ? "text-amber-300 [&_svg]:text-amber-300"
+                    : undefined
+            }
+        />
     );
 }
 
@@ -179,20 +278,34 @@ function ViewToggleLink(props: {
     path: string;
     /** Leaves the default representation, the listing or content, when omitted. */
     view?: "details" | "sync" | "git";
-    label: string;
+    label: React.ReactNode;
+    /** Names the tab for assistive technology when the visible label alone is not its name. */
+    ariaLabel?: string;
+    /** Explains a tab whose visible label is not the name of its view. */
+    tooltip?: string;
     icon: React.ReactNode;
     active: boolean;
+    className?: string;
 }) {
-    return (
+    const link = (
         <Link
             {...browserRoute(props.agent, props.path)}
             search={{ view: props.view }}
             aria-current={props.active ? "page" : undefined}
-            className={getPageViewTabClass(props.active)}
+            aria-label={props.ariaLabel}
+            className={cn(getPageViewTabClass(props.active), props.className)}
         >
             {props.icon}
             {props.label}
         </Link>
+    );
+
+    return props.tooltip === undefined ? (
+        link
+    ) : (
+        <Tooltip content={props.tooltip} className="shrink-0">
+            {link}
+        </Tooltip>
     );
 }
 
@@ -246,7 +359,8 @@ export function BrowserHeader(props: {
     activeView: BrowserView;
     /** Forwards the content-tab label so file chrome matches the editable gate. */
     editable?: boolean;
-    gitAvailable: boolean;
+    /** What the Git tab names, or null to hide it outside a worktree. */
+    gitHead: GitTabHead | null;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
     /** Shown under the breadcrumbs, such as the banner of a browsed Git revision. */
@@ -317,7 +431,7 @@ export function BrowserHeader(props: {
                         entryType={props.entryType}
                         activeView={props.activeView}
                         editable={props.editable}
-                        gitAvailable={props.gitAvailable}
+                        gitHead={props.gitHead}
                         readOnly={props.readOnly}
                     />
                 )

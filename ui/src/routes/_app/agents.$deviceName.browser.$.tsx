@@ -30,7 +30,9 @@ import { RouteError } from "#ui/components/route-error";
 import {
     BrowserHeader,
     UnavailablePathState,
+    gitTabHead,
     type BrowserView,
+    type GitTabHead,
 } from "#ui/components/browser/navigation";
 import { ViewToolbarSlotProvider } from "#ui/components/browser/view-toolbar-slot";
 import { MissingPathCreationForm } from "#ui/components/browser/missing-path";
@@ -338,7 +340,8 @@ function BrowserRouteShell(props: {
     parentPath: string | null;
     entryType: "directory" | "file";
     activeView: BrowserView;
-    gitAvailable: boolean;
+    /** What the Git tab names, or null to hide it outside a worktree. */
+    gitHead: GitTabHead | null;
     editable?: boolean;
     /** Bounds the route to the overlay viewport so CodeMirror, not the page, scrolls. */
     fillAvailableHeight?: boolean;
@@ -366,7 +369,7 @@ function BrowserRouteShell(props: {
                     entryType={props.entryType}
                     activeView={props.activeView}
                     editable={props.editable}
-                    gitAvailable={props.gitAvailable}
+                    gitHead={props.gitHead}
                     pathUnavailable={props.pathUnavailable}
                     startEditingPath={props.startEditingPath}
                     banner={props.banner}
@@ -425,6 +428,9 @@ function FileBrowser() {
     return <ConnectedFileBrowser data={data} agent={agent} />;
 }
 
+/** The revision banner already names the browsed commit, so the Git tab keeps a plain label. */
+const revisionGitHead: GitTabHead = { type: "revision" };
+
 /**
  * Browses a path as committed at a Git revision. Everything is read-only: the listing has
  * no file operations, the editor cannot save, and the Git view shows the commit's changes.
@@ -462,7 +468,7 @@ function RevisionFileBrowser(props: {
                 parentPath={parentPath}
                 entryType={deletesOneFile ? "file" : "directory"}
                 activeView="git"
-                gitAvailable
+                gitHead={revisionGitHead}
                 banner={banner}
                 readOnly
             >
@@ -502,7 +508,7 @@ function RevisionFileBrowser(props: {
                 parentPath={parentPath}
                 entryType="directory"
                 activeView="files"
-                gitAvailable
+                gitHead={revisionGitHead}
                 pathUnavailable
                 startEditingPath={false}
                 banner={banner}
@@ -603,7 +609,7 @@ function RevisionFileBrowser(props: {
             entryType={isDirectory ? "directory" : "file"}
             activeView={activeView}
             editable={editable}
-            gitAvailable
+            gitHead={revisionGitHead}
             fillAvailableHeight={isEditView}
             banner={banner}
             readOnly
@@ -646,7 +652,7 @@ function ConnectedFileBrowser(props: {
     );
 
     const parentPath = getImmediateParentPath(path);
-    const gitAvailable = gitContext.status === "inside_worktree";
+    const gitHead = gitTabHead(gitContext);
 
     if (
         pathError?.type === "missing" &&
@@ -662,7 +668,7 @@ function ConnectedFileBrowser(props: {
                 parentPath={parentPath}
                 entryType="file"
                 activeView="git"
-                gitAvailable
+                gitHead={gitHead}
             >
                 <WorktreeGitView
                     agent={agent}
@@ -691,7 +697,7 @@ function ConnectedFileBrowser(props: {
                 parentPath={parentPath}
                 entryType="directory"
                 activeView="files"
-                gitAvailable={gitAvailable}
+                gitHead={gitHead}
                 pathUnavailable
                 startEditingPath={pathError.type !== "missing"}
             >
@@ -892,7 +898,7 @@ function FileBrowserPage(props: {
             entryType="file"
             activeView={activeView}
             editable={editable}
-            gitAvailable={props.gitContext.status === "inside_worktree"}
+            gitHead={gitTabHead(props.gitContext)}
             fillAvailableHeight={isEditView}
         >
             {content}
@@ -928,7 +934,7 @@ function DirectoryBrowserPage(props: {
             parentPath={props.parentPath}
             entryType="directory"
             activeView={activeView}
-            gitAvailable={props.gitContext.status === "inside_worktree"}
+            gitHead={gitTabHead(props.gitContext)}
         >
             {activeView === "git" ? (
                 <WorktreeGitView

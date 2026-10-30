@@ -63,7 +63,8 @@ test.describe.serial("Git browser", () => {
             path.join(repositoryPath, "clean", "stable.txt"),
             "stable\n",
         );
-        await $`git -C ${repositoryPath} init`;
+        // A fixed branch name, so the Git tab name does not depend on the host's init.defaultBranch.
+        await $`git -C ${repositoryPath} init --initial-branch=main`;
         await $`git -C ${repositoryPath} config user.email playwright@redoor.test`;
         await $`git -C ${repositoryPath} config user.name Playwright`;
         await $`git -C ${repositoryPath} add .`;
@@ -244,19 +245,22 @@ test.describe.serial("Git browser", () => {
         await page.goto(`${repositoryUrl}?view=git`);
 
         const directoryView = page.getByLabel("Directory view");
-        await expect(
-            directoryView.getByRole("link", { name: "Git", exact: true }),
-        ).toBeVisible();
+
+        // The Git tab names the checked-out branch, both visibly and in its accessible name.
+        const gitTab = directoryView.getByRole("link", {
+            name: "Git, branch main",
+            exact: true,
+        });
+
+        await expect(gitTab).toBeVisible();
 
         const directoryTabs = await directoryView
             .getByRole("link")
             .allTextContents();
 
         // Git must follow Sync while remaining reachable in the phone-width tab strip.
-        expect(directoryTabs.slice(-2)).toEqual(["Sync", "Git"]);
-        await expect(
-            directoryView.getByRole("link", { name: "Git", exact: true }),
-        ).toHaveAttribute("aria-current", "page");
+        expect(directoryTabs.slice(-2)).toEqual(["Sync", "main"]);
+        await expect(gitTab).toHaveAttribute("aria-current", "page");
 
         const repositoryHeader = page.getByRole("region", {
             name: "Git repository",
@@ -380,7 +384,7 @@ test.describe.serial("Git browser", () => {
         const fileView = page.getByLabel("File view");
         const fileTabs = await fileView.getByRole("link").allTextContents();
         // File Git uses the same stable post-Sync tab position as directory Git.
-        expect(fileTabs.slice(-2)).toEqual(["Sync", "Git"]);
+        expect(fileTabs.slice(-2)).toEqual(["Sync", "main"]);
 
         const stagedOnly = page.getByRole("button", {
             name: "Staged only",
@@ -465,7 +469,7 @@ test.describe.serial("Git browser", () => {
         await expect(
             page
                 .getByLabel("Directory view")
-                .getByRole("link", { name: "Git", exact: true }),
+                .getByRole("link", { name: /^Git\b/ }),
         ).toHaveCount(0);
     });
 });
