@@ -141,6 +141,8 @@ test.describe("Diff context expansion", () => {
         // One step reveals the twenty lines just above the visible context.
         await expect(row(7)).toBeVisible();
 
+        // The open actions follow the hovered line instead of sitting on every row.
+        await row(30).hover();
         await diff
             .getByRole("link", { name: "Open line 30 in editor" })
             .click();
@@ -193,6 +195,8 @@ test.describe("Diff context expansion", () => {
         await expect(row(60)).toBeVisible();
         await expect(folds).toHaveCount(0);
 
+        // The open actions follow the hovered line instead of sitting on every row.
+        await row(30).hover();
         await diff
             .getByRole("link", { name: "Open line 30 in editor" })
             .click();

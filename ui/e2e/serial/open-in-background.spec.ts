@@ -125,6 +125,10 @@ test.describe.serial("Open in background", () => {
             exact: true,
         });
 
+        // The line actions follow the hovered line instead of sitting on every row.
+        await section
+            .locator(`tr[data-line-new="${String(TARGET_LINE)}"]`)
+            .hover();
         // Row buttons of an open file offer to move it to their line rather than open it.
         await expect(rowButton).toBeVisible();
         await rowButton.click();
@@ -253,6 +257,10 @@ fourth line
             `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(repositoryPath)}?view=git&rev=HEAD`,
         );
 
+        // The open actions follow the hovered line instead of sitting on every row.
+        await page
+            .locator(`tr[data-line-new="${String(TARGET_LINE)}"]`)
+            .hover();
         await page
             .getByRole("button", {
                 name: `Open ${fileName} at line ${String(TARGET_LINE)} in the background`,

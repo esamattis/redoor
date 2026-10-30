@@ -293,6 +293,19 @@ const MARKER_CLASSES = {
     modified: "border-l-amber-400",
 } satisfies Record<DiffLine["kind"], string>;
 
+/** How many line actions the toolbar holds, which sets the room rows leave for it. */
+type ActionSpace = "none" | "one" | "two";
+
+/**
+ * Room at the end of every row for the line actions toolbar, so it never covers the end of a
+ * line that is scrolled fully into view or wrapped. Touch screens get larger buttons.
+ */
+const ACTION_SPACE_CLASSES = {
+    none: "pr-4",
+    one: "pr-8 pointer-coarse:pr-10",
+    two: "pr-14 pointer-coarse:pr-18",
+} satisfies Record<ActionSpace, string>;
+
 const SIGNS = {
     normal: "",
     insert: "+",
@@ -404,8 +417,7 @@ const Line = React.memo(function Line(props: {
     line: DiffLine;
     oldTokens: HighlightToken[] | undefined;
     newTokens: HighlightToken[] | undefined;
-    editorRoute: DiffEditorRoute | null;
-    background: BackgroundOpen | null;
+    actionSpace: ActionSpace;
     slots: GutterSlots;
     wrapLines: boolean;
 }) {
@@ -418,8 +430,6 @@ const Line = React.memo(function Line(props: {
             : line.kind === "delete"
               ? "del"
               : "span";
-
-    const openLine = line.newLineNumber;
 
     return (
         <>
@@ -442,7 +452,8 @@ const Line = React.memo(function Line(props: {
                 />
                 <td
                     className={cn(
-                        "w-full pl-2 pr-4",
+                        "w-full pl-2",
+                        ACTION_SPACE_CLASSES[props.actionSpace],
                         props.wrapLines
                             ? "whitespace-pre-wrap wrap-anywhere"
                             : "whitespace-pre",
@@ -473,41 +484,6 @@ const Line = React.memo(function Line(props: {
                         )}
                     </Tag>
                 </td>
-                <td
-                    className={cn(
-                        // Sticky with the row's own opaque background, so the actions stay
-                        // in view over long lines instead of sitting at the far end of them.
-                        "sticky right-0 select-none whitespace-nowrap py-px pr-2 pl-1 text-right",
-                        ROW_CLASSES[line.kind],
-                        !props.wrapLines && "align-middle",
-                    )}
-                >
-                    {props.editorRoute === null || openLine === null ? null : (
-                        // Only new-side lines exist in the current file, so only they open.
-                        <span className="inline-flex items-center gap-1">
-                            {/* Tighter than the button's own padding, so rows keep their height. */}
-                            <IconLinkButton
-                                {...props.editorRoute}
-                                search={{ line: openLine }}
-                                variant="ghost"
-                                label={`Open line ${String(openLine)} in editor`}
-                                className="p-0.5"
-                            >
-                                <SquarePen
-                                    className="h-3.5 w-3.5"
-                                    aria-hidden="true"
-                                />
-                            </IconLinkButton>
-                            {props.background === null ? null : (
-                                <OpenInBackgroundButton
-                                    target={props.background}
-                                    line={openLine}
-                                    className="p-0.5"
-                                />
-                            )}
-                        </span>
-                    )}
-                </td>
             </tr>
             {line.missingNewline ? (
                 <tr data-line-kind="no-newline" className="bg-surface">
@@ -517,7 +493,7 @@ const Line = React.memo(function Line(props: {
                         newLineNumber={null}
                         slots={props.slots}
                     />
-                    <td colSpan={2} className="pl-2 italic text-slate-500">
+                    <td className="pl-2 italic text-slate-500">
                         \ No newline at end of file
                     </td>
                 </tr>
@@ -566,7 +542,7 @@ function SkipBlockRow(props: {
                     />
                 ) : undefined}
             </Gutter>
-            <td colSpan={2} className="py-1 pl-2 italic">
+            <td className="py-1 pl-2 italic">
                 {props.block.content === ""
                     ? hidden
                     : `${hidden} · ${props.block.content}`}
@@ -578,9 +554,7 @@ function SkipBlockRow(props: {
 /** The rows the view draws with, shared by hunks and revealed folds. */
 interface RowContext {
     highlight: FileHighlight | null;
-    editorRoute: DiffEditorRoute | null;
-    /** Opens the current file at a row's line without leaving the diff. */
-    background: BackgroundOpen | null;
+    actionSpace: ActionSpace;
     slots: GutterSlots;
     wrapLines: boolean;
 }
@@ -603,8 +577,7 @@ function Rows(props: { lines: DiffLine[]; context: RowContext }) {
                     ? undefined
                     : context.highlight?.new.get(line.newLineNumber)
             }
-            editorRoute={context.editorRoute}
-            background={context.background}
+            actionSpace={context.actionSpace}
             slots={context.slots}
             wrapLines={context.wrapLines}
         />
@@ -730,6 +703,454 @@ function Fold(props: {
     );
 }
 
+/**
+ * The height the rows take, as a CSS length, for a patch the browser has not laid out yet.
+ * Rows are one line tall unless they wrap, and a fold row is a little taller for its padding
+ * and buttons. It only has to be close: it stands in for the patches above a restored scroll
+ * position until they are rendered, so a better guess lands the reader nearer where they were.
+ */
+function estimatedRowsHeight(
+    file: DiffFile,
+    reveal: (index: number) => Reveal,
+    wholeFile: boolean,
+): string {
+    let lines = 0;
+    let folds = 0;
+
+    file.hunks.forEach((hunk, index) => {
+        if (hunk.type === "hunk") {
+            lines += hunk.lines.length;
+
+            return;
+        }
+
+        if (hunk.lines === null) {
+            folds += 1;
+
+            return;
+        }
+
+        const shown = reveal(index);
+        const fromTop = wholeFile ? hunk.lines.length : shown.fromTop;
+        const visible = Math.min(hunk.lines.length, fromTop + shown.fromBottom);
+
+        lines += visible;
+
+        if (visible < hunk.lines.length) {
+            folds += 1;
+        }
+    });
+
+    return `calc(${String(lines)} * 1lh + ${String(folds)} * (1lh + 0.625rem))`;
+}
+
+/** What the line actions toolbar can do with the current file. */
+interface LineActions {
+    editorRoute: DiffEditorRoute;
+    /** Opens the current file at a line without leaving the diff. */
+    background: BackgroundOpen | null;
+}
+
+/** The row the line actions toolbar shows for, measured against the frame it sits in. */
+interface ActiveRow {
+    row: HTMLTableRowElement;
+    line: number;
+    kind: DiffLine["kind"];
+    /**
+     * How the row was picked. Leaving the patch with the mouse hides only what hovering
+     * showed, so a tapped or keyboard-picked row keeps its toolbar.
+     */
+    source: "pointer" | "tap" | "keyboard";
+    top: number;
+    height: number;
+    /** The middle of the row's first visual line, where the toolbar centres on a wrapped row. */
+    center: number;
+}
+
+/** Rows that exist in the current file, which are the only lines the editor can open at. */
+const ACTIONABLE_ROW = "tr[data-line-new]";
+
+/** Reads a row's change kind back from the attribute `Line` writes. */
+function rowKind(row: HTMLTableRowElement): DiffLine["kind"] {
+    const kind = row.dataset.lineKind;
+
+    return kind === "insert" || kind === "delete" || kind === "modified"
+        ? kind
+        : "normal";
+}
+
+/**
+ * Measures a row against the frame. It returns null for a row that left the table or no
+ * longer opens a line, such as one a fold reused for another line.
+ */
+function measureRow(
+    frame: HTMLElement,
+    row: HTMLTableRowElement,
+    source: ActiveRow["source"],
+): ActiveRow | null {
+    const line = Number(row.dataset.lineNew);
+
+    if (
+        !row.isConnected ||
+        !row.matches(ACTIONABLE_ROW) ||
+        !Number.isInteger(line)
+    ) {
+        return null;
+    }
+
+    const frameRect = frame.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const lineHeight = Number.parseFloat(getComputedStyle(row).lineHeight);
+    const top = rowRect.top - frameRect.top;
+
+    const firstLineHeight = Number.isNaN(lineHeight)
+        ? rowRect.height
+        : Math.min(lineHeight, rowRect.height);
+
+    return {
+        row,
+        line,
+        kind: rowKind(row),
+        source,
+        top,
+        height: rowRect.height,
+        center: top + firstLineHeight / 2,
+    };
+}
+
+/** The next or previous row that opens a line, skipping deleted, fold and marker rows. */
+function siblingActionableRow(
+    row: Element,
+    direction: "next" | "previous",
+): HTMLTableRowElement | null {
+    let sibling =
+        direction === "next"
+            ? row.nextElementSibling
+            : row.previousElementSibling;
+
+    while (sibling !== null) {
+        if (
+            sibling instanceof HTMLTableRowElement &&
+            sibling.matches(ACTIONABLE_ROW)
+        ) {
+            return sibling;
+        }
+
+        sibling =
+            direction === "next"
+                ? sibling.nextElementSibling
+                : sibling.previousElementSibling;
+    }
+
+    return null;
+}
+
+/** The first row that opens a line and is on screen, else the patch's first such row. */
+function firstVisibleActionableRow(
+    viewport: HTMLElement,
+): HTMLTableRowElement | null {
+    const rows = viewport.querySelectorAll<HTMLTableRowElement>(ACTIONABLE_ROW);
+
+    for (const row of rows) {
+        const rect = row.getBoundingClientRect();
+
+        if (rect.bottom > 0 && rect.top < window.innerHeight) {
+            return row;
+        }
+    }
+
+    return rows[0] ?? null;
+}
+
+/**
+ * The picked line's actions and, while the lines have keyboard focus, a ring marking the
+ * line, both laid over the patch at the measured row.
+ */
+function LineActionsToolbar(props: {
+    ref: React.Ref<HTMLDivElement>;
+    actions: LineActions;
+    active: ActiveRow;
+}) {
+    return (
+        <>
+            {/* Marks the keyboard-picked line, since the box itself shows no outline. */}
+            <div
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-x-0 hidden ring-2 ring-inset ring-blue-500 peer-focus-visible:block"
+                style={{ top: props.active.top, height: props.active.height }}
+            />
+            <div
+                ref={props.ref}
+                role="toolbar"
+                aria-label={`Line ${String(props.active.line)} actions`}
+                className={cn(
+                    "absolute right-0 flex -translate-y-1/2 items-center gap-1 rounded-l-md py-px pr-2 pl-1",
+                    ROW_CLASSES[props.active.kind],
+                )}
+                style={{ top: props.active.center }}
+            >
+                <IconLinkButton
+                    {...props.actions.editorRoute}
+                    search={{ line: props.active.line }}
+                    variant="ghost"
+                    label={`Open line ${String(props.active.line)} in editor`}
+                    // Tight enough to fit a row, larger where fingers tap.
+                    className="p-0.5 pointer-coarse:p-1.5"
+                >
+                    <SquarePen className="h-3.5 w-3.5" aria-hidden="true" />
+                </IconLinkButton>
+                {props.actions.background === null ? null : (
+                    <OpenInBackgroundButton
+                        target={props.actions.background}
+                        line={props.active.line}
+                        className="p-0.5 pointer-coarse:p-1.5"
+                    />
+                )}
+            </div>
+        </>
+    );
+}
+
+/**
+ * The patch's scrolling box with one shared toolbar that opens the hovered, tapped or
+ * keyboard-picked line in the editor or in the background. Buttons on every row made a large
+ * diff mount two router links and tooltips per line, which cost more than the lines
+ * themselves. The table comes in as `children`, so moving the toolbar re-renders only this
+ * frame and never the rows.
+ *
+ * Keyboard users focus the patch and pick a line with the arrow keys; Tab then moves into the
+ * toolbar, which follows the box in the tab order. On touch screens a tap on a line shows it.
+ *
+ * The box skips rendering while it is off screen with `content-visibility`, so a long list of
+ * patches only lays out and paints the ones in view, while find in page still finds text in
+ * all of them. `estimatedHeight` sizes a skipped box before it has ever been rendered.
+ */
+function LineActionsFrame(props: {
+    /** Null where the diff is not of one file on one device, which has no line to open. */
+    actions: LineActions | null;
+    estimatedHeight: string;
+    children: React.ReactNode;
+}) {
+    const frameRef = React.useRef<HTMLDivElement>(null);
+    const viewportRef = React.useRef<HTMLDivElement>(null);
+    const toolbarRef = React.useRef<HTMLDivElement>(null);
+    const [active, setActive] = React.useState<ActiveRow | null>(null);
+    const actions = props.actions;
+    const activeRow = active?.row ?? null;
+    const activeSource = active?.source ?? null;
+
+    // Folds, wrapping and a narrower column move rows without any pointer or key event, so
+    // the toolbar measures its row again whenever the patch changes size.
+    React.useEffect(() => {
+        const frame = frameRef.current;
+        const viewport = viewportRef.current;
+
+        if (
+            activeRow === null ||
+            activeSource === null ||
+            frame === null ||
+            viewport === null
+        ) {
+            return;
+        }
+
+        const observer = new ResizeObserver(() => {
+            setActive(measureRow(frame, activeRow, activeSource));
+        });
+
+        observer.observe(viewport);
+
+        return () => observer.disconnect();
+    }, [activeRow, activeSource]);
+
+    /** Shows the toolbar for a row, or hides it when the row cannot open a line. */
+    const show = (row: HTMLTableRowElement, source: ActiveRow["source"]) => {
+        const frame = frameRef.current;
+
+        if (frame !== null) {
+            setActive(measureRow(frame, row, source));
+        }
+    };
+
+    /** The row an event happened in, when it happened among the rows and not the toolbar. */
+    const rowOf = (target: EventTarget): Element | null => {
+        const viewport = viewportRef.current;
+
+        if (
+            !(target instanceof Element) ||
+            viewport === null ||
+            !viewport.contains(target)
+        ) {
+            return null;
+        }
+
+        return target.closest("tr");
+    };
+
+    /** Hides the toolbar if hovering showed it, keeping a tapped or keyboard-picked one. */
+    const hidePointerActive = () =>
+        setActive((previous) =>
+            previous?.source === "pointer" ? null : previous,
+        );
+
+    const onPointerOver = (event: React.PointerEvent) => {
+        if (event.pointerType !== "mouse") {
+            return;
+        }
+
+        const row = rowOf(event.target);
+
+        if (row instanceof HTMLTableRowElement && row.matches(ACTIONABLE_ROW)) {
+            if (row !== activeRow) {
+                show(row, "pointer");
+            }
+        } else if (row !== null) {
+            // A deleted or fold row has no line to open, so the toolbar leaves with the pointer.
+            hidePointerActive();
+        }
+    };
+
+    // A tap ends in pointerup, while a touch that scrolls the page is cancelled instead, so
+    // scrolling past rows never moves the toolbar.
+    const onPointerUp = (event: React.PointerEvent) => {
+        const row = rowOf(event.target);
+
+        if (
+            event.pointerType !== "mouse" &&
+            row instanceof HTMLTableRowElement &&
+            row.matches(ACTIONABLE_ROW)
+        ) {
+            show(row, "tap");
+        }
+    };
+
+    const onPointerLeave = (event: React.PointerEvent) => {
+        if (event.pointerType === "mouse") {
+            hidePointerActive();
+        }
+    };
+
+    // Only keyboard focus picks a row by itself; a click focuses the box too, and the
+    // pointer has already decided what the toolbar shows.
+    const onFocus = (event: React.FocusEvent<HTMLDivElement>) => {
+        const viewport = event.currentTarget;
+
+        if (
+            event.target !== viewport ||
+            active !== null ||
+            !viewport.matches(":focus-visible")
+        ) {
+            return;
+        }
+
+        const row = firstVisibleActionableRow(viewport);
+
+        if (row !== null) {
+            show(row, "keyboard");
+        }
+    };
+
+    // Handled on the frame, so Escape also works while focus is in the toolbar.
+    const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+        const viewport = viewportRef.current;
+        const toolbar = toolbarRef.current;
+
+        if (viewport === null) {
+            return;
+        }
+
+        const inToolbar =
+            toolbar !== null &&
+            event.target instanceof Node &&
+            toolbar.contains(event.target);
+
+        if (
+            event.key === "Escape" &&
+            (event.target === viewport || inToolbar)
+        ) {
+            setActive(null);
+
+            // The toolbar leaves with its focused button, so focus goes back to the lines.
+            if (inToolbar) {
+                viewport.focus();
+            }
+
+            return;
+        }
+
+        if (event.target !== viewport) {
+            return;
+        }
+
+        // Fold buttons inside the rows come first in the tab order, so Tab jumps over them
+        // straight to the picked line's actions.
+        const firstAction =
+            toolbar?.querySelector<HTMLElement>("a, button") ?? null;
+
+        if (event.key === "Tab" && !event.shiftKey && firstAction !== null) {
+            event.preventDefault();
+            firstAction.focus();
+
+            return;
+        }
+
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp") {
+            return;
+        }
+
+        const next =
+            activeRow === null || !activeRow.isConnected
+                ? firstVisibleActionableRow(viewport)
+                : siblingActionableRow(
+                      activeRow,
+                      event.key === "ArrowDown" ? "next" : "previous",
+                  );
+
+        if (next !== null) {
+            event.preventDefault();
+            next.scrollIntoView({ block: "nearest" });
+            show(next, "keyboard");
+        }
+    };
+
+    return (
+        <div
+            ref={frameRef}
+            className="relative"
+            onPointerOver={actions === null ? undefined : onPointerOver}
+            onPointerUp={actions === null ? undefined : onPointerUp}
+            onPointerLeave={actions === null ? undefined : onPointerLeave}
+            onKeyDown={actions === null ? undefined : onKeyDown}
+        >
+            {/* Font and line height sit on the box, so the estimate's `lh` is one row. */}
+            <div
+                ref={viewportRef}
+                role={actions === null ? undefined : "group"}
+                aria-label={
+                    actions === null
+                        ? undefined
+                        : "Diff lines. Use the arrow keys to pick a line to open."
+                }
+                tabIndex={actions === null ? undefined : 0}
+                onFocus={actions === null ? undefined : onFocus}
+                className="peer w-full min-w-0 overflow-x-auto overflow-y-hidden font-mono text-code leading-5 outline-none [content-visibility:auto] @max-xl:leading-4"
+                style={{
+                    containIntrinsicBlockSize: `auto ${props.estimatedHeight}`,
+                }}
+            >
+                {props.children}
+            </div>
+            {actions === null || active === null ? null : (
+                <LineActionsToolbar
+                    ref={toolbarRef}
+                    actions={actions}
+                    active={active}
+                />
+            )}
+        </div>
+    );
+}
+
 /** How far each fold is revealed, by fold index, for every file a history entry showed. */
 type FoldRevealsByFile = ReadonlyMap<string, ReadonlyMap<number, Reveal>>;
 
@@ -806,21 +1227,40 @@ export function Diff(props: {
 
     const slots = React.useMemo(() => gutterSlots(file), [file]);
     const reveals = useFoldReveals(file);
+    const editorRoute = props.editorRoute;
+
+    const actions =
+        editorRoute === null
+            ? null
+            : { editorRoute, background: props.background };
 
     const context: RowContext = {
         highlight,
-        editorRoute: props.editorRoute,
-        background: props.background,
+        actionSpace:
+            actions === null
+                ? "none"
+                : actions.background === null
+                  ? "one"
+                  : "two",
         slots,
         wrapLines: props.wrapLines,
     };
 
     return (
-        <div className="w-full min-w-0 overflow-x-auto overflow-y-hidden">
+        <LineActionsFrame
+            actions={actions}
+            estimatedHeight={estimatedRowsHeight(
+                file,
+                reveals.get,
+                props.wholeFile,
+            )}
+        >
             <table
                 aria-label={props.label}
                 className={cn(
-                    "syntax-highlight border-separate border-spacing-0 bg-surface font-mono text-code leading-5 text-slate-200 @max-xl:leading-4",
+                    "syntax-highlight border-separate border-spacing-0 bg-surface text-slate-200",
+                    // Keyboard picks scroll rows into view below the file's sticky header.
+                    "[&_tr]:scroll-my-16",
                     props.wrapLines ? "w-full" : "w-max min-w-full",
                 )}
             >
@@ -849,6 +1289,6 @@ export function Diff(props: {
                     )}
                 </tbody>
             </table>
-        </div>
+        </LineActionsFrame>
     );
 }

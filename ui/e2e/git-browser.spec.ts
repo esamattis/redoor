@@ -349,9 +349,10 @@ test.describe.serial("Git browser", () => {
         // Only the changed word is marked, as removed old text and inserted new text.
         await expect(modifiedRow.getByRole("deletion")).toHaveText("committed");
         await expect(modifiedRow.getByRole("insertion")).toHaveText("worktree");
-        // The modified row exists in the current file, so it can still open the editor.
+        // The modified row exists in the current file, so hovering it offers the editor.
+        await modifiedRow.hover();
         await expect(
-            modifiedRow.getByRole("link", { name: "Open line 1 in editor" }),
+            fullDiff.getByRole("link", { name: "Open line 1 in editor" }),
         ).toBeVisible();
         // Diff colours must follow the resolved app theme rather than a fixed dark palette.
         await expect(modifiedRow.getByRole("insertion")).toHaveCSS(

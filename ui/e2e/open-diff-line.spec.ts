@@ -57,6 +57,10 @@ test.describe("Open diff line", () => {
         );
         const diff = page.getByRole("region", { name: "Full Git diff" });
         await expect(diff).toContainText(TARGET_TEXT);
+        // The open actions follow the hovered line instead of sitting on every row.
+        await diff
+            .locator(`tr[data-line-new="${String(TARGET_LINE)}"]`)
+            .hover();
         await diff
             .getByRole("link", {
                 name: `Open line ${String(TARGET_LINE)} in editor`,
@@ -109,5 +113,77 @@ test.describe("Open diff line", () => {
         expect(pageScroll.scrollHeight).toBeLessThanOrEqual(
             pageScroll.clientHeight + 1,
         );
+    });
+
+    test("picks a line with the arrow keys and opens it from the line toolbar", async ({
+        page,
+    }) => {
+        const ctx = await setupTestDir("open-diff-line-keyboard");
+        testDirPath = ctx.testDirPath;
+        const repositoryPath = path.join(ctx.testDirPath, "repository");
+        const filePath = path.join(repositoryPath, "notes.txt");
+        await fs.mkdir(repositoryPath);
+
+        const lines = Array.from(
+            { length: 40 },
+            (_, index) => `line ${String(index + 1)}`,
+        );
+
+        await fs.writeFile(filePath, `${lines.join("\n")}\n`);
+        await $`git -C ${repositoryPath} init`;
+        await $`git -C ${repositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${repositoryPath} config user.name Playwright`;
+        await $`git -C ${repositoryPath} add notes.txt`;
+        await $`git -C ${repositoryPath} commit -m baseline`;
+        // One edit in the middle leaves folds with expand buttons above and below it.
+        lines[19] = "changed line 20";
+        await fs.writeFile(filePath, `${lines.join("\n")}\n`);
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}?view=git`,
+        );
+
+        const diff = page.getByRole("region", { name: "Full Git diff" });
+        await expect(diff).toContainText("changed line 20");
+        // The fold buttons sit inside the lines, ahead of the toolbar in the tab order.
+        await expect(
+            diff.getByRole("button", { name: "Expand all" }).first(),
+        ).toBeVisible();
+
+        const diffLines = diff.getByRole("group", { name: /^Diff lines/ });
+        await diffLines.focus();
+        // Keyboard focus picks the first line on screen, so the toolbar is reachable at once.
+        await expect(
+            diff.getByRole("toolbar", { name: "Line 17 actions" }),
+        ).toBeVisible();
+
+        await page.keyboard.press("ArrowDown");
+        // Each arrow press moves the toolbar to the next line that can be opened.
+        await expect(
+            diff.getByRole("toolbar", { name: "Line 18 actions" }),
+        ).toBeVisible();
+
+        await page.keyboard.press("Tab");
+        // Tab skips the fold buttons and lands on the picked line's open link.
+        await expect(
+            diff.getByRole("link", { name: "Open line 18 in editor" }),
+        ).toBeFocused();
+
+        await page.keyboard.press("Escape");
+        // Escape hides the toolbar even from inside it and gives focus back to the lines.
+        await expect(diff.getByRole("toolbar")).toHaveCount(0);
+        await expect(diffLines).toBeFocused();
+
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("Tab");
+        // With nothing picked, an arrow press starts again from the first line on screen.
+        await expect(
+            diff.getByRole("link", { name: "Open line 17 in editor" }),
+        ).toBeFocused();
+
+        await page.keyboard.press("Enter");
+        // The link opens the editor at the picked line.
+        await expect(page).toHaveURL(/[?&]line=17(?:&|$)/);
+        await expect(page.getByLabel("Editor caret line")).toHaveText("17");
     });
 });
