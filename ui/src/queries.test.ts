@@ -1,13 +1,19 @@
-import { CancelledError, QueryClient } from "@tanstack/react-query";
+import {
+    CancelledError,
+    InfiniteQueryObserver,
+    QueryClient,
+} from "@tanstack/react-query";
 import { isNotFound } from "@tanstack/react-router";
-import { expect, test, vi } from "vitest";
+import { expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
+import type { GitLogResponse } from "#bindings/GitLogResponse";
 import { ApiClient } from "#ui/api-client";
 import {
     agentsQueryOptions,
     fetchQueryUncancelled,
     fileContentQueryOptions,
+    gitLogQueryOptions,
     invalidateAgentData,
     invalidateAllAgentData,
     loadAgentByName,
@@ -181,6 +187,67 @@ test("agent-wide invalidation refreshes mirrors but never editor buffers", async
     // Unattributed changes reach every agent's mirrors but still spare editor buffers.
     expect(isInvalidated(otherAgentKey)).toBe(true);
     expect(isInvalidated(contentOptions.queryKey)).toBe(false);
+});
+
+test("agent refreshes cannot cancel pagination through commit-pinned history", async () => {
+    const queryClient = new QueryClient();
+    const agent = new ApiClient("http://localhost").agentFor(agentInfo("a"));
+    let resolveNextPage: ((page: GitLogResponse) => void) | undefined;
+
+    const nextPage = new Promise<GitLogResponse>((resolve) => {
+        resolveNextPage = resolve;
+    });
+
+    const page: GitLogResponse = {
+        repository_root: "/repo",
+        repository_relative_path: "",
+        commits: [
+            {
+                id: "commit",
+                summary: "Commit",
+                author_name: "Test",
+                author_email: "test@example.com",
+                authored_at: 0,
+                parent_ids: [],
+            },
+        ],
+        has_more: true,
+    };
+
+    const gitLog = vi
+        .spyOn(agent, "gitLog")
+        .mockImplementation((_path, options) =>
+            options.skip === 0 ? Promise.resolve(page) : nextPage,
+        );
+
+    const options = gitLogQueryOptions(agent, "/repo", "commit");
+    await queryClient.fetchInfiniteQuery(options);
+    const observer = new InfiniteQueryObserver(queryClient, options);
+    const unsubscribe = observer.subscribe(() => {});
+    onTestFinished(() => {
+        unsubscribe();
+        queryClient.clear();
+        gitLog.mockRestore();
+    });
+
+    const pagination = observer.fetchNextPage();
+    await invalidateAgentData(queryClient, "a");
+    await invalidateAllAgentData(queryClient);
+
+    if (resolveNextPage === undefined) {
+        throw new Error("The next page has no resolver");
+    }
+
+    resolveNextPage({ ...page, commits: [], has_more: false });
+    await pagination;
+
+    // Unrelated filesystem events must leave the requested next page running.
+    expect(gitLog).toHaveBeenCalledTimes(2);
+    expect(observer.getCurrentResult().data?.pages).toHaveLength(2);
+    // Unborn HEAD has no fixed history and must still refresh when commits appear.
+    expect(
+        gitLogQueryOptions(agent, "/repo", null).meta?.immutableHistory,
+    ).toBe(false);
 });
 
 test("every agent-scoped key lives under the agent's prefix", () => {

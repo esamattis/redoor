@@ -173,16 +173,20 @@ export const queryKeys = {
         [...queryKeys.all, "server-logging-level"] as const,
 };
 
-/** Tells server mirrors, which a refresh may replace, from editor working copies. */
+/** Refreshes mutable mirrors without replacing working copies or immutable Git history. */
 function isServerMirror(query: Query): boolean {
-    return query.meta?.editorBuffer !== true;
+    return (
+        query.meta?.editorBuffer !== true &&
+        query.meta?.immutableHistory !== true
+    );
 }
 
 /**
  * Marks one agent's cached data stale and refetches whatever is on screen. Mutations and
  * server events share this single entry point after changing an agent's state, so no
  * caller has to know which keys a change might touch. Editor buffers are excluded: only
- * the editor decides when its clean text may be replaced.
+ * the editor decides when its clean text may be replaced. Commit-pinned history is also
+ * excluded, since unrelated changes cannot alter it and must not cancel its pagination.
  */
 export function invalidateAgentData(
     queryClient: QueryClient,
@@ -771,6 +775,8 @@ export function gitLogQueryOptions(
                   )
                 : undefined,
         staleTime: Number.POSITIVE_INFINITY,
+        // A broad filesystem refresh must not cancel loading the next immutable page.
+        meta: { immutableHistory: rev !== null },
     });
 }
 

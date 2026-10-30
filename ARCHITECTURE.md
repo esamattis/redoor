@@ -1209,6 +1209,11 @@ invalidating query keys, so a view never needs a separate reload signal.
   buffers). The inventory list is a sibling key, so refreshing it does not touch any agent's
   files. `invalidateAgentData` is the single entry point mutations and events use after
   changing an agent.
+- **Commit history is immutable.** History queries keyed by a resolved commit ID carry
+  `meta: { immutableHistory: true }` and are skipped by agent-wide invalidations. A file
+  mutation cannot change those ancestors, and refreshing them could cancel an in-flight
+  next page. A moved HEAD selects a new query key instead; unborn HEAD history remains
+  refreshable.
 - **The editor's device text is refetched by the editor only.** The file content query is
   tagged with `meta: { editorBuffer: true }`, and `invalidateAgentData` and
   `invalidateAllAgentData` skip it, so unrelated mutations do not download open files again.
