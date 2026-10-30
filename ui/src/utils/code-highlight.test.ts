@@ -75,3 +75,36 @@ test("resolves fence labels to bundled or lazily loaded grammars", () => {
     // Unknown labels get no grammar, so the fence stays plain.
     expect(languageForName("unknown-language")).toBeNull();
 });
+
+test("parses JSX in .tsx and .jsx files but not in .ts files", () => {
+    const element = `const el = <h3 className="flex min-w-0">{name}</h3>;`;
+    const tsx = highlight("view.tsx", element);
+    const jsx = highlight("view.jsx", element);
+
+    // Without JSX parsing the attribute's class list is read as code, splitting it
+    // into identifiers, operators and numbers instead of colouring it as one string.
+    expect(tokensOfKind(tsx, "string")).toEqual(['"flex min-w-0"']);
+    expect(tokensOfKind(tsx, "tag")).toEqual(["h3", "h3"]);
+    expect(tokensOfKind(jsx, "string")).toEqual(['"flex min-w-0"']);
+
+    // Plain TypeScript must keep `<Type>value` as a type assertion, not an element.
+    const ts = highlight("cast.ts", `const n = <number>value;`);
+
+    expect(tokensOfKind(ts, "type")).toEqual(["number"]);
+    expect(tokensOfKind(ts, "tag")).toEqual([]);
+});
+
+test("resolves tsx and jsx fence labels to JSX-aware grammars", () => {
+    const element = `<a href="x">y</a>`;
+    const tsx = languageForName("tsx");
+
+    if (!(tsx instanceof Language)) {
+        throw new Error("No bundled grammar for tsx");
+    }
+
+    // Markdown fences labelled tsx highlight JSX the same way .tsx files do.
+    expect(tokensOfKind(highlightLines(element, tsx), "tag")).toEqual([
+        "a",
+        "a",
+    ]);
+});

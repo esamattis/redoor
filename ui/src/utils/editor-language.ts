@@ -32,6 +32,7 @@ export type SupportedSyntaxLanguage =
     | "java"
     | "javascript"
     | "json"
+    | "jsx"
     | "lua"
     | "markdown"
     | "perl"
@@ -41,6 +42,7 @@ export type SupportedSyntaxLanguage =
     | "rust"
     | "shell"
     | "toml"
+    | "tsx"
     | "typescript"
     | "xml"
     | "yaml";
@@ -92,8 +94,13 @@ export function syntaxLanguageSupport(
             return rust();
         case "javascript":
             return javascript();
+        case "jsx":
+            return javascript({ jsx: true });
         case "typescript":
             return javascript({ typescript: true });
+        case "tsx":
+            // JSX stays off for plain TypeScript, where `<Type>value` is a type assertion.
+            return javascript({ typescript: true, jsx: true });
         case "go":
             return go();
         case "html":
@@ -194,13 +201,15 @@ export function syntaxLanguageFromFileName(
         case "js":
         case "mjs":
         case "cjs":
-        case "jsx":
             return "javascript";
+        case "jsx":
+            return "jsx";
         case "ts":
         case "mts":
         case "cts":
-        case "tsx":
             return "typescript";
+        case "tsx":
+            return "tsx";
         case "go":
             return "go";
         case "html":
