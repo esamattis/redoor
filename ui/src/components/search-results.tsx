@@ -46,7 +46,7 @@ function SearchResultRow(props: {
         <div className="flex items-start border-b border-slate-800 last:border-b-0">
             {props.children}
             {background === null ? null : (
-                <div className="sticky right-0 shrink-0 self-stretch bg-surface px-2 py-2">
+                <div className="sticky right-0 shrink-0 self-stretch px-2 py-2">
                     <OpenInBackgroundButton
                         target={background}
                         line={props.target.line}
@@ -54,7 +54,7 @@ function SearchResultRow(props: {
                 </div>
             )}
             {props.onSearchInFolder === undefined ? null : (
-                <div className="sticky right-0 shrink-0 self-stretch bg-surface px-2 py-2">
+                <div className="sticky right-0 shrink-0 self-stretch px-2 py-2">
                     <IconButton
                         type="button"
                         variant="ghost"
