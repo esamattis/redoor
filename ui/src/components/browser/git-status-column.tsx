@@ -177,7 +177,7 @@ function gitSymbol(
             return {
                 glyph: "◌",
                 label: "Ignored by .gitignore",
-                className: "font-normal text-slate-600",
+                className: "font-normal text-slate-500",
             };
         case "untracked":
             return {
