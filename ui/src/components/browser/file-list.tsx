@@ -9,6 +9,8 @@ import {
     Download,
     File,
     Folder,
+    GitBranch,
+    Files,
     Search,
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
@@ -26,6 +28,7 @@ import { DialogActions } from "#ui/components/dialog-actions";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { TextField } from "#ui/components/text-field";
 import { Tooltip } from "#ui/components/tooltip";
+import { cn } from "#ui/utils/cn";
 import {
     getSelectedFileKey,
     selectedFileKeysAtom,
@@ -62,9 +65,10 @@ import type { RevisionListing } from "#ui/components/browser/revision";
 import {
     type GitColumnData,
     gitColumnData,
+    gitColumnNote,
     gitEntryState,
+    gitRankByName,
     GitStatusCell,
-    GitStatusHeader,
 } from "#ui/components/browser/git-status-column";
 import { gitDirectoryEntriesQueryOptions } from "#ui/queries";
 import {
@@ -248,9 +252,14 @@ export function FileList(props: {
 
     const sort = props.sort;
 
+    const gitRank = gitColumn === null ? null : gitRankByName(gitColumn);
+
     const displayedRows = sort
         ? [...rows].sort((left, right) => {
-              return compareFileEntries(left.entry, right.entry, sort);
+              return compareFileEntries(left.entry, right.entry, {
+                  sort,
+                  gitRank,
+              });
           })
         : pendingRows.length > 0
           ? orderRowsWithoutSort(rows)
@@ -387,17 +396,25 @@ function FileTable(props: {
             <table ref={tableRef} className="w-full min-w-[55rem]">
                 <thead>
                     <tr className="border-b border-slate-800 bg-surface-raised">
-                        <th className="p-1.5 text-left text-sm font-medium text-slate-400 @xl:p-2">
-                            Select
+                        <th className="w-px whitespace-nowrap px-1 py-1.5 text-left text-sm font-medium text-slate-400 @xl:px-1.5 @xl:py-2">
+                            <span className="sr-only">Select</span>
                         </th>
                         <SortableFileColumnHeader
                             label="Type"
                             column="type"
+                            icon={<Files className="h-4 w-4" />}
                             sort={props.sort}
                             onSort={props.onSort}
                         />
                         {gitColumn === null ? null : (
-                            <GitStatusHeader data={gitColumn} />
+                            <SortableFileColumnHeader
+                                label="Git status"
+                                column="git"
+                                icon={<GitBranch className="h-4 w-4" />}
+                                note={gitColumnNote(gitColumn)}
+                                sort={props.sort}
+                                onSort={props.onSort}
+                            />
                         )}
                         <SortableFileColumnHeader
                             label="Name"
@@ -469,6 +486,14 @@ function SortableFileColumnHeader(props: {
     column: FileSortColumn;
     sort: FileSort | null;
     onSort: (column: FileSortColumn) => void;
+    /**
+     * Shows an icon instead of the label, for columns whose cells are a single icon, so the
+     * header does not make the column wider than its content. The label stays in the tooltip
+     * and the accessible name.
+     */
+    icon?: React.ReactNode;
+    /** Explains a column that is empty for a reason, in place of the sort tooltip. */
+    note?: string | null;
 }) {
     const direction =
         props.sort?.column === props.column ? props.sort.direction : null;
@@ -483,21 +508,46 @@ function SortableFileColumnHeader(props: {
               ? ChevronDown
               : ArrowDownUp;
 
+    const button = (
+        <Button
+            type="button"
+            variant="ghost"
+            onClick={() => props.onSort(props.column)}
+            aria-label={`Sort by ${props.label} ${nextDirection}`}
+            className={cn(
+                "flex w-full justify-start text-left text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500",
+                props.icon === undefined
+                    ? "gap-1.5 px-1.5 py-1.5"
+                    : "gap-0.5 px-1 py-1.5",
+            )}
+        >
+            {props.icon ?? props.label}
+            <SortIcon className="h-3.5 w-3.5" />
+        </Button>
+    );
+
+    if (props.icon === undefined) {
+        return (
+            <th
+                aria-sort={direction ?? "none"}
+                className="p-0.5 text-left text-sm font-medium text-slate-400"
+            >
+                {button}
+            </th>
+        );
+    }
+
+    const note = props.note ?? null;
+
     return (
         <th
             aria-sort={direction ?? "none"}
-            className="p-0.5 text-left text-sm font-medium text-slate-400"
+            className="w-px whitespace-nowrap p-0.5 text-left text-sm font-medium text-slate-400"
         >
-            <Button
-                type="button"
-                variant="ghost"
-                onClick={() => props.onSort(props.column)}
-                aria-label={`Sort by ${props.label} ${nextDirection}`}
-                className="flex w-full justify-start gap-1.5 px-1.5 py-1.5 text-left text-slate-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-            >
-                {props.label}
-                <SortIcon className="h-3.5 w-3.5" />
-            </Button>
+            <Tooltip content={note ?? `Sort by ${props.label}`}>
+                {button}
+            </Tooltip>
+            {note === null ? null : <span className="sr-only">{note}</span>}
         </th>
     );
 }
@@ -798,7 +848,10 @@ function FileEntry(props: {
             className="border-b border-slate-800/60 last:border-b-0 hover:bg-tint @max-xl:text-sm"
             aria-label={`${isDirectory ? "Directory" : "File"} entry ${entry.name}`}
         >
-            <td className="px-1.5 py-0.5 @xl:p-2" aria-label="">
+            <td
+                className="w-px whitespace-nowrap px-1 py-0.5 @xl:px-1.5 @xl:py-2"
+                aria-label=""
+            >
                 <Checkbox
                     role="checkbox"
                     label={
@@ -820,7 +873,7 @@ function FileEntry(props: {
                     }
                 />
             </td>
-            <td className="px-1.5 py-0.5 @xl:p-2">
+            <td className="w-px whitespace-nowrap px-1 py-0.5 @xl:px-1.5 @xl:py-2">
                 {isDirectory ? (
                     <Folder className="h-4 w-4 text-blue-400 @xl:h-5 @xl:w-5" />
                 ) : (

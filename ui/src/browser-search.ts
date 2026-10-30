@@ -68,9 +68,9 @@ const gitBranchScopeSchema = z
     .optional()
     .catch(undefined);
 
-/** The columns a directory listing can be ordered by. */
+/** The columns a directory listing can be ordered by; `git` is the Git status column. */
 const fileSortColumnSchema = z
-    .enum(["type", "name", "size", "modified", "owner", "group"])
+    .enum(["type", "git", "name", "size", "modified", "owner", "group"])
     .optional()
     .catch(undefined);
 

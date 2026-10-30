@@ -1550,6 +1550,12 @@ cache, so Back, reload and shared links all land on the same screen.
     in the loader, keyed under the agent's `git` prefix so window focus and file mutations
     refresh it with the listing. Symbols fade in by opacity only, keyed by their label, so a
     refetch with the same answer does not fade again.
+  - The column sorts like the others (`sort=git`): conflicts, then the entries' own changes,
+    directories holding changes, untracked, clean and ignored last, ties by name. Until the
+    status is known (loading, failed, `timed_out`) the Git sort keeps the name order, so rows
+    only move once there is something to sort by and only when the user chose that order.
+    Select, Type and Git are icon-sized columns with icon headers (labels in tooltips and
+    accessible names) that shrink-wrap their content, so Name starts close to the icons.
 - **One workflow per path operation.** Four dialogs that ask for a name (rename, duplicate,
   new file, new directory) share `PathNameDialog` and `validatePathComponent`, which rejects
   empty names, `.` and `..`, and separators. Directory creation alone opts in to nested names

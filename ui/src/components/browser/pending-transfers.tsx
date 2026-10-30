@@ -210,8 +210,8 @@ export function PendingFileEntry(props: {
             className="border-b border-slate-800/60 text-slate-500 last:border-b-0"
             aria-label={`Pending file entry ${name}`}
         >
-            <td className="p-1.5 @xl:p-2" />
-            <td className="p-1.5 @xl:p-2">
+            <td className="w-px whitespace-nowrap px-1 py-1.5 @xl:px-1.5 @xl:py-2" />
+            <td className="w-px whitespace-nowrap px-1 py-1.5 @xl:px-1.5 @xl:py-2">
                 <Tooltip
                     content={
                         canceling
@@ -226,7 +226,9 @@ export function PendingFileEntry(props: {
                     />
                 </Tooltip>
             </td>
-            {props.showGitStatus ? <td className="p-1.5 @xl:p-2" /> : null}
+            {props.showGitStatus ? (
+                <td className="w-px whitespace-nowrap px-1 py-1.5 @xl:px-1.5 @xl:py-2" />
+            ) : null}
             <td className="p-1.5 @xl:p-2">
                 <span className="flex min-w-0 items-center gap-2">
                     <span className="truncate font-medium italic text-slate-400">

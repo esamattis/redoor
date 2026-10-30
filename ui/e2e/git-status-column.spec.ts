@@ -90,6 +90,33 @@ test.describe("Git status column", () => {
         ).toHaveCount(0);
     });
 
+    test("sorts changed entries before clean ones by Git status", async ({
+        page,
+    }) => {
+        await page.goto(deviceBrowserUrl(ctx.agentName, repositoryPath));
+
+        const notesSymbol = page
+            .getByRole("row", { name: "File entry notes.txt" })
+            .getByRole("img", { name: "Modified" });
+
+        // The order only follows the status once the status is known.
+        await expect(notesSymbol).toBeVisible();
+        await page
+            .getByRole("button", { name: "Sort by Git status ascending" })
+            .click();
+
+        const fileRows = page.getByRole("row", { name: /^File entry / });
+
+        // The modified file leads, ahead of the alphabetically earlier clean file.
+        await expect(fileRows.first()).toHaveAccessibleName(
+            "File entry notes.txt",
+        );
+        // The ignored file comes after every clean one.
+        await expect(fileRows.last()).toHaveAccessibleName(
+            "File entry debug.log",
+        );
+    });
+
     test("leaves the column out outside a repository", async ({ page }) => {
         await page.goto(deviceBrowserUrl(ctx.agentName, outsidePath));
 

@@ -81,15 +81,34 @@ export function formatModifiedAge(modifiedAt: number, now: number): string {
     return `${parts.join(" ")} ago`;
 }
 
-/** Compares one selected column, keeping hidden entries last when names break ties. */
+/**
+ * A listing order: the chosen column and direction, plus what the Git column sorts by. The
+ * Git status is not part of the listing, so `gitRank` ranks an entry by its name (lower
+ * first); it is null while the status is loading or after the walk timed out.
+ */
+export type FileOrder = {
+    sort: FileSort;
+    gitRank: ((name: string) => number) | null;
+};
+
+/**
+ * Compares one selected column, keeping hidden entries last when names break ties. Without
+ * a Git rank the Git sort falls back to the name order, so rows never move until the status
+ * they would be sorted by is known.
+ */
 export function compareFileEntries(
     left: LsEntry,
     right: LsEntry,
-    sort: FileSort,
+    order: FileOrder,
 ): number {
+    const sort = order.sort;
+    const gitRank = order.gitRank;
     let comparison = 0;
 
-    if (sort.column === "size") {
+    if (sort.column === "git") {
+        comparison =
+            gitRank === null ? 0 : gitRank(left.name) - gitRank(right.name);
+    } else if (sort.column === "size") {
         comparison = left.size - right.size;
     } else if (sort.column === "modified") {
         comparison = left.modified_at - right.modified_at;

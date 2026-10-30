@@ -1,4 +1,3 @@
-import { GitBranch } from "lucide-react";
 import type { GitDirectoryEntriesResponse } from "#bindings/GitDirectoryEntriesResponse";
 import type { GitDirectoryEntryState } from "#bindings/GitDirectoryEntryState";
 import type { GitDirectoryChanges } from "#bindings/GitDirectoryChanges";
@@ -7,9 +6,9 @@ import { cn } from "#ui/utils/cn";
 import { getBaseName, getParentPath } from "#ui/utils/path";
 
 /**
- * The size of the row's type icon. Every symbol and the header icon sit in a slot of this
- * size, so a symbol arriving after the list rendered never changes a row's height or the
- * column's width.
+ * The size of the row's type icon. Every symbol sits in a slot of this size, and the header
+ * is wider than it, so a symbol arriving after the list rendered never changes a row's height
+ * or the column's width.
  */
 const SLOT_CLASS_NAME =
     "inline-flex h-4 w-4 shrink-0 items-center justify-center @xl:h-5 @xl:w-5";
@@ -75,35 +74,55 @@ export function gitEntryState(
     return data.entries.get(name) ?? null;
 }
 
-/** Explains the header icon, including why the column stays empty when it does. */
-function headerDescription(data: GitColumnData): string {
+/**
+ * Why the column is empty when the walk did not answer, for the header's tooltip; null when
+ * there is nothing to explain.
+ */
+export function gitColumnNote(data: GitColumnData): string | null {
     switch (data.kind) {
         case "timed_out":
             return "Git status took too long and was stopped";
         case "failed":
             return "Git status could not be read";
         default:
-            return "Git status";
+            return null;
     }
 }
 
 /**
- * The column header: an icon instead of a word, so the column stays as narrow as its
- * symbols and the name next to it keeps its room on phones.
+ * Ranks entries for the Git sort so the ones that need attention come first: conflicts,
+ * then the entry's own changes, then directories holding changes, then new files, then clean
+ * entries, with ignored ones last because they are the least interesting.
  */
-export function GitStatusHeader(props: { data: GitColumnData }) {
-    const description = headerDescription(props.data);
+export function gitSortRank(state: GitDirectoryEntryState | null): number {
+    if (state === null) {
+        return 4;
+    }
 
-    return (
-        <th className="p-1.5 text-left text-sm font-medium text-slate-400 @xl:p-2">
-            <Tooltip content={description}>
-                <span className={SLOT_CLASS_NAME}>
-                    <GitBranch aria-hidden="true" className="h-4 w-4" />
-                    <span className="sr-only">{description}</span>
-                </span>
-            </Tooltip>
-        </th>
-    );
+    switch (state.type) {
+        case "changed":
+            return state.conflicted ? 0 : 1;
+        case "contains_changes":
+            return 2;
+        case "untracked":
+            return 3;
+        case "ignored":
+            return 5;
+    }
+}
+
+/**
+ * Ranks rows by their Git state for `compareFileEntries`, or null until a state is known for
+ * every row, so the Git sort keeps the name order while loading, after a failure or timeout.
+ */
+export function gitRankByName(
+    data: GitColumnData,
+): ((name: string) => number) | null {
+    if (data.kind !== "entries" && data.kind !== "all_ignored") {
+        return null;
+    }
+
+    return (name) => gitSortRank(gitEntryState(data, name));
 }
 
 /** One row's cell; empty for clean tracked entries and while the state is unknown. */
@@ -119,7 +138,7 @@ export function GitStatusCell(props: {
 
     return (
         <td
-            className="px-1.5 py-0.5 @xl:p-2"
+            className="w-px whitespace-nowrap px-1 py-0.5 @xl:px-1.5 @xl:py-2"
             aria-label={`Git status of ${props.name}`}
         >
             <span className={SLOT_CLASS_NAME}>
