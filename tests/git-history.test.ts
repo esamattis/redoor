@@ -446,6 +446,49 @@ describe("Git history, branch and tag REST API", () => {
         expect(branches.has_more).toBe(false);
     });
 
+    it("lists only local or only remote-tracking branches on request", async () => {
+        const local = await testAgent.gitRefs(repo, "branches", {
+            sort: "recent",
+            scope: "local",
+            skip: 0,
+            limit: 100,
+        });
+
+        // The local scope leaves remote-tracking branches out of the rows and the count, so
+        // paging stays consistent with what the browser shows.
+        expect(local.refs.map((ref) => [ref.name, ref.kind])).toEqual([
+            ["main", "branch"],
+            ["feature", "branch"],
+        ]);
+        expect(local.total).toBe(2);
+        // The default branch is still marked when only local branches are read.
+        expect(local.refs[0]?.is_default).toBe(true);
+
+        const remote = await testAgent.gitRefs(repo, "branches", {
+            sort: "recent",
+            scope: "remote",
+            skip: 0,
+            limit: 100,
+        });
+
+        // The remote scope lists only remote-tracking branches, still without origin/HEAD.
+        expect(remote.refs.map((ref) => [ref.name, ref.kind])).toEqual([
+            ["origin/main", "remote_branch"],
+        ]);
+        expect(remote.total).toBe(1);
+        expect(remote.has_more).toBe(false);
+
+        const all = await testAgent.gitRefs(repo, "branches", {
+            sort: "recent",
+            scope: "all",
+            skip: 0,
+            limit: 100,
+        });
+
+        // The explicit all scope matches the default listing, which the compare picker uses.
+        expect(all.total).toBe(3);
+    });
+
     it("lists tags peeled to commits and pages them", async () => {
         const tags = await testAgent.gitRefs(repo, "tags", {
             sort: "recent",
@@ -588,6 +631,10 @@ describe("Git history, branch and tag REST API", () => {
         // Only the known orders are accepted, so a typo does not silently fall back.
         expect(
             (await listRequest("tags", repo, { sort: "newest" })).status,
+        ).toBe(400);
+        // Only the known branch scopes are accepted, so a typo does not list every branch.
+        expect(
+            (await listRequest("branches", repo, { scope: "origin" })).status,
         ).toBe(400);
         // Unknown revisions are bad input, like in revision browsing.
         expect(

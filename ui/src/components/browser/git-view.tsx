@@ -434,11 +434,13 @@ function GitViewNav(props: {
                         <Link
                             key={item.label}
                             {...browserRoute(props.agent, props.path)}
-                            // The branch and tag lists share their order, so it survives switching between them.
+                            // The branch and tag lists share their order, so it survives switching
+                            // between them, and the branch scope survives a visit to another tab.
                             search={(previous) => ({
                                 view: "git",
                                 gitTab: item.tab,
                                 refSort: previous.refSort,
+                                branchScope: previous.branchScope,
                             })}
                             aria-current={active ? "page" : undefined}
                             className={

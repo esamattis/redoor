@@ -184,7 +184,7 @@ mod tests {
     use crate::api::agents::EchoRequest;
     use crate::api::files::CreationOwnershipOptions;
     use crate::api::git::GitPage;
-    use crate::api::git::refs::{GitRefListKind, GitRefSort};
+    use crate::api::git::refs::{GitBranchScope, GitRefListKind, GitRefSort};
     use crate::api::git::worktree::GitDiffMode;
     use crate::api::search::CaseSensitivity;
     use crate::api::transfers::CopyExistingMode;
@@ -420,6 +420,7 @@ mod tests {
                 path: path(),
                 kind: GitRefListKind::Tags,
                 sort: GitRefSort::Recent,
+                scope: GitBranchScope::All,
                 page: GitPage { skip: 0, limit: 1 },
             }),
             Command::GitWorktreeList(request::GitWorktreeList { path: path() }),

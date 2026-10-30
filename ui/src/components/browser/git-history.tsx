@@ -3,10 +3,12 @@ import { getRouteApi, Link } from "@tanstack/react-router";
 import {
     ArrowDownAZ,
     Clock,
+    Cloud,
     FolderOpen,
     GitBranch,
     GitCompareArrows,
     History,
+    Laptop,
     Tag,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
@@ -60,6 +62,24 @@ const REF_SORT_OPTIONS: ReadonlyArray<SegmentedControlOption<GitRefSort>> = [
         label: "Name",
         icon: ArrowDownAZ,
         tooltip: "By name, with version numbers in numeric order",
+    },
+];
+
+/** The branches the branch list can show, local first because it is the default. */
+const BRANCH_SCOPE_OPTIONS: ReadonlyArray<
+    SegmentedControlOption<"local" | "remote">
+> = [
+    {
+        value: "local",
+        label: "Local",
+        icon: Laptop,
+        tooltip: "Branches in this repository",
+    },
+    {
+        value: "remote",
+        label: "Remote",
+        icon: Cloud,
+        tooltip: "Remote-tracking branches, such as origin/main",
     },
 ];
 
@@ -495,7 +515,8 @@ function CommitRow(props: {
  * A repository's branches or tags, most recently committed first or by name. A ref's name
  * opens the browsed path at that ref, and its commit id opens what the commit changed there.
  * The order is the `refSort` search key, so it survives reload and Back and is shared by
- * both lists.
+ * both lists. Branches show either the local or the remote-tracking ones, chosen by the
+ * `branchScope` search key, because a remote's many branches would bury the local ones.
  */
 export function GitRefList(props: {
     agent: Agent;
@@ -505,22 +526,37 @@ export function GitRefList(props: {
     kind: GitRefListKind;
 }) {
     const navigate = browserRouteApi.useNavigate();
-    const sort = browserRouteApi.useSearch().refSort ?? "recent";
+    const search = browserRouteApi.useSearch();
+    const sort = search.refSort ?? "recent";
+    const scope = search.branchScope ?? "local";
+    const isBranches = props.kind === "branches";
 
     const query = useInfiniteQuery(
-        gitRefsQueryOptions(props.agent, props.repositoryRoot, {
-            kind: props.kind,
-            sort,
-        }),
+        gitRefsQueryOptions(
+            props.agent,
+            props.repositoryRoot,
+            isBranches
+                ? { kind: "branches", scope, sort }
+                : { kind: "tags", sort },
+        ),
     );
 
-    const isBranches = props.kind === "branches";
-    const noun = isBranches ? "branches" : "tags";
+    const noun = isBranches
+        ? scope === "local"
+            ? "local branches"
+            : "remote branches"
+        : "tags";
+
+    const singular = isBranches
+        ? scope === "local"
+            ? "local branch"
+            : "remote branch"
+        : "tag";
 
     // The control stays put while a new order loads, so the user can switch straight back.
     const sortControl = (
         <SegmentedControl
-            label={`Sort ${noun}`}
+            label={isBranches ? "Sort branches" : "Sort tags"}
             options={REF_SORT_OPTIONS}
             value={sort}
             onChange={(value) =>
@@ -538,10 +574,34 @@ export function GitRefList(props: {
         />
     );
 
+    // Branches add the location beside the order, kept put while loading for the same reason.
+    const actions = isBranches ? (
+        <>
+            <SegmentedControl
+                label="Branch location"
+                options={BRANCH_SCOPE_OPTIONS}
+                value={scope}
+                onChange={(value) =>
+                    void navigate({
+                        search: (previous) => ({
+                            ...previous,
+                            branchScope: value === "local" ? undefined : value,
+                        }),
+                        replace: true,
+                    })
+                }
+                className="w-60 max-w-full"
+            />
+            {sortControl}
+        </>
+    ) : (
+        sortControl
+    );
+
     if (query.isPending) {
         return (
             <>
-                <GitPanelBar actions={sortControl}>{null}</GitPanelBar>
+                <GitPanelBar actions={actions}>{null}</GitPanelBar>
                 <ListMessage role="status">{`Loading ${noun}...`}</ListMessage>
             </>
         );
@@ -550,7 +610,7 @@ export function GitRefList(props: {
     if (query.isError) {
         return (
             <>
-                <GitPanelBar actions={sortControl}>{null}</GitPanelBar>
+                <GitPanelBar actions={actions}>{null}</GitPanelBar>
                 <ListMessage role="alert">
                     {getErrorMessage(query.error, `Failed to load ${noun}`)}
                 </ListMessage>
@@ -565,23 +625,21 @@ export function GitRefList(props: {
 
     return (
         <>
-            <GitPanelBar actions={sortControl}>
+            <GitPanelBar actions={actions}>
                 <span className="inline-flex items-center gap-2 font-medium text-slate-100">
                     <Icon
                         className="h-4 w-4 text-slate-400"
                         aria-hidden="true"
                     />
-                    {total === 1
-                        ? `1 ${isBranches ? "branch" : "tag"}`
-                        : `${total} ${noun}`}
+                    {total === 1 ? `1 ${singular}` : `${total} ${noun}`}
                 </span>
                 <span className="text-slate-400">
                     {sort === "name"
                         ? isBranches
-                            ? "Default branch first, then by name, local before remote-tracking."
+                            ? "Default branch first, then by name."
                             : "By name."
                         : isBranches
-                          ? "Default branch first, then most recently committed, including remote-tracking branches."
+                          ? "Default branch first, then most recently committed."
                           : "Most recently committed first."}
                 </span>
             </GitPanelBar>

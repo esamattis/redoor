@@ -8,7 +8,9 @@ use gix::bstr::ByteSlice;
 use redoor_protocol::{
     api::git::{
         GitPage,
-        refs::{GitRef, GitRefKind, GitRefListKind, GitRefListResponse, GitRefSort},
+        refs::{
+            GitBranchScope, GitRef, GitRefKind, GitRefListKind, GitRefListResponse, GitRefSort,
+        },
     },
     wire::{command::CommandErrorKind, request::CommandError},
 };
@@ -60,14 +62,16 @@ impl PartialOrd for Candidate {
     }
 }
 
-/// Lists one page of the branches or tags of the repository containing `path`.
+/// Lists one page of the branches or tags of the repository containing `path`. `scope`
+/// narrows a branch listing to local or remote-tracking branches and is ignored for tags.
 pub(crate) async fn list(
     path: String,
     kind: GitRefListKind,
+    scope: GitBranchScope,
     sort: GitRefSort,
     page: GitPage,
 ) -> Result<GitRefListResponse, CommandError> {
-    run_blocking(move |interrupt| list_blocking(&path, kind, sort, page, &interrupt)).await
+    run_blocking(move |interrupt| list_blocking(&path, kind, scope, sort, page, &interrupt)).await
 }
 
 /// Reads every ref of the kind, keeps only the rows up to the end of the page, then
@@ -80,6 +84,7 @@ pub(crate) async fn list(
 fn list_blocking(
     path: &str,
     kind: GitRefListKind,
+    scope: GitBranchScope,
     sort: GitRefSort,
     page: GitPage,
     interrupt: &AtomicBool,
@@ -99,20 +104,26 @@ fn list_blocking(
         .references()
         .map_err(|error| internal_failure("open Git references", error))?;
     let sources = match kind {
-        GitRefListKind::Branches => vec![
-            (
-                references
-                    .local_branches()
-                    .map_err(|error| internal_failure("list Git branches", error))?,
-                GitRefKind::Branch,
-            ),
-            (
-                references
-                    .remote_branches()
-                    .map_err(|error| internal_failure("list Git remote branches", error))?,
-                GitRefKind::RemoteBranch,
-            ),
-        ],
+        GitRefListKind::Branches => {
+            let mut sources = Vec::with_capacity(2);
+            if scope != GitBranchScope::Remote {
+                sources.push((
+                    references
+                        .local_branches()
+                        .map_err(|error| internal_failure("list Git branches", error))?,
+                    GitRefKind::Branch,
+                ));
+            }
+            if scope != GitBranchScope::Local {
+                sources.push((
+                    references
+                        .remote_branches()
+                        .map_err(|error| internal_failure("list Git remote branches", error))?,
+                    GitRefKind::RemoteBranch,
+                ));
+            }
+            sources
+        }
         GitRefListKind::Tags => vec![(
             references
                 .tags()

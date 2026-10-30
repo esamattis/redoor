@@ -16,7 +16,7 @@ use crate::api::files::{
 use crate::api::git::GitPage;
 use crate::api::git::commit::GitCommitDiffResponse;
 use crate::api::git::history::{GitCommitNeighborsResponse, GitLogResponse};
-use crate::api::git::refs::{GitRefListKind, GitRefListResponse, GitRefSort};
+use crate::api::git::refs::{GitBranchScope, GitRefListKind, GitRefListResponse, GitRefSort};
 use crate::api::git::revision::{GitRevisionContentResponse, GitRevisionTreeResponse};
 use crate::api::git::worktree::{
     GitContextResponse, GitDiffMode, GitDiffResponse, GitStatusResponse,
@@ -473,6 +473,10 @@ pub struct GitRefList {
     /// Defaults to the recent order so a server older than the option still gets a listing.
     #[serde(default)]
     pub sort: GitRefSort,
+    /// Which branches a branch listing reads; tag listings ignore it. Defaults to both so a
+    /// server older than the option still gets every branch.
+    #[serde(default)]
+    pub scope: GitBranchScope,
     pub page: GitPage,
 }
 

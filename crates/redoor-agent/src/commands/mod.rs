@@ -398,8 +398,11 @@ impl RunCommand for Command {
                 path,
                 kind,
                 sort,
+                scope,
                 page,
-            }) => Reply::of::<request::GitRefList>(git::refs::list(path, kind, sort, page).await),
+            }) => Reply::of::<request::GitRefList>(
+                git::refs::list(path, kind, scope, sort, page).await,
+            ),
             Command::GitWorktreeList(request::GitWorktreeList { path }) => {
                 Reply::of::<request::GitWorktreeList>(git::worktree_list::list(path).await)
             }

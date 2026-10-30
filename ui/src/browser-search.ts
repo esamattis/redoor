@@ -59,6 +59,15 @@ const gitTabSchema = z
  */
 const gitRefSortSchema = z.enum(["recent", "name"]).optional().catch(undefined);
 
+/**
+ * Narrows the branch list to local or remote-tracking branches. Local is the default and
+ * stays out of the URL, because those are the branches people work on.
+ */
+const gitBranchScopeSchema = z
+    .enum(["local", "remote"])
+    .optional()
+    .catch(undefined);
+
 /** The columns a directory listing can be ordered by. */
 const fileSortColumnSchema = z
     .enum(["type", "name", "size", "modified", "owner", "group"])
@@ -74,7 +83,8 @@ const fileSortDirectionSchema = z
 /**
  * The file browser's own URL state: which representation of the path is open, an editor
  * line to reveal, markdown preview, the full-window editor, the Git comparison, the browsed
- * Git revision, the Git view's list, the order of its branch and tag lists and the listing
+ * Git revision, the Git view's list, the order of its branch and tag lists, whether the
+ * branch list shows local or remote-tracking branches and the listing
  * order. Keeping these in the URL makes each of them survive a reload, work with Back, and be
  * shareable. Every field falls back to undefined, so a stale or hand-edited URL degrades to
  * the defaults.
@@ -88,6 +98,7 @@ export const browserSearchSchema = z.object({
     rev: gitRevisionSchema,
     gitTab: gitTabSchema,
     refSort: gitRefSortSchema,
+    branchScope: gitBranchScopeSchema,
     sort: fileSortColumnSchema,
     order: fileSortDirectionSchema,
 });

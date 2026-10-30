@@ -24,7 +24,10 @@ export async function prefetchWorktreeGitView(options: {
     isDirectory: boolean;
     /** The path's repository and HEAD, from the Git context the view reads them from too. */
     gitContext: Extract<GitContextResponse, { status: "inside_worktree" }>;
-    deps: Pick<BrowserSearch, "gitTab" | "diffMode" | "refSort">;
+    deps: Pick<
+        BrowserSearch,
+        "gitTab" | "diffMode" | "refSort" | "branchScope"
+    >;
 }) {
     const { context, agent, path, deps } = options;
 
@@ -37,6 +40,7 @@ export async function prefetchWorktreeGitView(options: {
             commitId: options.gitContext.head_commit_id,
             tab: deps.gitTab,
             refSort: deps.refSort,
+            branchScope: deps.branchScope,
         });
     } else if (options.isDirectory) {
         const status = await fetchQueryUncancelled(context.queryClient, {

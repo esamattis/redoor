@@ -50,6 +50,8 @@ export function GitComparePicker(props: {
     const refsQuery = useInfiniteQuery(
         gitRefsQueryOptions(props.agent, props.repositoryRoot, {
             kind: "branches",
+            // Both scopes, so a remote-tracking branch such as origin/main can be a side.
+            scope: "all",
             sort: "recent",
         }),
     );

@@ -68,9 +68,19 @@ export async function loadRevision(options: {
     view: BrowserSearch["view"];
     gitTab: BrowserSearch["gitTab"];
     refSort: BrowserSearch["refSort"];
+    branchScope: BrowserSearch["branchScope"];
 }) {
-    const { context, agent, params, path, rev, view, gitTab, refSort } =
-        options;
+    const {
+        context,
+        agent,
+        params,
+        path,
+        rev,
+        view,
+        gitTab,
+        refSort,
+        branchScope,
+    } = options;
 
     if (view === "sync") {
         throw redirect({
@@ -114,6 +124,7 @@ export async function loadRevision(options: {
                     commitId: deletion.commit.id,
                     tab: gitTab,
                     refSort,
+                    branchScope,
                 });
             }
 
@@ -159,6 +170,7 @@ export async function loadRevision(options: {
             commitId: tree.commit.id,
             tab: gitTab,
             refSort,
+            branchScope,
         });
     } else if (view === "git") {
         await fetchQueryUncancelled(context.queryClient, {

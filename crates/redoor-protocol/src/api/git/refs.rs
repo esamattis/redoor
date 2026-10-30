@@ -29,6 +29,30 @@ pub enum GitRefSort {
     Name,
 }
 
+/// Chooses which branches a branch listing reads. Local branches are what people work on,
+/// while a busy remote can hold hundreds of branches nobody has checked out, so the browser
+/// lists them apart. Comparing picks from both, so the listing reads both unless asked.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum GitBranchScope {
+    /// Local and remote-tracking branches together.
+    #[default]
+    All,
+    /// Only branches under `refs/heads/`.
+    Local,
+    /// Only remote-tracking branches under `refs/remotes/`.
+    Remote,
+}
+
+/// Selects which branches a branch listing reads in the query string. Kept apart from the
+/// order because tag listings have no scope.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+pub struct GitBranchScopeQuery {
+    pub scope: Option<GitBranchScope>,
+}
+
 /// Selects the order of a ref listing in the query string, apart from the page so the page
 /// query stays shared with the other Git lists.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]

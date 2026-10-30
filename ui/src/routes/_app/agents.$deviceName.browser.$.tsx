@@ -167,6 +167,7 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
         rev: search.rev,
         gitTab: search.gitTab,
         refSort: search.refSort,
+        branchScope: search.branchScope,
     }),
     loader: async ({ context, deps, params, location, parentMatchPromise }) => {
         const agent = await loadDeviceRouteAgent(context, parentMatchPromise);

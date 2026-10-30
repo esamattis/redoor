@@ -158,6 +158,59 @@ test.describe.serial("Git commit, branch and tag lists", () => {
         ).toHaveText("v1");
     });
 
+    test("switches the branch list between local and remote branches", async ({
+        page,
+    }) => {
+        // Its own repository, so the remote-tracking branch does not show up in the other
+        // tests' compare pickers.
+        const remotePath = path.join(ctx.testDirPath, "remote-branches");
+        await fs.mkdir(remotePath);
+        await $`git -C ${remotePath} init -b main`;
+        await $`git -C ${remotePath} config user.email playwright@redoor.test`;
+        await $`git -C ${remotePath} config user.name Playwright`;
+        await $`git -C ${remotePath} commit --allow-empty -q -m ${"Root"}`;
+        await $`git -C ${remotePath} update-ref refs/remotes/upstream/released HEAD`;
+
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, remotePath)}?view=git&gitTab=branches`,
+        );
+
+        const branches = page.getByRole("list", { name: "Branches" });
+        const location = page.getByRole("group", { name: "Branch location" });
+
+        // Local branches are the default, so the remote-tracking one is left out.
+        await expect(
+            location.getByRole("button", { name: "Local" }),
+        ).toHaveAttribute("aria-pressed", "true");
+        await expect(branches.getByRole("listitem")).toHaveCount(1);
+        await expect(branches).toContainText("main");
+
+        await location.getByRole("button", { name: "Remote" }).click();
+
+        // The choice is kept in the URL and the list shows only remote-tracking branches.
+        await expect(page).toHaveURL(/branchScope=remote/);
+        await expect(branches.getByRole("listitem")).toHaveCount(1);
+        await expect(branches).toContainText("upstream/released");
+
+        await page
+            .getByLabel("Git view")
+            .getByRole("link", { name: "Tags" })
+            .click();
+        await page
+            .getByLabel("Git view")
+            .getByRole("link", { name: "Branches" })
+            .click();
+
+        // A visit to another tab does not reset the chosen location.
+        await expect(branches).toContainText("upstream/released");
+
+        await location.getByRole("button", { name: "Local" }).click();
+
+        // The default location stays out of the URL.
+        await expect(page).not.toHaveURL(/branchScope=/);
+        await expect(branches).toContainText("main");
+    });
+
     test("sorts branches by name and keeps the order for tags", async ({
         page,
     }) => {

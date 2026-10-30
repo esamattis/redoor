@@ -92,6 +92,7 @@ import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
 import type { GitCommitNeighborsResponse } from "#bindings/GitCommitNeighborsResponse";
 import type { GitLogResponse } from "#bindings/GitLogResponse";
 import type { GitRefListResponse } from "#bindings/GitRefListResponse";
+import type { GitBranchScope } from "#bindings/GitBranchScope";
 import type { GitRefSort } from "#bindings/GitRefSort";
 import type { GitWorktreeListResponse } from "#bindings/GitWorktreeListResponse";
 import type { GitWorktreeStatusRequest } from "#bindings/GitWorktreeStatusRequest";
@@ -483,14 +484,26 @@ export class Agent {
         );
     }
 
-    /** Lists one page of the repository's branches or tags, most recently committed first or by name. */
+    /**
+     * Lists one page of the repository's branches or tags, most recently committed first or by
+     * name. `scope` narrows branches to local or remote-tracking ones; without it both are
+     * listed, and tags ignore it.
+     */
     async gitRefs(
         path: string,
         kind: "branches" | "tags",
-        options: { sort: GitRefSort; skip: number; limit: number },
+        options: {
+            sort: GitRefSort;
+            scope?: GitBranchScope;
+            skip: number;
+            limit: number;
+        },
     ): Promise<GitRefListResponse> {
         return apiRequest<GitRefListResponse>(
-            this.filesystemQueryUrl(`git/${kind}`, path, options),
+            this.filesystemQueryUrl(`git/${kind}`, path, {
+                ...options,
+                scope: options.scope ?? null,
+            }),
             undefined,
             this.requestContext,
         );

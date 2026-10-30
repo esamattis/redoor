@@ -15,6 +15,7 @@ import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
+import type { GitBranchScope } from "#bindings/GitBranchScope";
 import type { GitRefSort } from "#bindings/GitRefSort";
 import type {
     ManagedAgentFormConfiguration,
@@ -139,6 +140,7 @@ export const queryKeys = {
             ...queryKeys.git(agentId),
             "refs",
             list.kind,
+            list.kind === "branches" ? list.scope : null,
             list.sort,
             repositoryRoot,
         ] as const,
@@ -696,8 +698,13 @@ export const GIT_LIST_PAGE_SIZE = 100;
 /** Names the two ref listings the Git view offers. */
 export type GitRefListKind = "branches" | "tags";
 
-/** Which ref listing to read and in which order, kept together because both pick the rows. */
-export type GitRefListOrder = { kind: GitRefListKind; sort: GitRefSort };
+/**
+ * Which ref listing to read and in which order, kept together because both pick the rows.
+ * Only branches have a scope, since tags are never remote-tracking.
+ */
+export type GitRefListOrder =
+    | { kind: "branches"; scope: GitBranchScope; sort: GitRefSort }
+    | { kind: "tags"; sort: GitRefSort };
 
 /**
  * The commits that changed a path, a page at a time. `rev` is a resolved commit id, never a
@@ -747,6 +754,7 @@ export function gitRefsQueryOptions(
         queryFn: (context) =>
             agent.gitRefs(repositoryRoot, list.kind, {
                 sort: list.sort,
+                scope: list.kind === "branches" ? list.scope : undefined,
                 skip: context.pageParam,
                 limit: GIT_LIST_PAGE_SIZE,
             }),
@@ -807,6 +815,8 @@ export async function prefetchGitList(options: {
     tab: "commits" | "worktrees" | GitRefListKind;
     /** The order of a branch or tag list; absent is the default recent order. */
     refSort: GitRefSort | undefined;
+    /** Which branches the branch list shows; absent is the default local branches. */
+    branchScope: "local" | "remote" | undefined;
 }) {
     const { queryClient, agent, path, repositoryRoot, commitId, tab } = options;
 
@@ -821,11 +831,20 @@ export async function prefetchGitList(options: {
             staleTime: 0,
         });
     } else {
+        const sort = options.refSort ?? "recent";
+
         await queryClient.prefetchInfiniteQuery({
-            ...gitRefsQueryOptions(agent, repositoryRoot, {
-                kind: tab,
-                sort: options.refSort ?? "recent",
-            }),
+            ...gitRefsQueryOptions(
+                agent,
+                repositoryRoot,
+                tab === "branches"
+                    ? {
+                          kind: tab,
+                          scope: options.branchScope ?? "local",
+                          sort,
+                      }
+                    : { kind: tab, sort },
+            ),
             staleTime: 0,
         });
     }

@@ -1489,9 +1489,11 @@ cache, so Back, reload and shared links all land on the same screen.
 - **URL state is a validated schema.** `browser-search.ts` defines the search keys: `view`
   (details, sync or git), `line`, `preview`, `diffMode` (the Git comparison of a file), `rev`
   (a browsed Git revision, see "Git revision browsing"), `gitTab` (the Git view's commits,
-  branches, tags or worktrees list) and `sort` / `order` (the listing order). Each field falls back to
+  branches, tags or worktrees list), `refSort` and `branchScope` (the order of the branch and
+  tag lists, and whether branches are local or remote-tracking) and `sort` / `order` (the
+  listing order). Each field falls back to
   undefined, so a stale link shows the defaults. The loader depends on `view`, `diffMode`,
-  `rev` and `gitTab`, so it prefetches the diff or list the page is about to show; sorting and `line` stay out of the loader's dependencies and never
+  `rev`, `gitTab`, `refSort` and `branchScope`, so it prefetches the diff or list the page is about to show; sorting and `line` stay out of the loader's dependencies and never
   reload the route.
 - **Typed links only.** `browserRoute(device, path)` takes the device object (so a bare id
   cannot be passed by mistake) and returns the typed `to` and `params`, so the router encodes
@@ -1701,7 +1703,11 @@ the Git view rather than another level of page navigation.
   runs by value, letters without case) on the full ref name, so `v1.10` follows `v1.9` and
   local branches lead remote-tracking ones. The agent sorts because pages are offsets into
   one order, which the browser could not rebuild from a partial list; the order is the
-  `refSort` search key, shared by both lists. The default branch leads the branches in
+  `refSort` search key, shared by both lists. `scope=local|remote` narrows branches to one
+  namespace on the agent, so the count and the pages match what is shown; without it both
+  are listed, which the compare picker relies on. The branch list shows local branches by
+  default, because a busy remote's branches would bury them, and the `branchScope` search
+  key switches it to the remote-tracking ones. The default branch leads the branches in
   either order, marked `is_default`: the branch the default remote's `HEAD` names (its
   local branch when one exists), else `init.defaultBranch`, `main` or `master`. It is part
   of the heap order rather than a later insert, so offsets stay consistent. Either order visits every ref, but at most
