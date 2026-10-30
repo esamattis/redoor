@@ -522,11 +522,14 @@ export function gitContextQueryOptions(agent: Agent, path: string) {
     });
 }
 
-/** Shares one bounded directory status result with route preloading. */
+/**
+ * Shares one bounded directory status result with route preloading. The signal lets leaving
+ * the Git view stop the agent's walk.
+ */
 export function gitStatusQueryOptions(agent: Agent, path: string) {
     return queryOptions({
         queryKey: queryKeys.gitStatus(agent.id, path),
-        queryFn: () => agent.gitStatus(path),
+        queryFn: (context) => agent.gitStatus(path, { signal: context.signal }),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }
