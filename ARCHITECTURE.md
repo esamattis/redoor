@@ -1557,7 +1557,13 @@ way of looking at the same repository location, and paths deleted since are stil
   only its own work instead of also reverting what A gained since they split. The response
   marks the range `merge_base`, so the header reads "What B adds to A" and labels the start
   as the merge base. Histories without a common ancestor are invalid input rather than a
-  diff from the empty tree.
+  diff from the empty tree. Such a header also carries a base and a compare picker and a
+  swap link (`git-compare-picker.tsx`), so any two branches can be compared without typing
+  a range. They are native selects, which phones open as their own full-screen pickers,
+  stacked beside the swap button in a narrow column. They offer the checkout as `HEAD`
+  and the first page of branches (the 100 most recent), plus any side already in the URL
+  that the page lacks, so a select never shows a different ref than the one compared. Each
+  pick is a new history entry, so Back returns to the previous comparison.
   Git cannot resolve the parent of a root commit, so a left side of the form `<root>^` (or
   `~`, `^1`, `~1`) starts the range from the empty tree instead: that keeps
   `<oldest>^..<newest>`, the range a run of commits picked in the history list opens, valid

@@ -35,6 +35,7 @@ import {
     shortCommitId,
 } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
+import { GitComparePicker } from "#ui/components/browser/git-compare-picker";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     gitCommitDiffQueryOptions,
@@ -622,7 +623,9 @@ export function GitCommitView(props: {
  * diff is the sum of every commit after A up to B, so B's message alone would only explain
  * the last of them. Each end links to that commit's own changes, and there is no stepper,
  * since a range has no single neighbouring commit. A symmetric range `A...B` starts at the
- * merge base instead of A, so its title names both refs to say whose work is shown.
+ * merge base instead of A, so its title names both refs to say whose work is shown, and it
+ * offers pickers for both sides, since it is a comparison of branches rather than a run of
+ * commits.
  */
 function CommitRangeHeader(props: {
     agent: Agent;
@@ -645,6 +648,14 @@ function CommitRangeHeader(props: {
             <h2 className="text-base font-semibold leading-snug text-slate-50">
                 {title}
             </h2>
+            {props.range.merge_base ? (
+                <GitComparePicker
+                    agent={props.agent}
+                    path={props.path}
+                    repositoryRoot={props.diff.repository_root}
+                    rev={props.rev}
+                />
+            ) : null}
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 text-xs">
                 <dt className="font-medium text-slate-400">
                     {props.range.merge_base ? "Merge base" : "From"}

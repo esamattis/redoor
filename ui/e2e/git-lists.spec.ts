@@ -283,6 +283,56 @@ test.describe.serial("Git commit, branch and tag lists", () => {
         ).toHaveCount(0);
     });
 
+    test("picks and swaps the compared branches", async ({ page }) => {
+        // Relies on the side branch the previous test created next to main.
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?view=git&rev=${encodeURIComponent("refs/heads/side...HEAD")}`,
+        );
+
+        const picker = page.getByRole("group", { name: "Compared branches" });
+        const base = picker.getByRole("combobox", { name: "Base" });
+        const compare = picker.getByRole("combobox", { name: "Compare" });
+
+        // The pickers show the sides the URL compares, the checkout as HEAD.
+        await expect(base).toHaveValue("refs/heads/side");
+        await expect(compare).toHaveValue("HEAD");
+
+        await picker
+            .getByRole("link", { name: "Swap compared branches" })
+            .click();
+
+        // Swapping reverses the question: now it is what side adds to the checkout.
+        await expect(
+            page.getByRole("heading", { name: "What side adds to HEAD" }),
+        ).toBeVisible();
+        await expect(base).toHaveValue("HEAD");
+        await expect(compare).toHaveValue("refs/heads/side");
+        // Only side's own work shows, not main's commits as deletions.
+        await expect(
+            page.getByRole("region", { name: "Commit diff for side.txt" }),
+        ).toBeVisible();
+        await expect(
+            page.getByRole("region", { name: "Commit diff for notes.txt" }),
+        ).toHaveCount(0);
+
+        await base.selectOption({ label: "feature" });
+
+        // Picking a branch compares two branches, neither of them checked out.
+        await expect(page).toHaveURL(
+            /rev=refs(%2F|\/)heads(%2F|\/)feature(\.|%2E){3}refs(%2F|\/)heads(%2F|\/)side/,
+        );
+        await expect(
+            page.getByRole("heading", { name: "What side adds to feature" }),
+        ).toBeVisible();
+
+        await page.goBack();
+
+        // Each pick is its own history entry, so Back returns to the previous comparison.
+        await expect(
+            page.getByRole("heading", { name: "What side adds to HEAD" }),
+        ).toBeVisible();
+    });
+
     test("loads more commits beyond the first page", async ({ page }) => {
         await page.goto(
             `${deviceBrowserUrl(ctx.agentName, manyCommitsPath)}?view=git&gitTab=commits`,
