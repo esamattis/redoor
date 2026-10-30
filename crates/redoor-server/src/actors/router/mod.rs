@@ -30,11 +30,12 @@ pub use messages::{
 };
 pub use state::CopyContentKind;
 pub use state::CopyOperation;
+pub use state::RequestIds;
 pub use streams::{ConnectionStreams, OutboundError, OutboundStream, OutputReceiver};
 
 use flows::Flow;
 use redoor_core::log;
-use redoor_protocol::ids::{AgentId, SocketId, UnixTimestampSeconds};
+use redoor_protocol::ids::{AgentId, RequestId, SocketId, UnixTimestampSeconds};
 use redoor_protocol::wire::log::Level;
 use state::RouterState;
 use streams::CreditViolation;
@@ -51,12 +52,22 @@ pub const ROUTER_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone, Debug)]
 pub struct RouterHandle {
     sender: mpsc::Sender<RouterMsg>,
+    request_ids: RequestIds,
 }
 
 impl RouterHandle {
     /// Creates a new handle from the router mailbox sender.
     pub(super) fn new(sender: mpsc::Sender<RouterMsg>) -> Self {
-        Self { sender }
+        Self {
+            sender,
+            request_ids: RequestIds::default(),
+        }
+    }
+
+    /// Allocates a request id from the router's own sequence, so a caller can name a command
+    /// (and later abandon it) before the router has seen the message.
+    pub fn next_request_id(&self) -> RequestId {
+        self.request_ids.next()
     }
 
     /// Queues one router message without waiting, for synchronous contexts only.
@@ -189,7 +200,10 @@ pub enum RouterCallError {
 pub fn spawn_router() -> (RouterHandle, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel::<RouterMsg>(ROUTER_MAILBOX_CAPACITY);
     let router_handle = RouterHandle::new(sender);
-    let state = RouterState::new(ui::start_refresh_check_task(router_handle.clone()));
+    let state = RouterState::with_request_ids(
+        ui::start_refresh_check_task(router_handle.clone()),
+        router_handle.request_ids.clone(),
+    );
     let task_handle = tokio::spawn(state.run(receiver));
     (router_handle, task_handle)
 }
@@ -382,6 +396,10 @@ impl RouterState {
                 agent_id,
                 request_id,
             } => self.cancel_transfer(request_id, agent_id),
+            RouterMsg::AbandonCommand {
+                agent_id,
+                request_id,
+            } => self.abandon_command(request_id, &agent_id),
             RouterMsg::LocalVerification {
                 agent_id,
                 request_id,

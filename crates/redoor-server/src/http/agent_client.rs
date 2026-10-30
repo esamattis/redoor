@@ -13,6 +13,7 @@ pub(crate) use calls::*;
 use super::error::ApiError;
 use crate::actors::router::{
     AgentListEntry, ExecuteCommandRequest, RouterCallError, RouterHandle, RouterMsg,
+    RouterSendError,
 };
 use redoor_core::log;
 use redoor_protocol::{
@@ -68,17 +69,9 @@ impl AgentClient {
     ) -> Result<C::Response, ApiError> {
         let timeout = call.timeout();
         let command: Command = call.into();
-        let outcome = if C::RUNS_TO_COMPLETION {
-            // The detached task owns the reply port and the abandonment guard, so a dropped
-            // HTTP future neither cancels the agent nor lets the router prune the command.
-            let client = self.clone();
-            let agent_id = agent_id.clone();
-            tokio::spawn(async move { client.execute(&agent_id, command, timeout).await })
-                .await
-                .map_err(|_| ApiError::from(RouterCallError::RouterStopped))??
-        } else {
-            self.execute(agent_id, command, timeout).await?
-        };
+        let outcome = self
+            .execute(agent_id, command, timeout, !C::RUNS_TO_COMPLETION)
+            .await?;
         C::decode(outcome).map_err(|error| match error {
             DecodeError::Failed(CommandError { kind, message }) => {
                 ApiError::Command { kind, message }
@@ -146,29 +139,42 @@ impl AgentClient {
     }
 
     /// Queues a command and waits for its final result under `timeout`.
+    ///
+    /// The id is drawn before sending so the guard can abandon exactly this command however
+    /// the caller leaves. `cancel_on_abandon` is false for work that must finish even when
+    /// nobody waits for its answer.
     async fn execute(
         &self,
         agent_id: &AgentId,
         command: Command,
         timeout: Option<Duration>,
+        cancel_on_abandon: bool,
     ) -> Result<CommandOutcome, ApiError> {
-        let (admitted, admitted_receiver) = oneshot::channel();
+        let request_id = self.router.next_request_id();
         let (reply, result) = oneshot::channel();
-        self.router
-            .send_async(RouterMsg::ExecuteCommandRest(ExecuteCommandRequest {
-                agent_id: agent_id.clone(),
-                command,
-                admitted,
-                reply,
-            }))
-            .await
-            .map_err(|_| RouterCallError::RouterStopped)?;
+        // Armed before the send is awaited: a drop while waiting for mailbox capacity then
+        // sends a harmless abandon for a command the router never saw.
         let mut pending = PendingCommand {
             router: self.router.clone(),
             agent_id: agent_id.clone(),
-            admitted: admitted_receiver,
+            request_id,
             armed: true,
         };
+        if self
+            .router
+            .send_async(RouterMsg::ExecuteCommandRest(ExecuteCommandRequest {
+                agent_id: agent_id.clone(),
+                command,
+                request_id,
+                cancel_on_abandon,
+                reply,
+            }))
+            .await
+            .is_err()
+        {
+            pending.armed = false;
+            return Err(RouterCallError::RouterStopped.into());
+        }
         let result = match timeout {
             Some(deadline) => match tokio::time::timeout(deadline, result).await {
                 Ok(result) => result,
@@ -190,38 +196,47 @@ impl AgentClient {
     }
 }
 
-/// Cancels a queued command whose caller stopped waiting before it answered.
+/// Abandons a command whose caller stopped waiting before it answered.
 struct PendingCommand {
     router: RouterHandle,
     agent_id: AgentId,
-    /// Carries the request id once the router queued the command.
-    admitted: oneshot::Receiver<RequestId>,
+    request_id: RequestId,
     armed: bool,
 }
 
 impl Drop for PendingCommand {
-    /// Abandons the command in the router, which cancels it on the agent when possible.
+    /// Tells the router the caller left, so it forgets the command and, for cancelable ones,
+    /// stops it on the agent.
     ///
-    /// A command the router has not admitted yet needs nothing: the router sees the closed
-    /// reply and never sends it, or sees the closed admission channel and abandons it itself.
+    /// The router mailbox is FIFO and the execute message is enqueued before the caller can
+    /// wait on its answer, so the abandon always arrives after it; an abandon for a command
+    /// the router never saw or already settled is a no-op. The message is never dropped: a
+    /// full mailbox hands it to a task that waits for capacity.
     fn drop(&mut self) {
         if !self.armed {
             return;
         }
-        let Ok(request_id) = self.admitted.try_recv() else {
-            return;
+        let message = RouterMsg::AbandonCommand {
+            agent_id: self.agent_id.clone(),
+            request_id: self.request_id,
         };
-        let router = self.router.clone();
-        let agent_id = self.agent_id.clone();
-        tokio::spawn(async move {
-            // Waits for mailbox capacity: losing this would leave the agent working for nobody.
-            let _ = router
-                .send_async(RouterMsg::CancelTransfer {
-                    agent_id,
-                    request_id,
-                })
-                .await;
-        });
+        match self.router.send(message) {
+            Ok(()) | Err(RouterSendError::Stopped) => {}
+            Err(RouterSendError::Full) => {
+                let router = self.router.clone();
+                let agent_id = self.agent_id.clone();
+                let request_id = self.request_id;
+                tokio::spawn(async move {
+                    // Waits for mailbox capacity: losing this would leave the agent working for nobody.
+                    let _ = router
+                        .send_async(RouterMsg::AbandonCommand {
+                            agent_id,
+                            request_id,
+                        })
+                        .await;
+                });
+            }
+        }
     }
 }
 
@@ -257,6 +272,28 @@ mod tests {
 
         fn timeout(&self) -> Option<Duration> {
             Some(Duration::from_millis(50))
+        }
+    }
+
+    /// A restore (request cancel scope) with no deadline, so only a dropped caller ends it.
+    struct UnboundedRestore;
+
+    impl From<UnboundedRestore> for Command {
+        /// Sends an ordinary restore; only the missing deadline differs.
+        fn from(_: UnboundedRestore) -> Self {
+            QuickRestore.into()
+        }
+    }
+
+    impl AgentRequest for UnboundedRestore {
+        type Response = <RestoreTrash as AgentRequest>::Response;
+    }
+
+    impl AgentCall for UnboundedRestore {
+        const OPERATION: &'static str = "restoring a test item";
+
+        fn timeout(&self) -> Option<Duration> {
+            None
         }
     }
 
@@ -354,6 +391,25 @@ mod tests {
         assert!(matches!(
             agent.next_priority().await,
             ServerToAgent::Cancel { id: canceled , reason: redoor_protocol::wire::partials::CancelReason::Canceled } if canceled == request_id
+        ));
+    }
+
+    /// A caller that disappears without any deadline cancels its command on the agent through
+    /// the explicit abandon message.
+    #[tokio::test]
+    async fn dropped_caller_cancels_request_scoped_command() {
+        let mut agent = FakeAgent::connect().await;
+        let client = AgentClient::new(agent.router.clone());
+        let id = agent.agent_id.clone();
+        let call = tokio::spawn(async move { client.call(&id, UnboundedRestore).await });
+        let (request_id, _) = agent.next_command().await;
+        // The HTTP request goes away while the agent is still working.
+        call.abort();
+        let _ = call.await;
+        // The agent is told to stop exactly the abandoned request.
+        assert!(matches!(
+            agent.next_priority().await,
+            ServerToAgent::Cancel { id: canceled, .. } if canceled == request_id
         ));
     }
 

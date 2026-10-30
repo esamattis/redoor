@@ -164,8 +164,8 @@ impl RouterState {
         Ok(true)
     }
 
-    /// Cancels a download, upload or one-shot command whose HTTP side went away (body
-    /// dropped, producer gone, command deadline passed).
+    /// Cancels a download or upload whose HTTP side went away (body dropped, producer gone).
+    /// One-shot commands are abandoned through `RouterMsg::AbandonCommand` instead.
     ///
     /// Copies are canceled only through their public id because both agents must settle.
     pub(crate) fn cancel_transfer(&mut self, request_id: RequestId, agent_id: AgentId) {
@@ -198,12 +198,7 @@ impl RouterState {
                 ),
                 Some(request_id.as_transfer_id()),
             ),
-            Some(Flow::Command(_)) => {
-                // The REST caller of a one-shot command gave up (deadline or disconnect).
-                self.abandon_command(flow_id, &agent_id);
-                return;
-            }
-            Some(Flow::Copy(_)) | None => return,
+            Some(Flow::Command(_)) | Some(Flow::Copy(_)) | None => return,
         };
         if owner != agent_id {
             log!(

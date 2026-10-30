@@ -231,10 +231,13 @@ pub struct ExecuteCommandRequest {
     pub agent_id: AgentId,
     /// One-shot command to run on the agent.
     pub command: Command,
-    /// Receives the request id once the command is queued, so a caller that gives up (deadline
-    /// or dropped HTTP request) can cancel exactly this command. A dropped receiver means the
-    /// caller already left and the router abandons the command right away.
-    pub admitted: RouterReply<RequestId>,
+    /// Id the caller drew from [`RouterHandle::next_request_id`], so a caller that gives up
+    /// (deadline or dropped HTTP request) can abandon exactly this command without waiting
+    /// for the router to report an id back.
+    pub request_id: RequestId,
+    /// Whether abandoning the command also cancels it on the agent. Commands that must finish
+    /// for their own sake clear this and are only forgotten.
+    pub cancel_on_abandon: bool,
     /// Reply port that receives the final command result.
     pub reply: RouterReply<CommandOutcome>,
 }
@@ -499,6 +502,12 @@ pub enum RouterMsg {
         request_id: RequestId,
     },
     CancelTransfer {
+        agent_id: AgentId,
+        request_id: RequestId,
+    },
+    /// The caller of a one-shot command gave up (deadline or dropped HTTP request). A command
+    /// that already answered or was pruned is ignored.
+    AbandonCommand {
         agent_id: AgentId,
         request_id: RequestId,
     },

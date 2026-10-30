@@ -244,6 +244,32 @@ pub struct UiState {
     pub(crate) refresh_check_task: tokio::task::JoinHandle<()>,
 }
 
+/// Lock-free request id sequence shared by the router and its handles.
+///
+/// Callers that must cancel a command they just queued need its id before the router has
+/// processed the message; drawing from the router's own sequence keeps every id unique across
+/// commands, streams, uploads and copies.
+#[derive(Clone, Debug)]
+pub struct RequestIds {
+    next: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Default for RequestIds {
+    /// Starts at 1 so 0 never names a real request.
+    fn default() -> Self {
+        Self {
+            next: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(1)),
+        }
+    }
+}
+
+impl RequestIds {
+    /// Allocates the next unused request id.
+    pub fn next(&self) -> RequestId {
+        RequestId::new(self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 /// Aggregate router state split into domain-specific registries and stores.
 pub struct RouterState {
     /// Connected-agent registry used for all routing decisions.
@@ -254,8 +280,9 @@ pub struct RouterState {
     pub(crate) progress: TransferProgressStore,
     /// UI refresh throttling and subscriber fanout state.
     pub(crate) ui: UiState,
-    /// Monotonic counter used to allocate the next internal request id.
-    pub(crate) next_request_id: RequestId,
+    /// Allocator shared with [`super::RouterHandle`], so ids a caller picks before sending
+    /// and ids the router picks internally never collide.
+    pub(crate) request_ids: RequestIds,
     /// Canceled results of commands withdrawn before they were written. They are routed
     /// after the current message, like a result from the agent would be, so no handler sees
     /// its flow settle in the middle of its own cancel.
@@ -264,7 +291,17 @@ pub struct RouterState {
 
 impl RouterState {
     /// Constructs a fresh router state with the background UI refresh task attached.
+    #[cfg(test)]
     pub(crate) fn new(ui_refresh_check_task: tokio::task::JoinHandle<()>) -> Self {
+        Self::with_request_ids(ui_refresh_check_task, RequestIds::default())
+    }
+
+    /// Constructs a router state that draws request ids from `request_ids`, the allocator its
+    /// handle hands to clients that need an id before the router sees their message.
+    pub(crate) fn with_request_ids(
+        ui_refresh_check_task: tokio::task::JoinHandle<()>,
+        request_ids: RequestIds,
+    ) -> Self {
         Self {
             agents: AgentRegistry::default(),
             flows: FlowTable::default(),
@@ -275,15 +312,13 @@ impl RouterState {
                 refresh_pending: false,
                 refresh_check_task: ui_refresh_check_task,
             },
-            next_request_id: RequestId::new(1),
+            request_ids,
             local_results: Vec::new(),
         }
     }
 
     /// Allocates the next internal router request id.
     pub(crate) fn next_id(&mut self) -> RequestId {
-        let id = self.next_request_id;
-        self.next_request_id = self.next_request_id.next();
-        id
+        self.request_ids.next()
     }
 }

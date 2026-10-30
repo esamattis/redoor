@@ -580,12 +580,12 @@ impl RouterState {
             .collect()
     }
 
-    /// Allocates an internal request id and routes a one-shot command to an agent.
+    /// Routes a one-shot command, under the id its caller chose, to an agent.
     pub(crate) fn execute_command_rest(&mut self, request: ExecuteCommandRequest) {
         if request.reply.is_closed() {
             return;
         }
-        let request_id = self.next_id();
+        let request_id = request.request_id;
         log!(
             Level::Trace,
             "Routing REST command: agent_id={}, request_id={}, command={:?}",
@@ -600,7 +600,8 @@ impl RouterState {
             ));
             return;
         };
-        let cancelable = request.command.policy().cancel_scope == CancelScope::Request;
+        let cancelable = request.cancel_on_abandon
+            && request.command.policy().cancel_scope == CancelScope::Request;
         if !agent_connection.send_command(request_id, request.command) {
             let _ = request.reply.send(CommandOutcome::error(
                 redoor_protocol::wire::command::CommandErrorKind::ServiceUnavailable,
@@ -617,10 +618,6 @@ impl RouterState {
                 reply: request.reply,
             }),
         );
-        if request.admitted.send(request_id).is_err() {
-            // The caller left between queueing and admission, so nobody can cancel it later.
-            self.abandon_command(request_id, &request.agent_id);
-        }
     }
 
     /// Drops a one-shot command whose caller gave up and stops it on the agent when the agent
@@ -629,7 +626,16 @@ impl RouterState {
     pub(crate) fn abandon_command(&mut self, flow_id: super::flows::FlowId, agent_id: &AgentId) {
         match self.flows.get(flow_id) {
             Some(Flow::Command(command)) if &command.agent_id == agent_id => {}
-            _ => return,
+            _ => {
+                // Benign: the answer or the tick's pruning got there before the abandon.
+                log!(
+                    Level::Debug,
+                    "Abandoned command already settled: agent_id={}, request_id={}",
+                    agent_id,
+                    flow_id
+                );
+                return;
+            }
         }
         if let Some(Flow::Command(command)) = self.flows.remove(flow_id) {
             self.cancel_abandoned(&command);
@@ -1188,13 +1194,14 @@ mod tests {
         ));
 
         let (first_reply, first_receiver) = oneshot::channel();
-        let (first_admitted, _first_admitted) = oneshot::channel();
+        let request_id = state.next_id();
         state.execute_command_rest(ExecuteCommandRequest {
             agent_id: agent_id.clone(),
             command: redoor_protocol::wire::command::Command::GetAgentDetails(
                 request::GetAgentDetails {},
             ),
-            admitted: first_admitted,
+            request_id,
+            cancel_on_abandon: true,
             reply: first_reply,
         });
         // The admitted command owns exactly one pending reply while its frame fills the lane.
@@ -1202,13 +1209,14 @@ mod tests {
         drop(first_receiver);
 
         let (overload_reply, overload_receiver) = oneshot::channel();
-        let (overload_admitted, _overload_admitted) = oneshot::channel();
+        let request_id = state.next_id();
         state.execute_command_rest(ExecuteCommandRequest {
             agent_id: agent_id.clone(),
             command: redoor_protocol::wire::command::Command::GetAgentDetails(
                 request::GetAgentDetails {},
             ),
-            admitted: overload_admitted,
+            request_id,
+            cancel_on_abandon: true,
             reply: overload_reply,
         });
         // Rejected commands never enter pending state, and the periodic tick prunes the
@@ -1244,6 +1252,54 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// Verifies an explicit abandon stops a request-scoped command on the agent without
+    /// waiting for the periodic prune, and that repeating it is a harmless no-op.
+    #[tokio::test]
+    async fn abandon_command_cancels_request_scoped_command_on_agent() {
+        let mut state = test_state();
+        let agent_id = redoor_core::test_support::test_agent_id("abandon-agent");
+        let (lanes, mut receivers) = ControlLanes::bounded(4, 4);
+        state.commit_registration(RegisterAgentRequest::for_test(
+            &agent_id,
+            lanes,
+            super::super::streams::ConnectionStreams::new(agent_id.clone()),
+        ));
+        assert!(matches!(
+            receivers.priority.recv().await,
+            Some(ServerToAgent::Welcome { .. })
+        ));
+
+        let (reply, _receiver) = oneshot::channel();
+        let request_id = state.next_id();
+        state.execute_command_rest(ExecuteCommandRequest {
+            agent_id: agent_id.clone(),
+            command: redoor_protocol::wire::command::Command::RestoreTrash(request::RestoreTrash {
+                location_id: "l".to_string(),
+                item_id: "i".to_string(),
+                destination_path: "/tmp/restored".to_string(),
+            }),
+            request_id,
+            cancel_on_abandon: true,
+            reply,
+        });
+        // The command is written, so a cancel frame is needed to stop it.
+        let queued = receivers.commands.try_recv().unwrap();
+        assert!(queued.ticket.unwrap().mark_written());
+        assert_eq!(state.flows.len(), 1);
+
+        state.abandon_command(request_id, &agent_id);
+        // The flow is gone and the agent was told to stop it.
+        assert_eq!(state.flows.len(), 0);
+        assert!(matches!(
+            receivers.priority.try_recv(),
+            Ok(ServerToAgent::Cancel { id, .. }) if id == request_id
+        ));
+        // A second abandon finds nothing and must not send another cancel.
+        state.abandon_command(request_id, &agent_id);
+        assert!(receivers.priority.try_recv().is_err());
+        state.ui.refresh_check_task.abort();
     }
 
     /// Registers a connected test agent with an explicit name and returns its id.

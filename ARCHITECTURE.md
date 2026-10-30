@@ -503,7 +503,8 @@ sequenceDiagram
 - **Identity is the connection.** `hello` is the only frame that names the agent; every later
   frame is attributed to the session that received it. A second `hello` closes the socket.
 - **Request ids are interpreted per connection.** The server allocates them from one
-  router-wide counter, and the router indexes flows by agent and request id, so a frame can
+  router-wide atomic sequence shared by the router and its `RouterHandle` (so a client can
+  pick an id before sending), and the router indexes flows by agent and request id, so a frame can
   only resolve work that was sent to its own connection.
 - A reconnect of the same agent id replaces the old connection, which receives `evicted`.
   A *different* agent id that claims the name of a live or configured device is `rejected`
@@ -825,9 +826,10 @@ agent belongs to exactly one flow, and all flows live in one `FlowTable`.
   settles when:
   - the agent's result arrives. This is the normal case, and the result always comes after
     the stream data.
-  - the caller gives up. A dropped `AgentClient` call or HTTP body tells the router, which
-    removes a command flow at once. Stream flows move to `Canceling` until the agent
-    acknowledges the cancel.
+  - the caller gives up. A dropped `AgentClient` call sends `AbandonCommand`, which removes
+    the command flow at once; a dropped HTTP body sends `CancelTransfer`, and stream flows
+    move to `Canceling` until the agent acknowledges the cancel. The router tick also prunes
+    command flows whose reply port is closed, as a safety net.
   - the user cancels or pauses it by transfer id.
   - the agent's connection is lost. `fail_agent_flows` takes out every flow that depends on
     that agent and fails each one. Which agents a copy depends on changes with its phase.
@@ -857,7 +859,8 @@ sequenceDiagram
     participant A as Agent dispatcher
 
     C->>H: GET /api/v1/... (e.g. metadata)
-    H->>R: request.into() command, with the call's deadline
+    H->>H: draw request id from the shared sequence, arm abandon guard
+    H->>R: request.into() command with that id, with the call's deadline
     R->>R: add Command flow to flow table
     R->>A: command {id, credit, command} (command lane)
     A->>A: policy() → admit, register cancel, spawn
@@ -873,10 +876,15 @@ sequenceDiagram
   `R::decode`, so there are no "unexpected result type" branches. An agent
   error becomes an `ApiError` with the status of its `CommandErrorKind`; a payload that is
   not the request's response type is a protocol fault (500).
-- When the caller gives up (the deadline passes or the HTTP client disconnects), the router
-  drops the flow. If the command can be cancelled on the agent, the router also cancels it
-  (see the request lifecycle below). A few commands, such as trash restore, are allowed to
-  run to completion on purpose.
+- The client draws the request id before sending, so a guard that knows the id can always
+  abandon the command. When the caller gives up (the deadline passes or the HTTP client
+  disconnects) the guard sends `AbandonCommand`; the router drops the flow and, if the
+  command is cancelable on the agent, also cancels it (see the request lifecycle below). The
+  mailbox is FIFO and the execute message is enqueued first, so the abandon never overtakes
+  it, and an abandon for a settled or unknown id is a no-op. The guard tries a non-blocking
+  send and only spawns a task when the mailbox is full. A few commands, such as trash
+  restore, run to completion on purpose: their execute request clears `cancel_on_abandon`,
+  so an abandoned call is forgotten without a cancel frame.
 - File search, content grep, Git status (the Git view's change list) and Git worktree
   status are cancellable on the agent (`CancelScope::Request`) even though they carry no
   stream, because they can run for many seconds after their caller stopped caring. The
