@@ -63,6 +63,8 @@ Before reaching for local component state with `useState`, consider whether the 
 
 Use Tailwind for styling.
 
+Always consider mobile usability for every UI change, even when it is not asked for, because the app is used from phones. Lay controls out so they still fit and stay readable in a phone-narrow content column, keep touch targets large enough to tap, and prefer native controls such as `Select` where phones offer a better picker of their own.
+
 Prefer container queries over viewport media queries for responsive layouts, including when asked to fix something "on mobile" or "on phones". Persistent side menus can make the content column phone-narrow on a wide screen, so content must respond to the column, not the viewport. `OverlayChromeLayout` makes the content column (page, top bar and bottom drawer) the `@container/main` container: use `@xl:` / `@max-xl:` (36rem) where the old viewport `sm:` would go, `@2xl:` for `md:`, and `@4xl:` for `lg:`. Inside a component that is its own `@container`, name the main container explicitly (`@max-xl/main:`). In JS use `useIsContentBelow("xl")` instead of `useIsBelowBreakpoint`. Viewport media queries (`sm:` etc. and `useIsBelowBreakpoint`) are only for shell decisions such as side menu drawers and for modal dialogs, which are sized against the viewport.
 
 Combine and conditionally apply class names with `cn` from `ui/src/utils/cn.ts`. Do not call `twMerge` directly.
