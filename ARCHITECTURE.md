@@ -1540,6 +1540,16 @@ cache, so Back, reload and shared links all land on the same screen.
   - The command is request-scoped (`CancelScope::Request`), so leaving the directory aborts
     the query and the agent drops the walk at once (`Git directory entries canceled` in its
     debug log).
+  - In the browser the column (`git-status-column.tsx`) sits right after Type, so it stays
+    visible when the table scrolls sideways on phones. Whether it is shown depends only on
+    `git/context`, which the loader has before the first render: inside a worktree and not
+    at a revision, where worktree status would describe other files. It is there while
+    loading, on failure, on `timed_out` (the header tooltip says why the rows are empty) and
+    when everything is clean, and every cell is a fixed slot the size of the type icon, so
+    the data arriving never shifts the table. The data is a `useQuery` in the file list, not
+    in the loader, keyed under the agent's `git` prefix so window focus and file mutations
+    refresh it with the listing. Symbols fade in by opacity only, keyed by their label, so a
+    refetch with the same answer does not fade again.
 - **One workflow per path operation.** Four dialogs that ask for a name (rename, duplicate,
   new file, new directory) share `PathNameDialog` and `validatePathComponent`, which rejects
   empty names, `.` and `..`, and separators. Directory creation alone opts in to nested names

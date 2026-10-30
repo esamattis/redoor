@@ -123,6 +123,9 @@ export const queryKeys = {
         [...queryKeys.git(agentId), "context", path] as const,
     gitStatus: (agentId: string, path: string) =>
         [...queryKeys.git(agentId), "status", path] as const,
+    /** The file list's Git column; under `git` so focus refreshes and mutations reach it. */
+    gitDirectoryEntries: (agentId: string, path: string) =>
+        [...queryKeys.git(agentId), "directory-entries", path] as const,
     gitDiff: (agentId: string, files: string[], mode: GitDiffMode) =>
         [...queryKeys.git(agentId), "diff", files, mode] as const,
     gitRevisionTree: (agentId: string, path: string, rev: string) =>
@@ -524,6 +527,20 @@ export function gitStatusQueryOptions(agent: Agent, path: string) {
     return queryOptions({
         queryKey: queryKeys.gitStatus(agent.id, path),
         queryFn: () => agent.gitStatus(path),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/**
+ * The Git state of each entry of a directory for the file list's status column. It is not
+ * primed by the loader, because the walk can take far longer than the listing, which must
+ * not wait for it. The signal lets leaving the directory stop the agent's walk.
+ */
+export function gitDirectoryEntriesQueryOptions(agent: Agent, path: string) {
+    return queryOptions({
+        queryKey: queryKeys.gitDirectoryEntries(agent.id, path),
+        queryFn: (context) =>
+            agent.gitDirectoryEntries(path, { signal: context.signal }),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

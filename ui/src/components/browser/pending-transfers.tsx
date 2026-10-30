@@ -197,7 +197,11 @@ function PendingTransferSize(props: { transfer: TransferProgressEntry }) {
  * Shows an incoming transfer among the directory entries. It has no selection or actions,
  * because nothing exists under its final name until the transfer publishes it.
  */
-export function PendingFileEntry(props: { pending: PendingTransfer }) {
+export function PendingFileEntry(props: {
+    pending: PendingTransfer;
+    /** Adds the Git column's empty cell, since an incoming file has no Git state yet. */
+    showGitStatus: boolean;
+}) {
     const name = props.pending.name;
     const canceling = props.pending.transfer.state === "canceling";
 
@@ -222,6 +226,7 @@ export function PendingFileEntry(props: { pending: PendingTransfer }) {
                     />
                 </Tooltip>
             </td>
+            {props.showGitStatus ? <td className="p-1.5 @xl:p-2" /> : null}
             <td className="p-1.5 @xl:p-2">
                 <span className="flex min-w-0 items-center gap-2">
                     <span className="truncate font-medium italic text-slate-400">

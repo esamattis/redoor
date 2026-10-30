@@ -1,5 +1,6 @@
 import React from "react";
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
     ArrowDownUp,
@@ -12,6 +13,7 @@ import {
 } from "lucide-react";
 import type { LsEntry } from "#bindings/LsEntry";
 import type { MountPoint } from "#bindings/MountPoint";
+import type { GitDirectoryEntryState } from "#bindings/GitDirectoryEntryState";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
@@ -57,6 +59,14 @@ import {
 } from "#ui/utils/archive";
 import { useTerminals } from "#ui/use-terminals";
 import type { RevisionListing } from "#ui/components/browser/revision";
+import {
+    type GitColumnData,
+    gitColumnData,
+    gitEntryState,
+    GitStatusCell,
+    GitStatusHeader,
+} from "#ui/components/browser/git-status-column";
+import { gitDirectoryEntriesQueryOptions } from "#ui/queries";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
@@ -162,6 +172,12 @@ export function FileList(props: {
      * not shown because Git does not record them.
      */
     revision?: RevisionListing;
+    /**
+     * Shows the Git status column. It depends only on the Git context the loader already
+     * has, so the column is there from the first render and its data arriving never shifts
+     * the table.
+     */
+    showGitStatus: boolean;
 }) {
     const navigate = useNavigate();
     const readOnly = props.revision !== undefined;
@@ -188,6 +204,16 @@ export function FileList(props: {
     const filteredFiles = visibleFiles.filter((entry) =>
         entry.name.toLowerCase().includes(normalizedFilter),
     );
+
+    // Fetched here rather than in the loader, so the listing never waits for the status walk.
+    const gitEntries = useQuery({
+        ...gitDirectoryEntriesQueryOptions(props.agent, props.directoryPath),
+        enabled: props.showGitStatus,
+    });
+
+    const gitColumn: GitColumnData | null = props.showGitStatus
+        ? gitColumnData(gitEntries.data, gitEntries.isError)
+        : null;
 
     const worktreePendingTransfers = usePendingTransfers(
         props.agent.id,
@@ -291,6 +317,7 @@ export function FileList(props: {
                 sort={sort}
                 onSort={props.onSort}
                 revision={props.revision}
+                gitColumn={gitColumn}
             />
             <FilesystemFooter mountPoint={props.mountPoint} />
         </div>
@@ -339,7 +366,10 @@ function FileTable(props: {
     sort: FileSort | null;
     onSort: (column: FileSortColumn) => void;
     revision: RevisionListing | undefined;
+    /** The Git column's data, or null when the column is not shown. */
+    gitColumn: GitColumnData | null;
 }) {
+    const gitColumn = props.gitColumn;
     const tableRef = React.useRef<HTMLTableElement>(null);
 
     const getEntries = React.useEffectEvent(() =>
@@ -366,6 +396,9 @@ function FileTable(props: {
                             sort={props.sort}
                             onSort={props.onSort}
                         />
+                        {gitColumn === null ? null : (
+                            <GitStatusHeader data={gitColumn} />
+                        )}
                         <SortableFileColumnHeader
                             label="Name"
                             column="name"
@@ -407,6 +440,7 @@ function FileTable(props: {
                             <PendingFileEntry
                                 key={`pending:${row.pending.transfer.request_id}`}
                                 pending={row.pending}
+                                showGitStatus={gitColumn !== null}
                             />
                         ) : (
                             <FileEntry
@@ -415,6 +449,11 @@ function FileTable(props: {
                                 directoryPath={props.directoryPath}
                                 entry={row.entry}
                                 revision={props.revision}
+                                gitState={
+                                    gitColumn === null
+                                        ? undefined
+                                        : gitEntryState(gitColumn, row.name)
+                                }
                             />
                         ),
                     )}
@@ -733,6 +772,8 @@ function FileEntry(props: {
      * submodules cannot be selected at all.
      */
     revision: RevisionListing | undefined;
+    /** The entry's Git state; undefined when the column is not shown, null when clean. */
+    gitState: GitDirectoryEntryState | null | undefined;
 }) {
     const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
     const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
@@ -786,6 +827,13 @@ function FileEntry(props: {
                     <File className="h-4 w-4 text-slate-500 @xl:h-5 @xl:w-5" />
                 )}
             </td>
+            {props.gitState === undefined ? null : (
+                <GitStatusCell
+                    name={entry.name}
+                    state={props.gitState}
+                    directoryPath={props.directoryPath}
+                />
+            )}
             <td className="px-1.5 py-0.5 @xl:p-2">
                 <Link
                     {...browserRoute(props.agent, fullPath)}

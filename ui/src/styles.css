@@ -100,6 +100,21 @@
  */
 @theme {
     --text-code: 0.8125rem;
+    /*
+     * Lets content that arrives after the page settles, such as the file list's Git column,
+     * appear gently instead of popping in. Opacity only, so nothing around it moves.
+     */
+    --animate-fade-in: fade-in 350ms ease-out;
+
+    @keyframes fade-in {
+        from {
+            opacity: 0;
+        }
+
+        to {
+            opacity: 1;
+        }
+    }
 }
 
 :root.light {

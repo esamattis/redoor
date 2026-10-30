@@ -578,6 +578,7 @@ function RevisionFileBrowser(props: {
                     directoryPath={tree.path}
                     files={revisionListingEntries(tree.entry.entries)}
                     revision={revisionListing(tree.commit.id, tree.entry)}
+                    showGitStatus={false}
                 />
             </>
         ) : editable ? (
@@ -984,6 +985,9 @@ function DirectoryBrowserPage(props: {
                         agent={props.agent}
                         directoryPath={lsResult.path}
                         files={lsResult.files}
+                        showGitStatus={
+                            props.gitContext.status === "inside_worktree"
+                        }
                     />
                 </>
             )}
@@ -1001,6 +1005,8 @@ function DirectoryListing(props: {
     directoryPath: string;
     files: LsEntry[];
     revision?: RevisionListing;
+    /** Inside a worktree and not at a revision, where the worktree's status means nothing. */
+    showGitStatus: boolean;
 }) {
     const [userState, setUserState] = useUserState();
     const navigate = Route.useNavigate();
@@ -1052,6 +1058,7 @@ function DirectoryListing(props: {
             sort={sort}
             onSort={changeSort}
             revision={props.revision}
+            showGitStatus={props.showGitStatus}
             mountPoint={getMountPointForPath(
                 details.mount_points,
                 props.directoryPath,
