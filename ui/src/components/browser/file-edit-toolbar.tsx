@@ -5,6 +5,7 @@ import {
     Download,
     LoaderCircle,
     MoreHorizontal,
+    PanelLeftOpen,
     RefreshCw,
     Replace,
     Save,
@@ -12,6 +13,7 @@ import {
     ScanText,
     Trash2,
 } from "lucide-react";
+import { useAtom } from "jotai";
 import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
@@ -22,9 +24,11 @@ import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { ViewToolbar } from "#ui/components/browser/view-toolbar-slot";
 import { Checkbox } from "#ui/components/checkbox";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
+import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import { ToggleButton } from "#ui/components/toggle-button";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
+import { openSideMenuAtom, sideMenuDrawerIds } from "#ui/side-menu-state";
 import { useUserState } from "#ui/user-state";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
@@ -360,6 +364,34 @@ function FileEditorSecondaryActions(props: {
     );
 }
 
+/**
+ * Reopens the shared application menu from inside the full-window editor, whose overlay
+ * covers the persistent sidebar and the top bar's menu button. The menu is the only place
+ * that lists open files, so the editor keeps a way to reach them without leaving the file.
+ */
+function OpenApplicationMenuButton() {
+    const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
+    const isOpen = openMenu === "application";
+
+    return (
+        <IconButton
+            type="button"
+            label="Open application menu"
+            tooltip="Open the open files panel"
+            aria-haspopup="dialog"
+            aria-controls={sideMenuDrawerIds.application}
+            aria-expanded={isOpen}
+            data-side-menu-opener={sideMenuDrawerIds.application}
+            variant="ghost"
+            size="lg"
+            onClick={() => setOpenMenu(isOpen ? null : "application")}
+            className="shrink-0"
+        >
+            <PanelLeftOpen className="h-4 w-4" aria-hidden="true" />
+        </IconButton>
+    );
+}
+
 /** Groups editor toolbar actions so the edit view can stay focused on buffer state. */
 export function FileEditHeader(props: {
     readOnly: boolean;
@@ -400,6 +432,12 @@ export function FileEditHeader(props: {
             <ViewToolbar inPlace={props.isFullWindow}>
                 <div className="flex w-full min-w-0 items-center gap-1">
                     <div className="flex min-w-0 items-center gap-0.5">
+                        {props.isFullWindow ? (
+                            <>
+                                <OpenApplicationMenuButton />
+                                <ToolbarDivider />
+                            </>
+                        ) : null}
                         <FileEditActions
                             readOnly={props.readOnly}
                             statusMessage={props.statusMessage}
@@ -421,6 +459,16 @@ export function FileEditHeader(props: {
                             onToggleSearch={props.onToggleSearch}
                             onPreviewChange={props.onPreviewChange}
                         />
+                        {props.isFullWindow ? (
+                            // The full-window editor covers the tab that names the file, so the
+                            // name follows the editor actions that identify the buffer.
+                            <span
+                                aria-hidden="true"
+                                className="min-w-0 truncate px-2 text-sm text-slate-300"
+                            >
+                                {props.fileName}
+                            </span>
+                        ) : null}
                     </div>
                     {/* A full-width row pushes the window controls to its end; beside the tabs
                         there is no room to push, so a divider separates the groups instead. */}

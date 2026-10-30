@@ -1389,10 +1389,11 @@ A file becomes *open* when it is first edited or double-clicked in the editor (a
 selects a word but changes nothing, so it opens a file without editing it); any other file
 shown in the editor is a *preview*. Diff file headers, diff rows and search results also
 have a small button that opens a file without going to it (`OpenInBackgroundButton`). The
-open files list (`openFiles` in the user state) is shown in the application menu and, in
-full-window mode, as a strip above the editor. Full-window mode is the `fullWindow` search
-key, retained by the browser route like `rev`, so switching files keeps it, Back leaves it
-and a link or reload opens straight into it.
+open files list (`openFiles` in the user state) is shown in the application menu; the
+full-window editor covers that menu, so its header carries a button that opens the menu as a
+drawer over the editor. Full-window mode is the `fullWindow` search key, retained by the
+browser route like `rev`, so switching files keeps it, Back leaves it and a link or reload
+opens straight into it.
 
 - **One view, one buffer per open file.** `EditorWorkspace` (`ui/src/editor`), created in
   `main.tsx` and reached through the router context, owns the single `EditorView` and a

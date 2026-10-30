@@ -105,7 +105,7 @@ function boundedCollision(
                 return [];
             }
 
-            // The moving source can overlap the destination, especially on wide editor strip tabs.
+            // The moving source can overlap the destination, especially on wide tabs.
             return pointerWithin({
                 ...args,
                 droppableContainers: args.droppableContainers.filter(

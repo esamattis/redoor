@@ -216,7 +216,7 @@ test.describe.serial("Open files", () => {
         ).toBeVisible();
     });
 
-    test("switches open files above the toolbar while keeping the editor full window", async ({
+    test("opens the application menu over the full-window editor to switch open files", async ({
         page,
     }) => {
         const firstUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`;
@@ -231,37 +231,28 @@ test.describe.serial("Open files", () => {
 
         const panel = page.getByRole("article", { name: "Editing panel" });
 
-        const strip = panel.getByRole("navigation", {
-            name: "Editor open files",
+        const openMenu = panel.getByRole("button", {
+            name: "Open application menu",
         });
 
-        const firstLink = strip.getByRole("link", {
+        // The editor overlay covers the sidebar, so its header button must reopen the menu.
+        await openMenu.click();
+
+        const drawer = page.getByRole("dialog", { name: "Application menu" });
+        const openFiles = drawer.getByRole("list", { name: "Open files" });
+
+        const firstLink = openFiles.getByRole("link", {
             name: "file1.txt",
             exact: true,
         });
 
-        const secondLink = strip.getByRole("link", {
+        const secondLink = openFiles.getByRole("link", {
             name: "file2.txt",
             exact: true,
         });
 
-        // Both destinations must be visible on a single row above the editing actions.
         await expect(firstLink).toBeVisible();
         await expect(secondLink).toBeVisible();
-        const firstBox = await firstLink.boundingBox();
-        const secondBox = await secondLink.boundingBox();
-
-        const saveBox = await panel
-            .getByRole("button", { name: "Save file" })
-            .boundingBox();
-
-        if (!firstBox || !secondBox || !saveBox) {
-            throw new Error("Expected open row and toolbar measurements");
-        }
-
-        expect(firstBox.y).toBe(secondBox.y);
-        expect(secondBox.x).toBeGreaterThan(firstBox.x);
-        expect(firstBox.y + firstBox.height).toBeLessThanOrEqual(saveBox.y);
 
         await firstLink.click();
         // Navigating must replace the file content while retaining the full-window presentation.
@@ -269,29 +260,36 @@ test.describe.serial("Open files", () => {
         await expect(
             panel.getByLabel("File editor", { exact: true }),
         ).toHaveText("content1");
-        await expect(firstLink).toHaveAttribute("aria-current", "page");
+        // Choosing a file dismisses the menu so the editor is unobstructed again.
+        await expect(drawer).toBeHidden();
         await expect(panel).toHaveCSS("position", "fixed");
-        await expect(
-            panel.getByRole("button", { name: "Restore editor size" }),
-        ).toBeVisible();
 
-        await secondLink.click();
-        // Switching back proves the row remains usable after the keyed editor remounts.
+        await openMenu.click();
+        await expect(drawer).toBeVisible();
+        // The menu marks the file the editor is showing as the current one.
+        await expect(
+            drawer.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toHaveAttribute("aria-current", "page");
+
+        await drawer
+            .getByRole("link", { name: "file2.txt", exact: true })
+            .click();
+        // Switching back proves the menu still reaches every open file after navigation.
         await expect(page).toHaveURL(`${secondUrl}?fullWindow=true`);
         await expect(
             panel.getByLabel("File editor", { exact: true }),
         ).toHaveText("content2");
-        await expect(secondLink).toHaveAttribute("aria-current", "page");
         await expect(panel).toHaveCSS("position", "fixed");
+
         await panel
             .getByRole("button", { name: "Restore editor size" })
             .click();
         // Restoring the editor returns open navigation to the normal sidebar presentation.
         await expect(panel).toHaveCSS("position", "static");
-        await expect(strip).toHaveCount(0);
+        await expect(drawer).toBeHidden();
     });
 
-    test("opens full-window open files in background tabs and closes them with the close button", async ({
+    test("opens full-window open files in background tabs and closes them from the menu", async ({
         page,
         browser,
     }) => {
@@ -307,26 +305,30 @@ test.describe.serial("Open files", () => {
 
         const panel = page.getByRole("article", { name: "Editing panel" });
 
-        const strip = panel.getByRole("navigation", {
-            name: "Editor open files",
-        });
+        await panel
+            .getByRole("button", { name: "Open application menu" })
+            .click();
+
+        const drawer = page.getByRole("dialog", { name: "Application menu" });
+        const openFiles = drawer.getByRole("list", { name: "Open files" });
 
         const backgroundTabs = await BackgroundTabs.watch(browser);
-        await strip
+        await openFiles
             .getByRole("link", { name: "file1.txt", exact: true })
             .click({ button: "middle" });
-        // Native navigation must open the file in its own tab and leave the strip and the expanded
-        // editor on the original page intact.
+        // Native navigation must open the file in its own tab and leave the menu and the
+        // expanded editor on the original page intact.
         await expect
             .poll(() => backgroundTabs.urls())
             .toEqual([`${firstUrl}?fullWindow=true`]);
         await backgroundTabs.close();
+        await expect(drawer).toBeVisible();
         await expect(
-            strip.getByRole("link", { name: "file1.txt", exact: true }),
+            openFiles.getByRole("link", { name: "file1.txt", exact: true }),
         ).toBeVisible();
         await expect(page).toHaveURL(`${secondUrl}?fullWindow=true`);
         await expect(panel).toHaveCSS("position", "fixed");
-        await strip
+        await openFiles
             .getByRole("button", {
                 name: "Close open file file1.txt",
                 exact: true,
@@ -334,14 +336,21 @@ test.describe.serial("Open files", () => {
             .click();
         // The explicit close button remains the way to remove an inactive open file.
         await expect(
-            strip.getByRole("link", { name: "file1.txt", exact: true }),
+            openFiles.getByRole("link", { name: "file1.txt", exact: true }),
         ).toHaveCount(0);
+
+        await page.keyboard.press("Escape");
+        await expect(drawer).toBeHidden();
 
         const editor = panel.getByLabel("File editor", { exact: true });
         await editor.click();
         await page.keyboard.press("ControlOrMeta+End");
         await page.keyboard.type(" draft");
-        await strip
+
+        await panel
+            .getByRole("button", { name: "Open application menu" })
+            .click();
+        await openFiles
             .getByRole("button", {
                 name: "Close open file file2.txt",
                 exact: true,
@@ -358,7 +367,13 @@ test.describe.serial("Open files", () => {
             .getByRole("button", { name: "Discard changes" })
             .click();
         // Confirming closes the file and its editor falls back to the device text.
-        await expect(strip).toHaveCount(0);
+        await expect(
+            drawer.getByText(
+                "No open files — edit or double-click a file in the editor to list it here",
+            ),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        await expect(drawer).toBeHidden();
         await expect(editor).toHaveText("content2");
         // The editor stays on the file and keeps the expanded presentation.
         await expect(page).toHaveURL(`${secondUrl}?fullWindow=true`);
@@ -471,7 +486,7 @@ test.describe.serial("Open files", () => {
         await expect(confirmation).toBeHidden();
     });
 
-    test("reorders sidebar open files by insertion and restores that order in the editor", async ({
+    test("reorders sidebar open files by insertion and restores that order over the full-window editor", async ({
         page,
         browser,
     }) => {
@@ -549,16 +564,25 @@ test.describe.serial("Open files", () => {
             .getByRole("button", { name: "Expand editor to full window" })
             .click();
 
-        const editorStrip = page
-            .getByRole("article", { name: "Editing panel" })
-            .getByRole("navigation", { name: "Editor open files" });
+        const panel = page.getByRole("article", { name: "Editing panel" });
+        await panel
+            .getByRole("button", { name: "Open application menu" })
+            .click();
 
-        // The editor strip reads the same account order as the sidebar.
-        await expect(editorStrip.getByRole("link")).toHaveText([
-            "file3.txt",
-            "file1.txt",
-            "file2.txt",
-        ]);
+        // The menu over the editor reads the same account order as the sidebar.
+        await expect
+            .poll(() =>
+                page
+                    .getByRole("dialog", { name: "Application menu" })
+                    .getByRole("list", { name: "Open files" })
+                    .getByRole("link")
+                    .evaluateAll((elements) =>
+                        elements.map((element) =>
+                            element.getAttribute("aria-label"),
+                        ),
+                    ),
+            )
+            .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
 
         await page.reload();
         // Full-window mode is local, so reload restores the shared order in the sidebar.
@@ -581,91 +605,6 @@ test.describe.serial("Open files", () => {
             )
             .toEqual(["file3.txt", "file1.txt", "file2.txt"]);
         await fresh.close();
-    });
-
-    test("reorders the editor strip horizontally without resetting the draft", async ({
-        page,
-    }) => {
-        const names = ["file1.txt", "file2.txt", "file3.txt"];
-        const api = new ApiClient(API_BASE_URL);
-        await api.login("test-user", "test-password");
-        await api.updateUserState({
-            state: {
-                openFiles: names.map((name) => ({
-                    agentId: ctx.agentId,
-                    path: path.join(ctx.testDirPath, name),
-                    name,
-                    agentName: ctx.agentName,
-                })),
-            },
-        });
-        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "file1.txt"))}`;
-        await page.goto(fileUrl);
-        const panel = page.getByRole("article", { name: "Editing panel" });
-        const editor = panel.getByLabel("File editor", { exact: true });
-        await editor.click();
-        await page.keyboard.press("ControlOrMeta+End");
-        await page.keyboard.type(" draft");
-        await page
-            .getByRole("button", { name: "Expand editor to full window" })
-            .click();
-
-        const strip = panel.getByRole("navigation", {
-            name: "Editor open files",
-        });
-
-        await dragReorderRow(
-            page,
-            strip.getByRole("listitem", {
-                name: `Open file file3.txt on ${ctx.agentName}`,
-            }),
-            strip.getByRole("link", { name: "file2.txt", exact: true }),
-        );
-        // The horizontal pointer move must insert the file without navigating away from the draft.
-        await expect(strip.getByRole("link")).toHaveText([
-            "file1.txt",
-            "file3.txt",
-            "file2.txt",
-        ]);
-        await keyboardReorder(
-            page,
-            strip.getByRole("listitem", {
-                name: `Open file file3.txt on ${ctx.agentName}`,
-            }),
-            { key: "ArrowRight", times: 1 },
-        );
-        await keyboardReorder(
-            page,
-            strip.getByRole("listitem", {
-                name: `Open file file3.txt on ${ctx.agentName}`,
-            }),
-            { key: "ArrowLeft", times: 1 },
-        );
-        // Sorting must not navigate, exit full window, or drop the unsaved buffer.
-        await expect(page).toHaveURL(`${fileUrl}?fullWindow=true`);
-        await expect(panel).toHaveCSS("position", "fixed");
-        await expect(editor).toHaveText("content1 draft");
-        await expect(strip.getByRole("link")).toHaveText([
-            "file1.txt",
-            "file3.txt",
-            "file2.txt",
-        ]);
-        await panel
-            .getByRole("button", { name: "Restore editor size" })
-            .click();
-        await expect
-            .poll(() =>
-                page
-                    .getByRole("navigation", { name: "Application" })
-                    .getByRole("list", { name: "Open files" })
-                    .getByRole("link")
-                    .evaluateAll((elements) =>
-                        elements.map((element) =>
-                            element.getAttribute("aria-label"),
-                        ),
-                    ),
-            )
-            .toEqual(["file1.txt", "file3.txt", "file2.txt"]);
     });
 
     test("reorders open files from the keyboard and cancels without writing", async ({

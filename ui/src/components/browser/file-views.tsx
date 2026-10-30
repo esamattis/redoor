@@ -1,6 +1,7 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
+import { useAtom } from "jotai";
 import { Image as ImageIcon, X } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -17,7 +18,6 @@ import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
 import { DeletePathDialog } from "#ui/components/browser/delete-path-dialog";
-import { EditorOpenFiles } from "#ui/components/browser/editor-open-files";
 import { useEditorFullWindow } from "#ui/components/browser/editor-full-window";
 import { IconButton } from "#ui/components/icon-button";
 import {
@@ -26,6 +26,7 @@ import {
     gitRevisionContentQueryOptions,
 } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
+import { openSideMenuAtom } from "#ui/side-menu-state";
 import { isTerminalInputTarget } from "#ui/utils/keyboard";
 import {
     getOpenFileKey,
@@ -423,6 +424,27 @@ function useGitGutterSource(props: {
 }
 
 /**
+ * Dismisses the open files panel once the editor's full-window overlay leaves, because the
+ * persistent sidebar returns and the drawer would otherwise sit redundantly on top of it.
+ */
+function useCloseOpenFilesPanelOnFullWindowExit(isFullWindow: boolean) {
+    const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
+    const wasFullWindow = React.useRef(isFullWindow);
+
+    React.useEffect(() => {
+        if (
+            wasFullWindow.current &&
+            !isFullWindow &&
+            openMenu === "application"
+        ) {
+            setOpenMenu(null);
+        }
+
+        wasFullWindow.current = isFullWindow;
+    }, [isFullWindow, openMenu, setOpenMenu]);
+}
+
+/**
  * Edits file contents in a viewport-bounded CodeMirror with explicit save and reload.
  * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
  * There is no unsaved-changes prompt on leaving: an edited file is open, and its buffer is
@@ -433,6 +455,7 @@ export function FileEditView(props: FileEditViewProps) {
         React.useState(false);
 
     const fullWindow = useEditorFullWindow();
+    useCloseOpenFilesPanelOnFullWindowExit(fullWindow.isFullWindow);
 
     const [userState] = useUserState();
     const buffer = useFileBuffer(props);
@@ -543,12 +566,6 @@ export function FileEditView(props: FileEditViewProps) {
                     fullWindow.isFullWindow ? "fixed inset-0 z-[60]" : ""
                 }`}
             >
-                {fullWindow.isFullWindow ? (
-                    <EditorOpenFiles
-                        agentId={props.agent.id}
-                        filePath={props.filePath}
-                    />
-                ) : null}
                 <FileEditHeader
                     readOnly={buffer.readOnly}
                     fileName={props.fileName}

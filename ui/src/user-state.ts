@@ -192,7 +192,7 @@ export function closeFile(
     return openFiles.filter((file) => getOpenFileKey(file) !== targetKey);
 }
 
-/** Shares open file order between the sidebar and the full-window editor strip. */
+/** Shares open file order between the sidebar and the menu drawer over the editor. */
 export function reorderOpenFiles(openFiles: OpenFile[], move: ItemMove) {
     return moveKeyedItems(openFiles, getOpenFileKey, move);
 }

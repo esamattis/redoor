@@ -57,11 +57,15 @@ export function SideMenu(props: {
 
     React.useEffect(() => {
         // A persistent sidebar replaces the drawer, so a request left over from a narrower
-        // window must not pop the drawer open again when the window shrinks.
-        if (isPersistent && isOpen) {
-            onClose();
+        // window must not pop the drawer open again when the window grows. Only a mode change
+        // dismisses it: the full-window editor opens this drawer while the sidebar is
+        // persistent, because its overlay covers the sidebar.
+        if (!isPersistent) {
+            return;
         }
-    }, [isPersistent, isOpen, onClose]);
+
+        setOpenMenu((current) => (current === props.menu ? null : current));
+    }, [isPersistent, props.menu, setOpenMenu]);
 
     React.useEffect(() => {
         if (!isOpen) {
@@ -71,10 +75,16 @@ export function SideMenu(props: {
         // Return focus to the control that declares it opens this drawer. Looking it up, rather
         // than remembering document.activeElement, keeps the target right when the drawer was
         // opened programmatically or by a browser that does not focus clicked buttons, and
-        // when another drawer was closing and had just moved focus.
-        const opener = document.querySelector<HTMLElement>(
-            `[aria-controls="${drawerId}"]`,
-        );
+        // when another drawer was closing and had just moved focus. A control may mark itself
+        // as the frontmost opener, so the full-window editor's button wins over the covered
+        // top bar's.
+        const opener =
+            document.querySelector<HTMLElement>(
+                `[data-side-menu-opener="${drawerId}"]`,
+            ) ??
+            document.querySelector<HTMLElement>(
+                `[aria-controls="${drawerId}"]`,
+            );
 
         const drawer = drawerRef.current;
 
@@ -119,7 +129,7 @@ export function SideMenu(props: {
                 aria-label={props.label}
                 style={{ width: resize.width }}
                 className={cn(
-                    isPersistent ? "flex" : "hidden",
+                    isPersistent && !isOpen ? "flex" : "hidden",
                     "relative min-w-0 shrink-0 flex-col border-slate-800 bg-chrome",
                     borderClass,
                     !props.flush && "p-3",
@@ -147,7 +157,7 @@ export function SideMenu(props: {
                     />
                 ) : null}
             </aside>
-            {!isPersistent && isOpen ? (
+            {isOpen ? (
                 <div
                     className="fixed inset-0 z-[70] bg-black/60"
                     role="dialog"
