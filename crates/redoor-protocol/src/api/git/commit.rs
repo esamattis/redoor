@@ -55,11 +55,17 @@ pub struct GitCommitDiffResponse {
     pub truncated: bool,
 }
 
-/// The start of a revision range `A..B` a commit diff compared with.
+/// The start of a revision range `A..B` or `A...B` a commit diff compared with.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct GitCommitRange {
-    /// The commit A names, absent when the range starts at the parent of a root commit and
-    /// the diff starts from the empty tree.
+    /// The commit A names, or for a symmetric range the merge base of A and B. Absent when
+    /// the range starts at the parent of a root commit and the diff starts from the empty
+    /// tree.
     pub base: Option<GitCommitSummary>,
+    /// True for a symmetric range `A...B`, whose base is where B split from A rather than A
+    /// itself, so the view can say the diff shows only what B added. Defaults to false for
+    /// agents that predate symmetric ranges.
+    #[serde(default)]
+    pub merge_base: bool,
 }

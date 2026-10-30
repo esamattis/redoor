@@ -1,5 +1,6 @@
 //! What one commit changed: its tree compared with its first parent's, below one path. A
-//! range compares its newer end with its start instead, so several commits read as one.
+//! range compares its newer end with its start instead, so several commits read as one, and
+//! a symmetric range with the merge base of its sides, so a branch shows only its own work.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -54,10 +55,10 @@ fn commit_diff_blocking(
         .tree()
         .map_err(|error| internal_failure("read Git commit tree", error))?;
     // Merges are shown against their first parent, the branch they were merged into, and a
-    // range against its start, so its commits read as one change.
+    // range against its start (or its merge base), so its commits read as one change.
     let parent_id = match target.base {
         RevisionBase::FirstParent => commit.parent_ids().next().map(gix::Id::detach),
-        RevisionBase::Commit(id) => Some(id),
+        RevisionBase::Commit(id) | RevisionBase::MergeBase(id) => Some(id),
         RevisionBase::Empty => None,
     };
     let parent = parent_id
@@ -117,6 +118,7 @@ fn commit_diff_blocking(
     let range = if target.base.is_range() {
         Some(GitCommitRange {
             base: parent.as_ref().map(commit_summary).transpose()?,
+            merge_base: matches!(target.base, RevisionBase::MergeBase(_)),
         })
     } else {
         None

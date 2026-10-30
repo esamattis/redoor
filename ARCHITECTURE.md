@@ -1551,7 +1551,13 @@ way of looking at the same repository location, and paths deleted since are stil
   repository. Every history command reads B, so browsing a range shows its newer end, and
   `git/commit-diff` compares B with A instead of B's first parent, like `git diff A..B`,
   reporting the start in `range` so the view heads the diff with both ends and drops the
-  prev/next stepper. An empty side means `HEAD` as in Git; the symmetric `A...B` is refused.
+  prev/next stepper. An empty side means `HEAD` as in Git.
+- **Symmetric ranges compare with the merge base.** `A...B` also names B, but its diff
+  starts at the merge base of A and B, like `git diff A...B`, so reviewing a branch shows
+  only its own work instead of also reverting what A gained since they split. The response
+  marks the range `merge_base`, so the header reads "What B adds to A" and labels the start
+  as the merge base. Histories without a common ancestor are invalid input rather than a
+  diff from the empty tree.
   Git cannot resolve the parent of a root commit, so a left side of the form `<root>^` (or
   `~`, `^1`, `~1`) starts the range from the empty tree instead: that keeps
   `<oldest>^..<newest>`, the range a run of commits picked in the history list opens, valid

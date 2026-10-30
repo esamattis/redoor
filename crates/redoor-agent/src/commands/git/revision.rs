@@ -26,7 +26,9 @@ const MAX_TAG_DEPTH: usize = 16;
 ///
 /// A range `A..B` names B, so browsing a range shows the files at its newer end, and keeps A
 /// as the base a commit diff compares with. That lets several consecutive commits be read as
-/// one change, the way `git diff A..B` shows them.
+/// one change, the way `git diff A..B` shows them. A symmetric range `A...B` also names B but
+/// compares with the merge base of A and B, so a branch shows only its own work, not the
+/// reverse of what A gained since they split.
 pub(super) struct RevisionPath {
     pub(super) repository: RepositoryPath,
     /// The repository-relative path in `/` form, empty for the repository root.
@@ -42,6 +44,9 @@ pub(super) enum RevisionBase {
     FirstParent,
     /// A range: the commit its left side names.
     Commit(gix::ObjectId),
+    /// A symmetric range `A...B`: the best common ancestor of both sides, the point where
+    /// the branch being reviewed split from the one it is compared with.
+    MergeBase(gix::ObjectId),
     /// A range starting at the parent of a root commit, which has none, so the diff starts
     /// from the empty tree and the root commit's files count as added. This is how a range
     /// that includes the very first commit is spelled as `<root>^..B`.
@@ -115,9 +120,8 @@ impl RevisionPath {
 /// Resolves a single revision or a range `A..B` to the commit it names and the base a commit
 /// diff compares it with, or `None` when the repository does not know either side.
 ///
-/// Ref names cannot contain `..`, so the first `..` always separates a range. An empty side
-/// means `HEAD`, as in Git. The symmetric `A...B` would compare with a merge base and is
-/// refused rather than misread as `A..` and `.B`.
+/// Ref names cannot contain `..`, so the first `..` always separates a range, and a third
+/// dot right after it makes the range symmetric. An empty side means `HEAD`, as in Git.
 fn resolve_revision(
     repo: &gix::Repository,
     rev: &str,
@@ -125,18 +129,45 @@ fn resolve_revision(
     let Some((left, right)) = rev.split_once("..") else {
         return Ok(resolve_commit(repo, rev)?.map(|id| (id, RevisionBase::FirstParent)));
     };
-    if right.starts_with('.') {
-        return Err(GitFailure::new(
-            CommandErrorKind::InvalidInput,
-            "Symmetric Git revision ranges (A...B) are not supported",
-        ));
-    }
+    let (right, symmetric) = match right.strip_prefix('.') {
+        Some(right) => (right, true),
+        None => (right, false),
+    };
     let left = if left.is_empty() { "HEAD" } else { left };
     let right = if right.is_empty() { "HEAD" } else { right };
     let Some(commit_id) = resolve_commit(repo, right)? else {
         return Ok(None);
     };
+    if symmetric {
+        return resolve_merge_base(repo, left, commit_id)
+            .map(|base| base.map(|base| (commit_id, base)));
+    }
     Ok(resolve_range_base(repo, left)?.map(|base| (commit_id, base)))
+}
+
+/// Resolves the left side of a symmetric range and finds where it split from the right side,
+/// which is what "what does my branch add compared with main" is measured from.
+///
+/// Histories without a common ancestor have no such point, which is invalid input rather than
+/// a diff from the empty tree that would list every file as added.
+fn resolve_merge_base(
+    repo: &gix::Repository,
+    left: &str,
+    right_id: gix::ObjectId,
+) -> Result<Option<RevisionBase>, GitFailure> {
+    let Some(left_id) = resolve_commit(repo, left)? else {
+        return Ok(None);
+    };
+    let base = repo
+        .merge_base(left_id, right_id)
+        .map_err(|error| internal_failure("find Git merge base", error))?
+        .ok_or_else(|| {
+            GitFailure::new(
+                CommandErrorKind::InvalidInput,
+                format!("Git revisions {left:?} and {right_id} have no common history"),
+            )
+        })?;
+    Ok(Some(RevisionBase::MergeBase(base.detach())))
 }
 
 /// Resolves the left side of a range. When it names the parent of a root commit, which Git
