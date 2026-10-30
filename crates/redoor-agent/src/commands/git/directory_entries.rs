@@ -339,21 +339,10 @@ impl ChildStates {
             }
             return;
         }
-        let Some(relative) = location.strip_prefix(self.prefix.as_slice()) else {
-            // The pathspec keeps the walk inside the directory; anything else is not ours.
+        self.record_rename_source(&item);
+        let Some((name, below_child)) = self.child_of(&location) else {
             return;
         };
-        let (name, below_child) = match relative.find_byte(b'/') {
-            Some(slash) => (&relative[..slash], slash + 1 < relative.len()),
-            None => (relative, false),
-        };
-        // Listings name entries in UTF-8, so a name that is not cannot match a row.
-        let Ok(name) = name.to_str().map(str::to_string) else {
-            return;
-        };
-        if name.is_empty() {
-            return;
-        }
         if !below_child {
             self.children
                 .entry(name)
@@ -366,6 +355,41 @@ impl ChildStates {
         let Some(kind) = DescendantKind::of(&item) else {
             return;
         };
+        self.count_descendant(location, name, kind);
+    }
+
+    /// Counts a staged rename's source toward the directory it left. gix reports a rename
+    /// only at its destination, so without this a directory a file moved out of looks clean.
+    /// A source directly in the browsed directory is skipped: it no longer has a row.
+    fn record_rename_source(&mut self, item: &gix::status::Item) {
+        let gix::status::Item::TreeIndex(gix::diff::index::Change::Rewrite {
+            source_location, ..
+        }) = item
+        else {
+            return;
+        };
+        let location = source_location.to_vec();
+        if let Some((name, true)) = self.child_of(&location) {
+            self.count_descendant(location, name, DescendantKind::Changed);
+        }
+    }
+
+    /// Names the direct child `location` lies in and whether it lies below that child,
+    /// or `None` when it is outside the browsed directory or the name is not UTF-8.
+    fn child_of(&self, location: &[u8]) -> Option<(String, bool)> {
+        // The pathspec keeps the walk inside the directory; anything else is not ours.
+        let relative = location.strip_prefix(self.prefix.as_slice())?;
+        let (name, below_child) = match relative.find_byte(b'/') {
+            Some(slash) => (&relative[..slash], slash + 1 < relative.len()),
+            None => (relative, false),
+        };
+        // Listings name entries in UTF-8, so a name that is not cannot match a row.
+        let name = name.to_str().ok()?;
+        (!name.is_empty()).then(|| (name.to_string(), below_child))
+    }
+
+    /// Counts one changed path below the child `name`, keeping the most severe kind.
+    fn count_descendant(&mut self, location: Vec<u8>, name: String, kind: DescendantKind) {
         let child = self.children.entry(name.clone()).or_default();
         child.most_severe = child.most_severe.max(Some(kind));
         let full = self.descendants.len() >= MAX_GIT_DIRECTORY_COUNTED_CHANGES;
@@ -634,6 +658,44 @@ mod tests {
                     ..
                 }
             ))
+        ));
+    }
+
+    /// A directory a file was renamed out of still shows that it changed.
+    #[test]
+    fn rename_marks_the_directory_it_left() {
+        let temp = TempDir::create();
+        let root = temp.path();
+        git(root, &["init", "-q"]);
+        write(
+            root,
+            "from/moved.txt",
+            "contents long enough to be a rename",
+        );
+        write(root, "from/kept.txt", "kept");
+        git(root, &["add", "-A"]);
+        git(root, &["commit", "-q", "-m", "initial"]);
+        std::fs::create_dir(root.join("to")).unwrap();
+        git(root, &["mv", "from/moved.txt", "to/moved.txt"]);
+
+        let response = entries_of(root, "");
+
+        // gix reports the rename only at its destination, so without counting the source
+        // the directory the file left would look clean.
+        assert!(matches!(
+            state_of(&response, "from"),
+            Some(GitDirectoryEntryState::ContainsChanges(
+                GitDirectoryChanges {
+                    most_severe: GitDescendantChange::Changed,
+                    changed: 1,
+                    ..
+                }
+            ))
+        ));
+        // The destination directory is marked as before.
+        assert!(matches!(
+            state_of(&response, "to"),
+            Some(GitDirectoryEntryState::ContainsChanges(_))
         ));
     }
 
