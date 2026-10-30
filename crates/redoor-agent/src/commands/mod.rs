@@ -381,6 +381,9 @@ impl RunCommand for Command {
                     git::directory_entries::entries(path, &ctx.cancel).await,
                 )
             }
+            Command::GitFileBases(request::GitFileBases { path }) => {
+                Reply::of::<request::GitFileBases>(git::file_bases::bases(path, &ctx.cancel).await)
+            }
             Command::GitDiff(request::GitDiff { files, mode }) => {
                 Reply::of::<request::GitDiff>(git::diff::diff(files, mode).await)
             }

@@ -128,7 +128,8 @@ The agent runtime and the implementation of every command.
     and `refs` lists branches and tags (see "Git history, branch and tag lists");
     `worktree_list` lists the main and linked checkouts of a repository and
     `worktree_status` counts the uncommitted changes of the visible rows' checkouts within a
-    time budget; `export`
+    time budget; `file_bases` reads one file's staged and committed text for the editor's
+    Git gutter (see "Editor buffers and open files"); `export`
     streams committed files and directory archives for downloads and copies (see "Git
     history downloads and copies"). All Git work runs in `spawn_blocking` and every
     response is bounded (entries, files, bytes per blob and per batch), because gix inflates

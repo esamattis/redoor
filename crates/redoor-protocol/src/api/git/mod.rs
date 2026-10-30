@@ -3,6 +3,7 @@
 
 pub mod commit;
 pub mod directory_entries;
+pub mod file_bases;
 pub mod history;
 pub mod refs;
 pub mod revision;

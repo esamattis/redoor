@@ -84,6 +84,7 @@ import type { UserStateResponse } from "#bindings/UserStateResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitDirectoryEntriesResponse } from "#bindings/GitDirectoryEntriesResponse";
+import type { GitFileBasesResponse } from "#bindings/GitFileBasesResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";
 import type { GitDiffRequest } from "#bindings/GitDiffRequest";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
@@ -445,6 +446,22 @@ export class Agent {
     ): Promise<GitDirectoryEntriesResponse> {
         return apiRequest<GitDirectoryEntriesResponse>(
             this.filesystemUrl("git/entries", path),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Reads the committed and staged text of one file for the editor's Git gutter, which
+     * compares them with its buffer. Separate from the file content so opening a file never
+     * waits for Git, and the signal lets leaving the file stop the read on the agent.
+     */
+    async gitFileBases(
+        path: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<GitFileBasesResponse> {
+        return apiRequest<GitFileBasesResponse>(
+            this.filesystemUrl("git/file-bases", path),
             { signal: options.signal },
             this.requestContext,
         );

@@ -16,6 +16,7 @@ use crate::api::files::{
 use crate::api::git::GitPage;
 use crate::api::git::commit::GitCommitDiffResponse;
 use crate::api::git::directory_entries::GitDirectoryEntriesResponse;
+use crate::api::git::file_bases::GitFileBasesResponse;
 use crate::api::git::history::{GitCommitNeighborsResponse, GitLogResponse};
 use crate::api::git::refs::{GitBranchScope, GitRefListKind, GitRefListResponse, GitRefSort};
 use crate::api::git::revision::{GitRevisionContentResponse, GitRevisionTreeResponse};
@@ -404,6 +405,12 @@ pub struct GitDirectoryEntries {
     pub path: String,
 }
 
+/// Reads the committed and staged text of one file for the editor's Git gutter.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitFileBases {
+    pub path: String,
+}
+
 /// Compares ordered files with HEAD using the selected Git source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitDiff {
@@ -646,6 +653,7 @@ agent_requests! {
     GitContext => GitContextResponse,
     GitStatus => GitStatusResponse,
     GitDirectoryEntries => GitDirectoryEntriesResponse,
+    GitFileBases => GitFileBasesResponse,
     GitDiff => GitDiffResponse,
     GitRevisionTree => GitRevisionTreeResponse,
     GitRevisionContent => GitRevisionContentResponse,
@@ -768,6 +776,11 @@ mod tests {
                 "changed": 1, "untracked": 2, "conflicted": 0, "truncated": false}},
             {"name": "build", "state": {"type": "ignored"}}]}));
         assert_round_trip::<GitDirectoryEntries>(json!({"status": "timed_out"}));
+        assert_round_trip::<GitFileBases>(json!({"status": "bases", "index": "a\n",
+            "head": {"type": "text", "content": "b\n"}}));
+        assert_round_trip::<GitFileBases>(json!({"status": "bases", "index": null,
+            "head": {"type": "same_as_index"}}));
+        assert_round_trip::<GitFileBases>(json!({"status": "conflicted"}));
         assert_round_trip::<GitDiff>(json!({"diffs": []}));
         let commit = json!({"id": "abc", "summary": "first", "author_name": "A",
             "author_email": "a@example.invalid", "authored_at": 1, "parent_ids": []});

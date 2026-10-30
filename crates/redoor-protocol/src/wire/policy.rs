@@ -148,6 +148,7 @@ impl Command {
             | Self::ContentGrep { .. }
             | Self::GitStatus { .. }
             | Self::GitDirectoryEntries { .. }
+            | Self::GitFileBases { .. }
             | Self::GitWorktreeStatus { .. } => CommandPolicy::CANCELABLE_CONTROL,
             Self::ListPartials(_)
             | Self::ProbePartial(_)
@@ -259,11 +260,12 @@ mod tests {
             Command::GitWorktreeList(request::GitWorktreeList { .. }) => 50,
             Command::GitWorktreeStatus(request::GitWorktreeStatus { .. }) => 51,
             Command::GitDirectoryEntries(request::GitDirectoryEntries { .. }) => 52,
+            Command::GitFileBases(request::GitFileBases { .. }) => 53,
         }
     }
 
     /// Number of variants covered by `variant_index`.
-    const VARIANT_COUNT: usize = 53;
+    const VARIANT_COUNT: usize = 54;
 
     /// Builds one instance of every command variant for table-wide policy checks.
     fn every_command() -> Vec<Command> {
@@ -402,6 +404,7 @@ mod tests {
             Command::GitContext(request::GitContext { path: path() }),
             Command::GitStatus(request::GitStatus { path: path() }),
             Command::GitDirectoryEntries(request::GitDirectoryEntries { path: path() }),
+            Command::GitFileBases(request::GitFileBases { path: path() }),
             Command::GitDiff(request::GitDiff {
                 files: Vec::new(),
                 mode: GitDiffMode::Full,
@@ -509,6 +512,7 @@ mod tests {
                     | Command::ContentGrep(_)
                     | Command::GitStatus(_)
                     | Command::GitDirectoryEntries(_)
+                    | Command::GitFileBases(_)
                     | Command::GitWorktreeStatus(_)
             ) {
                 // Without a request-scoped token an abandoned search keeps its slots until its

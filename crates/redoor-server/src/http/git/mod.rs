@@ -4,6 +4,7 @@
 pub(crate) mod commit;
 pub(crate) mod directory_entries;
 pub(crate) mod download;
+pub(crate) mod file_bases;
 pub(crate) mod history;
 pub(crate) mod refs;
 pub(crate) mod revision;

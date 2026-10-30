@@ -11,7 +11,7 @@ use redoor_protocol::api::search::{FindRequest, GrepRequest};
 pub(crate) use redoor_protocol::wire::request::{
     ChmodPath, ChownPath, ContentGrep, CreateDirectory, DeletePartial, DirectorySize, Echo,
     EmptyTrash, FileSearch, GetAgentDetails, GetLoggingLevel, GitCommitDiff, GitCommitNeighbors,
-    GitContext, GitDiff, GitDirectoryEntries, GitLog, GitRefList, GitRevisionContent,
+    GitContext, GitDiff, GitDirectoryEntries, GitFileBases, GitLog, GitRefList, GitRevisionContent,
     GitRevisionStat, GitRevisionTree, GitStatus, GitWorktreeList, GitWorktreeStatus, ListAccounts,
     ListPartials, ListTrash, Ls, Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete,
     ReadPartial, RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
@@ -126,6 +126,10 @@ impl AgentCall for GitDirectoryEntries {
     fn timeout(&self) -> Option<Duration> {
         Some(GIT_DIRECTORY_ENTRIES_TIMEOUT)
     }
+}
+
+impl AgentCall for GitFileBases {
+    const OPERATION: &'static str = "reading the git bases of a file";
 }
 
 impl AgentCall for EmptyTrash {

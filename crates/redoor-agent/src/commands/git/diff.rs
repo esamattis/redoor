@@ -49,7 +49,7 @@ pub(super) enum DiffSource {
 
 /// Returns how many bytes text occupies inside a JSON string, so patch budgets bound the
 /// serialized control frame rather than the raw text.
-fn json_encoded_len(text: &[u8]) -> usize {
+pub(super) fn json_encoded_len(text: &[u8]) -> usize {
     text.iter()
         .map(|byte| match byte {
             b'"' | b'\\' | b'\n' | b'\r' | b'\t' | 0x08 | 0x0c => 2,
@@ -380,7 +380,10 @@ fn format_patch(
 }
 
 /// Honors Git's built-in `-diff` binary declaration without invoking configured drivers.
-fn path_declared_binary(repo: &gix::Repository, relative: &Path) -> Result<bool, GitFailure> {
+pub(super) fn path_declared_binary(
+    repo: &gix::Repository,
+    relative: &Path,
+) -> Result<bool, GitFailure> {
     let index = repo
         .index_or_empty()
         .map_err(|error| internal_failure("open Git index for attributes", error))?;
