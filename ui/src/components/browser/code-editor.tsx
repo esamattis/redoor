@@ -2,6 +2,7 @@ import React from "react";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { getRouteApi, useRouterState } from "@tanstack/react-router";
+import { useAtomValue } from "jotai";
 import {
     EditorSearch,
     type EditorSearchHandle,
@@ -10,10 +11,10 @@ import type { EditorHandlers, LineTargets } from "#ui/editor/editor-workspace";
 import type { StoredBuffer } from "#ui/editor/stored-buffer";
 import { historyEntryKey } from "#ui/history-entry-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
+import { resolvedThemeAtom } from "#ui/theme-state";
 import { useTerminals } from "#ui/use-terminals";
 import type { OpenFileReveal } from "#ui/user-state";
 import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
-import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -136,7 +137,7 @@ type CodeEditorProps = {
  */
 export function CodeEditor(props: CodeEditorProps) {
     const { editor: workspace } = rootRouteApi.useRouteContext();
-    const resolvedTheme = useResolvedTheme();
+    const resolvedTheme = useAtomValue(resolvedThemeAtom);
 
     // The resolved entry, not the live one: a navigation away changes the live location while
     // this file is still mounted, which would re-apply its `?line=` target on the way out.

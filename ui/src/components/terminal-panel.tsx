@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useAtomValue } from "jotai";
 
 import type { Agent } from "#ui/api-client";
 import { ActionMenuButton } from "#ui/components/action-menu";
@@ -7,6 +8,7 @@ import { TerminalTabActions } from "#ui/components/terminal-tabs";
 import { TerminalToolbar } from "#ui/components/terminal-toolbar";
 import { Toast } from "#ui/components/toast";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
+import { resolvedThemeAtom } from "#ui/theme-state";
 import type {
     TerminalSession,
     TerminalTabSnapshot,
@@ -21,7 +23,6 @@ import {
     isPlainKey,
     isUnmodifiedAltKey,
 } from "#ui/utils/keyboard";
-import { useResolvedTheme } from "#ui/utils/use-resolved-theme";
 
 /**
  * Registers the open-terminal shortcuts: `t` outside text entry, and Alt+t from the editor,
@@ -71,7 +72,7 @@ export function TerminalPanel(props: {
 }) {
     const terminals = useTerminals();
     const snapshot = useTerminalsSnapshot();
-    const resolvedTheme = useResolvedTheme();
+    const resolvedTheme = useAtomValue(resolvedThemeAtom);
 
     React.useEffect(() => {
         terminals.setTheme(resolvedTheme);

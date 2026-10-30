@@ -1,6 +1,8 @@
 import * as React from "react";
+import { useSetAtom } from "jotai";
 import { Monitor, Moon, Sun } from "lucide-react";
 import { IconButton } from "#ui/components/icon-button";
+import { resolvedThemeAtom } from "#ui/theme-state";
 import { useUserState } from "#ui/user-state";
 
 const themeOptions = [
@@ -12,6 +14,7 @@ const themeOptions = [
 /** Applies the saved preference while keeping the system option responsive to OS changes. */
 export function ThemeManager() {
     const [userState] = useUserState();
+    const setResolvedTheme = useSetAtom(resolvedThemeAtom);
 
     React.useLayoutEffect(() => {
         const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -29,6 +32,7 @@ export function ThemeManager() {
             root.classList.toggle("dark", resolvedTheme === "dark");
             root.classList.toggle("light", resolvedTheme === "light");
             root.dataset.theme = resolvedTheme;
+            setResolvedTheme(resolvedTheme);
             document
                 .querySelector('meta[name="theme-color"]')
                 ?.setAttribute(
@@ -41,7 +45,7 @@ export function ThemeManager() {
         mediaQuery.addEventListener("change", applyTheme);
 
         return () => mediaQuery.removeEventListener("change", applyTheme);
-    }, [userState.theme]);
+    }, [userState.theme, setResolvedTheme]);
 
     return null;
 }
