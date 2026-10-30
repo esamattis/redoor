@@ -88,6 +88,19 @@ test.describe("Server update", () => {
         await expect(page.getByText(/to 99\.0\.0\./)).toBeVisible();
         // Processes the update could not restart are named so the user restarts them.
         await expect(page.getByText(/Restart PID 4242 manually/)).toBeVisible();
+
+        const manualRestarts = page.getByRole("list", {
+            name: "Processes to restart manually",
+        });
+
+        // The command line tells the user which process the PID is.
+        await expect(
+            manualRestarts.getByText("4242: redoor agent ws://example.test"),
+        ).toBeVisible();
+        // The server's hint explains why the update could not restart it.
+        await expect(
+            manualRestarts.getByText("restart it to run the new version"),
+        ).toBeVisible();
         // The version row shows the replacement process's version.
         await expect(page.getByText("99.0.0", { exact: true })).toBeVisible();
     });

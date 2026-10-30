@@ -74,7 +74,7 @@ export function Toast(props: {
                     {props.icon}
                 </span>
             ) : null}
-            <span>{props.children}</span>
+            <div className="min-w-0">{props.children}</div>
             <IconButton
                 type="button"
                 label={props.dismissAriaLabel ?? "Dismiss notification"}

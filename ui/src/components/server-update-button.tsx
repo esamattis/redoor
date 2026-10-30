@@ -13,34 +13,76 @@ import { Toast } from "./toast";
 
 const rootRouteApi = getRouteApi("__root__");
 
+/** A local process still running the old binary, and why the update could not restart it. */
+type ManualRestart = {
+    pid: number;
+    command: string;
+    reason: string;
+};
+
+/** What the toast reports after the replacement server answered. */
+type UpdateResult = {
+    summary: string;
+    manualRestarts: ManualRestart[];
+};
+
+/**
+ * Picks the processes that keep running the old version until the operator restarts them,
+ * with the server's hint or error, so the operator can tell why and which process it is.
+ */
+function manualRestarts(processes: UpgradeProcessReport[]): ManualRestart[] {
+    return processes.flatMap((process) => {
+        switch (process.outcome.type) {
+            case "left_running":
+                return [
+                    {
+                        pid: process.pid,
+                        command: process.command,
+                        reason: process.outcome.hint,
+                    },
+                ];
+            case "failed":
+                return [
+                    {
+                        pid: process.pid,
+                        command: process.command,
+                        reason: process.outcome.error,
+                    },
+                ];
+            case "restarted":
+            case "restarting":
+                return [];
+        }
+    });
+}
+
 /**
  * Says what the update did, including the local processes it could not restart, since those
  * keep running the old version until the operator restarts them.
  */
-function updateSummary(update: {
+function updateResult(update: {
     previousVersion: string;
     version: string | undefined;
     processes: UpgradeProcessReport[];
-}): string {
+}): UpdateResult {
     const summary =
         update.version === undefined ||
         update.version === update.previousVersion
             ? `Reinstalled ${update.previousVersion}, which is already the latest release`
             : `Updated the server from ${update.previousVersion} to ${update.version}`;
 
-    const notRestarted = update.processes.filter(
-        (process) =>
-            process.outcome.type === "left_running" ||
-            process.outcome.type === "failed",
-    );
+    const restarts = manualRestarts(update.processes);
 
-    if (notRestarted.length === 0) {
-        return summary;
+    if (restarts.length === 0) {
+        return { summary, manualRestarts: restarts };
     }
 
-    const pids = notRestarted.map((process) => process.pid).join(", ");
+    const pids = restarts.map((process) => process.pid).join(", ");
 
-    return `${summary}. Restart PID ${pids} manually to run the new version.`;
+    return {
+        summary: `${summary}. Restart PID ${pids} manually to run the new version.`,
+        manualRestarts: restarts,
+    };
 }
 
 /**
@@ -58,7 +100,7 @@ export function ServerUpdateButton(props: {
     const queryClient = useQueryClient();
     const waitForServerRestart = useWaitForServerRestart();
     const [isOpen, setIsOpen] = React.useState(false);
-    const [result, setResult] = React.useState<string | null>(null);
+    const [result, setResult] = React.useState<UpdateResult | null>(null);
 
     const updateMutation = useMutation({
         mutationFn: async () => {
@@ -76,7 +118,7 @@ export function ServerUpdateButton(props: {
         },
         onSuccess: (update) => {
             setIsOpen(false);
-            setResult(updateSummary(update));
+            setResult(updateResult(update));
         },
     });
 
@@ -131,7 +173,27 @@ export function ServerUpdateButton(props: {
             />
             {result ? (
                 <Toast tone="success" onDismiss={() => setResult(null)}>
-                    {result}
+                    <p>{result.summary}</p>
+                    {result.manualRestarts.length > 0 ? (
+                        <ul
+                            aria-label="Processes to restart manually"
+                            className="mt-2 max-w-xl space-y-2"
+                        >
+                            {result.manualRestarts.map((process) => (
+                                <li key={process.pid}>
+                                    <code
+                                        title={process.command}
+                                        className="block truncate font-mono text-xs text-slate-300"
+                                    >
+                                        {process.pid}: {process.command}
+                                    </code>
+                                    <span className="block text-xs text-slate-400">
+                                        {process.reason}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
                 </Toast>
             ) : null}
         </>
