@@ -1676,6 +1676,11 @@ the Git view rather than another level of page navigation.
   The current match and per-card match counts live in a small external store, so a step
   re-renders only the cards and diffs it concerns. The query and whether the bar is open
   are kept per history entry; a restored query does not jump, so back keeps its scroll.
+  Text selected in the list offers, next to the repository search, a button that opens the
+  bar on it. The request goes through the same store as a one-shot event, because the bar
+  that owns the history-entry state is a child of the selection popup's wrapper. It carries
+  where the selection started (card, row key, character offset), so the selected
+  occurrence becomes current without scrolling, as the reader is already looking at it.
 
 - **History follows the browsed path.** `git/log` lists the commits that changed the path,
   newest first by commit time, starting at HEAD in the worktree or at the browsed commit

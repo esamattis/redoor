@@ -30,6 +30,8 @@ import { isTerminalInputTarget } from "#ui/utils/keyboard";
 import {
     DiffSearchHighlighter,
     firstMatchOnScreen,
+    isAnchoredMatch,
+    type DiffSearchAnchor,
 } from "#ui/utils/diff-search-highlighter";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitDiffResult } from "#bindings/GitDiffResult";
@@ -50,6 +52,17 @@ export interface DiffSearchListFile {
     source: DiffSearchSource;
     /** Whether its card shows similar lines as one row, which changes the rows' text. */
     mergeModifiedLines: boolean;
+}
+
+/**
+ * A query the reader asked for, typed or searched from selected text, which steps to a match
+ * once it has been searched. A query from selected text names where the selection was, so
+ * that occurrence becomes current where it already is on screen, instead of scrolling to
+ * another one.
+ */
+export interface RequestedQuery {
+    text: string;
+    anchor: DiffSearchAnchor | null;
 }
 
 /**
@@ -92,6 +105,9 @@ export class DiffSearchStore {
     private target: DiffSearchMatch | null = null;
     private counts: ReadonlyMap<string, number> = new Map();
     private readonly listeners = new Set<() => void>();
+    private readonly searchRequestListeners = new Set<
+        (request: RequestedQuery) => void
+    >();
 
     /** Registers a listener for `useSyncExternalStore`. */
     subscribe = (listener: () => void) => {
@@ -116,6 +132,26 @@ export class DiffSearchStore {
     setCounts(counts: ReadonlyMap<string, number>) {
         this.counts = counts;
         this.notify();
+    }
+
+    /**
+     * Registers the search bar for searches started elsewhere in the list, such as from
+     * selected text. A request is an event rather than state, so it is delivered once and
+     * never replayed to a bar that mounts later.
+     */
+    onSearchRequest = (listener: (request: RequestedQuery) => void) => {
+        this.searchRequestListeners.add(listener);
+
+        return () => {
+            this.searchRequestListeners.delete(listener);
+        };
+    };
+
+    /** Opens the search bar on a query as if the reader had typed it. */
+    requestSearch(request: RequestedQuery) {
+        for (const listener of this.searchRequestListeners) {
+            listener(request);
+        }
     }
 
     private notify() {
@@ -405,15 +441,17 @@ function useDiffSearchResult(files: DiffSearchListFile[], query: string) {
  * Steps through the matches: keeps the current one, marks every match on the page through
  * the highlighter, and shares the counts and the current match with the cards through the
  * store. Stepping to a match expands its file, which reveals its fold, and scrolls to it once
- * its row renders.
+ * its row renders, unless the reader selected that very match on screen.
  */
 function useDiffSearchNavigation(options: {
     search: ReturnType<typeof useDiffSearchResult>;
     store: DiffSearchStore;
     listRef: React.RefObject<HTMLElement | null>;
     expand: (path: string) => void;
-    /** The query last typed in the input, which tells typing from a restored query. */
-    typedQuery: React.RefObject<string | null>;
+    /** The query last typed or requested, which tells it from a restored query. */
+    typedQuery: React.RefObject<RequestedQuery | null>;
+    /** Counts requests from selected text, which may repeat the query being searched. */
+    requestCount: number;
 }) {
     const { searched, result, loading } = options.search;
     const store = options.store;
@@ -454,11 +492,11 @@ function useDiffSearchNavigation(options: {
     }, [highlighter, result, store]);
 
     const goTo = React.useCallback(
-        (match: DiffSearchMatch) => {
+        (match: DiffSearchMatch, scroll: boolean) => {
             setCurrentKey(diffMatchKey(match));
             expand(match.path);
             store.setTarget(match);
-            highlighter?.setCurrent(match, true);
+            highlighter?.setCurrent(match, scroll);
         },
         [expand, highlighter, store],
     );
@@ -474,41 +512,57 @@ function useDiffSearchNavigation(options: {
     }, [currentKey, currentIndex, highlighter, store]);
 
     // A query typed in this bar jumps to its first match on screen once it has one, which may
-    // only be after the patches load. A query restored by back, also while the bar stays open
-    // between commits, does not, so the restored scroll position stays where the reader left it.
-    const jumpPending = React.useRef(false);
+    // only be after the patches load. A query searched from selected text makes the selected
+    // occurrence current without scrolling, since the reader is already looking at it. A query
+    // restored by back, also while the bar stays open between commits, does neither, so the
+    // restored scroll position stays where the reader left it.
+    const jumpPending = React.useRef<RequestedQuery | null>(null);
     const lastSearched = React.useRef(searched);
     const typedQuery = options.typedQuery;
+    const requestCount = options.requestCount;
 
+    // Runs on a new request too, since selecting another occurrence of the searched text
+    // leaves the query as it is and must still move the current match.
     React.useEffect(() => {
-        if (searched !== lastSearched.current) {
-            lastSearched.current = searched;
-            jumpPending.current =
-                searched !== "" && searched === typedQuery.current;
+        const typed = typedQuery.current;
 
+        if (searched !== "" && searched === typed?.text) {
+            jumpPending.current = typed;
             // Typing jumps once; the same text restored later by back or forward must not.
-            if (searched === typedQuery.current) {
-                typedQuery.current = null;
-            }
+            typedQuery.current = null;
+        } else if (searched !== lastSearched.current) {
+            jumpPending.current = null;
         }
-    }, [searched, typedQuery]);
+
+        lastSearched.current = searched;
+    }, [searched, typedQuery, requestCount]);
 
     React.useEffect(() => {
         const root = listRef.current;
+        const pending = jumpPending.current;
 
-        if (!jumpPending.current || root === null || highlighter === null) {
+        if (pending === null || root === null || highlighter === null) {
             return;
         }
 
-        const first = result.matches[firstMatchOnScreen(root, result.matches)];
+        const anchor = pending.anchor;
 
-        if (first !== undefined) {
-            jumpPending.current = false;
-            goTo(first);
+        const index =
+            anchor === null
+                ? firstMatchOnScreen(root, result.matches)
+                : result.matches.findIndex((match) =>
+                      isAnchoredMatch(match, anchor),
+                  );
+
+        const match = result.matches[index];
+
+        if (match !== undefined) {
+            jumpPending.current = null;
+            goTo(match, anchor === null);
         } else if (loading === 0) {
-            jumpPending.current = false;
+            jumpPending.current = null;
         }
-    }, [result, loading, goTo, highlighter, listRef]);
+    }, [result, loading, goTo, highlighter, listRef, requestCount]);
 
     /** Steps forwards or backwards, starting from the screen when no match is current yet. */
     const step = (direction: 1 | -1) => {
@@ -527,7 +581,7 @@ function useDiffSearchNavigation(options: {
         const match = result.matches[next];
 
         if (match !== undefined) {
-            goTo(match);
+            goTo(match, true);
         }
     };
 
@@ -546,6 +600,12 @@ function DiffSearchBar(props: {
     /** Changes whenever the bar must take focus again, such as on a repeated Ctrl+F. */
     focusRequest: number;
     inputRef: React.RefObject<HTMLInputElement | null>;
+    /**
+     * The query last typed or requested. The search around the bar owns it, so a query
+     * requested while the bar is closed still counts as typed once the bar mounts.
+     */
+    typedQuery: React.RefObject<RequestedQuery | null>;
+    requestCount: number;
     store: DiffSearchStore;
     listRef: React.RefObject<HTMLElement | null>;
     /** Expands a collapsed card, so the match being stepped to can render. */
@@ -553,7 +613,7 @@ function DiffSearchBar(props: {
 }) {
     const queryClient = useQueryClient();
     const search = useDiffSearchResult(props.files, props.query);
-    const typedQuery = React.useRef<string | null>(null);
+    const typedQuery = props.typedQuery;
 
     const navigation = useDiffSearchNavigation({
         search,
@@ -561,6 +621,7 @@ function DiffSearchBar(props: {
         listRef: props.listRef,
         expand: props.expand,
         typedQuery,
+        requestCount: props.requestCount,
     });
 
     // Only a request focuses the input, so a bar restored by back does not open a phone's
@@ -607,7 +668,10 @@ function DiffSearchBar(props: {
                         loadWorktreePatches(queryClient, props.files)
                     }
                     onChange={(event) => {
-                        typedQuery.current = event.target.value;
+                        typedQuery.current = {
+                            text: event.target.value,
+                            anchor: null,
+                        };
                         props.onQueryChange(event.target.value);
                     }}
                     onKeyDown={(event) => {
@@ -699,7 +763,9 @@ export function DiffSearch(props: {
     });
 
     const inputRef = React.useRef<HTMLInputElement>(null);
+    const typedQuery = React.useRef<RequestedQuery | null>(null);
     const [focusRequest, setFocusRequest] = React.useState(0);
+    const [requestCount, setRequestCount] = React.useState(0);
     const queryClient = useQueryClient();
 
     const open = () => {
@@ -707,6 +773,25 @@ export function DiffSearch(props: {
         setFocusRequest((count) => count + 1);
         loadWorktreePatches(queryClient, props.files);
     };
+
+    // A search requested from selected text counts as typed, so its selected occurrence
+    // becomes current. It leaves focus where it is, because focusing the input would open a
+    // phone's keyboard over the diff the reader is looking at, and the bar's buttons step
+    // through the matches.
+    const searchRequested = React.useEffectEvent((request: RequestedQuery) => {
+        typedQuery.current = request;
+        setRequestCount((count) => count + 1);
+        // An earlier Ctrl+F's request would otherwise focus the bar again when it mounts.
+        setFocusRequest(0);
+        update(() => ({ open: true, query: request.text }));
+        loadWorktreePatches(queryClient, props.files);
+    });
+
+    React.useEffect(
+        () =>
+            props.store.onSearchRequest((request) => searchRequested(request)),
+        [props.store],
+    );
 
     useShortcut(
         {
@@ -750,6 +835,8 @@ export function DiffSearch(props: {
                         }
                         focusRequest={focusRequest}
                         inputRef={inputRef}
+                        typedQuery={typedQuery}
+                        requestCount={requestCount}
                         store={props.store}
                         listRef={props.listRef}
                         expand={props.expand}

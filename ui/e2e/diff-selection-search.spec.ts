@@ -51,6 +51,7 @@ test.describe("Diff selection search", () => {
 
         const searchButton = page.getByRole("button", {
             name: "Search selected text",
+            exact: true,
         });
 
         await expect(diff).toContainText(TOKEN);
@@ -77,6 +78,85 @@ test.describe("Diff selection search", () => {
         ).toBeVisible();
     });
 
+    test("searches text selected in a diff in the diffs", async ({ page }) => {
+        const ctx = await setupTestDir("diff-selection-diff-search");
+        testDirPath = ctx.testDirPath;
+        const repositoryPath = path.join(ctx.testDirPath, "repository");
+        const filePath = path.join(repositoryPath, "changed.txt");
+        await fs.mkdir(repositoryPath, { recursive: true });
+        await fs.writeFile(filePath, "first line\n");
+        await $`git -C ${repositoryPath} init`;
+        await $`git -C ${repositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${repositoryPath} config user.name Playwright`;
+        await $`git -C ${repositoryPath} add .`;
+        await $`git -C ${repositoryPath} commit -m baseline`;
+        await fs.writeFile(
+            filePath,
+            `first line
+const ${TOKEN} = 1
+use(${TOKEN})
+`,
+        );
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}?view=git`,
+        );
+
+        const diff = page.getByRole("region", { name: "Full Git diff" });
+
+        const diffSearchButton = page.getByRole("button", {
+            name: "Search selected text in diffs",
+        });
+
+        const input = page.getByRole("searchbox", { name: "Search in diffs" });
+        const status = page.getByRole("status", { name: "Diff search status" });
+
+        await expect(diff).toContainText(`use(${TOKEN})`);
+
+        const selectedLine = diff.getByText(`use(${TOKEN})`);
+
+        // Opened and closed with the keyboard first, so its focus request is already used.
+        await page.keyboard.press("Control+f");
+        await expect(input).toBeFocused();
+        await input.press("Escape");
+        await expect(input).toHaveCount(0);
+
+        const before = await selectedLine.boundingBox();
+
+        // The second occurrence is selected, so a search that merely started from the first
+        // match on screen would be told apart from one that keeps the selected occurrence.
+        await selectedLine.dblclick();
+        await expect(diffSearchButton).toBeVisible();
+        await diffSearchButton.click();
+
+        // The diff search opens on the selected word with the selected occurrence current.
+        await expect(input).toHaveValue(TOKEN);
+        await expect(status).toHaveText("2 of 2");
+        await expect
+            .poll(() =>
+                page.evaluate(() =>
+                    [...(CSS.highlights.get("diff-search-current") ?? [])].map(
+                        // Only static ranges lack text, and the search only adds live ones.
+                        (range) =>
+                            range instanceof Range ? range.toString() : "",
+                    ),
+                ),
+            )
+            .toEqual([TOKEN]);
+        // The page does not scroll, since the reader is already looking at the selected match.
+        expect(await selectedLine.boundingBox()).toEqual(before);
+        // The selection is cleared, so its buttons no longer cover the match.
+        await expect(diffSearchButton).toHaveCount(0);
+        // Focus stays out of the input, so a phone does not open its keyboard over the diff.
+        await expect(input).not.toBeFocused();
+
+        await diff.getByText(`const ${TOKEN} = 1`).dblclick();
+        await diffSearchButton.click();
+
+        // Selecting another occurrence of the searched text makes that one current.
+        await expect(status).toHaveText("1 of 2");
+    });
+
     test("searches text selected in a commit message", async ({ page }) => {
         const ctx = await setupTestDir("commit-message-selection-search");
         testDirPath = ctx.testDirPath;
@@ -99,6 +179,7 @@ test.describe("Diff selection search", () => {
 
         const searchButton = page.getByRole("button", {
             name: "Search selected text",
+            exact: true,
         });
 
         await expect(body).toBeVisible();

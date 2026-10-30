@@ -361,3 +361,64 @@ export function firstMatchOnScreen(
 
     return 0;
 }
+
+/**
+ * Where selected text starts in a diff list: the card, the row and the character in the
+ * row's text, counted the same way as a match's offsets.
+ */
+export interface DiffSearchAnchor {
+    path: string;
+    rowKey: string;
+    offset: number;
+}
+
+/**
+ * Finds where a selection starts among the rows the search knows, so a search for the
+ * selected text can make that occurrence current. Null when it starts outside a row's text.
+ */
+export function selectionAnchor(range: Range): DiffSearchAnchor | null {
+    const start = range.startContainer;
+    const element = start instanceof Element ? start : start.parentElement;
+    const row = element?.closest<HTMLTableRowElement>("tr[data-search-key]");
+    const cell = row?.cells[1];
+
+    const path = row
+        ?.closest(`[${DIFF_SEARCH_PATH_ATTRIBUTE}]`)
+        ?.getAttribute(DIFF_SEARCH_PATH_ATTRIBUTE);
+
+    const rowKey = row?.dataset.searchKey;
+
+    if (
+        cell === undefined ||
+        !cell.contains(start) ||
+        path === null ||
+        path === undefined ||
+        rowKey === undefined
+    ) {
+        return null;
+    }
+
+    const before = document.createRange();
+    before.selectNodeContents(cell);
+    before.setEnd(start, range.startOffset);
+
+    // The searched text is trimmed, so the match starts after any selected leading space.
+    const selected = range.toString();
+    const leading = selected.length - selected.trimStart().length;
+
+    return { path, rowKey, offset: before.toString().length + leading };
+}
+
+/** Whether a match is the occurrence the selection behind a search started at. */
+export function isAnchoredMatch(
+    match: DiffSearchMatch,
+    anchor: DiffSearchAnchor,
+): boolean {
+    return (
+        match.path === anchor.path &&
+        diffRowKey(match.diffIndex, match.hunkIndex, match.lineIndex) ===
+            anchor.rowKey &&
+        match.start <= anchor.offset &&
+        anchor.offset < match.end
+    );
+}

@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { Search } from "lucide-react";
+import { Search, TextSearch } from "lucide-react";
 import { IconButton } from "#ui/components/icon-button";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
 
@@ -17,6 +17,8 @@ const BUTTON_HEIGHT = 40;
  */
 interface SelectionSearchTarget {
     text: string;
+    /** The selection, so a search can tell which occurrence of the text was selected. */
+    range: Range;
     top?: number;
     bottom?: number;
     left?: number;
@@ -79,7 +81,7 @@ function selectionSearchTarget(
             ? { left: Math.max(0, last.right) }
             : { right: Math.max(0, window.innerWidth - last.right) };
 
-    return { text, ...vertical, ...horizontal };
+    return { text, range, ...vertical, ...horizontal };
 }
 
 /**
@@ -88,8 +90,14 @@ function selectionSearchTarget(
  * without copying it into the search dialog by hand. The search starts from the Git
  * repository root, since a diff is always about a repository and the name is likely used
  * outside the directory being viewed.
+ *
+ * A diff list also passes `onSearchInDiffs`, which offers a second button that looks the
+ * text up in the list's own diffs, for following a name through the rest of the change.
  */
-export function SelectionSearch(props: { children: React.ReactNode }) {
+export function SelectionSearch(props: {
+    children: React.ReactNode;
+    onSearchInDiffs?: (text: string, range: Range) => void;
+}) {
     const containerRef = React.useRef<HTMLDivElement>(null);
     const buttonRef = React.useRef<HTMLDivElement>(null);
 
@@ -164,7 +172,7 @@ export function SelectionSearch(props: { children: React.ReactNode }) {
                       <div
                           ref={buttonRef}
                           // The opaque background sits under the button, whose hover tint is translucent.
-                          className="fixed z-[60] rounded-md bg-surface-raised shadow-lg shadow-black/30"
+                          className="fixed z-[60] flex gap-1 rounded-md bg-surface-raised shadow-lg shadow-black/30"
                           style={{
                               top: target.top,
                               bottom: target.bottom,
@@ -190,9 +198,45 @@ export function SelectionSearch(props: { children: React.ReactNode }) {
                           >
                               <Search className="h-4 w-4" aria-hidden="true" />
                           </IconButton>
+                          {props.onSearchInDiffs === undefined ? null : (
+                              <SearchInDiffsButton
+                                  text={target.text}
+                                  range={target.range}
+                                  onSearchInDiffs={props.onSearchInDiffs}
+                              />
+                          )}
                       </div>,
                       document.body,
                   )}
         </div>
+    );
+}
+
+/**
+ * The selection button that searches the diffs of the list around the selection. It clears
+ * the selection afterwards, so the search's own highlight of the match shows instead of the
+ * selection and the floating buttons get out of the way.
+ */
+function SearchInDiffsButton(props: {
+    text: string;
+    range: Range;
+    onSearchInDiffs: (text: string, range: Range) => void;
+}) {
+    return (
+        <IconButton
+            type="button"
+            variant="outline"
+            size="sm"
+            label="Search selected text in diffs"
+            tooltip="Search the selected text in these diffs."
+            // Pressing a button would otherwise clear the selection it acts on.
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+                props.onSearchInDiffs(props.text, props.range);
+                document.getSelection()?.removeAllRanges();
+            }}
+        >
+            <TextSearch className="h-4 w-4" aria-hidden="true" />
+        </IconButton>
     );
 }

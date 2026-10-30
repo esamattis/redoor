@@ -30,7 +30,10 @@ import {
 } from "#ui/components/browser/open-file-actions";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
-import { DIFF_SEARCH_PATH_ATTRIBUTE } from "#ui/utils/diff-search-highlighter";
+import {
+    DIFF_SEARCH_PATH_ATTRIBUTE,
+    selectionAnchor,
+} from "#ui/utils/diff-search-highlighter";
 import {
     DiffSearch,
     DiffSearchCardContext,
@@ -683,10 +686,17 @@ export function GitDiffList(props: {
         }
     };
 
-    // Names in a patch are often worth looking up elsewhere in the repository.
+    // Names in a patch are often worth looking up elsewhere in the repository or the change.
     return (
         <DiffSearchStoreContext.Provider value={searchStore}>
-            <SelectionSearch>
+            <SelectionSearch
+                onSearchInDiffs={(text, range) =>
+                    searchStore.requestSearch({
+                        text,
+                        anchor: selectionAnchor(range),
+                    })
+                }
+            >
                 <div ref={listRef}>
                     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
                         {props.files.map((file) => (
