@@ -3322,7 +3322,7 @@ dependencies = [
 
 [[package]]
 name = "redoor"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3347,7 +3347,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-agent"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3389,7 +3389,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-cli"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -3416,7 +3416,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-core"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "blake3",
@@ -3440,7 +3440,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-protocol"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -3454,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-server"
-version = "1.9.0"
+version = "1.9.1"
 dependencies = [
  "anyhow",
  "argon2",
