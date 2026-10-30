@@ -233,6 +233,56 @@ test.describe.serial("Git commit, branch and tag lists", () => {
         await expect(page).not.toHaveURL(/refSort=/);
     });
 
+    test("compares the checkout with a branch it split from", async ({
+        page,
+    }) => {
+        // A branch that moved on after main split from it, so comparing tips directly would
+        // show its commit reverted, while the merge-base comparison must leave it out.
+        await $`git -C ${repositoryPath} checkout -q -b side ${firstCommit}`;
+        await fs.writeFile(
+            path.join(repositoryPath, "side.txt"),
+            "only on side\n",
+        );
+        await $`git -C ${repositoryPath} add side.txt`;
+        await $`git -C ${repositoryPath} commit -m ${"Side work"}`;
+        await $`git -C ${repositoryPath} checkout -q main`;
+
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?view=git&gitTab=branches`,
+        );
+
+        const branches = page.getByRole("list", { name: "Branches" });
+
+        // The checked-out branch has nothing to compare with itself.
+        await expect(
+            branches.getByRole("link", { name: "Compare checkout with main" }),
+        ).toHaveCount(0);
+
+        await branches
+            .getByRole("link", { name: "Compare checkout with side" })
+            .click();
+
+        // The comparison is a symmetric range kept in the URL, so it can be shared and reloaded.
+        await expect(page).toHaveURL(
+            /rev=refs(%2F|\/)heads(%2F|\/)side(\.|%2E){3}HEAD/,
+        );
+        // The header says whose work is shown against which branch.
+        await expect(
+            page.getByRole("heading", { name: "What HEAD adds to side" }),
+        ).toBeVisible();
+        // Both of main's own commits are in the diff, measured from where the branches split.
+        await expect(
+            page.getByRole("region", { name: "Commit diff for notes.txt" }),
+        ).toContainText("second notes");
+        await expect(
+            page.getByRole("region", { name: "Commit diff for src/app.ts" }),
+        ).toBeVisible();
+        // The side branch's own file is not listed as deleted, as a tip-to-tip diff would.
+        await expect(
+            page.getByRole("region", { name: "Commit diff for side.txt" }),
+        ).toHaveCount(0);
+    });
+
     test("loads more commits beyond the first page", async ({ page }) => {
         await page.goto(
             `${deviceBrowserUrl(ctx.agentName, manyCommitsPath)}?view=git&gitTab=commits`,

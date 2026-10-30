@@ -1728,6 +1728,9 @@ the Git view rather than another level of page navigation.
   ends are history-entry state, so Back from the combined diff returns to the same run. A branch or tag links to the path at
   `rev=<full ref name>`, because a short name can be ambiguous between a tag and a branch;
   the banner drops the `refs/heads/`, `refs/remotes/` and `refs/tags/` prefix for display.
+  Every ref except the checked-out branch also has a compare link to
+  `view=git&rev=<full ref name>...HEAD`, the usual "what does my branch add to main"
+  review. HEAD stays symbolic in the link, so the comparison follows new commits.
 - **Caching matches revision browsing.** History is always keyed by a commit id: the
   browsed commit at a revision, and in the worktree the HEAD commit from the Git context the
   loader refetches on navigation. Every page of one history then walks the same commits even
