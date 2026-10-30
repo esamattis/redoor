@@ -11,6 +11,7 @@ import {
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
 import { IconButton } from "#ui/components/icon-button";
+import { cn } from "#ui/utils/cn";
 import { getBaseName, getParentPath } from "#ui/utils/path";
 
 /** Names where a search result leads, with the line a content match should reveal. */
@@ -42,7 +43,7 @@ function SearchResultRow(props: {
     );
 
     return (
-        <div className="flex w-max min-w-full items-start border-b border-slate-800 last:border-b-0">
+        <div className="flex items-start border-b border-slate-800 last:border-b-0">
             {props.children}
             {background === null ? null : (
                 <div className="sticky right-0 shrink-0 self-stretch bg-surface px-2 py-2">
@@ -223,38 +224,54 @@ export function SearchResultList(props: {
     onOpen: (target: SearchResultTarget, index: number) => void;
     onSearchInFolder: (path: string) => void;
 }) {
+    const results = props.isContentSearch
+        ? props.contentResults
+        : props.pathResults;
+
+    const hasResults = results !== undefined && results.length > 0;
+
     return (
         <div
             ref={props.resultsRef}
             aria-label="Search results"
-            // An empty list would otherwise draw a stray border line under the status.
-            className="overflow-x-auto rounded-lg border border-slate-800 empty:hidden"
+            // Without results the list is empty, and a border would draw a stray line under the status.
+            className={cn(
+                "overflow-x-auto rounded-lg",
+                hasResults && "border border-slate-800",
+            )}
         >
-            {props.isContentSearch
-                ? props.contentResults?.map((result, index) => (
-                      <ContentResult
-                          key={`${result.path}:${result.line_number}:${result.line}`}
-                          result={result}
-                          agent={props.agent}
-                          target={{
-                              path: result.path,
-                              line: result.line_number,
-                          }}
-                          onOpen={(target) => props.onOpen(target, index)}
-                      />
-                  ))
-                : props.pathResults?.map((result, index) => (
-                      <PathResult
-                          key={result.path}
-                          result={result}
-                          agent={props.agent}
-                          target={{ path: result.path }}
-                          onOpen={(target) => props.onOpen(target, index)}
-                          onSearchInFolder={() =>
-                              props.onSearchInFolder(result.path)
-                          }
-                      />
-                  ))}
+            {/*
+             * This shared width makes every row as wide as the widest preview line. Rows clamp their
+             * sticky actions to their own right edge, so without it the actions would sit at
+             * different places whenever the list scrolls sideways.
+             */}
+            <div className="flex w-max min-w-full flex-col">
+                {props.isContentSearch
+                    ? props.contentResults?.map((result, index) => (
+                          <ContentResult
+                              key={`${result.path}:${result.line_number}:${result.line}`}
+                              result={result}
+                              agent={props.agent}
+                              target={{
+                                  path: result.path,
+                                  line: result.line_number,
+                              }}
+                              onOpen={(target) => props.onOpen(target, index)}
+                          />
+                      ))
+                    : props.pathResults?.map((result, index) => (
+                          <PathResult
+                              key={result.path}
+                              result={result}
+                              agent={props.agent}
+                              target={{ path: result.path }}
+                              onOpen={(target) => props.onOpen(target, index)}
+                              onSearchInFolder={() =>
+                                  props.onSearchInFolder(result.path)
+                              }
+                          />
+                      ))}
+            </div>
         </div>
     );
 }
