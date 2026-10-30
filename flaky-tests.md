@@ -15,3 +15,7 @@
   directories only, the dialog still showed "Searching…" with the previous file results for the
   whole 5s timeout during `pn test`, so the non-exact `Open path <folder>` locator also matched
   the file inside it; passed 8/8 when repeated alone and in the next full `pn test`.
+- 2026-10-30 `redoor-server` `ssh::provision::tests::local_build_expects_the_build_version`
+  (`crates/redoor-server/src/ssh/provision.rs:1511`): running the freshly written fake
+  `redoor --version` failed with "Text file busy (os error 26)" during `pn test`; passed when
+  rerun alone. Same cause as `local_build_cache_recomputes_only_after_a_change` above.
