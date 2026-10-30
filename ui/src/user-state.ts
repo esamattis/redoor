@@ -6,6 +6,7 @@ import {
     useQueryClient,
     type QueryClient,
 } from "@tanstack/react-query";
+import { atom, useStore, type createStore } from "jotai";
 import { z } from "zod";
 import type { ApiClient } from "#ui/api-client";
 import type { CaretReport } from "#ui/editor/editor-workspace";
@@ -315,47 +316,30 @@ export function toggleBookmark(bookmarks: Bookmark[], bookmark: Bookmark) {
 
 type UserStateUpdater = (prev: UserState) => UserState;
 
+/**
+ * What a settings write needs: the API to send it, the query cache it reads the latest value
+ * from, and the jotai store to report a failure in. Writes also run outside React, so they
+ * cannot reach these through hooks.
+ */
+type UserStateWriter = {
+    api: ApiClient;
+    queryClient: QueryClient;
+    store: ReturnType<typeof createStore>;
+};
+
 let persistPending = 0;
 
 let persistChain: Promise<void> = Promise.resolve();
 
-let persistError: string | null = null;
-
-const persistErrorListeners = new Set<() => void>();
+/**
+ * The last failed settings write, so the shell can show a non-blocking toast. Writes run
+ * outside React, which is why the writers are handed the application's jotai store.
+ */
+export const userStatePersistErrorAtom = atom<string | null>(null);
 
 /** Lets window-focus refetch wait until an in-flight write has reached disk. */
 export function isUserStatePersistPending() {
     return persistPending > 0;
-}
-
-function subscribePersistError(onStoreChange: () => void) {
-    persistErrorListeners.add(onStoreChange);
-
-    return () => {
-        persistErrorListeners.delete(onStoreChange);
-    };
-}
-
-function getPersistError() {
-    return persistError;
-}
-
-function setPersistError(message: string | null) {
-    persistError = message;
-
-    for (const listener of persistErrorListeners) {
-        listener();
-    }
-}
-
-/** Surfaces the last failed write so the shell can show a non-blocking toast. */
-export function useUserStatePersistError(): [string | null, () => void] {
-    const message = React.useSyncExternalStore(
-        subscribePersistError,
-        getPersistError,
-    );
-
-    return [message, () => setPersistError(null)];
 }
 
 function persistErrorMessage(cause: unknown) {
@@ -363,19 +347,22 @@ function persistErrorMessage(cause: unknown) {
 }
 
 /** Serializes writes so rapid updates converge on the last visible cache value. */
-function persistLatestUserState(api: ApiClient, queryClient: QueryClient) {
+function persistLatestUserState(writer: UserStateWriter) {
     persistPending += 1;
 
     const run = persistChain.then(async () => {
         const state =
-            queryClient.getQueryData<UserState>(queryKeys.userState()) ??
+            writer.queryClient.getQueryData<UserState>(queryKeys.userState()) ??
             defaultUserState;
 
         try {
-            await api.updateUserState({ state });
-            setPersistError(null);
+            await writer.api.updateUserState({ state });
+            writer.store.set(userStatePersistErrorAtom, null);
         } catch (cause) {
-            setPersistError(persistErrorMessage(cause));
+            writer.store.set(
+                userStatePersistErrorAtom,
+                persistErrorMessage(cause),
+            );
         }
     });
 
@@ -422,12 +409,11 @@ function nextUserState(
  * writes are serialized with the ones made from components.
  */
 export function updateUserState(
-    api: ApiClient,
-    queryClient: QueryClient,
+    writer: UserStateWriter,
     update: UserState | UserStateUpdater,
 ) {
     const current =
-        queryClient.getQueryData<UserState>(queryKeys.userState()) ??
+        writer.queryClient.getQueryData<UserState>(queryKeys.userState()) ??
         defaultUserState;
 
     const next = nextUserState(current, update);
@@ -436,8 +422,8 @@ export function updateUserState(
         return;
     }
 
-    queryClient.setQueryData(queryKeys.userState(), next);
-    persistLatestUserState(api, queryClient);
+    writer.queryClient.setQueryData(queryKeys.userState(), next);
+    persistLatestUserState(writer);
 }
 
 /**
@@ -449,13 +435,14 @@ export function useUserState(): [
 ] {
     const { api } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
+    const store = useStore();
     const { data } = useQuery(userStateQueryOptions(api));
     const userState = data ?? defaultUserState;
 
     const setUserState = React.useCallback(
         (update: UserState | UserStateUpdater) =>
-            updateUserState(api, queryClient, update),
-        [api, queryClient],
+            updateUserState({ api, queryClient, store }, update),
+        [api, queryClient, store],
     );
 
     return [userState, setUserState];

@@ -49,7 +49,7 @@ const uploads = new UploadQueue({
 // user moves between pages, and one CodeMirror view serves them all for the page's lifetime.
 // The open files list mirrors each caret line, so the menu can show it.
 const editor = new EditorWorkspace(api, queryClient, (caret) => {
-    updateUserState(api, queryClient, (current) => {
+    updateUserState({ api, queryClient, store }, (current) => {
         const openFiles = setOpenFileLine(current.openFiles, caret);
 
         return openFiles === current.openFiles
