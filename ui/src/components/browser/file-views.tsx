@@ -17,6 +17,7 @@ import {
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
+import { cn } from "#ui/utils/cn";
 import { DeletePathDialog } from "#ui/components/browser/delete-path-dialog";
 import { useEditorFullWindow } from "#ui/components/browser/editor-full-window";
 import { IconButton } from "#ui/components/icon-button";
@@ -562,9 +563,12 @@ export function FileEditView(props: FileEditViewProps) {
             <article
                 aria-label="Editing panel"
                 data-editor-full-window={fullWindow.isFullWindow}
-                className={`flex min-h-0 flex-1 flex-col overflow-hidden bg-surface shadow-2xl shadow-black/20 ${
-                    fullWindow.isFullWindow ? "fixed inset-0 z-[60]" : ""
-                }`}
+                // Fixed positioning bypasses the page padding, so reserve the measured drawer height here too.
+                className={cn(
+                    "flex min-h-0 flex-1 flex-col overflow-hidden bg-surface shadow-2xl shadow-black/20",
+                    fullWindow.isFullWindow &&
+                        "fixed inset-x-0 top-0 bottom-[var(--bottom-chrome-height,0px)] z-[60]",
+                )}
             >
                 <FileEditHeader
                     readOnly={buffer.readOnly}
