@@ -75,7 +75,9 @@ test.describe.serial("Git worktree list", () => {
         await expect(
             page.getByRole("region", { name: "Git repository" }),
         ).toContainText("feature");
-        await expect(page.getByText("draft.txt")).toBeVisible();
+        await expect(
+            page.getByRole("link", { name: "draft.txt" }),
+        ).toBeVisible();
 
         await gitTabs.getByRole("link", { name: "Worktrees" }).click();
 

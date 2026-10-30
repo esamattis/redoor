@@ -1664,6 +1664,13 @@ the Git view rather than another level of page navigation.
   fetches nothing it hides. The cards are memoized with stable props (files built in a
   `useMemo`, per-file callbacks from `useCallback`), so a filter change re-renders only the
   cards whose visibility changed.
+- **Changed files in the side menu.** A foldable diff list (worktree or commit changes)
+  lists its files under "Changed files" below the open files, so a long change set can be
+  navigated by name. The application menu and the browser route are separate trees under the
+  app shell, so the list publishes its filtered files and a `reveal` callback to a jotai atom
+  (`changed-files-outline.tsx`) while it is mounted, and the menu reads it. A list's cleanup
+  only clears its own outline, so a list mounting before the old one unmounts is not wiped. Picking a file expands its card and scrolls the card's top into
+  view; the top does not move while its own patch expands, so it can scroll before render.
 - **Diff search instead of find in page.** Find in page only sees rendered text, while a
   diff list keeps files collapsed, folds unchanged lines and fetches worktree patches on
   demand. Every `GitDiffList` therefore has its own search (`diff-search.tsx`): a floating

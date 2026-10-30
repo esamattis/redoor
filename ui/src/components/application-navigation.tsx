@@ -1,6 +1,7 @@
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
+import { useAtomValue } from "jotai";
 import {
     ArrowLeftRight,
     Ellipsis,
@@ -34,6 +35,12 @@ import { useWaitForServerRestart } from "#ui/use-server-restart";
 import { cn } from "#ui/utils/cn";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 import { useCloseOpenFiles } from "#ui/components/browser/open-file-actions";
+import {
+    changedFilesOutlineAtom,
+    type ChangedFilesOutlineFile,
+    type ChangedFilesOutlineSnapshot,
+} from "#ui/components/browser/changed-files-outline";
+import { ChangeBadge } from "#ui/components/browser/git-parts";
 import {
     getOpenFileKey,
     reorderOpenFiles,
@@ -147,7 +154,7 @@ function ApplicationMenu() {
                         <SidebarModeToggle />
                         <SideMenuCloseButton />
                     </div>
-                    <OpenFiles isCompact className="px-3" />
+                    <SidebarFiles isCompact className="px-3" />
                     <NavigationBar onRestart={openRestart} />
                 </>
             ) : (
@@ -163,7 +170,7 @@ function ApplicationMenu() {
                             <SidebarModeToggle />
                             <SideMenuCloseButton />
                         </div>
-                        <OpenFiles isCompact={false} />
+                        <SidebarFiles isCompact={false} />
                     </div>
                 </>
             )}
@@ -369,11 +376,127 @@ function useLogout() {
 }
 
 /**
+ * Stacks the open files and the changed files of the diff on screen. Each list scrolls on its
+ * own and they share the column's height, so a long list of either never pushes the other
+ * out of reach.
+ */
+function SidebarFiles(props: { isCompact: boolean; className?: string }) {
+    const outline = useAtomValue(changedFilesOutlineAtom);
+
+    return (
+        <div
+            className={cn("flex min-h-0 flex-1 flex-col pb-2", props.className)}
+        >
+            <OpenFiles isCompact={props.isCompact} />
+            {outline === null ? null : (
+                <ChangedFiles outline={outline} isCompact={props.isCompact} />
+            )}
+        </div>
+    );
+}
+
+/**
+ * Lists the files of the diff on screen, so a long change set can be navigated by name
+ * instead of scrolling past every patch. Picking one expands its diff and scrolls to it.
+ */
+function ChangedFiles(props: {
+    outline: ChangedFilesOutlineSnapshot;
+    isCompact: boolean;
+}) {
+    const closeMenu = useCloseSideMenu();
+    const files = props.outline.files;
+
+    return (
+        <section
+            aria-label="Changed files"
+            className="mt-2 flex min-h-24 shrink flex-col"
+        >
+            <div className="flex min-h-7 items-center gap-1.5 py-1 pl-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
+                Changed files
+                <span
+                    className="rounded-full bg-tint-strong px-1.5 text-[10px] leading-4 tracking-normal text-slate-300"
+                    aria-label={`${files.length} changed`}
+                >
+                    {files.length}
+                </span>
+            </div>
+            {files.length === 0 ? (
+                <p className="mt-1 px-1 text-xs text-slate-500">
+                    No files to show
+                </p>
+            ) : (
+                <ul
+                    aria-label="Changed files"
+                    className="mt-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto"
+                >
+                    {files.map((file) => (
+                        <ChangedFileRow
+                            key={file.path}
+                            file={file}
+                            isCompact={props.isCompact}
+                            onReveal={(path) => {
+                                // The drawer covers the diff on phones, so it gets out of the way.
+                                closeMenu();
+                                props.outline.reveal(path);
+                            }}
+                        />
+                    ))}
+                </ul>
+            )}
+        </section>
+    );
+}
+
+/** One changed file, leading with its name and dimming its directory below it. */
+function ChangedFileRow(props: {
+    file: ChangedFilesOutlineFile;
+    /** Phones get taller rows, because a finger needs a bigger target than a pointer. */
+    isCompact: boolean;
+    onReveal: (path: string) => void;
+}) {
+    const relativePath = props.file.relativePath;
+    const slash = relativePath.lastIndexOf("/");
+    const name = slash === -1 ? relativePath : relativePath.slice(slash + 1);
+    const directory = slash === -1 ? "" : relativePath.slice(0, slash);
+
+    return (
+        <li>
+            <Button
+                type="button"
+                variant="ghost"
+                aria-label={relativePath}
+                tooltip={`Show the diff of ${relativePath}`}
+                tooltipClassName="w-full min-w-0"
+                onClick={() => props.onReveal(props.file.path)}
+                className={cn(
+                    "w-full min-w-0 justify-start gap-2 px-2.5 text-left font-normal text-slate-300",
+                    props.isCompact ? "py-2" : "py-1.5",
+                )}
+            >
+                {props.file.change === null ? null : (
+                    <ChangeBadge kind={props.file.change} />
+                )}
+                <span className="flex min-w-0 flex-1 flex-col">
+                    <span className="truncate text-sm text-slate-200">
+                        {name}
+                    </span>
+                    {directory === "" ? null : (
+                        <span className="truncate text-[11px] leading-tight text-slate-500">
+                            {directory}
+                        </span>
+                    )}
+                </span>
+            </Button>
+        </li>
+    );
+}
+
+/**
  * Lists open files so they stay available from every route. The section stays visible
  * while empty because open files are the column's main content, and a blank column would
  * not tell the user how to fill it. Closing a file with unsaved edits asks first.
  */
-function OpenFiles(props: { isCompact: boolean; className?: string }) {
+function OpenFiles(props: { isCompact: boolean }) {
     const [userState, setUserState] = useUserState();
     const agents = useAgents();
     const listRef = React.useRef<HTMLUListElement>(null);
@@ -394,9 +517,7 @@ function OpenFiles(props: { isCompact: boolean; className?: string }) {
     };
 
     return (
-        <div
-            className={cn("flex min-h-0 flex-1 flex-col pb-2", props.className)}
-        >
+        <div className="flex min-h-0 shrink flex-col">
             <div className="flex min-h-7 items-center justify-between gap-2 py-1 pl-1">
                 <span className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">
                     Open files

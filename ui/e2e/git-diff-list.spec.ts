@@ -227,6 +227,70 @@ test.describe("Git diff list", () => {
         await expect(headers).toHaveCount(3);
     });
 
+    test("lists changed files in the side menu and reveals a picked file's diff", async ({
+        page,
+    }) => {
+        // A tall first patch pushes the later files below the fold once it is expanded.
+        await fs.writeFile(
+            path.join(repositoryPath, "src/my-test/helpers.ts"),
+            Array.from(
+                { length: 400 },
+                (_, index) => `export const line${String(index)} = 1;`,
+            ).join("\n"),
+        );
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${agentName}/browser/${encodeFilesystemPath(repositoryPath)}?view=git`,
+        );
+
+        const changedFiles = page.getByRole("region", {
+            name: "Changed files",
+        });
+
+        // The side menu names every file of the diff on screen.
+        await expect(changedFiles.getByRole("listitem")).toHaveCount(3);
+
+        await changedFiles
+            .getByRole("button", { name: "src/my-test/helpers.ts" })
+            .click();
+
+        // Picking a collapsed file expands its diff.
+        await expect(
+            page.getByRole("button", {
+                name: "Collapse diff for src/my-test/helpers.ts",
+            }),
+        ).toBeVisible();
+
+        const server = page.getByRole("region", {
+            name: `Git diff for ${path.join(repositoryPath, "src/server.ts")}`,
+        });
+
+        // The tall patch above leaves the last file out of view before it is picked.
+        await expect(server).not.toBeInViewport();
+
+        await changedFiles
+            .getByRole("button", { name: "src/server.ts" })
+            .click();
+
+        // Picking a file below the fold scrolls to it and expands it.
+        await expect(server).toBeInViewport();
+        await expect(server).toContainText("edited");
+
+        await page
+            .getByRole("textbox", { name: "Filter files by name" })
+            .fill("-test");
+
+        // Files the filter hides in the list are left out of the side menu too.
+        await expect(changedFiles.getByRole("listitem")).toHaveCount(1);
+
+        await page
+            .getByRole("link", { name: "server.ts", exact: true })
+            .click();
+
+        // A file view has no diff list, so the side menu stops listing changed files.
+        await expect(changedFiles).toHaveCount(0);
+    });
+
     test("brings filtered-out files back expanded when the filter is widened", async ({
         page,
     }) => {

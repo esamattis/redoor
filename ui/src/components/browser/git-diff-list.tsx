@@ -1,5 +1,6 @@
 import React from "react";
 import { Link } from "@tanstack/react-router";
+import { useSetAtom } from "jotai";
 import {
     Check,
     ChevronDown,
@@ -28,6 +29,10 @@ import {
     OpenInBackgroundButton,
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
+import {
+    changedFilesOutlineAtom,
+    type ChangedFilesOutlineSnapshot,
+} from "#ui/components/browser/changed-files-outline";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
@@ -685,6 +690,57 @@ export function GitDiffList(props: {
             collapsed.toggle(path);
         }
     };
+
+    // The side menu calls this long after the render that registered it, so it reads the
+    // collapse state through a ref instead of the one it was registered with.
+    const expandRef = React.useRef(expand);
+
+    React.useLayoutEffect(() => {
+        expandRef.current = expand;
+    });
+
+    // A list that can fold its files lists them in the side menu, so a long change set can be
+    // navigated by name. The files the filter leaves out are hidden here, so they are left
+    // out there too. A lone file has nothing to navigate to.
+    const isFoldable = collapsed !== undefined;
+    const setOutline = useSetAtom(changedFilesOutlineAtom);
+
+    React.useEffect(() => {
+        if (!isFoldable) {
+            return;
+        }
+
+        const outline: ChangedFilesOutlineSnapshot = {
+            files: props.files
+                .filter(
+                    (file) =>
+                        filter === undefined ||
+                        filter.matches(file.relativePath),
+                )
+                .map((file) => ({
+                    path: file.path,
+                    relativePath: file.relativePath,
+                    change: file.change,
+                })),
+            reveal: (path) => {
+                expandRef.current(path);
+                // The card's top stays put while its own patch expands below it, so it can
+                // be scrolled to before the patch renders.
+                listRef.current
+                    ?.querySelector(
+                        `[${DIFF_SEARCH_PATH_ATTRIBUTE}="${CSS.escape(path)}"]`,
+                    )
+                    ?.scrollIntoView({ block: "start" });
+            },
+        };
+
+        setOutline(outline);
+
+        // Clears only its own outline, so a list that mounted before this one unmounted keeps
+        // showing its files.
+        return () =>
+            setOutline((current) => (current === outline ? null : current));
+    }, [isFoldable, props.files, filter, setOutline]);
 
     // Names in a patch are often worth looking up elsewhere in the repository or the change.
     return (
