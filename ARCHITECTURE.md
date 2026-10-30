@@ -1551,7 +1551,21 @@ way of looking at the same repository location, and paths deleted since are stil
   repository. Every history command reads B, so browsing a range shows its newer end, and
   `git/commit-diff` compares B with A instead of B's first parent, like `git diff A..B`,
   reporting the start in `range` so the view heads the diff with both ends and drops the
-  prev/next stepper. An empty side means `HEAD` as in Git; the symmetric `A...B` is refused.
+  prev/next stepper. An empty side means `HEAD` as in Git.
+- **Symmetric ranges compare with the merge base.** `A...B` also names B, but its diff
+  starts at the merge base of A and B, like `git diff A...B`, so reviewing a branch shows
+  only its own work instead of also reverting what A gained since they split. The response
+  marks the range `merge_base`, so the header reads "What B adds to A" and labels the start
+  as the merge base. Histories without a common ancestor are invalid input rather than a
+  diff from the empty tree. Its base is usually a branch that moves while HEAD stays put
+  (pulling or merging into main), so the loader fetches a symmetric diff again on every
+  navigation instead of trusting the cache key, which only pins HEAD. Such a header also carries a base and a compare picker and a
+  swap link (`git-compare-picker.tsx`), so any two branches can be compared without typing
+  a range. They are native selects, which phones open as their own full-screen pickers,
+  stacked beside the swap button in a narrow column. They offer the checkout as `HEAD`
+  and the first page of branches (the 100 most recent), plus any side already in the URL
+  that the page lacks, so a select never shows a different ref than the one compared. Each
+  pick is a new history entry, so Back returns to the previous comparison.
   Git cannot resolve the parent of a root commit, so a left side of the form `<root>^` (or
   `~`, `^1`, `~1`) starts the range from the empty tree instead: that keeps
   `<oldest>^..<newest>`, the range a run of commits picked in the history list opens, valid
@@ -1722,6 +1736,9 @@ the Git view rather than another level of page navigation.
   ends are history-entry state, so Back from the combined diff returns to the same run. A branch or tag links to the path at
   `rev=<full ref name>`, because a short name can be ambiguous between a tag and a branch;
   the banner drops the `refs/heads/`, `refs/remotes/` and `refs/tags/` prefix for display.
+  Every ref except the checked-out branch also has a compare link to
+  `view=git&rev=<full ref name>...HEAD`, the usual "what does my branch add to main"
+  review. HEAD stays symbolic in the link, so the comparison follows new commits.
 - **Caching matches revision browsing.** History is always keyed by a commit id: the
   browsed commit at a revision, and in the worktree the HEAD commit from the Git context the
   loader refetches on navigation. Every page of one history then walks the same commits even

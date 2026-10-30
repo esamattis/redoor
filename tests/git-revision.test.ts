@@ -325,7 +325,7 @@ describe("Git revision REST API", () => {
         // The parent of a root commit starts the range at the empty tree, so a run of
         // commits reaching the first one still has a base.
         expect(fromRoot.parent_id).toBeNull();
-        expect(fromRoot.range).toEqual({ base: null });
+        expect(fromRoot.range).toEqual({ base: null, merge_base: false });
         // The commits combine: a file added and removed inside the range is not listed, and
         // everything else counts as added.
         expect(
@@ -367,16 +367,6 @@ describe("Git revision REST API", () => {
         // Browsing a range shows the files at its newer end.
         expect(tree.commit.id).toBe(secondCommit);
 
-        const symmetric = await revisionRequest(
-            "commit-diff",
-            repo,
-            `${firstCommit}...${secondCommit}`,
-        );
-
-        // A symmetric range is refused rather than misread as a plain range.
-        expect(symmetric.status).toBe(400);
-        expect(await symmetric.text()).toContain("not supported");
-
         const unknownStart = await revisionRequest(
             "commit-diff",
             repo,
@@ -416,6 +406,87 @@ describe("Git revision REST API", () => {
 
         return (await $({ cwd: directory })`git rev-parse HEAD`).stdout.trim();
     }
+
+    it("diffs a symmetric range against the merge base of its sides", async () => {
+        const diverged = await createRepository("-git-revision-symmetric");
+        await writeFile(join(diverged, "shared.txt"), "shared\n");
+        const base = await commitAll(diverged, "Shared start");
+        await $({ cwd: diverged })`git checkout -b feature`;
+        await writeFile(join(diverged, "feature.txt"), "feature work\n");
+        const feature = await commitAll(diverged, "Feature work");
+        await $({ cwd: diverged })`git checkout main`;
+        await writeFile(join(diverged, "main.txt"), "main moved on\n");
+        await commitAll(diverged, "Main moved on");
+        await $({ cwd: diverged })`git checkout feature`;
+
+        const symmetric: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            diverged,
+            "refs/heads/main...HEAD",
+        );
+
+        // The range names its right side, the checked-out feature branch.
+        expect(symmetric.commit.id).toBe(feature);
+        // The comparison starts where the branches split, not at main's tip.
+        expect(symmetric.parent_id).toBe(base);
+        expect(symmetric.range?.base?.id).toBe(base);
+        // The view is told the base is a merge base so it can title the diff accordingly.
+        expect(symmetric.range?.merge_base).toBe(true);
+        // Only the branch's own work is listed; main's newer file is not shown as deleted.
+        expect(
+            symmetric.files.map((file) => [
+                file.repository_relative_path,
+                file.change,
+            ]),
+        ).toEqual([["feature.txt", "added"]]);
+
+        const plain: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            diverged,
+            "refs/heads/main..HEAD",
+        );
+
+        // A two-dot range still compares the tips directly, so main's file reads as deleted.
+        expect(plain.range?.merge_base).toBe(false);
+        expect(
+            plain.files.map((file) => [
+                file.repository_relative_path,
+                file.change,
+            ]),
+        ).toEqual([
+            ["feature.txt", "added"],
+            ["main.txt", "deleted"],
+        ]);
+
+        const emptyRight: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            diverged,
+            "main...",
+        );
+
+        // An empty side means HEAD, as in Git.
+        expect(emptyRight.commit.id).toBe(feature);
+        expect(emptyRight.parent_id).toBe(base);
+
+        const tree = await testAgent.gitRevisionTree(
+            diverged,
+            "refs/heads/main...HEAD",
+        );
+
+        // Browsing a symmetric range shows the files at its right side.
+        expect(tree.commit.id).toBe(feature);
+
+        await $({ cwd: diverged })`git checkout --orphan unrelated`;
+        await writeFile(join(diverged, "unrelated.txt"), "no shared history\n");
+        await commitAll(diverged, "Unrelated root");
+
+        const unrelated = await revisionRequest(
+            "commit-diff",
+            diverged,
+            "main...HEAD",
+        );
+
+        // Histories without a common ancestor have no merge base to compare with.
+        expect(unrelated.status).toBe(400);
+        expect(await unrelated.text()).toContain("no common history");
+    });
 
     it("rejects revisions that name a blob or tree instead of a commit", async () => {
         const blobId = (

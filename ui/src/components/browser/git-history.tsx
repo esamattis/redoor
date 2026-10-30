@@ -5,6 +5,7 @@ import {
     Clock,
     FolderOpen,
     GitBranch,
+    GitCompareArrows,
     History,
     Tag,
 } from "lucide-react";
@@ -617,7 +618,10 @@ export function GitRefList(props: {
     );
 }
 
-/** One branch or tag. It links by full ref name, which a tag and a branch cannot share. */
+/**
+ * One branch or tag. It links by full ref name, which a tag and a branch cannot share, and
+ * offers to compare the checkout with it, the usual way to review a branch against `main`.
+ */
 function RefRow(props: {
     agent: Agent;
     path: string;
@@ -681,6 +685,24 @@ function RefRow(props: {
                     />
                 </p>
             </div>
+            {/* The checked-out branch compared with itself would always be empty. */}
+            {ref.is_head ? null : (
+                <IconLinkButton
+                    {...browserRoute(props.agent, props.path)}
+                    // Symmetric, like `git diff main...HEAD`, so the diff holds only what the
+                    // checkout added since it split from this ref, not the reverse of what
+                    // the ref gained meanwhile. HEAD stays symbolic so the link follows new
+                    // commits.
+                    search={{ view: "git", rev: `${ref.full_name}...HEAD` }}
+                    label={`Compare checkout with ${ref.name}`}
+                    tooltip={`Show what the checked-out commit adds compared with ${ref.name}`}
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
+                >
+                    <GitCompareArrows className="h-4 w-4" aria-hidden="true" />
+                </IconLinkButton>
+            )}
             <CopyableGitRef
                 kind="commit"
                 value={commit.id}

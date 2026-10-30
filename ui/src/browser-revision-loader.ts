@@ -2,7 +2,10 @@
 import { redirect } from "@tanstack/react-router";
 import type { Agent } from "#ui/api-client";
 import type { BrowserSearch } from "#ui/browser-search";
-import { commitDiffRevision } from "#ui/components/browser/git-parts";
+import {
+    commitDiffRevision,
+    revisionRange,
+} from "#ui/components/browser/git-parts";
 import {
     getPathLoadError,
     type PathLoadError,
@@ -158,14 +161,20 @@ export async function loadRevision(options: {
             refSort,
         });
     } else if (view === "git") {
-        await fetchQueryUncancelled(
-            context.queryClient,
-            gitCommitDiffQueryOptions(
+        await fetchQueryUncancelled(context.queryClient, {
+            ...gitCommitDiffQueryOptions(
                 agent,
                 path,
                 commitDiffRevision(rev, tree.commit.id),
             ),
-        );
+            // A symmetric range keeps its base as typed, usually a branch such as main that
+            // moves while HEAD stays put, so its merge base and diff are fetched again on
+            // every navigation instead of served from a cache pinned only by HEAD.
+            staleTime:
+                revisionRange(rev)?.separator === "..."
+                    ? 0
+                    : Number.POSITIVE_INFINITY,
+        });
     }
 
     return revisionData(options, { tree, error: null, deletion: null });

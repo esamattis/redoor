@@ -9,20 +9,27 @@ export function shortCommitId(id: string): string {
 }
 
 /**
- * Splits a revision range `A..B` into its sides, or returns null for a single revision. Ref
- * names cannot contain `..`, so the first one always separates the sides. An empty side
- * stays empty, which the agent reads as `HEAD` like Git does.
+ * Splits a revision range `A..B` or `A...B` into its sides and separator, or returns null for
+ * a single revision. Ref names cannot contain `..`, so the first one always separates the
+ * sides, and a third dot right after it makes the range symmetric (compared with the merge
+ * base). An empty side stays empty, which the agent reads as `HEAD` like Git does.
  */
 export function revisionRange(
     rev: string,
-): { base: string; head: string } | null {
-    const separator = rev.indexOf("..");
+): { base: string; head: string; separator: ".." | "..." } | null {
+    const index = rev.indexOf("..");
 
-    if (separator === -1) {
+    if (index === -1) {
         return null;
     }
 
-    return { base: rev.slice(0, separator), head: rev.slice(separator + 2) };
+    const separator = rev.startsWith("...", index) ? "..." : "..";
+
+    return {
+        base: rev.slice(0, index),
+        head: rev.slice(index + separator.length),
+        separator,
+    };
 }
 
 /**
@@ -34,7 +41,9 @@ export function revisionRange(
 export function commitDiffRevision(rev: string, commitId: string): string {
     const range = revisionRange(rev);
 
-    return range === null ? commitId : `${range.base}..${commitId}`;
+    return range === null
+        ? commitId
+        : `${range.base}${range.separator}${commitId}`;
 }
 
 /**
@@ -56,7 +65,7 @@ export function displayRevision(rev: string): string {
     const range = revisionRange(rev);
 
     if (range !== null) {
-        return `${displayRevision(range.base)}..${displayRevision(range.head)}`;
+        return `${displayRevision(range.base)}${range.separator}${displayRevision(range.head)}`;
     }
 
     const commit = /^([0-9a-f]{40,64})([~^].*)?$/i.exec(rev);

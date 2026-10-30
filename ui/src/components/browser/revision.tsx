@@ -35,6 +35,7 @@ import {
     shortCommitId,
 } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
+import { GitComparePicker } from "#ui/components/browser/git-compare-picker";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     gitCommitDiffQueryOptions,
@@ -543,6 +544,7 @@ export function GitCommitView(props: {
                 <CommitRangeHeader
                     agent={props.agent}
                     path={props.path}
+                    rev={props.rev}
                     diff={diff}
                     range={diff.range}
                     now={now}
@@ -620,22 +622,44 @@ export function GitCommitView(props: {
  * Heads the changes of a range `A..B` with both of its ends instead of a commit message. The
  * diff is the sum of every commit after A up to B, so B's message alone would only explain
  * the last of them. Each end links to that commit's own changes, and there is no stepper,
- * since a range has no single neighbouring commit.
+ * since a range has no single neighbouring commit. A symmetric range `A...B` starts at the
+ * merge base instead of A, so its title names both refs to say whose work is shown, and it
+ * offers pickers for both sides, since it is a comparison of branches rather than a run of
+ * commits.
  */
 function CommitRangeHeader(props: {
     agent: Agent;
     path: string;
+    /** The range as browsed, whose ref names title a symmetric comparison. */
+    rev: string;
     diff: GitCommitDiffResponse;
     range: GitCommitRange;
     now: number;
 }) {
+    const sides = revisionRange(props.rev);
+
+    const title =
+        props.range.merge_base && sides !== null
+            ? `What ${displayRevision(sides.head || "HEAD")} adds to ${displayRevision(sides.base || "HEAD")}`
+            : "Changes of a commit range";
+
     return (
         <header className="grid gap-2 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
             <h2 className="text-base font-semibold leading-snug text-slate-50">
-                Changes of a commit range
+                {title}
             </h2>
+            {props.range.merge_base ? (
+                <GitComparePicker
+                    agent={props.agent}
+                    path={props.path}
+                    repositoryRoot={props.diff.repository_root}
+                    rev={props.rev}
+                />
+            ) : null}
             <dl className="grid grid-cols-[auto_minmax(0,1fr)] items-center gap-x-3 gap-y-1.5 text-xs">
-                <dt className="font-medium text-slate-400">From</dt>
+                <dt className="font-medium text-slate-400">
+                    {props.range.merge_base ? "Merge base" : "From"}
+                </dt>
                 <dd className="min-w-0">
                     {props.range.base === null ? (
                         <span className="text-slate-300">
