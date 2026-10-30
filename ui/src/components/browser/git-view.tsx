@@ -21,6 +21,7 @@ import {
     revisionRefKind,
     shortCommitId,
 } from "#ui/components/browser/git-parts";
+import { cn } from "#ui/utils/cn";
 import { getBaseName } from "#ui/utils/path";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -360,7 +361,8 @@ function ReferenceBadge(props: { reference: GitViewReference }) {
 /**
  * Switches between the Git view's panels. It is a segmented switch inside the repository
  * header rather than a second row of underlined tabs, so it reads as part of the Git view
- * and not as another level of page navigation.
+ * and not as another level of page navigation. A narrow column keeps every panel reachable
+ * by naming only the open one, so the switch never spills past its own border.
  */
 function GitViewNav(props: {
     agent: Agent;
@@ -375,48 +377,28 @@ function GitViewNav(props: {
         {
             tab: undefined,
             label: "Changes",
-            icon: (
-                <FileDiff
-                    className="hidden h-4 w-4 @xl:block"
-                    aria-hidden="true"
-                />
-            ),
+            icon: <FileDiff className="h-4 w-4 shrink-0" aria-hidden="true" />,
         },
         {
             tab: "commits",
             label: "Commits",
-            icon: (
-                <History
-                    className="hidden h-4 w-4 @xl:block"
-                    aria-hidden="true"
-                />
-            ),
+            icon: <History className="h-4 w-4 shrink-0" aria-hidden="true" />,
         },
         {
             tab: "branches",
             label: "Branches",
-            icon: (
-                <GitBranch
-                    className="hidden h-4 w-4 @xl:block"
-                    aria-hidden="true"
-                />
-            ),
+            icon: <GitBranch className="h-4 w-4 shrink-0" aria-hidden="true" />,
         },
         {
             tab: "tags",
             label: "Tags",
-            icon: (
-                <Tag className="hidden h-4 w-4 @xl:block" aria-hidden="true" />
-            ),
+            icon: <Tag className="h-4 w-4 shrink-0" aria-hidden="true" />,
         },
         {
             tab: "worktrees",
             label: "Worktrees",
             icon: (
-                <FolderTree
-                    className="hidden h-4 w-4 @xl:block"
-                    aria-hidden="true"
-                />
+                <FolderTree className="h-4 w-4 shrink-0" aria-hidden="true" />
             ),
         },
     ];
@@ -426,7 +408,7 @@ function GitViewNav(props: {
             aria-label="Git view"
             className="overflow-x-auto overscroll-x-contain px-4 py-3 @xl:px-5 @xl:pb-4"
         >
-            <div className="flex w-full gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1 @xl:inline-flex @xl:w-auto">
+            <div className="flex w-full min-w-max gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1 @xl:inline-flex @xl:w-auto @xl:min-w-0">
                 {items.map((item) => {
                     const active = item.tab === props.tab;
 
@@ -450,7 +432,13 @@ function GitViewNav(props: {
                             }
                         >
                             {item.icon}
-                            {item.label}
+                            {/* A phone cannot fit every label, so only the active tab keeps
+                                its label and the rest show their icon, like the browser's
+                                own view switch. The label still names each link to
+                                assistive technology. */}
+                            <span className={cn(!active && "@max-xl:sr-only")}>
+                                {item.label}
+                            </span>
                         </Link>
                     );
                 })}
