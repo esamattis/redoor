@@ -48,8 +48,11 @@ jobs:
             - name: Build application
               run: pnpm run build
 
-            - name: Run Cargo tests
-              run: cargo test --locked
+            - name: Install cargo-nextest
+              run: cargo install cargo-nextest --locked --version 0.9.150
+
+            - name: Run Rust unit tests
+              run: cargo nextest run --locked
 
             - name: Run UI unit tests
               run: pnpm run test:unit

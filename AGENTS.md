@@ -30,6 +30,7 @@
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
 - UI unit tests live next to the source in `ui/src` as `*.test.ts(x)`. Run with `pn test:unit` (also part of `pn test`)
+- Run Rust unit tests with `cargo nextest run --locked` (also part of `pn test`). Install the pinned runner with `mise install`.
 - Add comments to test assertions why they are there
 - Add integration tests for all rest api features
 - Run `pn test` only after real code changes, including changes to executable scripts, tests, or configuration that affects application or build behavior. Use a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite.
