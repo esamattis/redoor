@@ -144,9 +144,10 @@ impl Command {
             // Restore is a move that reports progress and owns staging, so it stays cancelable.
             Self::RestoreTrash { .. } => CommandPolicy::trash_mutation(CancelScope::Request),
             Self::HashSegments(_) => CommandPolicy::LOCAL_TRANSFER,
-            Self::FileSearch { .. } | Self::ContentGrep { .. } | Self::GitWorktreeStatus { .. } => {
-                CommandPolicy::CANCELABLE_CONTROL
-            }
+            Self::FileSearch { .. }
+            | Self::ContentGrep { .. }
+            | Self::GitStatus { .. }
+            | Self::GitWorktreeStatus { .. } => CommandPolicy::CANCELABLE_CONTROL,
             Self::ListPartials(_)
             | Self::ProbePartial(_)
             | Self::ReadPartial(_)
@@ -163,7 +164,6 @@ impl Command {
             | Self::Metadata { .. }
             | Self::DirectorySize { .. }
             | Self::GitContext { .. }
-            | Self::GitStatus { .. }
             | Self::GitDiff { .. }
             | Self::GitRevisionTree { .. }
             | Self::GitRevisionContent { .. }
@@ -502,7 +502,10 @@ mod tests {
         for command in every_command() {
             if matches!(
                 command,
-                Command::FileSearch(_) | Command::ContentGrep(_) | Command::GitWorktreeStatus(_)
+                Command::FileSearch(_)
+                    | Command::ContentGrep(_)
+                    | Command::GitStatus(_)
+                    | Command::GitWorktreeStatus(_)
             ) {
                 // Without a request-scoped token an abandoned search keeps its slots until its
                 // own timeout, so superseded UI searches would queue behind stale ones.

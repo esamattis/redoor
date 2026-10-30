@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vites
 
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
+import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { Agent, ApiClient } from "#ui/api-client";
@@ -237,7 +238,10 @@ describe("request lifecycle on the multiplexed connection", () => {
             agent: Agent,
             signal: AbortSignal,
         ) => Promise<
-            FileSearchResponse | ContentGrepResponse | GitWorktreeStatusResponse
+            | FileSearchResponse
+            | ContentGrepResponse
+            | GitStatusResponse
+            | GitWorktreeStatusResponse
         >;
     }[] = [
         {
@@ -260,6 +264,10 @@ describe("request lifecycle on the multiplexed connection", () => {
                     fixedString: true,
                     signal,
                 }),
+        },
+        {
+            command: "GitStatus",
+            start: (agent, signal) => agent.gitStatus("/tmp", { signal }),
         },
         {
             command: "GitWorktreeStatus",

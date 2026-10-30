@@ -418,11 +418,17 @@ export class Agent {
         );
     }
 
-    /** Returns bounded repository status below one literal directory path. */
-    async gitStatus(path: string): Promise<GitStatusResponse> {
+    /**
+     * Returns bounded repository status below one literal directory path. The signal lets a
+     * caller that leaves stop the agent's walk.
+     */
+    async gitStatus(
+        path: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<GitStatusResponse> {
         return apiRequest<GitStatusResponse>(
             this.filesystemUrl("git/status", path),
-            undefined,
+            { signal: options.signal },
             this.requestContext,
         );
     }

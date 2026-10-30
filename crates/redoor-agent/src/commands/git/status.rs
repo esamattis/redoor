@@ -7,6 +7,10 @@ use std::{
 };
 
 use gix::bstr::ByteSlice;
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
+
+use redoor_core::log;
 
 use redoor_protocol::{
     api::git::{
@@ -16,7 +20,7 @@ use redoor_protocol::{
             GitStatusResponse, GitTrackingState,
         },
     },
-    wire::{command::CommandErrorKind, request::CommandError},
+    wire::{command::CommandErrorKind, log::Level, request::CommandError},
 };
 
 use super::{
@@ -63,9 +67,33 @@ pub(crate) async fn context(path: String) -> Result<GitContextResponse, CommandE
     run_blocking(move |interrupt| context_blocking(path, interrupt)).await
 }
 
-/// Runs a bounded full-repository status walk away from Tokio workers.
-pub(crate) async fn status(path: String) -> Result<GitStatusResponse, CommandError> {
-    run_blocking(move |interrupt| status_blocking(path, interrupt)).await
+/// Runs a bounded status walk of one directory away from Tokio workers.
+///
+/// When `cancel` fires (the browser left the Git view or the connection ended) the walk is
+/// dropped at once, which interrupts gix instead of letting a large checkout keep the disk
+/// and a command slot busy for an answer nobody reads.
+pub(crate) async fn status(
+    path: String,
+    cancel: &CancellationToken,
+) -> Result<GitStatusResponse, CommandError> {
+    let started_at = Instant::now();
+    let walk = run_blocking({
+        let path = path.clone();
+        move |interrupt| status_blocking(path, interrupt)
+    });
+    let Some(result) = cancel.run_until_cancelled(walk).await else {
+        // Lets an operator confirm that leaving the Git view stops the walk on the agent.
+        log!(
+            Level::Debug,
+            "Git status canceled: path={path} elapsed_ms={}",
+            started_at.elapsed().as_millis()
+        );
+        return Err(CommandError::new(
+            CommandErrorKind::Canceled,
+            "Git status was canceled",
+        ));
+    };
+    result
 }
 
 /// Discovers repository context and classifies the exact requested path.
@@ -137,7 +165,9 @@ fn status_blocking(
         },
         false,
         MAX_GIT_STATUS_ENTRIES + 1,
-        Vec::new(),
+        // Limiting gix to the directory keeps a status of a small subdirectory from walking
+        // the whole checkout; the prefix filter above stays as a guard on what is reported.
+        directory_pathspec(&selected_relative),
         interrupt,
     )?;
     let prefix = if selected_relative.is_empty() {
@@ -194,6 +224,16 @@ fn status_blocking(
         truncated,
         omitted_non_utf8_entries,
     })
+}
+
+/// Limits a status walk to the repository-relative `directory`, or walks everything at the
+/// repository root. The trailing slash keeps a sibling such as `src-old` out of a walk of
+/// `src`, and `literal` keeps glob characters in names from widening it.
+pub(super) fn directory_pathspec(directory: &str) -> Vec<gix::bstr::BString> {
+    if directory.is_empty() {
+        return Vec::new();
+    }
+    vec![format!(":(top,literal){directory}/").into()]
 }
 
 /// What HEAD names, read once so context and status describe it the same way.
@@ -303,49 +343,92 @@ pub(super) fn collect_status(
     patterns: Vec<gix::bstr::BString>,
     interrupt: Arc<AtomicBool>,
 ) -> Result<StatusCollection, GitFailure> {
-    let platform = repo
-        .status(gix::progress::Discard)
-        .map_err(|error| internal_failure("prepare Git status", error))?
-        .untracked_files(gix::status::UntrackedFiles::Files)
-        .dirwalk_options(|options| options.emit_ignored(Some(Default::default())))
-        .tree_index_track_renames(gix::status::tree_index::TrackRenames::Disabled)
-        .should_interrupt_owned(interrupt);
-    let iterator = platform
-        .into_iter(patterns)
-        .map_err(|error| internal_failure("start Git status", error))?;
     let mut changes = BTreeMap::new();
     let mut omitted = 0;
     let mut overflowed = false;
-    for item in iterator {
-        let item = item.map_err(|error| internal_failure("walk Git status", error))?;
+    let walk = StatusWalk {
+        patterns,
+        untracked: gix::status::UntrackedFiles::Files,
+        renames: gix::status::tree_index::TrackRenames::Disabled,
+    };
+    walk.run(repo, interrupt, |item| {
         let path = item.location().to_vec();
         if !include_path(&path) {
-            continue;
+            return;
         }
         if path.as_bstr().to_str().is_err() {
             omitted += 1;
-            continue;
+            return;
         }
         if !include_ignored && is_ignored_item(&item) {
-            continue;
+            return;
         }
         let status = changes
             .entry(path)
             .or_insert_with(StatusAccumulator::default);
-        match item {
-            gix::status::Item::TreeIndex(change) => apply_tree_index(status, change),
-            gix::status::Item::IndexWorktree(change) => apply_index_worktree(status, change),
-        }
+        status.apply(item);
         if changes.len() > max_entries {
             changes.pop_last();
             overflowed = true;
         }
-    }
+    })?;
     Ok(StatusCollection {
         changes,
         omitted_non_utf8_entries: omitted,
         overflowed,
     })
+}
+
+/// What one gix status walk looks at and how it reports it. The Git view lists every
+/// untracked file on its own, while the file list only needs to know that a directory is
+/// untracked, so the callers pick different shapes of the same walk.
+pub(super) struct StatusWalk {
+    /// Pathspecs that limit the walk; empty walks the whole worktree.
+    pub(super) patterns: Vec<gix::bstr::BString>,
+    /// Whether untracked directories are reported as one entry or file by file.
+    pub(super) untracked: gix::status::UntrackedFiles,
+    /// Whether staged renames are paired up, which costs blob comparisons.
+    pub(super) renames: gix::status::tree_index::TrackRenames,
+}
+
+impl StatusWalk {
+    /// Streams every status item to `visit`, so callers can fold the walk into whatever
+    /// bounded shape they answer with instead of holding every changed path at once.
+    ///
+    /// Ignored paths are always emitted, collapsed to the directory a pattern matched, so an
+    /// ignored `node_modules/` costs one entry rather than a walk through it.
+    pub(super) fn run(
+        self,
+        repo: &gix::Repository,
+        interrupt: Arc<AtomicBool>,
+        mut visit: impl FnMut(gix::status::Item),
+    ) -> Result<(), GitFailure> {
+        let platform = repo
+            .status(gix::progress::Discard)
+            .map_err(|error| internal_failure("prepare Git status", error))?
+            .untracked_files(self.untracked)
+            .dirwalk_options(|options| options.emit_ignored(Some(Default::default())))
+            .tree_index_track_renames(self.renames)
+            .should_interrupt_owned(interrupt);
+        let iterator = platform
+            .into_iter(self.patterns)
+            .map_err(|error| internal_failure("start Git status", error))?;
+        for item in iterator {
+            visit(item.map_err(|error| internal_failure("walk Git status", error))?);
+        }
+        Ok(())
+    }
+}
+
+impl StatusAccumulator {
+    /// Merges one side of the comparison into the path's state; the two sides arrive as
+    /// separate items in no fixed order.
+    pub(super) fn apply(&mut self, item: gix::status::Item) {
+        match item {
+            gix::status::Item::TreeIndex(change) => apply_tree_index(self, change),
+            gix::status::Item::IndexWorktree(change) => apply_index_worktree(self, change),
+        }
+    }
 }
 
 /// Identifies ignored dirwalk items before they consume bounded status capacity.

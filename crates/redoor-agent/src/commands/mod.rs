@@ -374,7 +374,7 @@ impl RunCommand for Command {
                 Reply::of::<request::GitContext>(git::status::context(path).await)
             }
             Command::GitStatus(request::GitStatus { path }) => {
-                Reply::of::<request::GitStatus>(git::status::status(path).await)
+                Reply::of::<request::GitStatus>(git::status::status(path, &ctx.cancel).await)
             }
             Command::GitDiff(request::GitDiff { files, mode }) => {
                 Reply::of::<request::GitDiff>(git::diff::diff(files, mode).await)

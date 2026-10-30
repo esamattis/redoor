@@ -260,10 +260,13 @@ describe("Git browser REST API", () => {
         await writeFile(file, "worktree\n");
         await writeFile(join(nested, "new.txt"), "new\n");
         await writeFile(join(repo, "root.txt"), "changed root\n");
+        await mkdir(join(repo, "nested-old"));
+        await writeFile(join(repo, "nested-old", "sibling.txt"), "new");
 
         const nestedStatus = await gitStatus(nested);
         const entries = nestedStatus.entries;
-        // Literal directory-prefix filtering excludes changed siblings at repository root.
+        // The walk is scoped to the directory, so neither changed siblings at the repository root
+        // nor a sibling directory sharing the name as a prefix leak into it.
         expect(entries.map((entry) => entry.repository_relative_path)).toEqual([
             "nested/file with ünicode.txt",
             "nested/new.txt",
