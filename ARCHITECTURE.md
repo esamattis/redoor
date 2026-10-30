@@ -1631,6 +1631,11 @@ the Git view rather than another level of page navigation.
   happens in the browser without another request. Reveals are keyed on the file's hunk
   layout, so switching the inline layout keeps them. Highlighting covers every row the
   patch carries, so a folded line keeps the colours of a string or comment opened above it.
+  A diff renders plain rows until it first comes near the screen (`useHasBeenVisible`,
+  observed against the app's scroll area) and then highlights in a deferred render, so
+  expanding a long list only highlights the files the reader reaches. Plain rows hold the
+  same text at the same height, so find in page and restored scroll positions work on them
+  and colouring moves nothing.
 - **One diff card everywhere.** Every diff (the worktree and commit lists, a file's worktree
   diff and Sync compare) is a card of `GitDiffList` (`git-diff-list.tsx`); a single file's
   diff and Sync are a list of one without the collapse chevron, filter and collapse-all

@@ -38,6 +38,7 @@ import {
     type HighlightToken,
 } from "#ui/utils/code-highlight";
 import { cn } from "#ui/utils/cn";
+import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
@@ -929,10 +930,12 @@ function LineActionsFrame(props: {
     /** Null where the diff is not of one file on one device, which has no line to open. */
     actions: LineActions | null;
     estimatedHeight: string;
+    /** The scrolling box, which the diff also watches to colour its rows once near the screen. */
+    viewportRef: React.RefObject<HTMLDivElement | null>;
     children: React.ReactNode;
 }) {
     const frameRef = React.useRef<HTMLDivElement>(null);
-    const viewportRef = React.useRef<HTMLDivElement>(null);
+    const viewportRef = props.viewportRef;
     const toolbarRef = React.useRef<HTMLDivElement>(null);
     const [active, setActive] = React.useState<ActiveRow | null>(null);
     const actions = props.actions;
@@ -1200,11 +1203,18 @@ function useFoldReveals(file: DiffFile) {
 }
 
 /**
+ * How far beyond the screen a diff starts colouring its rows, so a reader scrolling at a
+ * normal pace never sees plain rows turn coloured.
+ */
+const COLOUR_AHEAD_MARGIN = "100% 0px";
+
+/**
  * One file's rows as a table. It scrolls sideways inside its own box, so wide lines never
  * widen the page or the file header above them, unless `wrapLines` fits them to the box
- * for readers who would rather not scroll. Highlighting is memoized on the parsed file, so
- * re-rendering a large diff does not highlight it again. Folded unchanged lines come from the
- * patch itself, so revealing them never asks the server again.
+ * for readers who would rather not scroll. Highlighting waits until the diff nears the
+ * screen and is memoized on the parsed file, so re-rendering a large diff does not highlight
+ * it again. Folded unchanged lines come from the patch itself, so revealing them never asks
+ * the server again.
  */
 export function Diff(props: {
     file: DiffFile;
@@ -1216,13 +1226,23 @@ export function Diff(props: {
     wholeFile: boolean;
 }) {
     const file = props.file;
+    const viewportRef = React.useRef<HTMLDivElement>(null);
     // A grammar that loads lazily renders plain rows first and colours them once loaded.
     const languageSource = React.useMemo(() => diffFileLanguage(file), [file]);
     const language = useLoadedLanguage(languageSource);
 
+    // Rows render plain until the diff first comes near the screen, so expanding a long list
+    // of files only highlights the ones the reader gets to. Plain rows hold the same text at
+    // the same height, so find in page and scroll positions work on them,
+    // and colouring later moves nothing. The deferred value colours in a background render,
+    // so scrolling into a large file does not wait for its highlighting.
+    const nearScreen = React.useDeferredValue(
+        useHasBeenVisible(viewportRef, COLOUR_AHEAD_MARGIN),
+    );
+
     const highlight = React.useMemo(
-        () => highlightFile(file, language),
-        [file, language],
+        () => (nearScreen ? highlightFile(file, language) : null),
+        [nearScreen, file, language],
     );
 
     const slots = React.useMemo(() => gutterSlots(file), [file]);
@@ -1249,6 +1269,7 @@ export function Diff(props: {
     return (
         <LineActionsFrame
             actions={actions}
+            viewportRef={viewportRef}
             estimatedHeight={estimatedRowsHeight(
                 file,
                 reveals.get,

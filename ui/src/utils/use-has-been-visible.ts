@@ -1,6 +1,17 @@
 import { type RefObject, useEffect, useState } from "react";
 
 /**
+ * The app's scroll area around an element, or null for the window. Content scrolls inside that
+ * area, and an observer rooted at the window would clip at its edges, so the margin would
+ * never reach the rows just below it. It is found by the attribute the router restores its
+ * scroll position by, because reading styles or sizes to find a scrolling ancestor would force
+ * a layout for every element that mounts, which made expanding a long diff list crawl.
+ */
+function scrollArea(element: Element): Element | null {
+    return element.closest("[data-scroll-restoration-id]");
+}
+
+/**
  * Tells whether an element has come near the visible part of its scroll container, and
  * stays true afterwards. Rows use it to defer work, such as walking a checkout, until
  * someone could see the result, and keep it once started so scrolling back and forth does
@@ -25,7 +36,7 @@ export function useHasBeenVisible(
                     setVisible(true);
                 }
             },
-            { rootMargin },
+            { root: scrollArea(element), rootMargin },
         );
 
         observer.observe(element);
