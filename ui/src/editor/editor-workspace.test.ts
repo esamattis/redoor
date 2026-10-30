@@ -10,6 +10,7 @@ import {
 } from "vitest";
 import { redo, undo, undoDepth } from "@codemirror/commands";
 import type { EditorState } from "@codemirror/state";
+import type { EditorView } from "@codemirror/view";
 import { QueryClient } from "@tanstack/react-query";
 import type { DeleteEditorBufferResponse } from "#bindings/DeleteEditorBufferResponse";
 import type { EditorBufferResponse } from "#bindings/EditorBufferResponse";
@@ -22,6 +23,11 @@ import {
     type CaretReport,
     type EditorBufferApi,
 } from "./editor-workspace";
+import {
+    GIT_GUTTER_HIDDEN,
+    gitGutterField,
+    gitGutterSource,
+} from "./git-gutter";
 import { parseStoredBuffer, type StoredBuffer } from "./stored-buffer";
 
 // JSDOM does not measure text ranges, while CodeMirror only needs stable stubs here.
@@ -510,4 +516,55 @@ test("following a link to a file supersedes its pending line request", () => {
             view.state.selection.main.to,
         ),
     ).toBe("four");
+});
+
+/** The Git gutter marks of the shown state, as `line:change:staged` for compact asserts. */
+function gitMarks(view: EditorView) {
+    const marks: string[] = [];
+    const cursor = view.state.field(gitGutterField).markers.iter();
+
+    while (cursor.value !== null) {
+        const element = cursor.value.toDOM?.(view);
+        const line = view.state.doc.lineAt(cursor.from).number;
+        const data = element instanceof HTMLElement ? element.dataset : {};
+        marks.push(
+            `${String(line)}:${data.gitLineChange ?? "?"}:${data.gitLineStaged ?? "?"}`,
+        );
+        cursor.next();
+    }
+
+    return marks;
+}
+
+test("the Git gutter follows typing after a pause and survives a discard", async () => {
+    const { workspace } = createWorkspace();
+    const view = show(workspace, { key: "a", deviceContent: "one\ntwo\n" });
+    // Outside a repository the gutter is not part of the editor at all.
+    expect(view.dom.querySelector(".cm-gitGutter")).toBeNull();
+
+    const source = gitGutterSource({
+        status: "bases",
+        index: "one\ntwo\n",
+        head: { type: "same_as_index" },
+    });
+
+    workspace.setGitGutter("a", source);
+    // Inside one it appears, with no marks while the buffer equals the index.
+    expect(view.dom.querySelector(".cm-gitGutter")).not.toBeNull();
+    expect(gitMarks(view)).toEqual([]);
+
+    view.dispatch({ changes: { from: 0, insert: "zero\n" } });
+    // The diff waits for a pause in typing instead of running per keystroke.
+    expect(gitMarks(view)).toEqual([]);
+    await vi.advanceTimersByTimeAsync(300);
+    // The inserted line is compared with the index once typing paused.
+    expect(gitMarks(view)).toEqual(["1:added:false"]);
+
+    workspace.discard("a", "ONE\ntwo\n");
+    // A discard builds a new state, which must keep the gutter and mark the new text.
+    expect(gitMarks(view)).toEqual(["1:modified:false"]);
+
+    workspace.setGitGutter("a", GIT_GUTTER_HIDDEN);
+    // Leaving the repository removes the gutter again.
+    expect(view.dom.querySelector(".cm-gitGutter")).toBeNull();
 });

@@ -21,6 +21,7 @@ import {
     type BufferBase,
 } from "./buffer-sync";
 import { EditorConfiguration, type EditorSettings } from "./editor-extensions";
+import { GIT_GUTTER_HIDDEN, type GitGutterSource } from "./git-gutter";
 import {
     MAX_STORED_BUFFER_CHARS,
     type StoredBuffer,
@@ -138,6 +139,11 @@ type FileBuffer = {
     lastSeenVersion: number | null;
     /** Document or selection changes the server has not been sent yet. */
     unsynced: boolean;
+    /**
+     * What the Git gutter shows. Kept beside the state because a discard or an adopted server
+     * copy builds a new state, which must get the gutter back.
+     */
+    gitGutter: GitGutterSource;
 };
 
 /**
@@ -341,6 +347,24 @@ export class EditorWorkspace extends ExternalStore<
             pendingLineTarget(buffer, lineTargets) !== null
         ) {
             this.restoreScroll(buffer, lineTargets);
+        }
+    }
+
+    /**
+     * Shows, hides or fills a buffer's Git gutter. A buffer that is not on screen gets it when
+     * it is activated next.
+     */
+    setGitGutter(key: string, source: GitGutterSource) {
+        const buffer = this.buffers.get(key);
+
+        if (buffer === undefined || buffer.gitGutter === source) {
+            return;
+        }
+
+        buffer.gitGutter = source;
+
+        if (this.isShown(key)) {
+            this.reconfigure();
         }
     }
 
@@ -639,6 +663,7 @@ export class EditorWorkspace extends ExternalStore<
             revealEntry: null,
             lastSeenVersion: null,
             unsynced: false,
+            gitGutter: GIT_GUTTER_HIDDEN,
         };
 
         if (request.stored !== null && restored !== null) {
@@ -759,16 +784,32 @@ export class EditorWorkspace extends ExternalStore<
         this.handlers?.current.onStateReplaced(view.state);
     }
 
-    /** Matches the shown state's compartments to the current preferences. */
+    /**
+     * Matches the shown state's compartments to the current preferences and its buffer's Git
+     * gutter, which every state swapped into the view passes through.
+     */
     private reconfigure() {
         if (this.view === null || this.settings === null) {
             return;
         }
 
-        const effects = this.configuration.settingsEffects(
-            this.view.state,
-            this.settings,
-        );
+        const shown =
+            this.activeKey === null
+                ? undefined
+                : this.buffers.get(this.activeKey);
+
+        const effects = [
+            ...this.configuration.settingsEffects(
+                this.view.state,
+                this.settings,
+            ),
+            ...(shown === undefined
+                ? []
+                : this.configuration.gitGutterEffects(
+                      this.view.state,
+                      shown.gitGutter,
+                  )),
+        ];
 
         if (effects.length > 0) {
             this.view.dispatch({ effects });

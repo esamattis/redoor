@@ -48,7 +48,11 @@ import { RevisionDetailView } from "#ui/components/browser/revision-details";
 import { SyncView } from "#ui/components/browser/sync";
 import { GitDirectoryView, GitFileView } from "#ui/components/browser/git";
 import { GitView, WorktreeGitView } from "#ui/components/browser/git-view";
-import { FileEditView, FileImageView } from "#ui/components/browser/file-views";
+import {
+    FileEditView,
+    FileImageView,
+    worktreeEditorProps,
+} from "#ui/components/browser/file-views";
 import {
     GitCommitView,
     RevisionBanner,
@@ -854,11 +858,7 @@ function FileBrowserPage(props: {
                 agent={agent}
                 fileName={fileName}
                 filePath={lsResult.path}
-                repositoryRoot={
-                    props.gitContext.status === "inside_worktree"
-                        ? props.gitContext.repository_root
-                        : null
-                }
+                {...worktreeEditorProps(props.gitContext)}
                 mimeType={metadata.mime_type}
                 downloadUrl={agent.getRawUrl(lsResult.path, {
                     download: true,

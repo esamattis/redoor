@@ -1445,6 +1445,32 @@ and a link or reload opens straight into it.
   browser drops the undo history from a payload above 7 MiB and skips storing one that is
   still too large. Only open files and one preview are kept in memory. Editable files are at
   most 2 MiB.
+- **Git gutter.** A file in a worktree that Git does not ignore gets a thin gutter left of
+  the line numbers (`ui/src/editor/git-gutter.ts`) marking added and modified lines and
+  deletions, with staged changes drawn dashed (deletion wedges faded) so they differ by shape,
+  not only colour.
+  - The route's Git context decides whether the gutter exists, so its 4px are reserved before
+    any marks load and the text never shifts. It lives in a per-buffer compartment, so files
+    outside a repository and revisions have no gutter at all.
+  - The marks come from `GET git/file-bases/{path}` (the agent's `GitFileBases` command): the
+    index text, plus the HEAD text only when it differs from the index (`same_as_index`
+    otherwise, so the common case sends one copy). Each side is bounded by the editor's 2 MiB
+    and the pair by 8 MiB JSON-encoded; conflicts, binary or non-UTF-8 blobs, symlinks and
+    submodules answer without text and leave the gutter empty. It is a background query
+    rather than part of the file loader, so opening a file never waits for Git; it is
+    request-scoped (`CancelScope::Request`), so leaving the file aborts the query and the
+    agent drops the read (`Git file bases canceled` in its debug log). Like every `git` query
+    it is refetched when the window is focused or a terminal is left, which catches a
+    `git add` or commit made there.
+  - The browser diffs rather than the agent, so the gutter follows unsaved edits. Unstaged
+    marks compare the buffer with the index; staged marks compare HEAD with the index once
+    per answer and are carried onto the buffer lines that still show those index lines. The
+    diff skips the common head and tail and runs Myers' algorithm (jsdiff) only on the
+    interned middle, giving up past 1000 edits or 100 ms by marking the whole middle as one
+    change. The marks live in a state field of each buffer: edits only map them, and a
+    recomputation runs 250 ms after typing pauses. The workspace keeps each buffer's gutter
+    source beside its state and re-applies it on every state swapped into the view, so a
+    discard or an adopted server copy keeps its gutter.
 - **`?line=` applies once per history entry.** The applied entry is stored with the buffer,
   so returning to a file or reloading the page restores the user's place instead of jumping
   back to the linked line.

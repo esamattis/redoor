@@ -8,6 +8,7 @@ import {
     type EditorSearchHandle,
 } from "#ui/components/browser/editor-search";
 import type { EditorHandlers, LineTargets } from "#ui/editor/editor-workspace";
+import type { GitGutterSource } from "#ui/editor/git-gutter";
 import type { StoredBuffer } from "#ui/editor/stored-buffer";
 import { historyEntryKey } from "#ui/history-entry-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
@@ -127,6 +128,8 @@ type CodeEditorProps = {
     onSearchOpenChange: (open: boolean) => void;
     /** Leaves find keys to the browser while the editor is hidden behind a preview. */
     captureFindKeys: boolean;
+    /** What the Git gutter shows; a stable value, since a new one recomputes the marks. */
+    gitGutter: GitGutterSource;
 };
 
 /**
@@ -245,6 +248,11 @@ export function CodeEditor(props: CodeEditorProps) {
     React.useLayoutEffect(() => {
         workspace.receiveStored(props.bufferKey, props.stored);
     }, [props.bufferKey, props.stored, workspace]);
+
+    // After activation, which creates the buffer the gutter belongs to.
+    React.useLayoutEffect(() => {
+        workspace.setGitGutter(props.bufferKey, props.gitGutter);
+    }, [props.bufferKey, props.gitGutter, workspace]);
 
     React.useLayoutEffect(() => {
         workspace.applySettings({

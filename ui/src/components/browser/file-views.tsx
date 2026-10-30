@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { Image as ImageIcon, X } from "lucide-react";
 import type { Agent } from "#ui/api-client";
+import type { GitContextResponse } from "#bindings/GitContextResponse";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { ViewCardHeader } from "#ui/components/view-card-header";
@@ -21,6 +22,7 @@ import { useEditorFullWindow } from "#ui/components/browser/editor-full-window";
 import { IconButton } from "#ui/components/icon-button";
 import {
     fileContentQueryOptions,
+    gitFileBasesQueryOptions,
     gitRevisionContentQueryOptions,
 } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
@@ -34,6 +36,12 @@ import {
     editorBufferQueryOptions,
     type StoredBuffer,
 } from "#ui/editor/stored-buffer";
+import {
+    GIT_GUTTER_EMPTY,
+    GIT_GUTTER_HIDDEN,
+    gitGutterSource,
+    type GitGutterSource,
+} from "#ui/editor/git-gutter";
 import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
@@ -149,6 +157,7 @@ function FileEditorSurface(props: {
     onSave: () => void;
     onSelectionChange: (selection: EditorSelection | null) => void;
     onClosePreview: () => void;
+    gitGutter: GitGutterSource;
 }) {
     if (props.isPending) {
         return <p className="p-4 text-sm text-slate-400">Loading file...</p>;
@@ -187,6 +196,7 @@ function FileEditorSurface(props: {
                     isSearchOpen={props.isSearchOpen}
                     onSearchOpenChange={props.onSearchOpenChange}
                     captureFindKeys={!props.preview}
+                    gitGutter={props.gitGutter}
                 />
             </div>
             <div
@@ -285,6 +295,11 @@ type FileEditViewProps = {
     scrollToLine?: number;
     preview: boolean;
     onPreviewChange: (preview: boolean) => void;
+    /**
+     * Shows the Git gutter: the file is in a repository and Git does not ignore it. Known
+     * from the route's Git context, so the gutter's space is there before its marks load.
+     */
+    showGitGutter?: boolean;
 };
 
 /**
@@ -365,6 +380,49 @@ function useFileBuffer(props: FileEditViewProps) {
 }
 
 /**
+ * The editor props that follow from the route's Git context: the repository root for
+ * Markdown links, and whether the file gets a Git gutter (in a worktree and not ignored).
+ */
+export function worktreeEditorProps(
+    gitContext: GitContextResponse,
+): Pick<FileEditViewProps, "repositoryRoot" | "showGitGutter"> {
+    return gitContext.status === "inside_worktree"
+        ? {
+              repositoryRoot: gitContext.repository_root,
+              showGitGutter: gitContext.tracking_state !== "ignored",
+          }
+        : { repositoryRoot: null, showGitGutter: false };
+}
+
+/**
+ * Reads what the editor's Git gutter compares the buffer with. It is a background query, so
+ * the file opens without waiting for Git, and its abort signal stops the agent's read when
+ * the file is left. A failed or not yet answered read leaves the gutter empty.
+ */
+function useGitGutterSource(props: {
+    agent: Agent;
+    filePath: string;
+    enabled: boolean;
+}): GitGutterSource {
+    const basesQuery = useQuery({
+        ...gitFileBasesQueryOptions(props.agent, props.filePath),
+        enabled: props.enabled,
+    });
+
+    const data = basesQuery.data;
+
+    // The marks are recomputed whenever the source changes identity, so it only changes
+    // with the answer.
+    return React.useMemo(() => {
+        if (!props.enabled) {
+            return GIT_GUTTER_HIDDEN;
+        }
+
+        return data === undefined ? GIT_GUTTER_EMPTY : gitGutterSource(data);
+    }, [data, props.enabled]);
+}
+
+/**
  * Edits file contents in a viewport-bounded CodeMirror with explicit save and reload.
  * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
  * There is no unsaved-changes prompt on leaving: an edited file is open, and its buffer is
@@ -378,6 +436,14 @@ export function FileEditView(props: FileEditViewProps) {
 
     const [userState] = useUserState();
     const buffer = useFileBuffer(props);
+
+    const gitGutter = useGitGutterSource({
+        agent: props.agent,
+        filePath: props.filePath,
+        // A revision is committed text, which has no uncommitted changes to mark.
+        enabled: props.showGitGutter === true && !buffer.readOnly,
+    });
+
     const contentQuery = buffer.contentQuery;
     const saveMutation = buffer.saveMutation;
     const isDirty = buffer.isDirty;
@@ -575,6 +641,7 @@ export function FileEditView(props: FileEditViewProps) {
                         isSearchOpen={isSearchOpen}
                         onSearchOpenChange={setIsSearchOpen}
                         onClosePreview={() => props.onPreviewChange(false)}
+                        gitGutter={gitGutter}
                     />
                 </div>
             </article>

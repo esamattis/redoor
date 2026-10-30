@@ -126,6 +126,9 @@ export const queryKeys = {
     /** The file list's Git column; under `git` so focus refreshes and mutations reach it. */
     gitDirectoryEntries: (agentId: string, path: string) =>
         [...queryKeys.git(agentId), "directory-entries", path] as const,
+    /** The editor's Git gutter; under `git` so focus refreshes and mutations reach it. */
+    gitFileBases: (agentId: string, path: string) =>
+        [...queryKeys.git(agentId), "file-bases", path] as const,
     gitDiff: (agentId: string, files: string[], mode: GitDiffMode) =>
         [...queryKeys.git(agentId), "diff", files, mode] as const,
     gitRevisionTree: (agentId: string, path: string, rev: string) =>
@@ -544,6 +547,20 @@ export function gitDirectoryEntriesQueryOptions(agent: Agent, path: string) {
         queryKey: queryKeys.gitDirectoryEntries(agent.id, path),
         queryFn: (context) =>
             agent.gitDirectoryEntries(path, { signal: context.signal }),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/**
+ * The committed and staged text the editor's Git gutter compares its buffer with. It is not
+ * primed by the loader, so opening a file never waits for Git. The signal lets leaving the
+ * file stop the agent's read.
+ */
+export function gitFileBasesQueryOptions(agent: Agent, path: string) {
+    return queryOptions({
+        queryKey: queryKeys.gitFileBases(agent.id, path),
+        queryFn: (context) =>
+            agent.gitFileBases(path, { signal: context.signal }),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

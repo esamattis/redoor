@@ -46,6 +46,12 @@ import { vim, Vim } from "@replit/codemirror-vim";
 import { bbedit } from "@uiw/codemirror-theme-bbedit";
 import { tokyoNight } from "@uiw/codemirror-theme-tokyo-night";
 import { vimYankHighlightExtension } from "../components/browser/vim-yank-highlight";
+import {
+    gitGutter,
+    gitGutterField,
+    gitGutterSourceEffects,
+    type GitGutterSource,
+} from "./git-gutter";
 import { languageFromFileName } from "#ui/utils/editor-language";
 import { getBaseName } from "#ui/utils/path";
 
@@ -117,6 +123,9 @@ export class EditorConfiguration {
     private readonly wrapCompartment = new Compartment();
     private readonly themeCompartment = new Compartment();
     private readonly editableCompartment = new Compartment();
+    /** Holds the Git gutter only for files in a repository, so other files keep the width. */
+    private readonly gitGutterCompartment = new Compartment();
+    private readonly noGitGutter: Extension = [];
     private readonly vimOn: Extension;
     private readonly vimOff: Extension;
 
@@ -190,6 +199,7 @@ export class EditorConfiguration {
         });
 
         this.shared = [
+            gitGutterField,
             EditorView.updateListener.of((update) =>
                 callbacks.onUpdate(update),
             ),
@@ -241,6 +251,8 @@ export class EditorConfiguration {
         const language = languageFromFileName(fileName, languageContent);
 
         return [
+            // First, so the Git gutter is the leftmost one, before the line numbers.
+            this.gitGutterCompartment.of(this.noGitGutter),
             this.vimCompartment.of(this.vimContent(settings)),
             this.wrapCompartment.of(this.wrapContent(settings)),
             this.themeCompartment.of(this.themeContent(settings)),
@@ -267,6 +279,24 @@ export class EditorConfiguration {
                 ? []
                 : [compartment.reconfigure(content)],
         );
+    }
+
+    /**
+     * Lists the effects that show, hide or fill a state's Git gutter. The gutter is a
+     * per-file fact rather than a preference, so it is applied beside the settings.
+     */
+    gitGutterEffects(
+        state: EditorState,
+        source: GitGutterSource,
+    ): StateEffect<unknown>[] {
+        const content = source.kind === "hidden" ? this.noGitGutter : gitGutter;
+
+        return [
+            ...(this.gitGutterCompartment.get(state) === content
+                ? []
+                : [this.gitGutterCompartment.reconfigure(content)]),
+            ...gitGutterSourceEffects(state, source),
+        ];
     }
 
     /** Picks the shared Vim extension for the preference. */
