@@ -1634,8 +1634,8 @@ the Git view rather than another level of page navigation.
   A diff renders plain rows until it first comes near the screen (`useHasBeenVisible`,
   observed against the app's scroll area) and then highlights in a deferred render, so
   expanding a long list only highlights the files the reader reaches. Plain rows hold the
-  same text at the same height, so find in page and restored scroll positions work on them
-  and colouring moves nothing.
+  same text at the same height, so find in page, the diff search and restored scroll
+  positions work on them and colouring moves nothing.
 - **One diff card everywhere.** Every diff (the worktree and commit lists, a file's worktree
   diff and Sync compare) is a card of `GitDiffList` (`git-diff-list.tsx`); a single file's
   diff and Sync are a list of one without the collapse chevron, filter and collapse-all
@@ -1658,6 +1658,24 @@ the Git view rather than another level of page navigation.
   fetches nothing it hides. The cards are memoized with stable props (files built in a
   `useMemo`, per-file callbacks from `useCallback`), so a filter change re-renders only the
   cards whose visibility changed.
+- **Diff search instead of find in page.** Find in page only sees rendered text, while a
+  diff list keeps files collapsed, folds unchanged lines and fetches worktree patches on
+  demand. Every `GitDiffList` therefore has its own search (`diff-search.tsx`): a floating
+  button or bar pinned to the bottom of the list, opened with Ctrl/Cmd+F. A second Ctrl/Cmd+F
+  in its input falls through to the browser's find. Each card names where its patch comes
+  from (`searchSource`): a commit's results, a Sync patch, or a worktree file's diff query,
+  which the search fetches in batches (`prefetchGitDiffs`) when it opens or its input gets
+  focus, and then reads from the same cache the cards use. The search parses each patch with
+  the card's own options and matches the rows' shown text (`utils/diff-search.ts`), including
+  folded rows, literally and case-insensitively, within one row, up to 10,000 matches.
+  Stepping to a match expands only that card, and the diff reveals the fold the match is in
+  as if the reader had (`diff-fold-reveals.tsx`). Matches are marked with the CSS Custom
+  Highlight API (`utils/diff-search-highlighter.ts`), which colours ranges without touching
+  the DOM React owns. Every rendered row carries a `data-search-key`, and a mutation
+  observer rebuilds a card's ranges when its rows change (expanding, revealing, colouring).
+  The current match and per-card match counts live in a small external store, so a step
+  re-renders only the cards and diffs it concerns. The query and whether the bar is open
+  are kept per history entry; a restored query does not jump, so back keeps its scroll.
 
 - **History follows the browsed path.** `git/log` lists the commits that changed the path,
   newest first by commit time, starting at HEAD in the worktree or at the browsed commit

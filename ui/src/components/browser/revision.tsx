@@ -434,6 +434,7 @@ function commitDiffFiles(options: {
             hasWorkingCopy: file.change !== "deleted",
         },
         regionLabel: `Commit diff for ${file.repository_relative_path}`,
+        searchSource: { type: "result", result: file.result },
         renderBody: (view) => (
             <GitDiffResultView
                 result={file.result}

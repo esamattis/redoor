@@ -957,6 +957,11 @@ function SyncDiffSection(props: { workspace: SyncWorkspace }) {
         change: null,
         link: null,
         regionLabel: "File diff",
+        searchSource: {
+            type: "patch",
+            unifiedDiff,
+            fullContext: diff.fullContext,
+        },
         renderBody: (view) => (
             <UnifiedDiff
                 unifiedDiff={unifiedDiff}

@@ -30,6 +30,16 @@ import {
 } from "#ui/components/browser/open-file-actions";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
+import { DIFF_SEARCH_PATH_ATTRIBUTE } from "#ui/utils/diff-search-highlighter";
+import {
+    DiffSearch,
+    DiffSearchCardContext,
+    DiffSearchStore,
+    DiffSearchStoreContext,
+    useDiffSearchMatchCount,
+    type DiffSearchListFile,
+    type DiffSearchSource,
+} from "#ui/components/browser/diff-search";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
@@ -85,6 +95,8 @@ export type GitDiffListFile = {
     link: GitDiffFileLink | null;
     /** Names the file's region, so tests and assistive technology can find one patch. */
     regionLabel: string;
+    /** Where the diff search reads the file's patch, including while its card is collapsed. */
+    searchSource: DiffSearchSource;
     /**
      * Renders the patch or a message about it in the file's own layout. It is only called
      * while the file is expanded, so a body that fetches its own diff loads nothing for a
@@ -444,6 +456,7 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
         React.useState<HTMLElement | null>(null);
 
     const namesChange = file.change === null;
+    const matchCount = useDiffSearchMatchCount(file.path);
 
     const summarySlot = React.useMemo(
         () =>
@@ -468,6 +481,7 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
     return (
         <section
             aria-label={file.regionLabel}
+            {...{ [DIFF_SEARCH_PATH_ATTRIBUTE]: file.path }}
             hidden={props.filteredOut}
             className="overflow-clip rounded-lg border border-slate-800 bg-slate-950/30"
         >
@@ -548,6 +562,14 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
                         !collapsed && "basis-full @xl:basis-auto",
                     )}
                 >
+                    {/* Tells which files the diff search found text in, also while collapsed. */}
+                    {matchCount === 0 ? null : (
+                        <span className="rounded-full bg-amber-400/15 px-2 py-0.5 text-xs whitespace-nowrap text-amber-300 tabular-nums">
+                            {matchCount === 1
+                                ? "1 match"
+                                : `${String(matchCount)} matches`}
+                        </span>
+                    )}
                     {/* Empty until the body has parsed its patch; on its own row in a narrow
                         column the counts lead and the switches stay at the right edge. */}
                     <span
@@ -597,9 +619,11 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
                     id={bodyId}
                     className="w-full min-w-0 overflow-x-hidden [&>p]:p-3"
                 >
-                    <DiffSummarySlotContext.Provider value={summarySlot}>
-                        {file.renderBody(view)}
-                    </DiffSummarySlotContext.Provider>
+                    <DiffSearchCardContext.Provider value={file.path}>
+                        <DiffSummarySlotContext.Provider value={summarySlot}>
+                            {file.renderBody(view)}
+                        </DiffSummarySlotContext.Provider>
+                    </DiffSearchCardContext.Provider>
                 </div>
             ) : null}
         </section>
@@ -630,26 +654,67 @@ export function GitDiffList(props: {
     const fileChoices = useGitDiffFileChoices(props.scope);
     const collapsed = props.collapsed;
     const filter = props.filter;
+    const choices = fileChoices.choices;
+    const [searchStore] = React.useState(() => new DiffSearchStore());
+    const listRef = React.useRef<HTMLDivElement>(null);
+
+    // Built only when the files, filter or a layout change, so the search reruns only then.
+    const searchFiles = React.useMemo(
+        (): DiffSearchListFile[] =>
+            props.files
+                .filter(
+                    (file) =>
+                        filter === undefined ||
+                        filter.matches(file.relativePath),
+                )
+                .map((file) => ({
+                    path: file.path,
+                    source: file.searchSource,
+                    mergeModifiedLines: gitDiffBodyView(choices.get(file.path))
+                        .mergeModifiedLines,
+                })),
+        [props.files, filter, choices],
+    );
+
+    /** Expands the card the search steps into, leaving an expanded one as it is. */
+    const expand = (path: string) => {
+        if (collapsed?.isCollapsed(path) === true) {
+            collapsed.toggle(path);
+        }
+    };
 
     // Names in a patch are often worth looking up elsewhere in the repository.
     return (
-        <SelectionSearch>
-            <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
-                {props.files.map((file) => (
-                    <GitDiffSection
-                        key={file.path}
-                        file={file}
-                        collapsed={collapsed?.isCollapsed(file.path) ?? false}
-                        onToggle={collapsed?.toggle ?? null}
-                        choice={fileChoices.choices.get(file.path)}
-                        onChoose={fileChoices.choose}
-                        filteredOut={
-                            filter !== undefined &&
-                            !filter.matches(file.relativePath)
-                        }
+        <DiffSearchStoreContext.Provider value={searchStore}>
+            <SelectionSearch>
+                <div ref={listRef}>
+                    <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
+                        {props.files.map((file) => (
+                            <GitDiffSection
+                                key={file.path}
+                                file={file}
+                                collapsed={
+                                    collapsed?.isCollapsed(file.path) ?? false
+                                }
+                                onToggle={collapsed?.toggle ?? null}
+                                choice={choices.get(file.path)}
+                                onChoose={fileChoices.choose}
+                                filteredOut={
+                                    filter !== undefined &&
+                                    !filter.matches(file.relativePath)
+                                }
+                            />
+                        ))}
+                    </div>
+                    <DiffSearch
+                        scope={props.scope}
+                        files={searchFiles}
+                        store={searchStore}
+                        listRef={listRef}
+                        expand={expand}
                     />
-                ))}
-            </div>
-        </SelectionSearch>
+                </div>
+            </SelectionSearch>
+        </DiffSearchStoreContext.Provider>
     );
 }

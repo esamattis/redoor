@@ -481,3 +481,21 @@ code {
 [data-touch-scrolling] .git-diff-sticky-header {
     top: calc(-1 * var(--top-chrome-height, 0px));
 }
+
+/*
+ * Diff search matches, marked with the CSS Custom Highlight API so the rows are never
+ * changed. The current match is solid so it stands out among the others, and keeps the
+ * text readable on top of the insert and delete backgrounds in both themes.
+ */
+::highlight(diff-search) {
+    background-color: color-mix(
+        in oklab,
+        var(--color-amber-400) 35%,
+        transparent
+    );
+}
+
+::highlight(diff-search-current) {
+    background-color: var(--color-amber-400);
+    color: light-dark(#ffffff, #0f172a);
+}

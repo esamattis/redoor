@@ -217,6 +217,7 @@ export function UnifiedDiff(props: {
                         {hasRows ? (
                             <Diff
                                 file={file}
+                                diffIndex={index}
                                 label={
                                     name === ""
                                         ? "Changes"

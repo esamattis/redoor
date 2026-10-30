@@ -38,11 +38,12 @@ import {
     type HighlightToken,
 } from "#ui/utils/code-highlight";
 import { cn } from "#ui/utils/cn";
+import { diffRowKey, type FoldReveal } from "#ui/utils/diff-search";
 import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
 import {
-    HistoryEntryStore,
-    useHistoryEntryState,
-} from "#ui/history-entry-state";
+    useFoldReveals,
+    useRevealSearchTarget,
+} from "#ui/components/browser/diff-fold-reveals";
 
 /** Where the editor opens the diffed file, as built by `browserRoute`. */
 export type DiffEditorRoute = ReturnType<typeof browserRoute>;
@@ -421,6 +422,8 @@ const Line = React.memo(function Line(props: {
     actionSpace: ActionSpace;
     slots: GutterSlots;
     wrapLines: boolean;
+    /** Names the row for the diff search, which finds a match's row by it. */
+    searchKey: string;
 }) {
     const line = props.line;
     const parts = rowParts(line, props.oldTokens, props.newTokens);
@@ -438,6 +441,7 @@ const Line = React.memo(function Line(props: {
                 data-line-kind={line.kind}
                 data-line-old={line.oldLineNumber ?? undefined}
                 data-line-new={line.newLineNumber ?? undefined}
+                data-search-key={props.searchKey}
                 // A wrapped line spans several visual rows, so its number and open links
                 // stay beside its first one.
                 className={cn(
@@ -506,14 +510,6 @@ const Line = React.memo(function Line(props: {
 /** How many folded lines one step of expanding reveals. */
 const EXPAND_STEP = 20;
 
-/** How much of one fold the reader has revealed, from its top and from its bottom. */
-interface Reveal {
-    fromTop: number;
-    fromBottom: number;
-}
-
-const NOTHING_REVEALED: Reveal = { fromTop: 0, fromBottom: 0 };
-
 /**
  * Stands in for the unchanged lines between hunks, with the section Git names there. The
  * buttons that reveal the lines sit in the gutter's columns; a fold without them keeps a
@@ -554,20 +550,35 @@ function SkipBlockRow(props: {
 
 /** The rows the view draws with, shared by hunks and revealed folds. */
 interface RowContext {
+    /** The file's position in its patch, which search keys name its rows by. */
+    diffIndex: number;
     highlight: FileHighlight | null;
     actionSpace: ActionSpace;
     slots: GutterSlots;
     wrapLines: boolean;
 }
 
-/** Renders rows of a hunk or a revealed fold. */
-function Rows(props: { lines: DiffLine[]; context: RowContext }) {
+/**
+ * Renders rows of a hunk or a revealed fold. `offset` is the position of the first row among
+ * the hunk's or fold's lines, so a revealed slice of a fold keys its rows like the whole fold.
+ */
+function Rows(props: {
+    lines: DiffLine[];
+    hunkIndex: number;
+    offset: number;
+    context: RowContext;
+}) {
     const context = props.context;
 
     return props.lines.map((line, index) => (
         <Line
             key={index}
             line={line}
+            searchKey={diffRowKey(
+                context.diffIndex,
+                props.hunkIndex,
+                props.offset + index,
+            )}
             oldTokens={
                 line.oldLineNumber === null
                     ? undefined
@@ -592,8 +603,9 @@ function Rows(props: { lines: DiffLine[]; context: RowContext }) {
  */
 function Fold(props: {
     block: SkipBlock;
-    reveal: Reveal;
-    onReveal: (reveal: Reveal) => void;
+    hunkIndex: number;
+    reveal: FoldReveal;
+    onReveal: (reveal: FoldReveal) => void;
     /** Shows every folded line, for reading the whole file. */
     wholeFile: boolean;
     hasHunkAbove: boolean;
@@ -617,7 +629,14 @@ function Fold(props: {
     const hiddenCount = lines.length - fromTop - fromBottom;
 
     if (hiddenCount <= 0) {
-        return <Rows lines={lines} context={props.context} />;
+        return (
+            <Rows
+                lines={lines}
+                hunkIndex={props.hunkIndex}
+                offset={0}
+                context={props.context}
+            />
+        );
     }
 
     const expandDown = () =>
@@ -639,7 +658,12 @@ function Fold(props: {
 
     return (
         <>
-            <Rows lines={lines.slice(0, fromTop)} context={props.context} />
+            <Rows
+                lines={lines.slice(0, fromTop)}
+                hunkIndex={props.hunkIndex}
+                offset={0}
+                context={props.context}
+            />
             <SkipBlockRow
                 block={props.block}
                 hiddenCount={hiddenCount}
@@ -698,6 +722,8 @@ function Fold(props: {
             />
             <Rows
                 lines={lines.slice(lines.length - fromBottom)}
+                hunkIndex={props.hunkIndex}
+                offset={lines.length - fromBottom}
                 context={props.context}
             />
         </>
@@ -712,7 +738,7 @@ function Fold(props: {
  */
 function estimatedRowsHeight(
     file: DiffFile,
-    reveal: (index: number) => Reveal,
+    reveal: (index: number) => FoldReveal,
     wholeFile: boolean,
 ): string {
     let lines = 0;
@@ -1154,54 +1180,6 @@ function LineActionsFrame(props: {
     );
 }
 
-/** How far each fold is revealed, by fold index, for every file a history entry showed. */
-type FoldRevealsByFile = ReadonlyMap<string, ReadonlyMap<number, Reveal>>;
-
-const foldRevealStates = new HistoryEntryStore<FoldRevealsByFile>();
-
-/**
- * Remembers how far each fold of a file is revealed. The folds are identified by the file's
- * paths and hunk layout rather than the parsed object, so switching the inline layout, which
- * parses the patch again, keeps what the reader opened, while a patch whose hunks moved starts
- * over. Every file of a history entry shares one stored map, because a store keeps a bounded
- * number of values and a long diff list would otherwise push out other entries' state. It is
- * kept per history entry because revealed lines change the list's height, which the restored
- * scroll position depends on when the reader comes back from a file.
- */
-function useFoldReveals(file: DiffFile) {
-    const fileKey = React.useMemo(
-        () =>
-            JSON.stringify([
-                file.oldPath,
-                file.newPath,
-                file.hunks.map((hunk) =>
-                    hunk.type === "hunk" ? hunk.header : String(hunk.count),
-                ),
-            ]),
-        [file],
-    );
-
-    const [revealsByFile, update] = useHistoryEntryState<FoldRevealsByFile>({
-        store: foldRevealStates,
-        // One scope for the whole entry, since the file key already tells the files apart.
-        scope: "diff-folds",
-        initial: () => new Map(),
-    });
-
-    const reveals = revealsByFile.get(fileKey);
-
-    return {
-        get: (index: number) => reveals?.get(index) ?? NOTHING_REVEALED,
-        set: (index: number, reveal: Reveal) =>
-            update((previous) =>
-                new Map(previous).set(
-                    fileKey,
-                    new Map(previous.get(fileKey)).set(index, reveal),
-                ),
-            ),
-    };
-}
-
 /**
  * How far beyond the screen a diff starts colouring its rows, so a reader scrolling at a
  * normal pace never sees plain rows turn coloured.
@@ -1218,6 +1196,8 @@ const COLOUR_AHEAD_MARGIN = "100% 0px";
  */
 export function Diff(props: {
     file: DiffFile;
+    /** The file's position in its patch, which the diff search names it by. */
+    diffIndex: number;
     label: string;
     editorRoute: DiffEditorRoute | null;
     background: BackgroundOpen | null;
@@ -1233,7 +1213,7 @@ export function Diff(props: {
 
     // Rows render plain until the diff first comes near the screen, so expanding a long list
     // of files only highlights the ones the reader gets to. Plain rows hold the same text at
-    // the same height, so find in page and scroll positions work on them,
+    // the same height, so find in page, the diff search and scroll positions work on them,
     // and colouring later moves nothing. The deferred value colours in a background render,
     // so scrolling into a large file does not wait for its highlighting.
     const nearScreen = React.useDeferredValue(
@@ -1249,12 +1229,20 @@ export function Diff(props: {
     const reveals = useFoldReveals(file);
     const editorRoute = props.editorRoute;
 
+    useRevealSearchTarget({
+        file,
+        diffIndex: props.diffIndex,
+        wholeFile: props.wholeFile,
+        reveals,
+    });
+
     const actions =
         editorRoute === null
             ? null
             : { editorRoute, background: props.background };
 
     const context: RowContext = {
+        diffIndex: props.diffIndex,
         highlight,
         actionSpace:
             actions === null
@@ -1291,12 +1279,15 @@ export function Diff(props: {
                             <Rows
                                 key={index}
                                 lines={hunk.lines}
+                                hunkIndex={index}
+                                offset={0}
                                 context={context}
                             />
                         ) : (
                             <Fold
                                 key={index}
                                 block={hunk}
+                                hunkIndex={index}
                                 reveal={reveals.get(index)}
                                 onReveal={(reveal) =>
                                     reveals.set(index, reveal)

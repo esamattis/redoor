@@ -193,6 +193,12 @@ function worktreeDiffFiles(
                 hasWorkingCopy: item.state !== "deleted",
             },
             regionLabel: `Git diff for ${entry.path}`,
+            searchSource: {
+                type: "worktree",
+                agent,
+                path: entry.path,
+                mode: "full",
+            },
             renderBody: (view) => (
                 <WorktreeDiffBody
                     agent={agent}
@@ -477,6 +483,12 @@ export function GitFileView(props: {
             hasWorkingCopy: !deleted,
         },
         regionLabel: `${props.mode === "full" ? "Full" : "Staged"} Git diff`,
+        searchSource: {
+            type: "worktree",
+            agent: props.agent,
+            path: props.path,
+            mode: props.mode,
+        },
         renderBody: (view) => (
             <WorktreeDiffBody
                 agent={props.agent}
