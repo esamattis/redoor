@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { $ } from "zx";
 import {
+    deviceBrowserUrl,
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
@@ -25,6 +26,20 @@ function fileWithNeedle(needleLine: number, edited: boolean) {
             ? `edited ${String(number)}\n`
             : `line ${String(number)}\n`;
     }).join("");
+}
+
+/** The text of every range a named CSS highlight holds, or null when it is not registered. */
+async function highlightTexts(page: Page, name: string) {
+    return page.evaluate((highlight) => {
+        const ranges = CSS.highlights.get(highlight);
+
+        return ranges === undefined
+            ? null
+            : [...ranges].map((range) =>
+                  // Only static ranges lack text, and the search only adds live ones.
+                  range instanceof Range ? range.toString() : "",
+              );
+    }, name);
 }
 
 /** How many ranges a named CSS highlight holds, or null when it is not registered. */
@@ -132,6 +147,15 @@ test.describe("Diff search", () => {
         // Both matches are rendered now, so both are marked.
         await expect.poll(() => highlightSize(page, "diff-search")).toBe(2);
 
+        await input.fill("edited");
+
+        // A new query whose matches exclude the current one moves to its own first match
+        // instead of leaving nothing current.
+        await expect
+            .poll(() => highlightTexts(page, "diff-search-current"))
+            .toEqual(["edited"]);
+        await expect(status).toHaveText(/^[12] of 2$/);
+
         await input.press("Escape");
 
         // Closing removes the marks, so no stale highlight outlives the search.
@@ -142,7 +166,79 @@ test.describe("Diff search", () => {
 
         // The floating button reopens the search with the query kept, for phones without
         // a keyboard shortcut.
-        await expect(input).toHaveValue("needle");
+        await expect(input).toHaveValue("edited");
         await expect(status).toHaveText("2 matches");
+    });
+
+    test("does not jump to a query that back or forward restores", async ({
+        page,
+    }) => {
+        const ctx = await setupTestDir("diff-search-history");
+        testDirPath = ctx.testDirPath;
+        const repositoryPath = path.join(ctx.testDirPath, "repository");
+        await fs.mkdir(repositoryPath);
+        await $`git -C ${repositoryPath} init`;
+        await $`git -C ${repositoryPath} config user.email playwright@redoor.test`;
+        await $`git -C ${repositoryPath} config user.name Playwright`;
+
+        // Each commit adds its own file, so a match in one is never a match in the other.
+        await fs.writeFile(path.join(repositoryPath, "alpha.txt"), "needle\n");
+        await $`git -C ${repositoryPath} add alpha.txt`;
+        await $`git -C ${repositoryPath} commit -m ${"Add alpha"}`;
+        await fs.writeFile(path.join(repositoryPath, "beta.txt"), "edited\n");
+        await $`git -C ${repositoryPath} add beta.txt`;
+        await $`git -C ${repositoryPath} commit -m ${"Add beta"}`;
+
+        const head = (
+            await $`git -C ${repositoryPath} rev-parse HEAD`
+        ).stdout.trim();
+
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, repositoryPath)}?view=git&rev=${head}`,
+        );
+
+        const input = page.getByRole("searchbox", { name: "Search in diffs" });
+        const status = page.getByRole("status", { name: "Diff search status" });
+
+        await page.getByRole("button", { name: "Search in diffs" }).click();
+        await input.fill("edited");
+
+        // Typing jumps to the match.
+        await expect(status).toHaveText("1 of 1");
+
+        await page
+            .getByRole("navigation", { name: "Commit navigation" })
+            .getByRole("link", { name: "Previous commit: Add alpha" })
+            .click();
+
+        // Typing before the older commit shows would type into the newer one's entry.
+        await expect(
+            page.getByRole("region", { name: "Commit diff for alpha.txt" }),
+        ).toBeVisible();
+        await input.fill("needle");
+
+        // The bar stays open on the older commit, and typing there jumps too.
+        await expect(status).toHaveText("1 of 1");
+
+        await page.goBack();
+
+        // Back restores the newer commit with its own query, and searches it again.
+        await expect(input).toHaveValue("edited");
+        await expect
+            .poll(() => highlightTexts(page, "diff-search"))
+            .toEqual(["edited"]);
+
+        await page.goForward();
+
+        // Every match is marked once the restored query has been searched, and a jump
+        // would have marked the current match in the same pass.
+        await expect(input).toHaveValue("needle");
+        await expect
+            .poll(() => highlightTexts(page, "diff-search"))
+            .toEqual(["needle"]);
+
+        // The restored query only counts its matches, so the restored scroll position stays.
+        await expect(status).toHaveText("1 match");
+        expect(await highlightSize(page, "diff-search-current")).toBe(0);
     });
 });

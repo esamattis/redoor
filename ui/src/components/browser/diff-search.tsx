@@ -412,6 +412,8 @@ function useDiffSearchNavigation(options: {
     store: DiffSearchStore;
     listRef: React.RefObject<HTMLElement | null>;
     expand: (path: string) => void;
+    /** The query last typed in the input, which tells typing from a restored query. */
+    typedQuery: React.RefObject<string | null>;
 }) {
     const { searched, result, loading } = options.search;
     const store = options.store;
@@ -461,18 +463,35 @@ function useDiffSearchNavigation(options: {
         [expand, highlighter, store],
     );
 
+    // A match that a newer result no longer has is no longer current. It runs before the jump
+    // below, so a new query's first match replaces the old one instead of being cleared with it.
+    React.useEffect(() => {
+        if (currentKey !== null && currentIndex === -1) {
+            setCurrentKey(null);
+            store.setTarget(null);
+            highlighter?.setCurrent(null, false);
+        }
+    }, [currentKey, currentIndex, highlighter, store]);
+
     // A query typed in this bar jumps to its first match on screen once it has one, which may
-    // only be after the patches load. A query restored by back does not, so the restored
-    // scroll position stays where the reader left it.
+    // only be after the patches load. A query restored by back, also while the bar stays open
+    // between commits, does not, so the restored scroll position stays where the reader left it.
     const jumpPending = React.useRef(false);
     const lastSearched = React.useRef(searched);
+    const typedQuery = options.typedQuery;
 
     React.useEffect(() => {
         if (searched !== lastSearched.current) {
             lastSearched.current = searched;
-            jumpPending.current = searched !== "";
+            jumpPending.current =
+                searched !== "" && searched === typedQuery.current;
+
+            // Typing jumps once; the same text restored later by back or forward must not.
+            if (searched === typedQuery.current) {
+                typedQuery.current = null;
+            }
         }
-    }, [searched]);
+    }, [searched, typedQuery]);
 
     React.useEffect(() => {
         const root = listRef.current;
@@ -490,15 +509,6 @@ function useDiffSearchNavigation(options: {
             jumpPending.current = false;
         }
     }, [result, loading, goTo, highlighter, listRef]);
-
-    // A match that a newer result no longer has is no longer current.
-    React.useEffect(() => {
-        if (currentKey !== null && currentIndex === -1) {
-            setCurrentKey(null);
-            store.setTarget(null);
-            highlighter?.setCurrent(null, false);
-        }
-    }, [currentKey, currentIndex, highlighter, store]);
 
     /** Steps forwards or backwards, starting from the screen when no match is current yet. */
     const step = (direction: 1 | -1) => {
@@ -543,12 +553,14 @@ function DiffSearchBar(props: {
 }) {
     const queryClient = useQueryClient();
     const search = useDiffSearchResult(props.files, props.query);
+    const typedQuery = React.useRef<string | null>(null);
 
     const navigation = useDiffSearchNavigation({
         search,
         store: props.store,
         listRef: props.listRef,
         expand: props.expand,
+        typedQuery,
     });
 
     // Only a request focuses the input, so a bar restored by back does not open a phone's
@@ -594,9 +606,10 @@ function DiffSearchBar(props: {
                     onFocus={() =>
                         loadWorktreePatches(queryClient, props.files)
                     }
-                    onChange={(event) =>
-                        props.onQueryChange(event.target.value)
-                    }
+                    onChange={(event) => {
+                        typedQuery.current = event.target.value;
+                        props.onQueryChange(event.target.value);
+                    }}
                     onKeyDown={(event) => {
                         if (event.key === "Escape") {
                             event.preventDefault();
