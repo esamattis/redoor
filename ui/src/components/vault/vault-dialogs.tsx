@@ -1,27 +1,40 @@
 import React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { Fingerprint, Upload } from "lucide-react";
+import { Fingerprint, KeyRound, Upload } from "lucide-react";
 
 import type { VaultDocument } from "#bindings/VaultDocument";
+import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
+import type { ApiClient } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { FileInput, type FileInputHandle } from "#ui/components/file-input";
-import { Password } from "#ui/components/password";
 import { TextField } from "#ui/components/text-field";
+import {
+    FreshUnlockFields,
+    useFreshUnlock,
+    useUnlockMaterial,
+} from "#ui/components/vault/fresh-unlock";
+import {
+    NewPassphraseFields,
+    newPassphraseProblem,
+} from "#ui/components/vault/new-passphrase-fields";
 import { queryKeys } from "#ui/queries";
-import { newSlotId, wipe } from "#ui/vault/vault-crypto";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import {
     addSlotInput,
     buildDestroy,
     currentProof,
-    openPassphraseSlot,
+    newPassphraseKek,
+    openFreshSlots,
     proofFromRaw,
+    wipeOpened,
+    type FreshUnlockInput,
+    type SlotToWrap,
 } from "#ui/vault/vault-keys";
-import { registerPasskey } from "#ui/vault/vault-passkeys";
+import { currentRpId, newPasskeySlot } from "#ui/vault/vault-passkeys";
 import { parseVaultBackup } from "#ui/vault/vault-document";
 
 const rootRouteApi = getRouteApi("__root__");
@@ -34,49 +47,55 @@ function useInvalidateVault() {
 }
 
 /**
- * Registers a passkey as a new slot. Wrapping the vault key for it needs the raw key, which
- * only a fresh unlock yields, so the passphrase is asked for even while unlocked.
+ * Adds a slot that wraps the current key, after a fresh unlock with any slot: the session
+ * only holds non-extractable keys, so the raw key comes from unwrapping a slot again.
+ */
+async function addSlotWithFreshUnlock(options: {
+    api: ApiClient;
+    unlock: FreshUnlockInput;
+    /** Derives the new slot once the vault is known; passkeys need its id. */
+    newSlot: (vaultId: string) => Promise<SlotToWrap>;
+}): Promise<void> {
+    const material = await options.api.getVaultUnlockMaterial();
+    const opened = await openFreshSlots(material, options.unlock);
+    const rawVaultKey = opened[0].rawVaultKey;
+
+    try {
+        const slot = await options.newSlot(material.vault_id);
+
+        await options.api.addVaultSlot({
+            auth_proof: await proofFromRaw(rawVaultKey),
+            slot: await addSlotInput({
+                material,
+                rawVaultKey,
+                kek: slot.kek,
+                slotId: slot.id ?? undefined,
+            }),
+        });
+    } finally {
+        wipeOpened(opened);
+    }
+}
+
+/**
+ * Registers a passkey as a new slot. Wrapping the vault key for it needs a fresh unlock with
+ * the passphrase or an already registered passkey, even while the vault is unlocked.
  */
 export function AddPasskeyDialog(props: { onClose: () => void }) {
     const { api } = rootRouteApi.useRouteContext();
     const invalidate = useInvalidateVault();
+    const materialQuery = useUnlockMaterial();
+    const unlock = useFreshUnlock();
     const [label, setLabel] = React.useState("");
-    const [passphrase, setPassphrase] = React.useState("");
 
     const add = useMutation({
-        mutationFn: async () => {
-            const material = await api.getVaultUnlockMaterial();
-            const opened = await openPassphraseSlot(material, passphrase);
-
-            try {
-                const slotId = newSlotId();
-                const name = label.trim() || "Passkey";
-
-                const registered = await registerPasskey({
-                    vaultId: material.vault_id,
-                    slotId,
-                    label: name,
-                });
-
-                await api.addVaultSlot({
-                    auth_proof: await proofFromRaw(opened.rawVaultKey),
-                    slot: await addSlotInput({
-                        material,
-                        rawVaultKey: opened.rawVaultKey,
-                        slotId,
-                        kek: {
-                            type: "passkey",
-                            label: name,
-                            credentialId: registered.credentialId,
-                            rpId: registered.rpId,
-                            kek: registered.kek,
-                        },
-                    }),
-                });
-            } finally {
-                wipe(opened.rawVaultKey);
-            }
-        },
+        mutationFn: () =>
+            addSlotWithFreshUnlock({
+                api,
+                unlock: unlock.input,
+                newSlot: (vaultId) =>
+                    newPasskeySlot(vaultId, label.trim() || "Passkey"),
+            }),
         onSuccess: async () => {
             await invalidate();
             props.onClose();
@@ -87,7 +106,7 @@ export function AddPasskeyDialog(props: { onClose: () => void }) {
         <Dialog
             isOpen
             title="Add passkey"
-            description={`Passkeys only work on the hostname they are registered on: ${window.location.hostname}.`}
+            description={`Passkeys only work on the hostname they are registered on: ${currentRpId()}.`}
             closeAriaLabel="Cancel"
             isBusy={add.isPending}
             errorMessage={
@@ -113,12 +132,13 @@ export function AddPasskeyDialog(props: { onClose: () => void }) {
                     disabled={add.isPending}
                     onChange={setLabel}
                 />
-                <Password
-                    label="Vault passphrase"
-                    value={passphrase}
-                    autoComplete="current-password"
+                <FreshUnlockFields
+                    unlock={unlock}
+                    material={materialQuery.data}
                     disabled={add.isPending}
-                    onChange={setPassphrase}
+                    showPasskeyButton
+                    showPassphrase
+                    passphraseLabel="Vault passphrase"
                 />
                 <DialogActions stackOnMobile>
                     <Button
@@ -132,10 +152,110 @@ export function AddPasskeyDialog(props: { onClose: () => void }) {
                     <Button
                         type="submit"
                         isLoading={add.isPending}
-                        disabled={passphrase === ""}
+                        disabled={!unlock.hasInput}
                     >
                         <Fingerprint className="h-4 w-4" aria-hidden="true" />
                         Register passkey
+                    </Button>
+                </DialogActions>
+            </form>
+        </Dialog>
+    );
+}
+
+/**
+ * Adds a passphrase to a passwordless vault. It wraps the current key, so no rotation is
+ * needed; it becomes the way back in on other hostnames and after losing every passkey.
+ */
+export function AddPassphraseDialog(props: { onClose: () => void }) {
+    const { api } = rootRouteApi.useRouteContext();
+    const invalidate = useInvalidateVault();
+    const materialQuery = useUnlockMaterial();
+    const unlock = useFreshUnlock();
+    const [passphrase, setPassphrase] = React.useState("");
+    const [repeated, setRepeated] = React.useState("");
+    const [validation, setValidation] = React.useState<string | null>(null);
+
+    const add = useMutation({
+        mutationFn: () =>
+            addSlotWithFreshUnlock({
+                api,
+                unlock: unlock.input,
+                newSlot: async () => ({
+                    id: null,
+                    kek: await newPassphraseKek(passphrase),
+                }),
+            }),
+        onSuccess: async () => {
+            await invalidate();
+            props.onClose();
+        },
+    });
+
+    const error =
+        validation ??
+        (add.error
+            ? vaultErrorMessage(add.error, "Failed to add the passphrase")
+            : null);
+
+    return (
+        <Dialog
+            isOpen
+            title="Add passphrase"
+            description="A passphrase unlocks the vault on any hostname and after losing every passkey."
+            closeAriaLabel="Cancel"
+            isBusy={add.isPending}
+            errorMessage={error}
+            onClose={props.onClose}
+        >
+            <form
+                noValidate
+                onSubmit={(event) => {
+                    event.preventDefault();
+
+                    const problem = !unlock.hasInput
+                        ? "Unlock with a passkey first"
+                        : newPassphraseProblem(passphrase, repeated);
+
+                    setValidation(problem);
+
+                    if (problem === null) {
+                        add.mutate();
+                    }
+                }}
+                className="mt-4 grid gap-4"
+            >
+                <NewPassphraseFields
+                    label="New passphrase"
+                    repeatLabel="Repeat new passphrase"
+                    passphrase={passphrase}
+                    repeated={repeated}
+                    disabled={add.isPending}
+                    onChange={(next, again) => {
+                        setPassphrase(next);
+                        setRepeated(again);
+                    }}
+                />
+                <FreshUnlockFields
+                    unlock={unlock}
+                    material={materialQuery.data}
+                    disabled={add.isPending}
+                    showPasskeyButton
+                    showPassphrase
+                    passphraseLabel="Current passphrase"
+                />
+                <DialogActions stackOnMobile>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={props.onClose}
+                        disabled={add.isPending}
+                    >
+                        Cancel
+                    </Button>
+                    <Button type="submit" isLoading={add.isPending}>
+                        <KeyRound className="h-4 w-4" aria-hidden="true" />
+                        Add passphrase
                     </Button>
                 </DialogActions>
             </form>
@@ -287,9 +407,20 @@ export function DestroyGenerationDialog(props: {
     );
 }
 
+/** The unlock material of a backup, so its own slots can be opened. */
+function backupMaterial(document: VaultDocument): VaultUnlockMaterialResponse {
+    return {
+        vault_id: document.vault_id,
+        current_key_id: document.keys[0]?.key_id ?? "",
+        slots: document.slots,
+        keys: document.keys,
+    };
+}
+
 /**
- * Replaces the vault with a backup. The backup's passphrase proves it unlocks, and an
- * installed vault must be unlocked too, so a stolen session cannot swap the vault.
+ * Replaces the vault with a backup. Opening one of the backup's own slots (its passphrase or
+ * a passkey of this hostname) proves it unlocks, and an installed vault must be unlocked
+ * too, so a stolen session cannot swap the vault.
  */
 export function RestoreBackupDialog(props: {
     hasVault: boolean;
@@ -300,24 +431,17 @@ export function RestoreBackupDialog(props: {
     const fileInput = React.useRef<FileInputHandle>(null);
     const [backup, setBackup] = React.useState<VaultDocument | null>(null);
     const [fileError, setFileError] = React.useState<string | null>(null);
-    const [passphrase, setPassphrase] = React.useState("");
+    const unlock = useFreshUnlock();
 
     const restore = useMutation({
         mutationFn: async (document: VaultDocument) => {
-            const currentKey = document.keys[0];
-
-            if (currentKey === undefined) {
+            if (document.keys[0] === undefined) {
                 throw new Error("The backup has no key generation");
             }
 
-            const opened = await openPassphraseSlot(
-                {
-                    vault_id: document.vault_id,
-                    current_key_id: currentKey.key_id,
-                    slots: document.slots,
-                    keys: document.keys,
-                },
-                passphrase,
+            const opened = await openFreshSlots(
+                backupMaterial(document),
+                unlock.input,
             );
 
             try {
@@ -331,11 +455,13 @@ export function RestoreBackupDialog(props: {
 
                 await api.restoreVaultBackup({
                     backup: document,
-                    backup_auth_proof: await proofFromRaw(opened.rawVaultKey),
+                    backup_auth_proof: await proofFromRaw(
+                        opened[0].rawVaultKey,
+                    ),
                     current_auth_proof: currentAuthProof,
                 });
             } finally {
-                wipe(opened.rawVaultKey);
+                wipeOpened(opened);
             }
 
             await vault.lock();
@@ -346,7 +472,7 @@ export function RestoreBackupDialog(props: {
         },
     });
 
-    /** Reads the chosen file; nothing is sent until the passphrase is confirmed. */
+    /** Reads the chosen file; nothing is sent until one of its slots is opened. */
     const choose = async (files: File[]) => {
         const file = files[0];
 
@@ -408,13 +534,16 @@ export function RestoreBackupDialog(props: {
                     <Upload className="h-4 w-4" aria-hidden="true" />
                     {backup === null ? "Choose backup file" : backup.label}
                 </Button>
-                <Password
-                    label="The backup's passphrase"
-                    value={passphrase}
-                    autoComplete="current-password"
-                    disabled={restore.isPending}
-                    onChange={setPassphrase}
-                />
+                {backup === null ? null : (
+                    <FreshUnlockFields
+                        unlock={unlock}
+                        material={backupMaterial(backup)}
+                        disabled={restore.isPending}
+                        showPasskeyButton
+                        showPassphrase
+                        passphraseLabel="The backup's passphrase"
+                    />
+                )}
                 <DialogActions stackOnMobile>
                     <Button
                         type="button"
@@ -428,7 +557,7 @@ export function RestoreBackupDialog(props: {
                         type="submit"
                         variant="danger"
                         isLoading={restore.isPending}
-                        disabled={backup === null || passphrase === ""}
+                        disabled={backup === null || !unlock.hasInput}
                     >
                         Restore
                     </Button>

@@ -7,8 +7,10 @@
  */
 import type { VaultSlot } from "#bindings/VaultSlot";
 import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
+import type { SlotKek } from "#ui/vault/vault-keys";
 import {
     fromBase64Url,
+    newSlotId,
     passkeyKek,
     prfSalt,
     randomBytes,
@@ -194,4 +196,27 @@ export async function derivePasskeyKek(
     }
 
     return { slot, kek: await passkeyKek(toArrayBuffer(output), slot.id) };
+}
+
+/**
+ * Registers a passkey for a new slot of the given vault, ready to wrap the vault key. The
+ * slot id is chosen here because the passkey's KEK binds it.
+ */
+export async function newPasskeySlot(
+    vaultId: string,
+    label: string,
+): Promise<{ id: string; kek: SlotKek }> {
+    const slotId = newSlotId();
+    const registered = await registerPasskey({ vaultId, slotId, label });
+
+    return {
+        id: slotId,
+        kek: {
+            type: "passkey",
+            label,
+            credentialId: registered.credentialId,
+            rpId: registered.rpId,
+            kek: registered.kek,
+        },
+    };
 }

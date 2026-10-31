@@ -121,15 +121,18 @@ export async function newPassphraseKek(
     };
 }
 
+/** A slot to wrap the vault key for: its id (null for a new random one) and its KEK. */
+export type SlotToWrap = { id: string | null; kek: SlotKek };
+
 /**
  * Builds a new vault: a random vault id and vault key, every slot wrapping it, and the
- * proof verifier. The passkey KEKs need the vault id for their PRF salt, so the caller
- * derives them through `prepare`.
+ * proof verifier. Passkey KEKs need the vault id for their PRF salt and bind their slot id,
+ * so the caller derives the slots through the callback once the id is known. Any slot type
+ * is enough; a passphrase is optional.
  */
 export async function buildNewVault(options: {
     label: string;
-    passphrase: SlotKek;
-    passkeys?: (vaultId: string) => Promise<SlotKek[]>;
+    slots: (vaultId: string) => Promise<SlotToWrap[]>;
 }): Promise<{ request: CreateVaultRequest; vault: UnlockedVault }> {
     const vaultId = newVaultId();
     const raw = randomBytes(32);
@@ -137,14 +140,18 @@ export async function buildNewVault(options: {
     try {
         const vaultKey = await importVaultKey(raw);
         const keyId = await deriveKeyId(vaultKey);
-        const passkeys = (await options.passkeys?.(vaultId)) ?? [];
+        const planned = await options.slots(vaultId);
         const slots: VaultSlotInput[] = [];
 
-        for (const slot of [options.passphrase, ...passkeys]) {
+        if (planned.length === 0) {
+            throw new Error("Choose at least one way to unlock the vault");
+        }
+
+        for (const slot of planned) {
             slots.push(
-                await slotInput(slot, raw, {
+                await slotInput(slot.kek, raw, {
                     vaultId,
-                    slotId: newSlotId(),
+                    slotId: slot.id ?? newSlotId(),
                     keyId,
                 }),
             );
@@ -171,17 +178,14 @@ export async function buildNewVault(options: {
     }
 }
 
-/** The passphrase slot of a vault; every vault has one. */
+/**
+ * The vault's passphrase slot, or null for a passwordless vault. Only the first one counts;
+ * the UI never creates a second.
+ */
 export function passphraseSlot(
-    material: VaultUnlockMaterialResponse,
-): VaultSlot {
-    const slot = material.slots.find((entry) => entry.type === "passphrase");
-
-    if (!slot) {
-        throw new Error("The vault has no passphrase slot");
-    }
-
-    return slot;
+    material: Pick<VaultUnlockMaterialResponse, "slots">,
+): VaultSlot | null {
+    return material.slots.find((entry) => entry.type === "passphrase") ?? null;
 }
 
 /** The result of opening one slot. The raw key is for flows that wrap it again. */
@@ -198,8 +202,8 @@ export async function openPassphraseSlot(
 ): Promise<OpenedSlot> {
     const slot = passphraseSlot(material);
 
-    if (slot.type !== "passphrase") {
-        throw new Error("Unexpected slot type");
+    if (slot?.type !== "passphrase") {
+        throw new Error("This vault has no passphrase; use a passkey");
     }
 
     const kek = await passphraseKek(passphrase, slot.kdf);
@@ -215,6 +219,63 @@ export async function openPassphraseSlot(
         kek: { type: "passphrase", label: slot.label, kdf: slot.kdf, kek },
         rawVaultKey,
     };
+}
+
+/**
+ * What the user gave for a fresh unlock: the passphrase (empty if none was typed) and the
+ * KEKs of passkeys confirmed by prompt, by slot id.
+ */
+export type FreshUnlockInput = {
+    passphrase: string;
+    passkeys: ReadonlyMap<string, CryptoKey>;
+};
+
+/**
+ * Opens every slot a fresh unlock supplied, each verified by unwrapping it, so a wrong
+ * passphrase or a stale passkey confirmation fails here instead of being wrapped into the
+ * vault. Flows that wrap the key again (adding a slot, rotation, restoring a backup) need the
+ * raw key, which the unlocked session never holds, and any slot yields it because every slot
+ * wraps the same key. The first opened slot is the fresh unlock; rotation keeps the others
+ * as confirmed. The caller wipes every raw key with `wipeOpened`.
+ */
+export async function openFreshSlots(
+    material: VaultUnlockMaterialResponse,
+    input: FreshUnlockInput,
+): Promise<[OpenedSlot, ...OpenedSlot[]]> {
+    const opened: OpenedSlot[] = [];
+
+    try {
+        for (const slot of material.slots) {
+            const kek = input.passkeys.get(slot.id);
+
+            if (slot.type === "passkey" && kek !== undefined) {
+                opened.push(await openPasskeySlot(material, slot, kek));
+            }
+        }
+
+        if (input.passphrase !== "") {
+            opened.push(await openPassphraseSlot(material, input.passphrase));
+        }
+    } catch (error) {
+        wipeOpened(opened);
+
+        throw error;
+    }
+
+    const [first, ...rest] = opened;
+
+    if (first === undefined) {
+        throw new Error("Unlock with a passkey or type the passphrase first");
+    }
+
+    return [first, ...rest];
+}
+
+/** Wipes the raw keys of opened slots once a flow is done with them. */
+export function wipeOpened(opened: OpenedSlot[]): void {
+    for (const slot of opened) {
+        wipe(slot.rawVaultKey);
+    }
 }
 
 /** Opens a passkey slot with the KEK its PRF output derived. */

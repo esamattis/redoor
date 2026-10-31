@@ -1,16 +1,27 @@
 import React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { Check, Fingerprint, RefreshCw } from "lucide-react";
 
 import type { VaultSlot } from "#bindings/VaultSlot";
+import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
 import type { ApiClient } from "#ui/api-client";
 import type { VaultSession } from "#ui/vault/vault-session";
 import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
-import { Password } from "#ui/components/password";
+import {
+    FreshUnlockFields,
+    useFreshUnlock,
+    useUnlockMaterial,
+    type FreshUnlock,
+} from "#ui/components/vault/fresh-unlock";
+import {
+    NewPassphraseFields,
+    PasswordlessWarning,
+    newPassphraseProblem,
+} from "#ui/components/vault/new-passphrase-fields";
 import { queryKeys } from "#ui/queries";
 import { wipe } from "#ui/vault/vault-crypto";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
@@ -18,11 +29,14 @@ import {
     addSlotInput,
     buildRotation,
     newPassphraseKek,
+    openFreshSlots,
     openGenerations,
-    openPassphraseSlot,
-    passphraseProblem,
+    passphraseSlot,
     proofFromRaw,
-    type SlotKek,
+    wipeOpened,
+    type FreshUnlockInput,
+    type OpenedSlot,
+    type SlotToWrap,
 } from "#ui/vault/vault-keys";
 import { derivePasskeyKek, currentRpId } from "#ui/vault/vault-passkeys";
 
@@ -47,87 +61,133 @@ function title(intent: RotationIntent): string {
 }
 
 /**
- * Applies the dialog's change: a rotation that keeps the passphrase (or a new one) and every
- * confirmed passkey, or, without rotation, the slot change alone. Returns whether the key
- * was rotated.
+ * The slots a rotation keeps when confirmed: every slot except the removed one and, when
+ * the passphrase changes, the old passphrase, which a new slot replaces.
+ */
+function keepCandidates(
+    material: Pick<VaultUnlockMaterialResponse, "slots">,
+    removedId: string | null,
+    replacesPassphrase: boolean,
+): VaultSlot[] {
+    const replaced = replacesPassphrase ? passphraseSlot(material)?.id : null;
+
+    return material.slots.filter(
+        (slot) => slot.id !== removedId && slot.id !== replaced,
+    );
+}
+
+/**
+ * The opened slots a rotation wraps the new key for. Only slots the user just opened are
+ * kept, because wrapping needs each slot's own KEK.
+ */
+function keptSlots(
+    candidates: VaultSlot[],
+    opened: OpenedSlot[],
+): SlotToWrap[] {
+    const ids = new Set(candidates.map((slot) => slot.id));
+
+    return opened.flatMap((entry) =>
+        ids.has(entry.slot.id) ? [{ id: entry.slot.id, kek: entry.kek }] : [],
+    );
+}
+
+/**
+ * Applies a slot change without rotation: the slot change alone, with the proof from the
+ * fresh unlock. A new passphrase slot wraps the same key and replaces the old one.
+ */
+async function applyWithoutRotation(options: {
+    api: ApiClient;
+    material: VaultUnlockMaterialResponse;
+    rawVaultKey: Uint8Array<ArrayBuffer>;
+    newPassphrase: SlotToWrap | null;
+    removedId: string | null;
+}): Promise<void> {
+    const proof = await proofFromRaw(options.rawVaultKey);
+    const previous = passphraseSlot(options.material);
+
+    if (options.newPassphrase !== null) {
+        await options.api.addVaultSlot({
+            auth_proof: proof,
+            slot: await addSlotInput({
+                material: options.material,
+                rawVaultKey: options.rawVaultKey,
+                kek: options.newPassphrase.kek,
+            }),
+        });
+
+        if (previous !== null) {
+            await options.api.removeVaultSlot(previous.id, {
+                auth_proof: proof,
+            });
+        }
+    } else if (options.removedId !== null) {
+        await options.api.removeVaultSlot(options.removedId, {
+            auth_proof: proof,
+        });
+    }
+}
+
+/**
+ * Applies the dialog's change: a rotation that keeps every slot opened by the fresh unlock
+ * (plus a new passphrase), or, without rotation, the slot change alone. Returns whether the
+ * key was rotated.
  */
 async function applyVaultChange(options: {
     api: ApiClient;
     vault: VaultSession;
-    passphrase: string;
+    unlock: FreshUnlockInput;
     newPassphrase: string | null;
     rotate: boolean;
     removedId: string | null;
-    keptPasskeys: VaultSlot[];
-    confirmed: Map<string, CryptoKey>;
 }): Promise<boolean> {
     const material = await options.api.getVaultUnlockMaterial();
-
-    const opened = await openPassphraseSlot(material, options.passphrase);
+    const opened = await openFreshSlots(material, options.unlock);
+    const rawPrevious = opened[0].rawVaultKey;
 
     try {
-        const nextPassphrase =
-            options.newPassphrase !== null
-                ? await newPassphraseKek(options.newPassphrase)
-                : null;
+        const newPassphrase: SlotToWrap | null =
+            options.newPassphrase === null
+                ? null
+                : {
+                      id: null,
+                      kek: await newPassphraseKek(options.newPassphrase),
+                  };
 
         if (!options.rotate) {
-            const proof = await proofFromRaw(opened.rawVaultKey);
-
-            if (nextPassphrase !== null) {
-                // Without rotation the new passphrase slot wraps the same key and
-                // replaces the old slot.
-                await options.api.addVaultSlot({
-                    auth_proof: proof,
-                    slot: await addSlotInput({
-                        material,
-                        rawVaultKey: opened.rawVaultKey,
-                        kek: nextPassphrase,
-                    }),
-                });
-                await options.api.removeVaultSlot(opened.slot.id, {
-                    auth_proof: proof,
-                });
-            } else if (options.removedId !== null) {
-                await options.api.removeVaultSlot(options.removedId, {
-                    auth_proof: proof,
-                });
-            }
+            await applyWithoutRotation({
+                api: options.api,
+                material,
+                rawVaultKey: rawPrevious,
+                newPassphrase,
+                removedId: options.removedId,
+            });
 
             return false;
         }
 
-        const current = await openGenerations(material, opened.rawVaultKey);
+        const slots = [
+            ...keptSlots(
+                keepCandidates(
+                    material,
+                    options.removedId,
+                    newPassphrase !== null,
+                ),
+                opened,
+            ),
+            ...(newPassphrase === null ? [] : [newPassphrase]),
+        ];
 
-        const passphraseSlot: { id: string | null; kek: SlotKek } =
-            nextPassphrase === null
-                ? { id: opened.slot.id, kek: opened.kek }
-                : { id: null, kek: nextPassphrase };
-
-        const passkeySlots = options.keptPasskeys.flatMap((slot) => {
-            const kek = options.confirmed.get(slot.id);
-
-            return slot.type === "passkey" && kek !== undefined
-                ? [
-                      {
-                          id: slot.id,
-                          kek: {
-                              type: "passkey" as const,
-                              label: slot.label,
-                              credentialId: slot.credential_id,
-                              rpId: slot.rp_id,
-                              kek,
-                          },
-                      },
-                  ]
-                : [];
-        });
+        if (slots.length === 0) {
+            throw new Error(
+                "Keep at least one unlock method: confirm a passkey or type the passphrase",
+            );
+        }
 
         const { request, rawNext } = await buildRotation({
             material,
-            vault: current,
-            rawPrevious: opened.rawVaultKey,
-            slots: [passphraseSlot, ...passkeySlots],
+            vault: await openGenerations(material, rawPrevious),
+            rawPrevious,
+            slots,
         });
 
         try {
@@ -141,18 +201,93 @@ async function applyVaultChange(options: {
 
         return true;
     } finally {
-        wipe(opened.rawVaultKey);
+        wipeOpened(opened);
     }
+}
+
+/**
+ * Whether a kept slot was confirmed: a passkey by its prompt, the passphrase by typing it.
+ * Only the first passphrase slot can be opened, so any other one counts as unconfirmed.
+ */
+function isConfirmed(
+    slot: VaultSlot,
+    unlock: FreshUnlockInput,
+    passphraseId: string | null,
+): boolean {
+    return slot.type === "passkey"
+        ? unlock.passkeys.has(slot.id)
+        : slot.id === passphraseId && unlock.passphrase !== "";
+}
+
+/**
+ * What the form needs to know about a change before it runs: which slots would be removed
+ * without consent, and whether the vault would end up without a passphrase.
+ */
+function planChange(options: {
+    material: VaultUnlockMaterialResponse | undefined;
+    intent: RotationIntent;
+    unlock: FreshUnlock;
+    isRotating: boolean;
+}) {
+    const material = options.material ?? { slots: [] };
+
+    const removedId =
+        options.intent.type === "remove-slot" ? options.intent.slot.id : null;
+
+    const changesPassphrase = options.intent.type === "change-passphrase";
+    const passphrase = passphraseSlot(material);
+    const candidates = keepCandidates(material, removedId, changesPassphrase);
+
+    const unconfirmed = options.isRotating
+        ? candidates.filter(
+              (slot) =>
+                  !isConfirmed(
+                      slot,
+                      options.unlock.input,
+                      passphrase?.id ?? null,
+                  ),
+          )
+        : [];
+
+    const removesPassphrase =
+        passphrase !== null &&
+        (passphrase.id === removedId ||
+            unconfirmed.some((slot) => slot.id === passphrase.id));
+
+    return {
+        removedId,
+        changesPassphrase,
+        keptPasskeys: candidates.filter((slot) => slot.type === "passkey"),
+        unconfirmed,
+        keptCount:
+            candidates.length -
+            unconfirmed.length +
+            (changesPassphrase ? 1 : 0),
+        removesPassphrase,
+        /** Typing the passphrase only helps if it is kept, or without a rotation. */
+        showPassphrase:
+            passphrase !== null &&
+            !(options.isRotating && passphrase.id === removedId),
+        remainingHosts: [
+            ...new Set(
+                candidates.flatMap((slot) =>
+                    slot.type === "passkey" ? [slot.rp_id] : [],
+                ),
+            ),
+        ],
+    };
 }
 
 /**
  * Rotates the vault key, optionally removing a slot or changing the passphrase on the way.
  *
  * Wrapping the new key for a slot needs that slot's own key, and one unlock only yields the
- * key of the slot that was used. So the user types the passphrase and confirms every kept
- * passkey one by one; a passkey that is not confirmed is removed, after a confirmation that
- * names it. Removing a slot or changing the passphrase can skip the rotation, which keeps
- * old backups of `vault.json` usable with the removed slot or old passphrase.
+ * key of the slot that was used. So the user confirms every kept passkey with its own prompt
+ * and types the passphrase to keep it; any one of them is also the fresh unlock, so a vault
+ * with a single passkey rotates with one prompt. A slot that is not confirmed is removed,
+ * after a confirmation that names it. Removing a slot or changing the passphrase can skip
+ * the rotation, which keeps old backups of `vault.json` usable with the removed slot or old
+ * passphrase.
  */
 export function RotateVaultDialog(props: {
     intent: RotationIntent;
@@ -162,36 +297,22 @@ export function RotateVaultDialog(props: {
 }) {
     const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
-    const [passphrase, setPassphrase] = React.useState("");
+    const unlock = useFreshUnlock();
     const [newPassphrase, setNewPassphrase] = React.useState("");
     const [repeated, setRepeated] = React.useState("");
     const [rotate, setRotate] = React.useState(true);
-
-    const [confirmed, setConfirmed] = React.useState(
-        new Map<string, CryptoKey>(),
-    );
-
     const [acceptRemoval, setAcceptRemoval] = React.useState(false);
     const [validation, setValidation] = React.useState<string | null>(null);
-
-    const materialQuery = useQuery({
-        queryKey: [...queryKeys.vault(), "unlock-material"],
-        queryFn: () => api.getVaultUnlockMaterial(),
-        staleTime: 0,
-        gcTime: 0,
-    });
-
-    const removedId =
-        props.intent.type === "remove-slot" ? props.intent.slot.id : null;
-
-    const keptPasskeys = (materialQuery.data?.slots ?? []).filter(
-        (slot) => slot.type === "passkey" && slot.id !== removedId,
-    );
-
-    const unconfirmed = keptPasskeys.filter((slot) => !confirmed.has(slot.id));
+    const materialQuery = useUnlockMaterial();
     const canSkipRotation = props.intent.type !== "rotate";
     const isRotating = rotate || !canSkipRotation;
-    const changesPassphrase = props.intent.type === "change-passphrase";
+
+    const plan = planChange({
+        material: materialQuery.data,
+        intent: props.intent,
+        unlock,
+        isRotating,
+    });
 
     const confirm = useMutation({
         mutationFn: async (slot: VaultSlot) => {
@@ -201,12 +322,9 @@ export function RotateVaultDialog(props: {
                 throw new Error("The vault is still loading");
             }
 
-            const { kek } = await derivePasskeyKek(material, [slot]);
-
-            return { slot, kek };
+            return derivePasskeyKek(material, [slot]);
         },
-        onSuccess: ({ slot, kek }) =>
-            setConfirmed((current) => new Map(current).set(slot.id, kek)),
+        onSuccess: ({ slot, kek }) => unlock.confirmPasskey(slot.id, kek),
     });
 
     const submit = useMutation({
@@ -214,12 +332,10 @@ export function RotateVaultDialog(props: {
             applyVaultChange({
                 api,
                 vault,
-                passphrase,
-                newPassphrase: changesPassphrase ? newPassphrase : null,
+                unlock: unlock.input,
+                newPassphrase: plan.changesPassphrase ? newPassphrase : null,
                 rotate: isRotating,
-                removedId,
-                keptPasskeys,
-                confirmed,
+                removedId: plan.removedId,
             }),
         onSuccess: async (rotated) => {
             await queryClient.invalidateQueries({
@@ -238,17 +354,21 @@ export function RotateVaultDialog(props: {
     const start = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
 
-        const problem =
-            passphrase === ""
-                ? "Type the current passphrase"
-                : changesPassphrase
-                  ? (passphraseProblem(newPassphrase) ??
-                    (newPassphrase === repeated
-                        ? null
-                        : "The new passphrases differ"))
-                  : isRotating && unconfirmed.length > 0 && !acceptRemoval
-                    ? "Confirm every passkey you keep, or accept removing the others"
-                    : null;
+        const passphraseIssue = plan.changesPassphrase
+            ? newPassphraseProblem(newPassphrase, repeated)
+            : null;
+
+        const problem = !unlock.hasInput
+            ? plan.showPassphrase
+                ? "Confirm with a passkey or type the current passphrase"
+                : "Confirm a passkey to keep"
+            : passphraseIssue !== null
+              ? passphraseIssue
+              : isRotating && plan.keptCount === 0
+                ? "Keep at least one unlock method"
+                : plan.unconfirmed.length > 0 && !acceptRemoval
+                  ? "Confirm every unlock method you keep, or accept removing the others"
+                  : null;
 
         setValidation(problem);
 
@@ -273,69 +393,66 @@ export function RotateVaultDialog(props: {
             onClose={props.onClose}
         >
             <form noValidate onSubmit={start} className="mt-4 grid gap-4">
-                {canSkipRotation ? (
-                    <div>
-                        <Checkbox
-                            role="checkbox"
-                            checked={rotate}
-                            disabled={isBusy}
-                            onCheckedChange={setRotate}
-                            title={false}
-                        >
-                            Rotate vault key
-                        </Checkbox>
-                        <p className="mt-1 text-xs text-slate-500">
-                            Without a rotation, an older backup of the vault
-                            still opens with the{" "}
-                            {changesPassphrase
-                                ? "old passphrase"
-                                : "removed slot"}
-                            .
-                        </p>
-                    </div>
-                ) : (
-                    <p className="text-sm text-slate-400">
-                        New files use a new key; old files keep opening through
-                        the key chain. Rotate after losing a device that kept
-                        the vault unlocked, or if someone may have seen your
-                        passphrase.
-                    </p>
-                )}
-                <Password
-                    label="Current passphrase"
-                    value={passphrase}
-                    autoComplete="current-password"
+                <RotationChoice
+                    canSkip={canSkipRotation}
+                    rotate={rotate}
                     disabled={isBusy}
-                    onChange={setPassphrase}
+                    subject={
+                        plan.changesPassphrase
+                            ? "old passphrase"
+                            : "removed slot"
+                    }
+                    onChange={setRotate}
                 />
-                {changesPassphrase ? (
-                    <>
-                        <Password
-                            label="New passphrase"
-                            value={newPassphrase}
-                            autoComplete="new-password"
-                            description="At least 12 characters"
-                            disabled={isBusy}
-                            onChange={setNewPassphrase}
-                        />
-                        <Password
-                            label="Repeat new passphrase"
-                            value={repeated}
-                            autoComplete="new-password"
-                            disabled={isBusy}
-                            onChange={setRepeated}
-                        />
-                    </>
+                <FreshUnlockFields
+                    unlock={unlock}
+                    material={materialQuery.data}
+                    disabled={isBusy}
+                    showPasskeyButton={!isRotating}
+                    showPassphrase={plan.showPassphrase}
+                    passphraseLabel="Current passphrase"
+                    passphraseDescription={
+                        isRotating && !plan.changesPassphrase
+                            ? "Keeps the passphrase. Without it, the passphrase is removed."
+                            : undefined
+                    }
+                />
+                {plan.changesPassphrase ? (
+                    <NewPassphraseFields
+                        label="New passphrase"
+                        repeatLabel="Repeat new passphrase"
+                        passphrase={newPassphrase}
+                        repeated={repeated}
+                        disabled={isBusy}
+                        onChange={(next, again) => {
+                            setNewPassphrase(next);
+                            setRepeated(again);
+                        }}
+                    />
                 ) : null}
-                {isRotating && keptPasskeys.length > 0 ? (
+                {isRotating && plan.keptPasskeys.length > 0 ? (
                     <PasskeyConfirmList
-                        passkeys={keptPasskeys}
-                        confirmed={confirmed}
-                        acceptRemoval={acceptRemoval}
+                        passkeys={plan.keptPasskeys}
+                        confirmed={unlock.input.passkeys}
                         disabled={isBusy}
                         onConfirm={(slot) => confirm.mutate(slot)}
-                        onAcceptRemovalChange={setAcceptRemoval}
                     />
+                ) : null}
+                {plan.unconfirmed.length > 0 ? (
+                    <Checkbox
+                        role="checkbox"
+                        checked={acceptRemoval}
+                        disabled={isBusy}
+                        onCheckedChange={setAcceptRemoval}
+                        title={false}
+                    >
+                        Remove{" "}
+                        {plan.unconfirmed.map((slot) => slot.label).join(", ")}{" "}
+                        (they can be added again later)
+                    </Checkbox>
+                ) : null}
+                {plan.removesPassphrase ? (
+                    <PasswordlessWarning hosts={plan.remainingHosts} />
                 ) : null}
                 {error === null ? null : (
                     <p role="alert" className="text-sm text-red-300">
@@ -362,21 +479,53 @@ export function RotateVaultDialog(props: {
 }
 
 /**
- * The kept passkeys, each confirmed with its own prompt, and the consent to remove the ones
- * that were not.
+ * The "Rotate vault key" choice where rotation is optional, or the explanation of a manual
+ * rotation where it is the point of the dialog.
  */
+function RotationChoice(props: {
+    canSkip: boolean;
+    rotate: boolean;
+    disabled: boolean;
+    /** What an older backup still opens with when the rotation is skipped. */
+    subject: string;
+    onChange: (rotate: boolean) => void;
+}) {
+    if (!props.canSkip) {
+        return (
+            <p className="text-sm text-slate-400">
+                New files use a new key; old files keep opening through the key
+                chain. Rotate after losing a device that kept the vault
+                unlocked, or if someone may have seen your passphrase.
+            </p>
+        );
+    }
+
+    return (
+        <div>
+            <Checkbox
+                role="checkbox"
+                checked={props.rotate}
+                disabled={props.disabled}
+                onCheckedChange={props.onChange}
+                title={false}
+            >
+                Rotate vault key
+            </Checkbox>
+            <p className="mt-1 text-xs text-slate-500">
+                Without a rotation, an older backup of the vault still opens
+                with the {props.subject}.
+            </p>
+        </div>
+    );
+}
+
+/** The kept passkeys, each confirmed with its own prompt. */
 function PasskeyConfirmList(props: {
     passkeys: VaultSlot[];
-    confirmed: Map<string, CryptoKey>;
-    acceptRemoval: boolean;
+    confirmed: ReadonlyMap<string, CryptoKey>;
     disabled: boolean;
     onConfirm: (slot: VaultSlot) => void;
-    onAcceptRemovalChange: (accept: boolean) => void;
 }) {
-    const unconfirmed = props.passkeys.filter(
-        (slot) => !props.confirmed.has(slot.id),
-    );
-
     return (
         <div className="grid gap-2">
             <p className="text-sm font-medium text-slate-300">
@@ -391,18 +540,6 @@ function PasskeyConfirmList(props: {
                     onConfirm={() => props.onConfirm(slot)}
                 />
             ))}
-            {unconfirmed.length > 0 ? (
-                <Checkbox
-                    role="checkbox"
-                    checked={props.acceptRemoval}
-                    disabled={props.disabled}
-                    onCheckedChange={props.onAcceptRemovalChange}
-                    title={false}
-                >
-                    Remove {unconfirmed.map((slot) => slot.label).join(", ")}{" "}
-                    (they can be added again later)
-                </Checkbox>
-            ) : null}
         </div>
     );
 }

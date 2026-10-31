@@ -7,7 +7,7 @@ const API_ERROR_CODES = [
     "vault_not_found",
     "vault_exists",
     "vault_proof_invalid",
-    "vault_passphrase_required",
+    "vault_last_slot",
     "vault_invalid",
     "not_a_vault_file",
     "vault_format_unsupported",

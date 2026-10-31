@@ -14,17 +14,24 @@ import { queryKeys, vaultStatusQueryOptions } from "#ui/queries";
 import { wipe } from "#ui/vault/vault-crypto";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import {
+    NewPassphraseFields,
+    PasswordlessWarning,
+    newPassphraseProblem,
+} from "#ui/components/vault/new-passphrase-fields";
+import {
     buildNewVault,
     newPassphraseKek,
     openGenerations,
     openPasskeySlot,
     openPassphraseSlot,
-    passphraseProblem,
     type OpenedSlot,
+    type SlotToWrap,
 } from "#ui/vault/vault-keys";
 import {
+    currentRpId,
     derivePasskeyKek,
     isPasskeySupported,
+    newPasskeySlot,
     usablePasskeySlots,
 } from "#ui/vault/vault-passkeys";
 
@@ -74,25 +81,54 @@ function KeepUnlockedOption(props: {
     );
 }
 
-/** Creates the vault: a passphrase is required, passkeys can be added in the settings. */
+/**
+ * Creates the vault with a passkey, a passphrase or both. Every slot wraps the same key, so
+ * either alone unlocks; without a passphrase the warning names what can go wrong.
+ */
 function CreateVaultForm(props: { onCancel: () => void }) {
     const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
+    const passkeysSupported = isPasskeySupported();
+    const hostname = currentRpId();
 
-    const [label, setLabel] = React.useState(
-        `Vault on ${window.location.hostname}`,
-    );
-
+    const [label, setLabel] = React.useState(`Vault on ${hostname}`);
+    const [usePasskey, setUsePasskey] = React.useState(false);
+    const [passkeyLabel, setPasskeyLabel] = React.useState("");
+    const [usePassphrase, setUsePassphrase] = React.useState(true);
     const [passphrase, setPassphrase] = React.useState("");
     const [confirmation, setConfirmation] = React.useState("");
     const [keep, setKeep] = React.useState(false);
     const [validation, setValidation] = React.useState<string | null>(null);
+    const withPasskey = passkeysSupported && usePasskey;
+    const withPassphrase = usePassphrase || !passkeysSupported;
 
     const create = useMutation({
         mutationFn: async () => {
             const { request, vault: unlocked } = await buildNewVault({
                 label: label.trim(),
-                passphrase: await newPassphraseKek(passphrase),
+                // The passkey prompt comes first, while the click still counts as the user
+                // gesture that some browsers require; Argon2id takes seconds.
+                slots: async (vaultId) => {
+                    const slots: SlotToWrap[] = [];
+
+                    if (withPasskey) {
+                        slots.push(
+                            await newPasskeySlot(
+                                vaultId,
+                                passkeyLabel.trim() || "Passkey",
+                            ),
+                        );
+                    }
+
+                    if (withPassphrase) {
+                        slots.push({
+                            id: null,
+                            kek: await newPassphraseKek(passphrase),
+                        });
+                    }
+
+                    return slots;
+                },
             });
 
             await api.createVault(request);
@@ -102,13 +138,16 @@ function CreateVaultForm(props: { onCancel: () => void }) {
             queryClient.invalidateQueries({ queryKey: queryKeys.vault() }),
     });
 
-    /** Checks the passphrase before the slow key derivation starts. */
+    /** Checks the choices before the passkey prompt and the slow key derivation start. */
     const submit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
 
         const problem =
-            passphraseProblem(passphrase) ??
-            (passphrase === confirmation ? null : "The passphrases differ");
+            !withPasskey && !withPassphrase
+                ? "Choose a passkey, a passphrase or both"
+                : withPassphrase
+                  ? newPassphraseProblem(passphrase, confirmation)
+                  : null;
 
         setValidation(problem);
 
@@ -128,8 +167,8 @@ function CreateVaultForm(props: { onCancel: () => void }) {
             <p className="text-sm text-slate-400">
                 The vault encrypts files ending in <code>.redoorvault</code>.
                 Its key never leaves this browser; devices only store
-                ciphertext. Keep the passphrase safe: without it, or a
-                registered passkey, encrypted files cannot be opened.
+                ciphertext. Without a registered passkey or the passphrase,
+                encrypted files cannot be opened.
             </p>
             <TextField
                 label="Vault name"
@@ -140,23 +179,54 @@ function CreateVaultForm(props: { onCancel: () => void }) {
                 disabled={create.isPending}
                 onChange={setLabel}
             />
-            <Password
-                label="Passphrase"
-                value={passphrase}
-                autoComplete="new-password"
-                required
-                description="At least 12 characters. A leaked vault file allows offline guessing."
-                disabled={create.isPending}
-                onChange={setPassphrase}
-            />
-            <Password
-                label="Repeat passphrase"
-                value={confirmation}
-                autoComplete="new-password"
-                required
-                disabled={create.isPending}
-                onChange={setConfirmation}
-            />
+            {passkeysSupported ? (
+                <div className="grid gap-3">
+                    <Checkbox
+                        role="checkbox"
+                        checked={usePasskey}
+                        disabled={create.isPending}
+                        onCheckedChange={setUsePasskey}
+                        title={false}
+                    >
+                        Unlock with a passkey
+                    </Checkbox>
+                    {usePasskey ? (
+                        <TextField
+                            label="Passkey name"
+                            value={passkeyLabel}
+                            placeholder="Passkey"
+                            description={`Works only on ${hostname}`}
+                            disabled={create.isPending}
+                            onChange={setPasskeyLabel}
+                        />
+                    ) : null}
+                    <Checkbox
+                        role="checkbox"
+                        checked={usePassphrase}
+                        disabled={create.isPending}
+                        onCheckedChange={setUsePassphrase}
+                        title={false}
+                    >
+                        Unlock with a passphrase
+                    </Checkbox>
+                </div>
+            ) : null}
+            {withPassphrase ? (
+                <NewPassphraseFields
+                    label="Passphrase"
+                    repeatLabel="Repeat passphrase"
+                    passphrase={passphrase}
+                    repeated={confirmation}
+                    disabled={create.isPending}
+                    onChange={(next, repeated) => {
+                        setPassphrase(next);
+                        setConfirmation(repeated);
+                    }}
+                />
+            ) : null}
+            {withPasskey && !withPassphrase ? (
+                <PasswordlessWarning hosts={[hostname]} />
+            ) : null}
             <KeepUnlockedOption
                 checked={keep}
                 disabled={create.isPending}
@@ -185,7 +255,10 @@ function CreateVaultForm(props: { onCancel: () => void }) {
     );
 }
 
-/** Unlocks with one prompt for every registered passkey of this hostname, or the passphrase. */
+/**
+ * Unlocks with one prompt for every registered passkey of this hostname, or the passphrase
+ * if the vault has one.
+ */
 function UnlockVaultForm(props: {
     summary: VaultSummary;
     onCancel: () => void;
@@ -259,8 +332,11 @@ function UnlockVaultForm(props: {
     const failure = withPassphrase.error ?? withPasskey.error;
 
     const otherHostPasskeys = props.summary.slots.filter(
-        (slot) =>
-            slot.type === "passkey" && slot.rp_id !== window.location.hostname,
+        (slot) => slot.type === "passkey" && slot.rp_id !== currentRpId(),
+    );
+
+    const hasPassphrase = props.summary.slots.some(
+        (slot) => slot.type === "passphrase",
     );
 
     return (
@@ -268,8 +344,11 @@ function UnlockVaultForm(props: {
             noValidate
             onSubmit={(event) => {
                 event.preventDefault();
-                withPasskey.reset();
-                withPassphrase.mutate();
+
+                if (hasPassphrase) {
+                    withPasskey.reset();
+                    withPassphrase.mutate();
+                }
             }}
             className="mt-4 grid gap-4"
         >
@@ -297,17 +376,21 @@ function UnlockVaultForm(props: {
                     {[
                         ...new Set(otherHostPasskeys.map((slot) => slot.rp_id)),
                     ].join(", ")}
-                    , and you are on {window.location.hostname}. Use the
-                    passphrase here.
+                    , and you are on {currentRpId()}.{" "}
+                    {hasPassphrase
+                        ? "Use the passphrase here."
+                        : "This vault has no passphrase, so open redoor there to unlock it."}
                 </p>
             ) : null}
-            <Password
-                label="Passphrase"
-                value={passphrase}
-                autoComplete="current-password"
-                disabled={isBusy}
-                onChange={setPassphrase}
-            />
+            {hasPassphrase ? (
+                <Password
+                    label="Passphrase"
+                    value={passphrase}
+                    autoComplete="current-password"
+                    disabled={isBusy}
+                    onChange={setPassphrase}
+                />
+            ) : null}
             <KeepUnlockedOption
                 checked={keep}
                 disabled={isBusy}
@@ -327,14 +410,16 @@ function UnlockVaultForm(props: {
                 >
                     Cancel
                 </Button>
-                <Button
-                    type="submit"
-                    isLoading={withPassphrase.isPending}
-                    disabled={isBusy || passphrase === ""}
-                >
-                    <LockKeyhole className="h-4 w-4" aria-hidden="true" />
-                    {withPassphrase.isPending ? "Unlocking…" : "Unlock"}
-                </Button>
+                {hasPassphrase ? (
+                    <Button
+                        type="submit"
+                        isLoading={withPassphrase.isPending}
+                        disabled={isBusy || passphrase === ""}
+                    >
+                        <LockKeyhole className="h-4 w-4" aria-hidden="true" />
+                        {withPassphrase.isPending ? "Unlocking…" : "Unlock"}
+                    </Button>
+                ) : null}
             </DialogActions>
         </form>
     );

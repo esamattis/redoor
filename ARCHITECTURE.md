@@ -2000,8 +2000,8 @@ device, or to another device.
 
 Files ending in `.redoorvault` are stored encrypted on devices. The user opens, edits,
 uploads and downloads them through redoor, and the server encrypts and decrypts them as a
-stream. A per-user **vault** holds the key, unlocked in the browser by a passphrase or a
-passkey (WebAuthn PRF).
+stream. A per-user **vault** holds the key, unlocked in the browser by any of its slots:
+passkeys (WebAuthn PRF) and an optional passphrase.
 
 ```mermaid
 flowchart LR
@@ -2066,9 +2066,11 @@ account directory, written atomically). The file is small and changes rarely, so
 re-reads it under one lock on every request instead of caching it. The document is also the
 backup format: it holds only wrapped keys, so "Download vault backup" is safe anywhere.
 The server validates the shape of everything the browser submits (id formats, wrap and
-salt lengths, Argon2id parameters of at least 64 MiB and 3 passes, a passphrase slot, an
+salt lengths, Argon2id parameters of at least 64 MiB and 3 passes, at least one slot, an
 unbroken chain) but never sees a key, so it cannot check that a wrap really wraps the right
-one.
+one. Every slot wraps the same key, so no slot type is required: creation, slot removal,
+rotation and restore only refuse to leave the vault without any slot (`vault_last_slot`),
+because nothing could unlock it again.
 
 ### File format
 
@@ -2124,13 +2126,25 @@ it.
   rotation in this tab locks every other tab and deletes kept keys. "Lock now" deletes the
   kept copy before it locks, so a reload cannot undo it.
 - Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
-  unlocked and otherwise opens the one `VaultDialog` in the app shell (create or unlock with
-  the passphrase or one prompt for every passkey of this hostname). The editor, uploads,
-  downloads, file creation and the settings page share it.
+  unlocked and otherwise opens the one `VaultDialog` in the app shell (create with a passkey,
+  a passphrase or both; unlock with one prompt for every passkey of this hostname or the
+  passphrase). The editor, uploads, downloads, file creation and the settings page share it.
+- **Passwordless vaults.** The passphrase is optional and is the user's recovery path; there
+  is no separate recovery code. Wherever a vault ends up without one (creation, removing
+  the passphrase, a rotation that drops it) the UI warns that passkeys only work on their
+  hostname and that losing them loses every file, which a `vault.json` backup cannot fix.
 - **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
   `evalByCredential` for every registered credential unlocks; registration refuses
-  authenticators without PRF. Rotation needs the passphrase and confirms each kept passkey
-  with its own prompt.
+  authenticators without PRF.
+- **Fresh unlock.** Flows that wrap the vault key again (adding a passkey or passphrase,
+  rotation, slot removal, restoring a backup) need the raw key, which the session never
+  holds, so they unwrap a slot again: one prompt for every passkey of this hostname or the
+  passphrase (`FreshUnlockFields`, `openFreshSlots`). Only the passkeys' non-extractable
+  KEKs wait in React state; the raw key exists only while the flow runs. A restore opens
+  the backup's own slots. Rotation keeps only slots opened in the dialog: every kept
+  passkey is confirmed with its own prompt (the first confirmation is also the fresh
+  unlock, so a single-passkey vault rotates with one prompt), a kept passphrase is typed,
+  and anything unconfirmed is removed after a consent that names it.
 - **Editor.** A `.redoorvault` path opens in the editor even though the agent cannot call
   ciphertext editable. Its content query (`vault-files`) reads the header, unwraps the file
   key and reads the plaintext; it is keyed by the unlocked generation and has `gcTime: 0`,

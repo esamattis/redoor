@@ -13,15 +13,21 @@ import {
     fileKeyForHeader,
     newPassphraseKek,
     newWriteKeys,
+    openFreshSlots,
     openGenerations,
     openPassphraseSlot,
+    proofFromRaw,
     rewrapKeys,
+    wipeOpened,
     type UnlockedVault,
 } from "#ui/vault/vault-keys";
 import {
     deriveAuthProof,
     fromBase64Url,
     importVaultKey,
+    newSlotId,
+    passkeyKek,
+    randomBytes,
     toBase64Url,
 } from "#ui/vault/vault-crypto";
 import {
@@ -130,7 +136,9 @@ describe("Vault", () => {
     async function createVault(label = "test vault"): Promise<UnlockedVault> {
         const { request, vault } = await buildNewVault({
             label,
-            passphrase: await newPassphraseKek(PASSPHRASE),
+            slots: async () => [
+                { id: null, kek: await newPassphraseKek(PASSPHRASE) },
+            ],
         });
 
         await apiClient.createVault(request);
@@ -218,14 +226,16 @@ describe("Vault", () => {
 
         const { request } = await buildNewVault({
             label: "second",
-            passphrase: await newPassphraseKek(PASSPHRASE),
+            slots: async () => [
+                { id: null, kek: await newPassphraseKek(PASSPHRASE) },
+            ],
         });
 
         // A second vault would orphan every file of the first.
         await expectCode(apiClient.createVault(request), "vault_exists");
     });
 
-    it("requires a proof for slot changes and keeps the last passphrase slot", async () => {
+    it("requires a proof for slot changes and keeps the last slot", async () => {
         const vault = await createVault();
         const material = await apiClient.getVaultUnlockMaterial();
         const slotId = material.slots[0]?.id ?? "";
@@ -238,12 +248,12 @@ describe("Vault", () => {
             }),
             "vault_proof_invalid",
         );
-        // The passphrase is the fallback on every hostname, so it cannot be removed.
+        // Without any slot nothing could unlock the vault, so the last one stays.
         await expectCode(
             apiClient.removeVaultSlot(slotId, {
                 auth_proof: await currentProof(vault),
             }),
-            "vault_passphrase_required",
+            "vault_last_slot",
         );
 
         const renamed = await apiClient.renameVaultSlot(slotId, {
@@ -256,6 +266,64 @@ describe("Vault", () => {
         // The first unlock of the day is recorded, the next one is not.
         expect((await apiClient.markVaultSlotUsed(slotId)).updated).toBe(true);
         expect((await apiClient.markVaultSlotUsed(slotId)).updated).toBe(false);
+    });
+
+    it("accepts a passkey-only vault and keeps its last passkey", async () => {
+        // Node has no authenticator, so a random PRF output stands in for one.
+        const prfOutput = randomBytes(32);
+        const slotId = newSlotId();
+
+        const { request, vault } = await buildNewVault({
+            label: "passwordless",
+            slots: async () => [
+                {
+                    id: slotId,
+                    kek: {
+                        type: "passkey",
+                        label: "Virtual key",
+                        credentialId: toBase64Url(randomBytes(16)),
+                        rpId: "localhost",
+                        kek: await passkeyKek(prfOutput, slotId),
+                    },
+                },
+            ],
+        });
+
+        const created = await apiClient.createVault(request);
+        // Every slot wraps the same key, so a passphrase is not required.
+        expect(created.vault?.slots.map((slot) => slot.type)).toEqual([
+            "passkey",
+        ]);
+
+        const material = await apiClient.getVaultUnlockMaterial();
+
+        const opened = await openFreshSlots(material, {
+            passphrase: "",
+            passkeys: new Map([[slotId, await passkeyKek(prfOutput, slotId)]]),
+        });
+
+        // The passkey alone unwraps the key the browser created.
+        expect(await proofFromRaw(opened[0].rawVaultKey)).toBe(
+            await currentProof(vault),
+        );
+        // A passwordless vault still keeps its last slot.
+        await expectCode(
+            apiClient.removeVaultSlot(slotId, {
+                auth_proof: await currentProof(vault),
+            }),
+            "vault_last_slot",
+        );
+
+        const { request: rotation } = await buildRotation({
+            material,
+            vault: await openGenerations(material, opened[0].rawVaultKey),
+            rawPrevious: opened[0].rawVaultKey,
+            slots: [],
+        });
+
+        // A rotation that keeps no slot would make the new key unreachable.
+        await expectCode(apiClient.rotateVault(rotation), "vault_last_slot");
+        wipeOpened(opened);
     });
 
     it("refuses to restore a backup over a vault without that vault's proof", async () => {

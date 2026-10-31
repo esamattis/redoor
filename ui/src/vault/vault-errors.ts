@@ -13,6 +13,8 @@ import { PasskeyPrfUnsupported } from "#ui/vault/vault-passkeys";
 const messages: Partial<Record<ApiErrorCode, string>> = {
     vault_not_found: "No vault has been created yet.",
     vault_exists: "A vault already exists. Reload the page to unlock it.",
+    vault_last_slot:
+        "A vault keeps at least one unlock method. Add another one before removing this one.",
     vault_proof_invalid:
         "The vault key in this tab is out of date. Unlock the vault again.",
     not_a_vault_file: "Not a redoor vault file, or the file is corrupted.",

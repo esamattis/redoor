@@ -14,6 +14,9 @@ import {
 
 const PASSPHRASE = "correct horse battery staple";
 
+/** The passphrase added to a passwordless vault. */
+const SECOND = "another long passphrase";
+
 const MAGIC = Buffer.from("REDOORVAULT\0", "latin1");
 
 /** The Playwright server's data directories, where the account's vault file lives. */
@@ -60,10 +63,14 @@ async function createVaultInDialog(page: Page, keep = false) {
 }
 
 /** Unlocks with the passphrase in the shared vault dialog. */
-async function unlockInDialog(page: Page, keep = false) {
+async function unlockInDialog(
+    page: Page,
+    keep = false,
+    passphrase = PASSPHRASE,
+) {
     const dialog = page.getByRole("dialog", { name: "Unlock vault" });
     await expect(dialog).toBeVisible();
-    await dialog.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+    await dialog.getByLabel("Passphrase", { exact: true }).fill(passphrase);
 
     if (keep) {
         await dialog
@@ -85,6 +92,31 @@ async function createVaultFile(page: Page, ctx: TestContext, fileName: string) {
     await dialog
         .getByRole("button", { name: "Create file", exact: true })
         .click();
+}
+
+/** Adds a virtual authenticator with PRF, so passkeys can derive vault keys in the test. */
+async function addVirtualAuthenticator(page: Page) {
+    const client = await page.context().newCDPSession(page);
+    await client.send("WebAuthn.enable");
+    await client.send("WebAuthn.addVirtualAuthenticator", {
+        options: {
+            protocol: "ctap2",
+            transport: "internal",
+            hasResidentKey: true,
+            hasUserVerification: true,
+            isUserVerified: true,
+            hasPrf: true,
+        },
+    });
+}
+
+/** Locks from the settings page and unlocks again with the passkey. */
+async function relockWithPasskey(page: Page) {
+    await page.getByRole("button", { name: "Lock now" }).click();
+    await page.getByRole("button", { name: "Unlock", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Unlock vault" });
+    await dialog.getByRole("button", { name: "Unlock with passkey" }).click();
+    await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
 test.describe.serial("Vault", () => {
@@ -231,18 +263,7 @@ test.describe.serial("Vault", () => {
     });
 
     test("unlocks with a registered passkey", async ({ page }) => {
-        const client = await page.context().newCDPSession(page);
-        await client.send("WebAuthn.enable");
-        await client.send("WebAuthn.addVirtualAuthenticator", {
-            options: {
-                protocol: "ctap2",
-                transport: "internal",
-                hasResidentKey: true,
-                hasUserVerification: true,
-                isUserVerified: true,
-                hasPrf: true,
-            },
-        });
+        await addVirtualAuthenticator(page);
 
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
         await page.getByRole("button", { name: "Create vault" }).click();
@@ -266,6 +287,85 @@ test.describe.serial("Vault", () => {
             .click();
         await expect(dialog).toBeHidden({ timeout: 30_000 });
         // The PRF output unwrapped the vault key, so the vault is unlocked.
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+    });
+
+    test("creates a passwordless vault, adds a passphrase and removes it again", async ({
+        page,
+    }) => {
+        await addVirtualAuthenticator(page);
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        const create = page.getByRole("dialog", { name: "Create vault" });
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passkey" })
+            .click();
+        await create.getByLabel("Passkey name").fill("Virtual key");
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passphrase" })
+            .click();
+        // Without a passphrase the user is told that losing the passkeys loses the files.
+        await expect(
+            create.getByRole("note", { name: "Passwordless vault warning" }),
+        ).toContainText("cannot help");
+        await create.getByRole("button", { name: "Create vault" }).click();
+        await expect(create).toBeHidden({ timeout: 30_000 });
+        // The passkey is the only unlock method.
+        await expect(
+            page.getByLabel("Unlock method Virtual key"),
+        ).toBeVisible();
+        await expect(page.getByLabel(/^Unlock method /)).toHaveCount(1);
+
+        await relockWithPasskey(page);
+        // The passkey alone unwrapped the vault key.
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+
+        await page
+            .getByRole("button", { name: "Add passphrase", exact: true })
+            .click();
+        const add = page.getByRole("dialog", { name: "Add passphrase" });
+        await add.getByLabel("New passphrase", { exact: true }).fill(SECOND);
+        await add.getByLabel("Repeat new passphrase").fill(SECOND);
+        await add.getByRole("button", { name: "Unlock with passkey" }).click();
+        await expect(add.getByText("Unlocked with Virtual key")).toBeVisible();
+        await add
+            .getByRole("button", { name: "Add passphrase", exact: true })
+            .click();
+        await expect(add).toBeHidden({ timeout: 30_000 });
+        // The passphrase is listed next to the passkey.
+        await expect(page.getByLabel("Unlock method Passphrase")).toBeVisible();
+
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await page.getByRole("button", { name: "Unlock", exact: true }).click();
+        await unlockInDialog(page, false, SECOND);
+        // The added passphrase wraps the same vault key.
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+
+        await page
+            .getByRole("button", { name: "Remove passphrase", exact: true })
+            .click();
+        const remove = page.getByRole("dialog", { name: "Remove Passphrase" });
+        // Removing the passphrase rotates the key unless the user opts out.
+        await expect(
+            remove.getByRole("checkbox", { name: "Rotate vault key" }),
+        ).toBeChecked();
+        await expect(
+            remove.getByRole("note", { name: "Passwordless vault warning" }),
+        ).toBeVisible();
+        await remove.getByRole("button", { name: "Confirm" }).click();
+        await expect(remove.getByText("Confirmed")).toBeVisible();
+        await remove
+            .getByRole("button", { name: "Rotate", exact: true })
+            .click();
+        await expect(remove).toBeHidden({ timeout: 30_000 });
+        // Only the passkey is left after the rotation.
+        await expect(page.getByLabel("Unlock method Passphrase")).toBeHidden();
+        await expect(
+            page.getByLabel("Unlock method Virtual key"),
+        ).toBeVisible();
+
+        await relockWithPasskey(page);
+        // The confirmed passkey wraps the rotated key, so it still unlocks.
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
     });
 });

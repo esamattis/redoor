@@ -15,6 +15,6 @@ auth_proof: string, new_key_id: string, new_auth_verifier: string,
  */
 previous_key_wrap: VaultKeyWrap, 
 /**
- * Every kept slot, wrapping the new key. At least one passphrase slot.
+ * Every kept slot, wrapping the new key. At least one slot of any type.
  */
 slots: Array<VaultSlotInput>, };

@@ -140,7 +140,10 @@ pub(super) fn slot(slot: &VaultSlotInput) -> Result<(), ApiError> {
     }
 }
 
-/// A whole slot list: valid slots, unique ids and credentials, and a passphrase slot.
+/// A whole slot list: valid slots, unique ids and credentials, and at least one slot.
+///
+/// Any slot type is enough: every slot wraps the same vault key, so a passphrase is not
+/// needed cryptographically. A vault without slots could never be unlocked again.
 pub(super) fn slots(slots: &[VaultSlotInput]) -> Result<(), ApiError> {
     if slots.len() > MAX_SLOTS {
         return Err(invalid(format!("A vault holds at most {MAX_SLOTS} slots")));
@@ -158,15 +161,11 @@ pub(super) fn slots(slots: &[VaultSlotInput]) -> Result<(), ApiError> {
             return Err(invalid("This passkey is already registered"));
         }
     }
-    if !slots
-        .iter()
-        .any(|slot| matches!(slot.kind, VaultSlotKind::Passphrase { .. }))
-    {
+    if slots.is_empty() {
         return Err(ApiError::coded(
             StatusCode::CONFLICT,
-            ApiErrorCode::VaultPassphraseRequired,
-            "A vault always keeps a passphrase slot, because passkeys only work on the \
-hostname they were registered on",
+            ApiErrorCode::VaultLastSlot,
+            "A vault keeps at least one unlock method, because without one nothing can open it",
         ));
     }
     Ok(())

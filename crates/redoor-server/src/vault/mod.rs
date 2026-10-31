@@ -168,8 +168,8 @@ impl VaultStore {
         .await
     }
 
-    /// Removes a slot, refusing to remove the last passphrase slot: passkeys only work on
-    /// the hostname they were registered on, so the passphrase is the fallback.
+    /// Removes a slot, refusing to remove the last one: a vault without slots could never be
+    /// unlocked again, and its files would be lost.
     pub(crate) async fn remove_slot(
         &self,
         slot_id: &str,

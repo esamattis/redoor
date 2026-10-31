@@ -26,6 +26,7 @@ import {
     type RotationIntent,
 } from "#ui/components/vault/rotate-vault-dialog";
 import {
+    AddPassphraseDialog,
     AddPasskeyDialog,
     DestroyGenerationDialog,
     RenameVaultDialog,
@@ -54,6 +55,7 @@ export const Route = createFileRoute("/_app/settings/vault")({
 type OpenDialog =
     | { type: "rotate"; intent: RotationIntent }
     | { type: "add-passkey" }
+    | { type: "add-passphrase" }
     | { type: "rename-vault" }
     | { type: "rename-slot"; slot: VaultSlotSummary }
     | { type: "destroy"; keyId: string }
@@ -114,6 +116,9 @@ function VaultSettingsPage() {
                             onAddPasskey={() =>
                                 setDialog({ type: "add-passkey" })
                             }
+                            onAddPassphrase={() =>
+                                setDialog({ type: "add-passphrase" })
+                            }
                             onChangePassphrase={() =>
                                 setDialog({
                                     type: "rotate",
@@ -173,6 +178,9 @@ function VaultSettingsPage() {
             ) : null}
             {dialog?.type === "add-passkey" ? (
                 <AddPasskeyDialog onClose={close} />
+            ) : null}
+            {dialog?.type === "add-passphrase" ? (
+                <AddPassphraseDialog onClose={close} />
             ) : null}
             {dialog?.type === "rename-vault" && summary !== null ? (
                 <RenameVaultDialog
@@ -241,7 +249,7 @@ function NoVault(props: { onRestore: () => void }) {
             <div className="mt-4 flex flex-wrap justify-center gap-3">
                 <Button
                     type="button"
-                    tooltip="Create a vault protected by a passphrase"
+                    tooltip="Create a vault protected by a passkey, a passphrase or both"
                     onClick={() =>
                         void session
                             .requestUnlock("Create a vault to encrypt files")
@@ -356,17 +364,23 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
     );
 }
 
-/** The passphrase and passkey slots. */
+/**
+ * The passphrase and passkey slots. Any slot can be removed while another remains, because
+ * every slot wraps the same key; the last one stays, or nothing could unlock the vault.
+ */
 function SlotsCard(props: {
     summary: VaultSummary;
     onAddPasskey: () => void;
+    onAddPassphrase: () => void;
     onChangePassphrase: () => void;
     onRename: (slot: VaultSlotSummary) => void;
     onRemove: (slot: VaultSlotSummary) => void;
 }) {
-    const passphrases = props.summary.slots.filter(
+    const passphrase = props.summary.slots.find(
         (slot) => slot.type === "passphrase",
-    ).length;
+    );
+
+    const canRemove = props.summary.slots.length > 1;
 
     return (
         <DetailCard
@@ -375,52 +389,21 @@ function SlotsCard(props: {
         >
             <ul className="grid gap-2">
                 {props.summary.slots.map((slot) => (
-                    <li
+                    <SlotRow
                         key={slot.id}
-                        aria-label={`Unlock method ${slot.label}`}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 px-3 py-2"
-                    >
-                        <span className="min-w-0 text-sm text-slate-200">
-                            {slot.label}
-                            <span className="block text-xs text-slate-500">
-                                {slot.type === "passkey"
-                                    ? `Passkey for ${slot.rp_id ?? "unknown host"}`
-                                    : "Passphrase"}{" "}
-                                · added {formatDate(slot.created_at)} · last
-                                used {formatDate(slot.last_used_at)}
-                            </span>
-                        </span>
-                        <span className="flex gap-1">
-                            <IconButton
-                                type="button"
-                                label={`Rename ${slot.label}`}
-                                tooltip="Rename"
-                                variant="ghost"
-                                onClick={() => props.onRename(slot)}
-                            >
-                                <Pencil
-                                    className="h-4 w-4"
-                                    aria-hidden="true"
-                                />
-                            </IconButton>
-                            {slot.type === "passkey" || passphrases > 1 ? (
-                                <IconButton
-                                    type="button"
-                                    label={`Remove ${slot.label}`}
-                                    tooltip="Remove"
-                                    variant="ghost"
-                                    onClick={() => props.onRemove(slot)}
-                                >
-                                    <Trash2
-                                        className="h-4 w-4"
-                                        aria-hidden="true"
-                                    />
-                                </IconButton>
-                            ) : null}
-                        </span>
-                    </li>
+                        slot={slot}
+                        canRemove={canRemove}
+                        onRename={() => props.onRename(slot)}
+                        onRemove={() => props.onRemove(slot)}
+                    />
                 ))}
             </ul>
+            {passphrase === undefined ? (
+                <p className="mt-3 text-xs text-amber-300">
+                    No passphrase: only the passkeys unlock this vault, each on
+                    its own hostname. Losing them loses every encrypted file.
+                </p>
+            ) : null}
             <div className="mt-4 flex flex-wrap gap-3">
                 <Button
                     type="button"
@@ -436,16 +419,92 @@ function SlotsCard(props: {
                     <Fingerprint className="h-4 w-4" aria-hidden="true" />
                     Add passkey
                 </Button>
-                <Button
-                    type="button"
-                    variant="secondary"
-                    tooltip="Replace the vault passphrase"
-                    onClick={props.onChangePassphrase}
-                >
-                    Change passphrase
-                </Button>
+                {passphrase === undefined ? (
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        tooltip="Add a passphrase that unlocks the vault on any hostname"
+                        onClick={props.onAddPassphrase}
+                    >
+                        <KeyRound className="h-4 w-4" aria-hidden="true" />
+                        Add passphrase
+                    </Button>
+                ) : (
+                    <>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            tooltip="Replace the vault passphrase"
+                            onClick={props.onChangePassphrase}
+                        >
+                            Change passphrase
+                        </Button>
+                        {canRemove ? (
+                            <Button
+                                type="button"
+                                variant="secondary"
+                                tooltip="Unlock only with passkeys from now on"
+                                onClick={() => props.onRemove(passphrase)}
+                            >
+                                <Trash2
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                                Remove passphrase
+                            </Button>
+                        ) : null}
+                    </>
+                )}
             </div>
         </DetailCard>
+    );
+}
+
+/** One slot with its rename and, unless it is the last one, remove actions. */
+function SlotRow(props: {
+    slot: VaultSlotSummary;
+    canRemove: boolean;
+    onRename: () => void;
+    onRemove: () => void;
+}) {
+    return (
+        <li
+            aria-label={`Unlock method ${props.slot.label}`}
+            className="flex flex-wrap items-center justify-between gap-2 rounded border border-slate-800 px-3 py-2"
+        >
+            <span className="min-w-0 text-sm text-slate-200">
+                {props.slot.label}
+                <span className="block text-xs text-slate-500">
+                    {props.slot.type === "passkey"
+                        ? `Passkey for ${props.slot.rp_id ?? "unknown host"}`
+                        : "Passphrase"}{" "}
+                    · added {formatDate(props.slot.created_at)} · last used{" "}
+                    {formatDate(props.slot.last_used_at)}
+                </span>
+            </span>
+            <span className="flex gap-1">
+                <IconButton
+                    type="button"
+                    label={`Rename ${props.slot.label}`}
+                    tooltip="Rename"
+                    variant="ghost"
+                    onClick={props.onRename}
+                >
+                    <Pencil className="h-4 w-4" aria-hidden="true" />
+                </IconButton>
+                {props.canRemove ? (
+                    <IconButton
+                        type="button"
+                        label={`Remove ${props.slot.label}`}
+                        tooltip="Remove"
+                        variant="ghost"
+                        onClick={props.onRemove}
+                    >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    </IconButton>
+                ) : null}
+            </span>
+        </li>
     );
 }
 

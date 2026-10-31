@@ -1,4 +1,4 @@
-//! Store rules: proofs, the passphrase requirement, rotation, destroy and restore.
+//! Store rules: proofs, the last-slot rule, rotation, destroy and restore.
 
 use super::*;
 use redoor_core::test_support::TempDir;
@@ -165,30 +165,33 @@ async fn create_refuses_a_second_vault_and_writes_a_private_file() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-/// Creation without a passphrase slot is refused, because passkeys are bound to hostnames.
+/// A passkey-only vault is accepted, because every slot wraps the same key; a vault without
+/// any slot is refused, because nothing could unlock it.
 #[tokio::test]
-async fn create_requires_a_passphrase_slot() {
+async fn create_accepts_passkey_only_and_refuses_no_slots() {
     let temp = TempDir::create();
     let store = VaultStore::new(
         redoor_core::paths::AppPaths::for_home("redoor-test", temp.path()),
         "tester".to_string(),
     );
-    let result = store
-        .create(CreateVaultRequest {
-            vault_id: id("vlt_"),
-            label: "tester".to_string(),
-            key_id: id("kid_"),
-            auth_verifier: Proof::new().verifier,
-            slots: vec![passkey_slot()],
-        })
-        .await;
-    // Passkey-only vaults would be lost on another hostname.
-    assert_eq!(code(result), Some(ApiErrorCode::VaultPassphraseRequired));
+    let request = |slots| CreateVaultRequest {
+        vault_id: id("vlt_"),
+        label: "tester".to_string(),
+        key_id: id("kid_"),
+        auth_verifier: Proof::new().verifier,
+        slots,
+    };
+    let empty = store.create(request(vec![])).await;
+    // A vault without slots could never be opened again.
+    assert_eq!(code(empty), Some(ApiErrorCode::VaultLastSlot));
+    let created = store.create(request(vec![passkey_slot()])).await.unwrap();
+    // A passphrase is optional: one passkey is enough to unlock.
+    assert_eq!(created.slots.len(), 1);
 }
 
-/// Slot changes need the proof, and the last passphrase slot stays.
+/// Slot changes need the proof, and the last slot stays, whatever its type.
 #[tokio::test]
-async fn slot_changes_need_proof_and_keep_a_passphrase() {
+async fn slot_changes_need_proof_and_keep_the_last_slot() {
     let temp = TempDir::create();
     let (store, proof, summary) = created(&temp).await;
     let passkey = passkey_slot();
@@ -221,18 +224,21 @@ async fn slot_changes_need_proof_and_keep_a_passphrase() {
     // The same credential twice would only confuse unlocking.
     assert_eq!(code(duplicate), Some(ApiErrorCode::VaultInvalid));
     let passphrase_id = &summary.slots[0].id;
-    let removed = store.remove_slot(passphrase_id, &proof.proof).await;
-    // Removing the only passphrase slot is refused.
-    assert_eq!(code(removed), Some(ApiErrorCode::VaultPassphraseRequired));
+    let without_passphrase = store
+        .remove_slot(passphrase_id, &proof.proof)
+        .await
+        .unwrap();
+    // The passphrase is optional while a passkey remains.
+    assert_eq!(without_passphrase.slots.len(), 1);
     let renamed = store
         .rename_slot(&passkey.id, &proof.proof, "Laptop key".to_string())
         .await
         .unwrap();
     // Renaming changes only the label.
     assert!(renamed.slots.iter().any(|slot| slot.label == "Laptop key"));
-    let after = store.remove_slot(&passkey.id, &proof.proof).await.unwrap();
-    // A passkey slot can be removed.
-    assert_eq!(after.slots.len(), 1);
+    let last = store.remove_slot(&passkey.id, &proof.proof).await;
+    // Removing the last slot would leave nothing that unlocks the vault.
+    assert_eq!(code(last), Some(ApiErrorCode::VaultLastSlot));
 }
 
 /// Rotation chains the old generation, and writes with the old key id become stale.
@@ -252,6 +258,17 @@ async fn rotation_chains_generations_and_rejects_stale_writes() {
         .await;
     // Rotation is a vault change and needs the proof.
     assert_eq!(code(stale_proof), Some(ApiErrorCode::VaultProofInvalid));
+    let no_slots = store
+        .rotate(RotateVaultRequest {
+            auth_proof: proof.proof.clone(),
+            new_key_id: id("kid_"),
+            new_auth_verifier: Proof::new().verifier,
+            previous_key_wrap: wrap(),
+            slots: vec![],
+        })
+        .await;
+    // A rotation that keeps no slot would leave the new key unreachable.
+    assert_eq!(code(no_slots), Some(ApiErrorCode::VaultLastSlot));
     let (next, new_key) = rotate(&store, &proof, vec![passphrase_slot()]).await;
     let material = store.unlock_material().await.unwrap();
     // The new generation is current and wraps the old one.
@@ -367,6 +384,18 @@ async fn restore_over_a_vault_needs_its_proof() {
         .await;
     // A stolen session could otherwise install a vault it controls.
     assert_eq!(code(swapped), Some(ApiErrorCode::VaultProofInvalid));
+    let empty = store
+        .restore(RestoreVaultBackupRequest {
+            backup: VaultDocument {
+                slots: vec![],
+                ..foreign.clone()
+            },
+            backup_auth_proof: other_proof.proof.clone(),
+            current_auth_proof: Some(proof.proof.clone()),
+        })
+        .await;
+    // A backup without slots could never be unlocked once installed.
+    assert_eq!(code(empty), Some(ApiErrorCode::VaultLastSlot));
     let wrong_backup_proof = store
         .restore(RestoreVaultBackupRequest {
             backup: foreign.clone(),

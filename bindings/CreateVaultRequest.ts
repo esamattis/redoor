@@ -6,6 +6,6 @@ import type { VaultSlotInput } from "./VaultSlotInput";
  */
 export type CreateVaultRequest = { vault_id: string, label: string, key_id: string, auth_verifier: string, 
 /**
- * At least one passphrase slot.
+ * At least one slot of any type.
  */
 slots: Array<VaultSlotInput>, };

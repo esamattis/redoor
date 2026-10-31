@@ -57,8 +57,8 @@ pub struct VaultKdfParams {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum VaultSlotKind {
-    /// A passphrase stretched with Argon2id. Every vault has one, because passkeys only
-    /// work on the hostname they were registered on.
+    /// A passphrase stretched with Argon2id. Optional: it is the fallback on hostnames
+    /// where no passkey is registered, and the user's recovery path when passkeys are lost.
     Passphrase { kdf: VaultKdfParams },
     /// A WebAuthn credential whose PRF output derives the slot key.
     Passkey {
@@ -225,7 +225,7 @@ pub struct CreateVaultRequest {
     pub label: String,
     pub key_id: String,
     pub auth_verifier: String,
-    /// At least one passphrase slot.
+    /// At least one slot of any type.
     pub slots: Vec<VaultSlotInput>,
 }
 
@@ -272,7 +272,7 @@ pub struct RotateVaultRequest {
     pub new_auth_verifier: String,
     /// The previous vault key wrapped with the new one, the new chain link.
     pub previous_key_wrap: VaultKeyWrap,
-    /// Every kept slot, wrapping the new key. At least one passphrase slot.
+    /// Every kept slot, wrapping the new key. At least one slot of any type.
     pub slots: Vec<VaultSlotInput>,
 }
 
@@ -445,8 +445,8 @@ pub enum ApiErrorCode {
     VaultExists,
     /// The proof of possession did not match.
     VaultProofInvalid,
-    /// The request would leave the vault without a passphrase slot.
-    VaultPassphraseRequired,
+    /// The request would leave the vault without any slot, so nothing could unlock it.
+    VaultLastSlot,
     /// The submitted vault data is malformed.
     VaultInvalid,
     /// The file does not start with the vault magic.
