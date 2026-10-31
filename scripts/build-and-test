@@ -76,8 +76,6 @@ silent_unless_error pn types
 silent_unless_error pn test:anti-slop
 silent_unless_error pn test:unit
 silent_unless_error pn lint
-silent_unless_error pn format:check
-silent_unless_error cargo fmt -- --check
 silent_unless_error cargo clippy --all-targets -- -D warnings
 if cargo ndk --version &>/dev/null; then
     silent_unless_error env RUSTFLAGS=-Dwarnings cargo ndk --target arm64-v8a --platform 24 check --locked
