@@ -3,6 +3,8 @@ import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { $ } from "zx";
 import {
+    deleteIsolatedTerminalSessions,
+    isolateTerminalSessions,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
@@ -53,6 +55,15 @@ test.describe.serial("Create archive", () => {
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+    });
+
+    test.beforeEach(async ({ page }) => {
+        // Terminal sessions are shared server state; see `isolateTerminalSessions`.
+        await isolateTerminalSessions(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await deleteIsolatedTerminalSessions(page);
     });
 
     test("archives one row from its action menu", async ({ page }) => {

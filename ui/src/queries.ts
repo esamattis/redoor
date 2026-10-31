@@ -168,6 +168,8 @@ export const queryKeys = {
     protocolMismatches: () =>
         [...queryKeys.all, "protocol-mismatches"] as const,
     userState: () => [...queryKeys.all, "user-state"] as const,
+    /** Every server-owned terminal session; the tabs of every window follow it. */
+    terminalSessions: () => [...queryKeys.all, "terminal-sessions"] as const,
     /** An open file's stored editor buffer, keyed like the open files list. */
     editorBuffer: (key: string) =>
         [...queryKeys.all, "editor-buffer", key] as const,
@@ -459,6 +461,18 @@ export function accessTokensQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.accessTokens(),
         queryFn: () => api.listAccessTokens(),
+    });
+}
+
+/**
+ * The server's terminal sessions, which every window restores its tabs from. Server events
+ * refresh it, so it never goes stale by time.
+ */
+export function terminalSessionsQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.terminalSessions(),
+        queryFn: () => api.listTerminalSessions(),
+        staleTime: Number.POSITIVE_INFINITY,
     });
 }
 

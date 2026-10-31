@@ -16,6 +16,7 @@ import { VaultDialog } from "#ui/components/vault-dialog";
 import { useRefreshListener } from "#ui/refresh-listener";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
+import { useTerminalSessionSync } from "#ui/use-terminals";
 import { useEscapeBlursTextControls } from "#ui/utils/use-escape-blur";
 
 const rootRouteApi = getRouteApi("__root__");
@@ -32,6 +33,7 @@ export function AppShell() {
         React.useState(false);
 
     useRefreshListener(api);
+    useTerminalSessionSync();
     useRememberAgentTabLocation();
     useEscapeBlursTextControls();
 

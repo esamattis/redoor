@@ -1,4 +1,5 @@
-// Serial: switches the shared theme to dark and resets every user setting after each test.
+// Serial: switches the shared theme to dark and resets every user setting after each test,
+// and its terminal sessions outlive pages, so another spec's pages would restore them as tabs.
 import {
     expect,
     test,
@@ -9,10 +10,13 @@ import { ApiClient } from "#ui/api-client";
 import { dragReorderRow } from "../reorder";
 import {
     API_BASE_URL,
+    deleteAllTerminalSessions,
     expectTerminalFocused,
+    isTerminalSocket,
     minimizeBottomDrawer,
     setupTestDir,
     teardownTestDir,
+    terminalSocketCwd,
     WEB_BASE_URL,
     type TestContext,
 } from "../helpers";
@@ -32,6 +36,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("terminal");
+        await deleteAllTerminalSessions();
     });
 
     test.afterAll(async () => {
@@ -39,6 +44,8 @@ test.describe.serial("Terminal panel lifecycle", () => {
     });
 
     test.afterEach(async () => {
+        // Sessions outlive the page; the next test must not restore this test's shells.
+        await deleteAllTerminalSessions();
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
         // Later browser tests assume the default system theme.
@@ -61,7 +68,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 terminalSockets.push(socket);
             }
         });
@@ -82,9 +89,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         await expectTerminalFocused(terminal);
         // A file editor opens its terminal in the parent directory.
-        expect(
-            new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[0]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
         await page.keyboard.press("Alt+e");
         const originalText = await editor.innerText();
         await editor.press("t");
@@ -113,7 +120,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     test("initializes a shell and executes a command", async ({ page }) => {
         let terminalOutput = "";
         page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) {
+            if (!isTerminalSocket(socket.url())) {
                 return;
             }
 
@@ -156,7 +163,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
         const inputFrames: string[] = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 socket.on("framesent", (event) => {
                     inputFrames.push(terminalFrameSchema.parse(event.payload));
                 });
@@ -213,7 +220,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         let terminalOutput = "";
         const inputFrames: string[] = [];
         page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) {
+            if (!isTerminalSocket(socket.url())) {
                 return;
             }
 
@@ -287,7 +294,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 terminalSockets.push(socket);
             }
         });
@@ -356,7 +363,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         const terminalSizes: Array<{ rows: number; cols: number }> = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 terminalSockets.push(socket);
                 socket.on("framesent", (event) => {
                     const frame = terminalFrameSchema.parse(event.payload);
@@ -419,9 +426,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // The first tab snapshots the canonical cwd from the browser root.
         expect(terminalSockets).toHaveLength(1);
-        expect(
-            new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(agentDetails.cwd);
+        expect(await terminalSocketCwd(terminalSockets[0]?.url() ?? "")).toBe(
+            agentDetails.cwd,
+        );
         // The caret style belongs to the terminal host, not its equally labeled input textarea.
         await expect(
             page
@@ -461,9 +468,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // A terminal created in a directory uses the committed canonical path.
         expect(terminalSockets).toHaveLength(2);
-        expect(
-            new URL(terminalSockets[1]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[1]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         await page.getByRole("tab", { name: "agent1_src 1" }).click();
         await expect(
@@ -508,9 +515,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toBeVisible();
         // An open file contributes its parent directory, not the file path.
         expect(terminalSockets).toHaveLength(3);
-        expect(
-            new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[2]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         const secondSocket = terminalSockets[1];
 
@@ -710,7 +717,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 terminalSockets.push(socket);
             }
         });
@@ -807,9 +814,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             page.getByRole("tab", { name: /^agent1_src / }),
         ).toHaveCount(2);
         expect(terminalSockets).toHaveLength(3);
-        expect(
-            new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[2]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         await page.getByRole("tab", { name: "agent1_src 2" }).click();
         await page.keyboard.press("t");
@@ -900,7 +907,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
         let terminalOutput = "";
         page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) {
+            if (!isTerminalSocket(socket.url())) {
                 return;
             }
 
@@ -1034,7 +1041,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
     }) => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         page.on("websocket", (socket) => {
-            if (socket.url().includes("/terminal/ws")) {
+            if (isTerminalSocket(socket.url())) {
                 terminalSockets.push(socket);
             }
         });

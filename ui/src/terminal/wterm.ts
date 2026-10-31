@@ -16,7 +16,7 @@ export type WTermSession = {
 };
 
 /** Describes the host and protocol callbacks needed to initialize one browser terminal. */
-type CreateWTermOptions = {
+export type CreateWTermOptions = {
     host: HTMLDivElement;
     onData: (data: string) => void;
     onResize: (cols: number, rows: number) => void;
@@ -58,6 +58,29 @@ function preserveOptionText(event: KeyboardEvent, terminal: WTerm): void {
 }
 
 /** Creates one initialized DOM renderer and its dedicated Ghostty-backed core. */
+/** The part of wterm a tab uses, so a test can stand in for it without the wasm core. */
+export type TerminalEmulator = Pick<
+    WTerm,
+    | "cols"
+    | "rows"
+    | "bridge"
+    | "write"
+    | "focus"
+    | "destroy"
+    | "getSelectionText"
+>;
+
+/** The part of the Ghostty core a tab uses. */
+export type EmulatorCore = Pick<GhosttyCore, "dispose">;
+
+/**
+ * How a tab gets its emulator. Injected, so tests of tab bookkeeping can run without the
+ * wasm core and a real layout.
+ */
+export type CreateEmulator = (
+    options: CreateWTermOptions,
+) => Promise<{ terminal: TerminalEmulator; core: EmulatorCore }>;
+
 export async function createWTerm(
     options: CreateWTermOptions,
 ): Promise<WTermSession> {

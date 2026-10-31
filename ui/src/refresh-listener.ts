@@ -16,6 +16,7 @@ const uiEventSchema: z.ZodType<UiEvent> = z.object({
         z.literal("agents_changed"),
         z.literal("routes_changed"),
         z.literal("transfers_changed"),
+        z.literal("terminals_changed"),
     ]),
 });
 
@@ -114,6 +115,16 @@ export class RefreshListener {
             return;
         }
 
+        if (event.type === "terminals_changed") {
+            // Another window opened or closed a tab, or a shell exited.
+            void this.queryClient.invalidateQueries({
+                queryKey: queryKeys.terminalSessions(),
+                exact: true,
+            });
+
+            return;
+        }
+
         if (event.type === "routes_changed") {
             // Uploads and edits finished, which changes listings, metadata and git state.
             void invalidateAllAgentData(this.queryClient);
@@ -137,6 +148,7 @@ export class RefreshListener {
             queryKeys.agents(),
             queryKeys.partials(),
             queryKeys.transfers(),
+            queryKeys.terminalSessions(),
         ]) {
             void this.queryClient.invalidateQueries({ queryKey, exact: true });
         }

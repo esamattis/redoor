@@ -1,8 +1,21 @@
 import { expect, test, type Locator } from "@playwright/test";
 
-import { WEB_BASE_URL } from "./helpers";
+import {
+    deleteIsolatedTerminalSessions,
+    isolateTerminalSessions,
+    WEB_BASE_URL,
+} from "./helpers";
 
 test.describe("Server home", () => {
+    test.beforeEach(async ({ page }) => {
+        // Terminal sessions are shared server state; see `isolateTerminalSessions`.
+        await isolateTerminalSessions(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await deleteIsolatedTerminalSessions(page);
+    });
+
     test("keeps transfer progress available in a minimized bar", async ({
         page,
     }) => {

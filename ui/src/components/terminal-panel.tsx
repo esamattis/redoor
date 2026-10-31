@@ -20,6 +20,7 @@ import type {
     TerminalSessions,
 } from "#ui/terminal/terminal-sessions";
 import { useTerminals, useTerminalsSnapshot } from "#ui/use-terminals";
+import { cn } from "#ui/utils/cn";
 import {
     isEditorInputTarget,
     isPlainKey,
@@ -261,7 +262,13 @@ function TerminalView(props: {
             inert={!props.isActive}
             className={`absolute inset-0 rounded-md border border-transparent p-1.5 focus-within:border-blue-500 ${props.isActive ? "visible" : "invisible"}`}
         >
-            <div ref={containerRef} className="h-full w-full" />
+            <div
+                ref={containerRef}
+                className={cn(
+                    "h-full w-full transition-opacity",
+                    props.tab.state.type === "taken_over" && "opacity-50",
+                )}
+            />
             <ContextMenu
                 isOpen={contextMenu !== null}
                 title="Terminal actions"
@@ -329,13 +336,71 @@ function TerminalView(props: {
                     {clipboardError}
                 </Toast>
             ) : null}
-            {props.tab.state.type === "disconnected" ? (
-                <div
-                    role="alert"
-                    className="absolute inset-x-0 bottom-0 rounded-md border border-red-500/20 bg-error-tint/95 px-3 py-2 text-sm text-red-300 shadow-lg"
+            <TerminalStatusLine tab={props.tab} session={session} />
+        </div>
+    );
+}
+
+/**
+ * Explains why a tab cannot take input and offers the way back: taking a session over from
+ * another window, or attaching again after reconnecting gave up. The actions wrap below the
+ * message in a phone-narrow drawer.
+ */
+function TerminalStatusLine(props: {
+    tab: TerminalTabSnapshot;
+    session: TerminalSession;
+}) {
+    const state = props.tab.state;
+
+    if (state.type === "taken_over") {
+        return (
+            <div
+                role="status"
+                className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 rounded-md border border-slate-600 bg-surface/95 px-3 py-2 text-sm text-slate-300 shadow-lg"
+            >
+                <span>Open in another window</span>
+                <Button
+                    size="sm"
+                    variant="secondary"
+                    tooltip="Show this terminal here and disconnect the other window"
+                    onClick={() => props.session.takeOver()}
                 >
-                    {props.tab.state.message}
-                </div>
+                    Take over
+                </Button>
+            </div>
+        );
+    }
+
+    if (state.type === "reconnecting") {
+        return (
+            <div
+                role="status"
+                className="absolute inset-x-0 bottom-0 rounded-md border border-amber-500/20 bg-surface/95 px-3 py-2 text-sm text-amber-300 shadow-lg"
+            >
+                Connection lost, reconnecting…
+            </div>
+        );
+    }
+
+    if (state.type !== "disconnected") {
+        return null;
+    }
+
+    return (
+        <div
+            role="alert"
+            className="absolute inset-x-0 bottom-0 flex flex-wrap items-center justify-between gap-2 rounded-md border border-red-500/20 bg-error-tint/95 px-3 py-2 text-sm text-red-300 shadow-lg"
+        >
+            <span>{state.message}</span>
+            {state.canReconnect ? (
+                <Button
+                    size="sm"
+                    variant="secondary"
+                    tooltip="Attach to the running shell again"
+                    onClick={() => props.session.reconnect()}
+                >
+                    Reconnect
+                </Button>
             ) : null}
         </div>
     );

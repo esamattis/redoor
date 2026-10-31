@@ -63,6 +63,17 @@ export const openFileSchema = z.object({
 
 export type OpenFile = z.infer<typeof openFileSchema>;
 
+/**
+ * Terminal tab order and the active tab, by server session id, so a reload restores the
+ * tabs as the user arranged them. Ids of sessions that no longer exist are ignored.
+ */
+export const terminalTabsSchema = z.object({
+    order: z.array(z.string()).catch([]),
+    active: z.string().nullable().catch(null),
+});
+
+export type TerminalTabs = z.infer<typeof terminalTabsSchema>;
+
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
@@ -76,6 +87,7 @@ export const userStateSchema = z.object({
     recursiveSearchRespectGitignore: z.boolean().catch(true),
     deviceOrder: z.array(z.string()).catch([]),
     showOnlyConnectedDevices: z.boolean().catch(false),
+    terminalTabs: terminalTabsSchema.catch({ order: [], active: null }),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;

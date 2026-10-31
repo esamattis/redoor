@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";
 import {
+    deleteAllTerminalSessions,
     expectTerminalBlurred,
     expectTerminalFocused,
     setupTestDir,
@@ -26,6 +27,8 @@ test.describe.serial("File editor options", () => {
     });
 
     test.afterEach(async () => {
+        // Sessions outlive the page; the next test must not restore this test's shells.
+        await deleteAllTerminalSessions();
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
         // Later editor tests assume default keybindings rather than Vim.

@@ -17,6 +17,21 @@ export function useTerminals(): TerminalSessions {
     return rootRouteApi.useRouteContext().terminals;
 }
 
+/**
+ * Makes the terminal tabs follow the server's session list while the authenticated shell is
+ * mounted. The effect only subscribes to the query cache, which the `_app` loader primed;
+ * the login page never asks for terminal sessions.
+ */
+export function useTerminalSessionSync(): void {
+    const terminals = useTerminals();
+
+    React.useEffect(() => {
+        terminals.start();
+
+        return () => terminals.stop();
+    }, [terminals]);
+}
+
 /** Subscribes to the tabs and display facts of the terminal panel. */
 export function useTerminalsSnapshot(): TerminalSessionsSnapshot {
     const terminals = useTerminals();

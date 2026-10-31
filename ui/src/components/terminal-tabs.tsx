@@ -3,6 +3,7 @@ import {
     CircleCheck,
     CircleX,
     HardDrive,
+    MonitorUp,
     LoaderCircle,
     MoreHorizontal,
     Plus,
@@ -32,6 +33,14 @@ function getTerminalStatus(state: TerminalState) {
 
     if (state.type === "disconnected") {
         return { label: "Disconnected", color: "text-amber-400" };
+    }
+
+    if (state.type === "taken_over") {
+        return { label: "Open in another window", color: "text-slate-400" };
+    }
+
+    if (state.type === "reconnecting") {
+        return { label: "Reconnecting", color: "text-amber-400" };
     }
 
     return { label: "Connecting", color: "text-slate-400" };
@@ -204,6 +213,8 @@ function TerminalTabControl(props: {
                                 <CircleCheck className="h-3.5 w-3.5" />
                             ) : props.tab.state.type === "disconnected" ? (
                                 <CircleX className="h-3.5 w-3.5" />
+                            ) : props.tab.state.type === "taken_over" ? (
+                                <MonitorUp className="h-3.5 w-3.5" />
                             ) : (
                                 <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                             )}

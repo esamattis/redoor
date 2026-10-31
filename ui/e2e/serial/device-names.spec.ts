@@ -7,6 +7,7 @@ import type { AgentListResponse } from "#bindings/AgentListResponse";
 import { ApiClient } from "#ui/api-client";
 import {
     API_BASE_URL,
+    deleteAllTerminalSessions,
     deviceBrowserUrl,
     simulateTabRefocus,
     WEB_BASE_URL,
@@ -124,6 +125,11 @@ function recordApiUrls(page: Page): string[] {
 test.describe.serial("Device names in URLs", () => {
     const createdIds: string[] = [];
 
+    test.afterEach(async () => {
+        // Sessions outlive the page; the next test must not restore this test's shells.
+        await deleteAllTerminalSessions();
+    });
+
     test.beforeAll(async () => {
         // Managed agents inherit the server's HOME, the fixture home. Without a startup file
         // zsh opens its first-run wizard there, which would swallow the typed command.
@@ -226,14 +232,17 @@ test.describe.serial("Device names in URLs", () => {
 
         // Only a shell on the renamed device can execute the command after the rename.
         await expect.poll(() => terminalOutput).toContain("renamed-ok");
-        // Terminals address the device by id, which the rename kept.
+
+        // Terminal sessions are created on the device by id, which the rename kept.
+        const terminalCreations = apiUrls.filter((url) =>
+            new URL(url).pathname.endsWith("/terminals"),
+        );
+
+        expect(terminalCreations).not.toHaveLength(0);
         expect(
-            apiUrls.filter((url) => url.includes("/terminal/ws")),
-        ).not.toHaveLength(0);
-        expect(
-            apiUrls
-                .filter((url) => url.includes("/terminal/ws"))
-                .every((url) => url.includes(`/api/v1/agents/${id}/`)),
+            terminalCreations.every((url) =>
+                url.includes(`/api/v1/agents/${id}/`),
+            ),
         ).toBe(true);
     });
 

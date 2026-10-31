@@ -31,9 +31,10 @@ export const queryClient = new QueryClient();
 // drawer atoms and reveal the drawer without going through a component.
 const store = createStore();
 
-// Terminals are a page-lifetime resource: shells keep running while routes and the drawer
-// come and go. Logging out or losing the session reloads the page, which ends them.
-const terminals = new TerminalSessions(queryClient, store);
+// Terminal tabs are a page-lifetime resource that views the server's terminal sessions: the
+// tabs outlive routes and the drawer, and the shells outlive the page, so a reload restores
+// them from the server.
+const terminals = new TerminalSessions({ queryClient, store, api });
 
 // Uploads outlive the page being browsed, so the queue lives with the application and only
 // the views that enqueue into it or show it subscribe.

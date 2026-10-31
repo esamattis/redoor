@@ -5,6 +5,7 @@ import {
     agentsQueryOptions,
     fetchQueryUncancelled,
     serverInfoQueryOptions,
+    terminalSessionsQueryOptions,
     transfersQueryOptions,
 } from "#ui/queries";
 import { userStateQueryOptions } from "#ui/user-state";
@@ -34,6 +35,11 @@ export const Route = createFileRoute("/_app")({
             fetchQueryUncancelled(
                 context.queryClient,
                 userStateQueryOptions(context.api),
+            ),
+            // Primes the list the terminal tabs are restored from.
+            fetchQueryUncancelled(
+                context.queryClient,
+                terminalSessionsQueryOptions(context.api),
             ),
         ]);
     },

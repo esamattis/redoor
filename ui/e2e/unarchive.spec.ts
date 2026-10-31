@@ -8,10 +8,14 @@ import {
 import { $ } from "zx";
 import { z } from "zod";
 import {
+    deleteIsolatedTerminalSessions,
     ignoreServerEvents,
+    isolateTerminalSessions,
+    isTerminalSocket,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
+    terminalSocketCwd,
     type TestContext,
 } from "./helpers";
 
@@ -75,6 +79,14 @@ test.describe.serial("Unarchive file action", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
+    test.beforeEach(async ({ page }) => {
+        await isolateTerminalSessions(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await deleteIsolatedTerminalSessions(page);
+    });
+
     test("extracts each destination in a fresh terminal", async ({ page }) => {
         // Other specs' uploads and edits broadcast `routes_changed`, which refetches this
         // listing at random moments and breaks both the stale-listing and request-count checks.
@@ -85,7 +97,7 @@ test.describe.serial("Unarchive file action", () => {
         const terminalSockets: PlaywrightWebSocket[] = [];
         const terminalEvents: TerminalSocketEvent[][] = [];
         page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) return;
+            if (!isTerminalSocket(socket.url())) return;
             terminalSockets.push(socket);
             const socketEvents: TerminalSocketEvent[] = [];
             terminalEvents.push(socketEvents);
@@ -234,9 +246,9 @@ test.describe.serial("Unarchive file action", () => {
             .toBe(requestsAfterClose + 1);
         await page.clock.resume();
         // The terminal socket proves extraction starts in the archive's containing directory.
-        expect(
-            new URL(terminalSockets[0]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[0]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         // Startup input must contain the generated archive-specific command rather than waiting for typing.
         const firstReadyIndex = terminalEvents[0]?.findIndex(
@@ -293,9 +305,9 @@ test.describe.serial("Unarchive file action", () => {
             )
             .toBe("subdirectory extraction");
         // Subdirectory extraction must also preserve the containing cwd.
-        expect(
-            new URL(terminalSockets[1]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[1]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         // The startup command must create and target the suffix-stripped directory.
         const secondCommandEvents = terminalEvents[1]?.filter(
@@ -366,9 +378,9 @@ test.describe.serial("Unarchive file action", () => {
             )
             .toBe("subdirectory extraction");
         // Custom extraction remains rooted at the archive's containing directory.
-        expect(
-            new URL(terminalSockets[2]?.url() ?? "").searchParams.get("cwd"),
-        ).toBe(ctx.testDirPath);
+        expect(await terminalSocketCwd(terminalSockets[2]?.url() ?? "")).toBe(
+            ctx.testDirPath,
+        );
 
         const customReadyIndex = terminalEvents[2]?.findIndex(
             (event) =>

@@ -3,6 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, type Locator, type Page } from "@playwright/test";
+import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import { encodeFilesystemPath } from "#ui/api-paths";
 import { testPorts } from "#test-ports";
@@ -20,6 +21,127 @@ const BASE_TEST_DIR = path.join(__dirname, "..", "..", ".test");
 export const WEB_BASE_URL = `http://localhost:${testPorts.playwright}`;
 
 export const API_BASE_URL = WEB_BASE_URL;
+
+/** A logged-in API client for test setup and cleanup. */
+async function loggedInApi(): Promise<ApiClient> {
+    const api = new ApiClient(API_BASE_URL);
+    await api.login("test-user", "test-password");
+
+    return api;
+}
+
+/** Whether a websocket is the socket that attaches a page to a terminal session. */
+export function isTerminalSocket(url: string): boolean {
+    return /^\/api\/v1\/terminals\/[^/]+\/ws$/.test(new URL(url).pathname);
+}
+
+/** Directories of sessions created by isolated pages, kept after the session is closed. */
+const createdTerminalCwds = new Map<string, string>();
+
+/**
+ * The directory the terminal session behind an attach socket was created in. Sessions of
+ * isolated pages are remembered, so this works after the tab was closed too.
+ */
+export async function terminalSocketCwd(
+    url: string,
+): Promise<string | undefined> {
+    const sessionId = new URL(url).pathname.split("/").at(-2) ?? "";
+    const remembered = createdTerminalCwds.get(sessionId);
+
+    if (remembered !== undefined) {
+        return remembered;
+    }
+
+    const api = await loggedInApi();
+
+    return (await api.listTerminalSessions()).sessions.find(
+        (session) => session.id === sessionId,
+    )?.cwd;
+}
+
+/**
+ * Deletes every terminal session. Sessions outlive pages, so serial specs call this between
+ * tests: otherwise the next test's page restores the previous test's shells as tabs.
+ */
+export async function deleteAllTerminalSessions(): Promise<void> {
+    const api = await loggedInApi();
+
+    for (const session of (await api.listTerminalSessions()).sessions) {
+        await api.deleteTerminalSession(session.id).catch(() => undefined);
+    }
+}
+
+/** The fields of a created session the isolation keeps. */
+const createdSessionSchema = z.object({
+    session: z.object({ id: z.string(), cwd: z.string() }),
+});
+
+/** A session list, keeping every field of each session for the page. */
+const sessionListSchema = z.object({
+    sessions: z.array(z.looseObject({ id: z.string() })),
+});
+
+/** Sessions created by each isolated page, so its spec can delete them afterwards. */
+const isolatedTerminalSessions = new WeakMap<Page, Set<string>>();
+
+/**
+ * Shows a page only the terminal sessions it created itself. Sessions are server state that
+ * every page restores as tabs, and parallel specs share the same devices, so without this
+ * one spec's shells would appear in another's tab strip, shift its tab numbers, and could
+ * even be taken over by it. Pair with `deleteIsolatedTerminalSessions` in `afterEach`.
+ */
+export async function isolateTerminalSessions(page: Page): Promise<void> {
+    const own = new Set<string>();
+    isolatedTerminalSessions.set(page, own);
+    await page.route("**/api/v1/agents/*/terminals", async (route) => {
+        const response = await route.fetch();
+
+        if (response.ok()) {
+            const created = createdSessionSchema.parse(await response.json());
+
+            own.add(created.session.id);
+            createdTerminalCwds.set(created.session.id, created.session.cwd);
+        }
+
+        await route.fulfill({ response });
+    });
+    await page.route("**/api/v1/terminals", async (route) => {
+        if (route.request().method() !== "GET") {
+            await route.fallback();
+
+            return;
+        }
+
+        const response = await route.fetch();
+        const list = sessionListSchema.parse(await response.json());
+
+        await route.fulfill({
+            response,
+            json: {
+                sessions: list.sessions.filter((session) =>
+                    own.has(session.id),
+                ),
+            },
+        });
+    });
+}
+
+/** Deletes the sessions an isolated page created, so later specs never see them. */
+export async function deleteIsolatedTerminalSessions(
+    page: Page,
+): Promise<void> {
+    const own = isolatedTerminalSessions.get(page);
+
+    if (own === undefined || own.size === 0) {
+        return;
+    }
+
+    const api = await loggedInApi();
+
+    for (const sessionId of own) {
+        await api.deleteTerminalSession(sessionId).catch(() => undefined);
+    }
+}
 
 /** Asserts keyboard ownership through wterm's hidden textarea inside the accessible host. */
 export async function expectTerminalFocused(terminal: Locator): Promise<void> {

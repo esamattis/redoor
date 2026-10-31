@@ -2,6 +2,8 @@
 import { expect, test } from "@playwright/test";
 import { z } from "zod";
 import {
+    deleteAllTerminalSessions,
+    isTerminalSocket,
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
@@ -24,13 +26,18 @@ test.describe("Terminal clipboard", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
+    test.afterEach(async () => {
+        // Sessions outlive the page; the next test must not restore this test's shells.
+        await deleteAllTerminalSessions();
+    });
+
     test("copies and pastes from the terminal context menu", async ({
         page,
         context,
     }) => {
         let terminalOutput = "";
         page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) {
+            if (!isTerminalSocket(socket.url())) {
                 return;
             }
 

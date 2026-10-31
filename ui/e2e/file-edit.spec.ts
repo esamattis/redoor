@@ -2,6 +2,8 @@ import { test, expect, type Locator, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+    deleteIsolatedTerminalSessions,
+    isolateTerminalSessions,
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
@@ -39,6 +41,15 @@ test.describe.serial("File Edit View", () => {
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+    });
+
+    test.beforeEach(async ({ page }) => {
+        // Terminal sessions are shared server state; see `isolateTerminalSessions`.
+        await isolateTerminalSessions(page);
+    });
+
+    test.afterEach(async ({ page }) => {
+        await deleteIsolatedTerminalSessions(page);
     });
 
     test("should open editable files in the Edit tab by default", async ({
