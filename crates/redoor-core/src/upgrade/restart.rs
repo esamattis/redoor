@@ -186,7 +186,13 @@ struct ProcessSnapshot {
 
 impl ProcessSnapshot {
     /// Reads the process table; blocking, so callers run it off the async workers.
+    ///
+    /// A non-dumpable process (the server makes itself one so other processes of its user
+    /// cannot read vault keys from its memory) hides its `exe` link even from its own user.
+    /// Its command line stays readable, so an absolute `argv[0]` of a process of this user
+    /// stands in for the executable path.
     fn all() -> Vec<Self> {
+        let own_user = nix::unistd::Uid::current().as_raw();
         let mut system = System::new();
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -195,7 +201,9 @@ impl ProcessSnapshot {
                 .without_tasks()
                 .with_exe(UpdateKind::Always)
                 .with_cmd(UpdateKind::Always)
-                .with_environ(UpdateKind::Always),
+                .with_environ(UpdateKind::Always)
+                // The owner decides whether a hidden `exe` may fall back to `argv[0]`.
+                .with_user(UpdateKind::Always),
         );
         system
             .processes()
@@ -204,7 +212,14 @@ impl ProcessSnapshot {
             .map(|process| Self {
                 pid: ProcessId(process.pid().as_u32()),
                 parent: process.parent().map(|parent| ProcessId(parent.as_u32())),
-                exe: process.exe().map(Path::to_path_buf),
+                exe: process.exe().map(Path::to_path_buf).or_else(|| {
+                    let owned = process.user_id().is_some_and(|user| **user == own_user);
+                    process
+                        .cmd()
+                        .first()
+                        .map(PathBuf::from)
+                        .filter(|path| owned && path.is_absolute())
+                }),
                 command: process
                     .cmd()
                     .iter()
@@ -328,7 +343,8 @@ impl ProcessId {
     /// path, and the new image catches the signal again once its role started. macOS has
     /// no such marker, so there the signal delivery is the last thing that can be checked.
     async fn wait_for_reexec(self) -> Result<()> {
-        if cfg!(target_os = "macos") {
+        // A non-dumpable process hides its `exe` link too, so it gets the same treatment.
+        if cfg!(target_os = "macos") || self.hides_image().await {
             return Ok(());
         }
         let waited = tokio::time::timeout(RESTART_TIMEOUT, async {
@@ -351,6 +367,13 @@ impl ProcessId {
                 RESTART_TIMEOUT.as_secs()
             ),
         }
+    }
+
+    /// Whether `/proc/<pid>/exe` cannot be read by this user, as for a non-dumpable process.
+    async fn hides_image(self) -> bool {
+        tokio::fs::read_link(format!("/proc/{}/exe", self.0))
+            .await
+            .is_err_and(|error| error.kind() == std::io::ErrorKind::PermissionDenied)
     }
 
     /// Whether `/proc/<pid>/exe` names an existing file rather than a replaced one.

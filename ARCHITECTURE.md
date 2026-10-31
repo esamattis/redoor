@@ -763,6 +763,10 @@ half-written file.
   accepting at once, so restarted agents reconnect to the new server and not to the old one,
   which would reject a newer protocol with `426` and make the agent exit. On Linux the
   upgrade then waits until `/proc/<pid>/exe` names the new file and the handler is back.
+- **The server is not dumpable** (see "Encrypted vault files"), which hides its `exe` link
+  and environment even from its own user. Process discovery falls back to an absolute
+  `argv[0]` for processes of the same user, and the wait treats a hidden `exe` like macOS:
+  the signal delivery is the last thing it can check.
 - **Upgrading from inside a restarted process uses a detached helper.** When an agent's web
   terminal or exec runs the upgrade, restarting the server drops that agent's connection, and
   the agent kills its terminals and execs. So the upgrade re-runs itself with the hidden
@@ -2087,7 +2091,12 @@ store and the existing `OutputStream` and `AgentUpload` services.
   a stream; the route checks `Origin` and `Sec-Fetch-Site` itself because form posts are
   not protected by CORS. One-time links never decrypt.
 - Plaintext never touches a temporary file on the server; it passes one 64 KiB chunk at a
-  time. Keys live in zeroizing types with redacted `Debug`.
+  time. Keys live in zeroizing types with redacted `Debug`, and travel in headers and bodies,
+  which nothing logs; an integration test checks the logs for them.
+- **The server makes itself non-dumpable** (`PR_SET_DUMPABLE 0`) at startup on Linux and
+  Termux, so processes of its own OS user (local managed agents run as that user) cannot
+  read keys from `/proc/<pid>/mem` or attach a debugger. macOS has no equivalent that keeps
+  crash reporting, so there a same-user process remains a risk while a request decrypts.
 
 ## SSH device keys
 
