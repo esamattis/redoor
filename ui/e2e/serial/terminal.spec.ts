@@ -950,9 +950,17 @@ test.describe.serial("Terminal panel lifecycle", () => {
          * drawing its prompt after the marker arrives, and a slow or multi-line prompt scrolls
          * the marker row away between measuring it and pressing the mouse, so the whole drag is
          * retried from a fresh measurement until the screen has settled under it.
+         *
+         * A Shift-press extends a selection that is already on the page instead of starting a
+         * new one, so a drag that missed the row would anchor every retry on that wrong row
+         * and select only the prompt rows between it and the marker. Each attempt first hands
+         * focus back to the shell input, which drops any earlier selection, so it starts from
+         * the same state as the first attempt.
          */
         const selectMarker = async () => {
             await expect(async () => {
+                await terminalHost.locator("textarea").focus();
+
                 const box = await terminalHost
                     .getByText("select-me", { exact: true })
                     .first()
