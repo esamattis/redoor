@@ -517,7 +517,14 @@ log = "${agentLogPath}"
                         seenProvisioning.add(step.message);
                     }
 
-                    if (agent?.connectionId) {
+                    // Routing registration and watchdog progress publish independently;
+                    // wait for both before asserting the completed provisioning history.
+                    if (
+                        agent?.connectionId &&
+                        agent.provisioningStatus.some(
+                            (step) => step.message === "Connected",
+                        )
+                    ) {
                         return agent;
                     }
 
