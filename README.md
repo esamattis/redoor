@@ -2,9 +2,9 @@
 
 Web based file browser, editor, git viewer and terminal for multiple devices.
 
-Here's the thing. Today I work on multiple different devices: Servers, laptops, phones etc. and I need to be able to manage files on all of those and move the files between them. This is were Redoor comes in: It combines multiple devices behind a single interface. The devices can be accessed using direct SSH-connection or by spawning a Redoor Agent process on the device which connects to the Redoor Server.
+Here's the thing. Today I work on multiple different devices: Servers, laptops, phones etc. and I need to be able to manage files on all of those and move the files between them. This is where Redoor comes in: It combines multiple devices behind a single interface. The devices can be accessed using direct SSH-connection or by spawning a Redoor Agent process on the device which connects to the Redoor Server.
 
-Features
+### Features
 
 - File browser
 - File editor with Git gutter and Vim-mode
@@ -14,12 +14,23 @@ Features
   - Download/upload files
   - Transfers files directly between your devices
 - SSH key management secured by Passkey PRF based vaults
-- Stateless MCP support to allow your agents you devices
+- Stateless MCP support to allow your agents to access your devices
 - Remote CLI
 - Login via static credentials, PAM, or OIDC (Pocket ID, Keycloak etc.)
 - Easy deployment via a single static binary
 - One click updates via the Web UI
 - Automatic Systemd and Launchd config handling
+
+### Documentation
+
+- [Configuration](docs/config.md)
+- [Remote CLI](docs/remote-cli.md)
+- [MCP](docs/mcp.md)
+- [SSH relays](docs/relays.md)
+- [Upgrade](docs/upgrade.md)
+- [Deployment behind a reverse proxy](docs/deployment.md)
+- [Docker Compose deployment](docs/docker.md)
+- [launchd on macOS](docs/launchd.md)
 
 ### Architecture
 
