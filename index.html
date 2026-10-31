@@ -190,6 +190,15 @@ h1 {
 }
 .lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 34px; }
 .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 26px; }
+.hero-install {
+    position: relative;
+    max-width: 920px;
+    margin: 0 auto 26px;
+    text-align: left;
+    box-shadow: 0 20px 50px -25px rgb(37 99 235 / 0.5);
+}
+.code-block.hero-install pre { font-size: 13px; padding: 15px 64px 15px 18px; white-space: pre-wrap; word-break: break-all; }
+.hero-install .copy { top: 50%; transform: translateY(-50%); }
 .platforms { display: flex; gap: 10px 22px; justify-content: center; flex-wrap: wrap; color: var(--faint); font-size: 14px; }
 .platforms span { display: inline-flex; align-items: center; gap: 7px; }
 .platforms svg { width: 16px; height: 16px; opacity: 0.8; }
@@ -627,6 +636,10 @@ footer p { margin: 6px 0; }
         <div class="hero-actions">
             <a class="btn btn-primary" href="#install"><svg><use href="#i-download"/></svg>Install Redoor</a>
             <a class="btn btn-ghost" href="https://github.com/esamattis/redoor"><svg><use href="#i-github"/></svg>View on GitHub</a>
+        </div>
+        <div class="code-block hero-install">
+<pre><code><span class="t-prompt">$ </span>bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"</code></pre>
+            <button class="copy" type="button" aria-label="Copy install command" data-copy='bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"'><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
         </div>
         <div class="platforms">
             <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Linux</span>
