@@ -79,6 +79,15 @@ async function unlockInDialog(
     await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
+/** Signs in with the test account's password, giving this page a session of its own. */
+async function signIn(page: Page) {
+    await page.goto(`${WEB_BASE_URL}/login`);
+    await page.getByLabel("Username").fill("test-user");
+    await page.getByLabel("Password").fill("test-password");
+    await page.getByRole("button", { name: "Sign in" }).click();
+    await expect(page).toHaveURL(`${WEB_BASE_URL}/`);
+}
+
 /** Creates a vault file from the directory's New menu. */
 async function createVaultFile(page: Page, ctx: TestContext, fileName: string) {
     await page.goto(deviceBrowserUrl(ctx.agentName, ctx.testDirPath));
@@ -256,6 +265,34 @@ test.describe.serial("Vault", () => {
         // Locking removes the key from this tab and from the device.
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
         await page.reload();
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
+    });
+
+    test("logging out locks a vault kept on this device", async ({ page }) => {
+        // A session of its own, because logging out revokes the session shared by the specs.
+        await page.context().clearCookies();
+        await signIn(page);
+        await createVaultFile(page, ctx, "logout.txt.redoorvault");
+        await createVaultInDialog(page, true);
+        await expect(
+            page.getByRole("textbox", { name: "File editor" }),
+        ).toBeVisible();
+
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        // Precondition: the key is kept, so only an explicit lock can remove it.
+        await expect(page.getByLabel("Vault status")).toHaveText(
+            "Unlocked, kept on this device",
+        );
+
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("button", { name: "Log out" })
+            .click();
+        await expect(page).toHaveURL(`${WEB_BASE_URL}/login`);
+
+        await signIn(page);
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        // Logout deleted the kept key, so the next user of this browser finds the vault locked.
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 

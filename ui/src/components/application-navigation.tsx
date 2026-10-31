@@ -402,14 +402,20 @@ function ServerRestartDialog(props: { isOpen: boolean; onClose: () => void }) {
 
 /**
  * Ends the session and reloads into the login page, so no cached server state or open
- * socket outlives the user's credentials.
+ * socket outlives the user's credentials. The vault is locked first, in every tab and
+ * including a key kept on this device, because logging out is how a user leaves a shared
+ * browser and the next person to sign in must not find the vault already open.
  */
 function useLogout() {
-    const { api } = rootRouteApi.useRouteContext();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const router = useRouter();
 
     return useMutation({
-        mutationFn: () => api.logout(),
+        mutationFn: async () => {
+            await vault.lock();
+
+            return api.logout();
+        },
         onSuccess: () => {
             window.location.replace(
                 router.buildLocation({ to: "/login" }).href,

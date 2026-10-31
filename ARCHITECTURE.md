@@ -2142,7 +2142,8 @@ it.
   keeps them in IndexedDB instead (no idle lock). On load, kept keys of another generation
   than the server's current one are deleted, because the vault was rotated elsewhere; a
   rotation in this tab locks every other tab and deletes kept keys. "Lock now" deletes the
-  kept copy before it locks, so a reload cannot undo it.
+  kept copy before it locks, so a reload cannot undo it. Logging out locks the same way
+  before it ends the session, so the next user of a shared browser finds the vault locked.
 - Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
   unlocked and otherwise opens the one `VaultDialog` in the app shell (create with a passkey,
   a passphrase or both; unlock with one prompt for every passkey of this hostname or the
