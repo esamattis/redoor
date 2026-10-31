@@ -223,7 +223,7 @@ pub(super) mod tests {
             vault_label: "test vault".to_string(),
             key_id: "kid_0123456789abcdef0123456789abcdef".to_string(),
             kind: VaultObjectKind::File,
-            context: serde_json::Map::new(),
+            context: Default::default(),
             wrap: VaultKeyWrap {
                 alg: VAULT_WRAP_ALG.to_string(),
                 iv: random_base64url(WRAP_IV_LEN),

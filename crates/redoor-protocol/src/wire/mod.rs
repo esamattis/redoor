@@ -318,7 +318,7 @@ mod tests {
     /// Verifies flattening keeps the flat hello JSON that agents and fixtures send.
     #[test]
     fn hello_round_trips_its_flat_json() {
-        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false}"#;
+        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false,"supports_upload_preconditions":true}"#;
         let hello: AgentToServer = serde_json::from_str(json).unwrap();
         let AgentToServer::Hello {
             identity,
@@ -332,6 +332,14 @@ mod tests {
         assert_eq!(identity.default_directory, "/home/u");
         assert_eq!(identity.uid, 1000);
         assert!(capabilities.supports_trash);
+        assert!(capabilities.supports_upload_preconditions);
+        let older = json.replace(r#","supports_upload_preconditions":true"#, "");
+        let AgentToServer::Hello { capabilities, .. } = serde_json::from_str(&older).unwrap()
+        else {
+            panic!("expected a hello");
+        };
+        // An older agent omits the capability, so vault writes to it are refused.
+        assert!(!capabilities.supports_upload_preconditions);
         // Serializing yields the same flat object the fake agents build by hand.
         assert_eq!(
             serde_json::to_value(&hello).unwrap(),

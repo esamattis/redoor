@@ -105,7 +105,7 @@ fn header(vault_id: &str, key_id: &str) -> VaultFileHeader {
         vault_label: "other".to_string(),
         key_id: key_id.to_string(),
         kind: VaultObjectKind::File,
-        context: serde_json::Map::new(),
+        context: Default::default(),
         wrap: wrap(),
         payload: VaultPayloadParams {
             alg: "chacha20poly1305-stream".to_string(),

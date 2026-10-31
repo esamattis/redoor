@@ -82,7 +82,7 @@ fn new_preamble(
     document: &VaultDocument,
     keys: &WriteKeys,
     kind: VaultObjectKind,
-    context: serde_json::Map<String, serde_json::Value>,
+    context: std::collections::BTreeMap<String, String>,
 ) -> Result<VaultPreamble, ApiError> {
     VaultPreamble::build(
         VaultFileHeader {

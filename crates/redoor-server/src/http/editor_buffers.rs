@@ -69,6 +69,13 @@ pub(crate) async fn put_editor_buffer_handler(
     Json(request): Json<PutEditorBufferRequest>,
 ) -> Result<Json<PutEditorBufferResponse>, ApiError> {
     let key = decode_key(&encoded_key)?;
+    // A vault file's draft is plaintext; the browser never sends it, and this keeps a buggy
+    // client from writing it to the server's disk anyway.
+    if redoor_core::vault::is_vault_path(&key) {
+        return Err(ApiError::bad_request(
+            "Editor buffers of vault files are never stored",
+        ));
+    }
     let path = buffer_path(&state, &key)?;
     // Serializes writes, so versions only grow and a cleanup cannot interleave with a write.
     let _guard = state.editor_buffer_lock.lock().await;

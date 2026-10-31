@@ -9,9 +9,10 @@ import type { VaultPayloadParams } from "./VaultPayloadParams";
  */
 export type VaultFileHeader = { vault_id: string, vault_label: string, key_id: string, kind: VaultObjectKind, 
 /**
- * What the object is bound to, compared by the server; empty for files.
+ * What the object is bound to (for example a device id and key fingerprint), compared
+ * by the server; empty for files.
  */
-context: Record<string, unknown>, 
+context: { [key in string]: string }, 
 /**
  * The file key wrapped with the vault key generation `key_id`.
  */

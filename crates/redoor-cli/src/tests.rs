@@ -442,7 +442,8 @@ fn agent_json(id: &str, name: &str) -> serde_json::Value {
         "configuration_editable": false, "ssh_target": null, "status": "connected", "connected_at": null,
         "connection_id": null, "last_seen_at": null, "connection_issue": null, "provisioning_status": [],
         "binary": null, "supports_native_open": false,
-        "supports_move_to_trash": false, "supports_trash": false, "uid": null, "is_root": false,
+        "supports_move_to_trash": false, "supports_trash": false,
+        "supports_upload_preconditions": false, "uid": null, "is_root": false,
         "duplicate_id": null
     })
 }

@@ -345,9 +345,9 @@ pub struct VaultFileHeader {
     pub vault_label: String,
     pub key_id: String,
     pub kind: VaultObjectKind,
-    /// What the object is bound to, compared by the server; empty for files.
-    #[ts(type = "Record<string, unknown>")]
-    pub context: serde_json::Map<String, serde_json::Value>,
+    /// What the object is bound to (for example a device id and key fingerprint), compared
+    /// by the server; empty for files.
+    pub context: std::collections::BTreeMap<String, String>,
     /// The file key wrapped with the vault key generation `key_id`.
     pub wrap: VaultKeyWrap,
     pub payload: VaultPayloadParams,
