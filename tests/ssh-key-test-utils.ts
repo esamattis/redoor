@@ -52,8 +52,15 @@ export type KeyFixture = {
     apiClient: ApiClient;
     configPath: string;
     home: string;
-    /** `<HOME>/.local/share/<app>/ssh`, where the server keeps keys and pinned host keys. */
+    /**
+     * `<HOME>/.local/share/<app>/users/<account>/ssh`, where the server keeps the login
+     * account's keys and pinned host keys.
+     */
     sshDataDir: string;
+    /** `<HOME>/.local/share/<app>/users/<account>`, holding the account's vault. */
+    accountDir: string;
+    /** The server's own log file. */
+    serverLog: string;
     processManager: ProcessManager;
     serverPid: number;
     suffix: string;
@@ -133,11 +140,16 @@ port = ${VITEST_SERVER_PORT}
     const apiClient = new ApiClient(`http://127.0.0.1:${VITEST_SERVER_PORT}`);
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
+    const dataDir = join(home, ".local", "share", appName);
+    const accountDir = join(dataDir, "users", TEST_USERNAME);
+
     return {
         apiClient,
         configPath,
         home,
-        sshDataDir: join(home, ".local", "share", appName, "ssh"),
+        sshDataDir: join(accountDir, "ssh"),
+        accountDir,
+        serverLog: join(dataDir, "server.log"),
         processManager,
         serverPid,
         suffix,
@@ -204,6 +216,11 @@ export async function createDevice(
 /** The whole `authorized_keys` of `user` on the SSH test host, empty when it is missing. */
 export async function remoteAuthorizedKeys(user: string): Promise<string> {
     return sshAs(user, `cat "$HOME/.ssh/authorized_keys" 2>/dev/null || true`);
+}
+
+/** The `authorized_keys` marker of a key the test account installed for `deviceId`. */
+export function keyMarker(deviceId: string, fingerprint: string): string {
+    return `redoor:${deviceId}:${TEST_USERNAME}:${fingerprint}`;
 }
 
 /** The `authorized_keys` lines of `user` that carry `deviceId`'s marker. */
@@ -383,6 +400,27 @@ export async function startAndWaitConnected(
         },
         timeoutMs: CONNECT_TIMEOUT_MS,
         description: `SSH device ${deviceId} to connect`,
+    });
+}
+
+/** Waits until the device is connected on a connection other than `previousConnectionId`. */
+export async function waitReconnected(
+    fixture: KeyFixture,
+    deviceId: string,
+    previousConnectionId: string | null,
+) {
+    return waitForValue({
+        predicate: async () => {
+            const agent = await findAgent(fixture, deviceId);
+
+            return agent.status === "connected" &&
+                agent.connectionId !== null &&
+                agent.connectionId !== previousConnectionId
+                ? agent
+                : undefined;
+        },
+        timeoutMs: CONNECT_TIMEOUT_MS,
+        description: `SSH device ${deviceId} to reconnect`,
     });
 }
 

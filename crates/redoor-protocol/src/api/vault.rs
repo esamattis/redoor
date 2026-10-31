@@ -307,12 +307,19 @@ pub struct VaultSlotUsedResponse {
 }
 
 /// What kind of object a vault file holds; the server compares it with what it expects.
+///
+/// The browser binds the kind into the file key wrap's associated data, so a file key can
+/// never be presented as an SSH key's and vice versa.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
 #[ts(export)]
 pub enum VaultObjectKind {
     /// A user file opened, edited, uploaded or downloaded through redoor.
+    #[serde(rename = "file")]
     File,
+    /// A managed SSH private key of one device, stored on the server and bound to the
+    /// account and device by its header context (see [`SSH_KEY_CONTEXT_FIELDS`]).
+    #[serde(rename = "ssh-key")]
+    SshKey,
 }
 
 impl VaultObjectKind {
@@ -320,9 +327,15 @@ impl VaultObjectKind {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::SshKey => "ssh-key",
         }
     }
 }
+
+/// Header context of an SSH key: the account and device it belongs to, and its OpenSSH
+/// public key, so the fingerprint and the `authorized_keys` marker work while the key is
+/// locked. Exactly these fields, all non-empty; the header MAC covers them.
+pub const SSH_KEY_CONTEXT_FIELDS: [&str; 3] = ["account", "device_id", "public_key"];
 
 /// How the payload of a vault file is encrypted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -476,4 +489,12 @@ pub enum ApiErrorCode {
     NotAVaultPath,
     /// The agent is too old to check write preconditions.
     AgentUpgradeRequired,
+    /// The device's SSH key is encrypted with the vault and not held by the server; start
+    /// it from the browser, which unlocks the vault and sends the key's file key.
+    SshKeyLocked,
+    /// The account has a vault, so new SSH keys must be encrypted with it.
+    VaultRequired,
+    /// A key generation cannot be destroyed while an SSH key still uses it; rewrap the key
+    /// first.
+    VaultKeyInUse,
 }

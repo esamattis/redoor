@@ -36,7 +36,9 @@ import {
     VaultScan,
     type ScannedVaultFile,
 } from "#ui/components/vault/vault-scan";
-import { vaultStatusQueryOptions } from "#ui/queries";
+import { VaultSshKeys } from "#ui/components/vault/vault-ssh-keys";
+import { queryKeys, vaultStatusQueryOptions } from "#ui/queries";
+import { rewrapOlderSshKeys } from "#ui/vault/ssh-key-vault";
 import { fingerprint } from "#ui/vault/vault-crypto";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import { isPasskeySupported } from "#ui/vault/vault-passkeys";
@@ -71,7 +73,7 @@ function formatDate(value: string | null): string {
  * that finds vault files on devices.
  */
 function VaultSettingsPage() {
-    const { api } = Route.useRouteContext();
+    const { api, queryClient, vault } = Route.useRouteContext();
     const statusQuery = useQuery(vaultStatusQueryOptions(api));
     const [dialog, setDialog] = React.useState<OpenDialog | null>(null);
 
@@ -82,6 +84,25 @@ function VaultSettingsPage() {
     const [notice, setNotice] = React.useState<string | null>(null);
     const summary = statusQuery.data?.vault ?? null;
     const close = () => setDialog(null);
+
+    /**
+     * SSH keys are on the server at known paths, so unlike files on devices they are moved
+     * to the new key right after a rotation, without a scan.
+     */
+    const afterRotation = async () => {
+        const failed = await rewrapOlderSshKeys({ api, vault }).catch(
+            () => null,
+        );
+
+        await queryClient.invalidateQueries({
+            queryKey: queryKeys.vaultSshKeys(),
+        });
+        setNotice(
+            failed === 0
+                ? "Vault key rotated and SSH keys rewrapped. Download a new vault backup, then find vault files to rewrap."
+                : "Vault key rotated, but some SSH keys still use the old key; rewrap them below. Download a new vault backup, then find vault files to rewrap.",
+        );
+    };
 
     return (
         <div className="min-h-full bg-canvas px-4 py-8 @xl:px-8">
@@ -162,6 +183,17 @@ function VaultSettingsPage() {
                         >
                             <VaultScan files={scanned} onFiles={setScanned} />
                         </DetailCard>
+                        <DetailCard
+                            title="SSH keys"
+                            icon={
+                                <LockKeyhole
+                                    className="h-5 w-5"
+                                    aria-hidden="true"
+                                />
+                            }
+                        >
+                            <VaultSshKeys />
+                        </DetailCard>
                     </>
                 )}
             </div>
@@ -169,11 +201,7 @@ function VaultSettingsPage() {
                 <RotateVaultDialog
                     intent={dialog.intent}
                     onClose={close}
-                    onRotated={() =>
-                        setNotice(
-                            "Vault key rotated. Download a new vault backup, then find vault files to rewrap.",
-                        )
-                    }
+                    onRotated={() => void afterRotation()}
                 />
             ) : null}
             {dialog?.type === "add-passkey" ? (

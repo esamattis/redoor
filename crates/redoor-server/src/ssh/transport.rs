@@ -2,6 +2,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 
 use zeroize::Zeroizing;
 
@@ -11,6 +12,9 @@ use redoor_core::rotating_log::LogFileSpec;
 use redoor_protocol::wire::log::Level;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+use super::keys::SshPrivateKey;
+use super::ssh_agent::{SshAgentGuard, SshAgentSocket};
 
 /// Caps browser-bound SSH diagnostics while retaining the final, usually actionable lines.
 const MAX_SSH_DIAGNOSTIC_BYTES: usize = 8 * 1024;
@@ -209,10 +213,53 @@ pub(super) enum AuthPolicy {
     /// credential to a host whose key the user has not confirmed yet.
     NoAuth,
     /// Only the redoor-managed key may be offered, and the user's config files are not read.
+    /// The key stays in this process: `ssh` gets signatures from an in-process ssh-agent
+    /// ([`super::ssh_agent`]) created for each `ssh` process.
     ManagedKey {
-        /// The device's private key file.
-        identity_file: PathBuf,
+        /// The device's private key, decrypted or read from a plaintext file.
+        key: Arc<SshPrivateKey>,
     },
+}
+
+/// Where `ssh` finds the in-process ssh-agent of one invocation.
+pub(super) struct SshAgentPaths {
+    /// The ssh-agent socket, passed as `IdentityAgent`.
+    pub(super) socket: PathBuf,
+    /// The public key file, passed as `IdentityFile`, so `ssh` offers only this key.
+    pub(super) public_key: PathBuf,
+}
+
+/// An `ssh` command ready to spawn, with the ssh-agent socket a managed-key connection
+/// authenticates through.
+pub(super) struct SshCommand {
+    /// The command itself.
+    command: Command,
+    /// The bound ssh-agent socket; it starts serving once the process exists, because only
+    /// then is the pid known that the peer check expects.
+    ssh_agent: Option<SshAgentSocket>,
+}
+
+impl std::fmt::Debug for SshCommand {
+    /// The command's own form; the ssh-agent socket holds a key and is not printed.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.command.fmt(formatter)
+    }
+}
+
+impl SshCommand {
+    /// The command, for setting stdio before spawning and for logging its argv.
+    fn command(&mut self) -> &mut Command {
+        &mut self.command
+    }
+
+    /// Spawns `ssh` and starts its ssh-agent, if any. The guard ends the ssh-agent when
+    /// dropped, so callers that wait for the process keep it until then; long-running
+    /// spawns detach it and the ssh-agent ends after authentication on its own.
+    fn spawn(&mut self) -> std::io::Result<(tokio::process::Child, Option<SshAgentGuard>)> {
+        let child = self.command.spawn()?;
+        let guard = self.ssh_agent.take().map(|socket| socket.serve(child.id()));
+        Ok((child, guard))
+    }
 }
 
 /// Represents an ssh reachable host and builds `ssh` invocations against it.
@@ -336,7 +383,7 @@ impl SshHost {
             Level::Debug,
             "Spawning ssh command: target={}, argv={}",
             self.target,
-            ssh_command_argv_debug(&ssh)
+            ssh_command_argv_debug(ssh.command())
         );
 
         // Ensure the ssh client is killed if the supervisor task is
@@ -344,8 +391,8 @@ impl SshHost {
         // process from being orphaned. `kill_on_drop` sends SIGKILL.
         // Note: this only kills the local ssh client; the remote
         // `redoor agent` would need a separate shutdown signal.
-        ssh.kill_on_drop(true);
-        let mut child = ssh.spawn().map_err(|error| {
+        ssh.command().kill_on_drop(true);
+        let (mut child, ssh_agent) = ssh.spawn().map_err(|error| {
             redoor_core::log_failure!(
                 Level::Error,
                 "SSH spawn failed to start child: target={}, command={}, error={:#}",
@@ -355,6 +402,11 @@ impl SshHost {
             );
             error
         })?;
+        // The caller owns the child, not this guard, so the ssh-agent ends on its own after
+        // the authentication it exists for (or its lifetime, if ssh never gets that far).
+        if let Some(ssh_agent) = ssh_agent {
+            ssh_agent.detach();
+        }
         log!(
             Level::Debug,
             "SSH spawn child created: target={}, command={}, child_id={:?}, has_secret={}",
@@ -415,12 +467,13 @@ impl SshHost {
             Level::Debug,
             "Running ssh command: target={}, argv={}",
             self.target,
-            ssh_command_argv_debug(&ssh)
+            ssh_command_argv_debug(ssh.command())
         );
 
-        ssh.kill_on_drop(true);
+        ssh.command().kill_on_drop(true);
         let start = std::time::Instant::now();
-        let status = ssh.status().await?;
+        let (mut child, _ssh_agent) = ssh.spawn()?;
+        let status = child.wait().await?;
         log!(
             Level::Debug,
             "SSH run completed: target={}, command={}, exit_status={}, elapsed={:?}",
@@ -455,20 +508,21 @@ impl SshHost {
         // Streamed scripts may span lines, which a `sh -c` argument cannot for csh-family
         // login shells, so the wrapper only replaces itself with a stdin-reading shell.
         let mut ssh = build_ssh_command(self, "exec sh -s", &[], options).await?;
-        ssh.stdin(Stdio::piped());
-        ssh.stdout(Stdio::piped());
-        ssh.stderr(Stdio::piped());
-        ssh.kill_on_drop(true);
+        ssh.command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         log!(
             Level::Debug,
             "Running ssh script through target={}, argv={}",
             self.target,
-            ssh_command_argv_debug(&ssh)
+            ssh_command_argv_debug(ssh.command())
         );
 
         let start = std::time::Instant::now();
-        let mut child = ssh.spawn().map_err(|error| {
+        let (mut child, _ssh_agent) = ssh.spawn().map_err(|error| {
             redoor_core::log_failure!(
                 Level::Error,
                 "SSH run_script_captured failed to spawn: target={}, error={:#}, elapsed={:?}",
@@ -548,17 +602,18 @@ impl SshHost {
         options: &SshRunOptions,
     ) -> Result<SshOutput, std::io::Error> {
         let mut ssh = build_ssh_command(self, command, args, options).await?;
-        ssh.stdin(Stdio::null());
-        ssh.stdout(Stdio::null());
-        ssh.stderr(Stdio::piped());
-        ssh.kill_on_drop(true);
+        ssh.command()
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
         log!(
             Level::Debug,
             "Running captured ssh command: target={}, argv={}",
             self.target,
-            ssh_command_argv_debug(&ssh)
+            ssh_command_argv_debug(ssh.command())
         );
-        let mut child = ssh.spawn()?;
+        let (mut child, _ssh_agent) = ssh.spawn()?;
         let stderr = child
             .stderr
             .take()
@@ -597,12 +652,13 @@ impl SshHost {
         let options = SshRunOptions::default().compressed();
         let mut ssh = build_ssh_command(self, command, &[], &options).await?;
 
-        ssh.stdin(Stdio::piped());
-        ssh.stdout(Stdio::inherit());
         // Capture stderr so prepare/watchdog logs include the remote reason
         // instead of only the local Broken pipe that follows an early remote exit.
-        ssh.stderr(Stdio::piped());
-        ssh.kill_on_drop(true);
+        ssh.command()
+            .stdin(Stdio::piped())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
 
         log!(
             Level::Debug,
@@ -612,7 +668,7 @@ impl SshHost {
             self.username,
             stage,
             local_path.display(),
-            ssh_command_argv_debug(&ssh)
+            ssh_command_argv_debug(ssh.command())
         );
 
         let upload_start = std::time::Instant::now();
@@ -630,7 +686,7 @@ impl SshHost {
                 local_path.display()
             ))
         })?;
-        let mut child = ssh.spawn().map_err(|error| {
+        let (mut child, _ssh_agent) = ssh.spawn().map_err(|error| {
             redoor_core::log_failure!(
                 Level::Error,
                 "SSH upload failed to spawn: target={}, stage={}, error={:#}",
@@ -963,14 +1019,29 @@ async fn build_ssh_command(
     command: &str,
     args: &[&str],
     options: &SshRunOptions,
-) -> Result<Command, std::io::Error> {
-    // Managed-key connections ignore the config files, so their routing is resolved first.
-    let routing = match &host.auth {
-        AuthPolicy::ManagedKey { .. } => Some(ResolvedRouting::resolve(host).await?),
-        _ => None,
+) -> Result<SshCommand, std::io::Error> {
+    // Managed-key connections ignore the config files, so their routing is resolved first,
+    // and they authenticate through their own in-process ssh-agent.
+    let (routing, ssh_agent) = match &host.auth {
+        AuthPolicy::ManagedKey { key } => (
+            Some(ResolvedRouting::resolve(host).await?),
+            Some(SshAgentSocket::bind(key.clone()).await?),
+        ),
+        _ => (None, None),
     };
+    let ssh_agent_paths = ssh_agent.as_ref().map(|socket| SshAgentPaths {
+        socket: socket.socket_path(),
+        public_key: socket.public_key_path(),
+    });
     let mut ssh = Command::new("ssh");
-    ssh.args(ssh_argv(host, routing.as_ref(), command, args, options));
+    ssh.args(ssh_argv(
+        host,
+        routing.as_ref(),
+        ssh_agent_paths.as_ref(),
+        command,
+        args,
+        options,
+    ));
     if let AuthPolicy::Password(password) = &host.auth {
         apply_askpass_env(&mut ssh, password)?;
     }
@@ -1016,7 +1087,10 @@ async fn build_ssh_command(
         output_route(options)
     );
 
-    Ok(ssh)
+    Ok(SshCommand {
+        command: ssh,
+        ssh_agent,
+    })
 }
 
 /// Collects `-o Name=value` pairs so tests can assert every security relevant option is
@@ -1087,8 +1161,9 @@ impl HostKeyPolicy {
 }
 
 impl AuthPolicy {
-    /// Writes this policy's credential options, each once.
-    fn write_options(&self, options: &mut OptionWriter) {
+    /// Writes this policy's credential options, each once. A managed key needs the paths of
+    /// its ssh-agent; without them no identity is offered at all, so the login fails closed.
+    fn write_options(&self, options: &mut OptionWriter, ssh_agent: Option<&SshAgentPaths>) {
         match self {
             Self::Default => {
                 // BatchMode prevents OpenSSH from reading a password or keyboard-interactive
@@ -1107,10 +1182,20 @@ impl AuthPolicy {
                 options.set("NumberOfPasswordPrompts", 0);
                 options.set("PreferredAuthentications", "none");
             }
-            Self::ManagedKey { identity_file } => {
+            Self::ManagedKey { .. } => {
+                // The public key file selects the one identity the in-process ssh-agent
+                // holds; no private key file exists for ssh to read.
                 options.set("IdentitiesOnly", "yes");
-                options.set_path("IdentityFile", identity_file);
-                options.set("IdentityAgent", "none");
+                match ssh_agent {
+                    Some(ssh_agent) => {
+                        options.set_path("IdentityFile", &ssh_agent.public_key);
+                        options.set_path("IdentityAgent", &ssh_agent.socket);
+                    }
+                    None => {
+                        options.set("IdentityFile", "none");
+                        options.set("IdentityAgent", "none");
+                    }
+                }
                 // A broken key must fail loudly instead of falling back to a password.
                 options.set("PasswordAuthentication", "no");
                 options.set("KbdInteractiveAuthentication", "no");
@@ -1127,6 +1212,7 @@ impl AuthPolicy {
 fn ssh_argv(
     host: &SshHost,
     routing: Option<&ResolvedRouting>,
+    ssh_agent: Option<&SshAgentPaths>,
     command: &str,
     args: &[&str],
     options: &SshRunOptions,
@@ -1177,7 +1263,7 @@ fn ssh_argv(
         ssh_options.set("ConnectTimeout", SSH_CONNECT_TIMEOUT_SECONDS);
     }
     host.host_key.write_options(&mut ssh_options);
-    host.auth.write_options(&mut ssh_options);
+    host.auth.write_options(&mut ssh_options, ssh_agent);
     argv.extend(ssh_options.args);
     for forward in &options.reverse_forwards {
         argv.push("-R".to_string());
@@ -1600,6 +1686,7 @@ mod tests {
         let argv = super::ssh_argv(
             &host,
             None,
+            None,
             r#"printf '%s|' "$REDOOR_AGENT_TOKEN" "$REDOOR_MANAGED_AGENT" "$@""#,
             &["My Laptop", "it's $(touch pwned)"],
             &options,
@@ -1659,7 +1746,7 @@ mod tests {
             super::build_ssh_command(&host, "true", &[], &super::SshRunOptions::default())
                 .await
                 .unwrap();
-        let logged = super::ssh_command_argv_debug(&command);
+        let logged = super::ssh_command_argv_debug(&command.command);
 
         // Operator logs must not print the configured password.
         assert!(!logged.contains("super-secret-password"));
@@ -1669,6 +1756,7 @@ mod tests {
         assert!(logged.contains("BatchMode=no"));
 
         let envs: Vec<(String, Option<String>)> = command
+            .command
             .as_std()
             .get_envs()
             .map(|(key, value)| {
@@ -1860,6 +1948,11 @@ mod tests {
         assert!(issue.contains("[redacted]"));
     }
 
+    /// A managed key for the policy tests; argv building never uses its private half.
+    fn test_key() -> std::sync::Arc<super::SshPrivateKey> {
+        std::sync::Arc::new(super::SshPrivateKey::generate().unwrap())
+    }
+
     /// Every `-o` value given for `name` in an argv.
     fn option_values(argv: &[String], name: &str) -> Vec<String> {
         argv.windows(2)
@@ -1919,13 +2012,12 @@ proxyjump bob@j1:2201,carol@j2
                 super::AuthPolicy::Password(zeroize::Zeroizing::new("pw".to_string())),
             ),
             ("none", super::AuthPolicy::NoAuth),
-            (
-                "key",
-                super::AuthPolicy::ManagedKey {
-                    identity_file: "/data/ssh/dev_x/key_y/id_ed25519".into(),
-                },
-            ),
+            ("key", super::AuthPolicy::ManagedKey { key: test_key() }),
         ];
+        let ssh_agent = super::SshAgentPaths {
+            socket: "/run/user/1/redoor-ssh-agent-x/s".into(),
+            public_key: "/run/user/1/redoor-ssh-agent-x/id.pub".into(),
+        };
         let routing = super::ResolvedRouting::from_dump(&super::SshConfigDump::parse(CONFIG_DUMP));
         for (host_key_name, host_key) in &host_keys {
             for (auth_name, auth) in &auths {
@@ -1938,6 +2030,7 @@ proxyjump bob@j1:2201,carol@j2
                 let argv = super::ssh_argv(
                     &host,
                     is_key.then_some(&routing),
+                    is_key.then_some(&ssh_agent),
                     "true",
                     &[],
                     &super::SshRunOptions::default(),
@@ -1974,11 +2067,16 @@ proxyjump bob@j1:2201,carol@j2
                         }),
                     ),
                     ("IdentitiesOnly", is_key.then_some("yes")),
+                    // Only the public key file and the in-process ssh-agent; no private
+                    // key file is ever handed to ssh.
                     (
                         "IdentityFile",
-                        is_key.then_some("\"/data/ssh/dev_x/key_y/id_ed25519\""),
+                        is_key.then_some("\"/run/user/1/redoor-ssh-agent-x/id.pub\""),
                     ),
-                    ("IdentityAgent", is_key.then_some("none")),
+                    (
+                        "IdentityAgent",
+                        is_key.then_some("\"/run/user/1/redoor-ssh-agent-x/s\""),
+                    ),
                     ("PasswordAuthentication", is_key.then_some("no")),
                     ("ExitOnForwardFailure", Some("yes")),
                     ("ControlMaster", Some("no")),
@@ -2073,12 +2171,12 @@ proxyjump bob@j1:2201,carol@j2
 connecttimeout 37
 ",
         ));
-        let host = super::SshHost::new("device".to_string()).auth(super::AuthPolicy::ManagedKey {
-            identity_file: "/data/id_ed25519".into(),
-        });
+        let host = super::SshHost::new("device".to_string())
+            .auth(super::AuthPolicy::ManagedKey { key: test_key() });
         let argv = super::ssh_argv(
             &host,
             Some(&routing),
+            None,
             "true",
             &[],
             &super::SshRunOptions::default(),
@@ -2091,7 +2189,14 @@ connecttimeout 37
     #[test]
     fn target_cannot_inject_ssh_options() {
         let host = super::SshHost::new("-oProxyCommand=touch /tmp/not-run".to_string());
-        let argv = super::ssh_argv(&host, None, "true", &[], &super::SshRunOptions::default());
+        let argv = super::ssh_argv(
+            &host,
+            None,
+            None,
+            "true",
+            &[],
+            &super::SshRunOptions::default(),
+        );
         let end = argv.iter().position(|arg| arg == "--").unwrap();
         // The option parser must stop before it encounters an untrusted target.
         assert_eq!(

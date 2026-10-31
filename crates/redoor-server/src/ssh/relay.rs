@@ -67,8 +67,10 @@ pub async fn run_relay(
         .context("relay startup must resolve a log path")?;
     let provision = ProvisionContext {
         app_name: paths.app_name().to_string(),
-        // Relays never have managed keys; the store is only consulted for `managed_ssh_key`.
+        // Relays never have managed keys or pins: they belong to no account.
         ssh_keys: crate::ssh::keys::SshKeyStore::for_data_dir(&paths.data_dir()?),
+        held_ssh_keys: Default::default(),
+        default_account: None,
         binaries: crate::binaries::BinaryCache::new(paths),
         log_max_size: relay.log_max_size,
         // Filled on the first preparation that uploads the local debug build.

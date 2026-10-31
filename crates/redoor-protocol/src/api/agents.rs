@@ -259,6 +259,34 @@ pub struct DuplicateIdWarning {
     pub since: UnixTimestampSeconds,
 }
 
+/// Optional body of `POST /api/v1/agents/{agent}/start`.
+///
+/// A device whose managed SSH key is encrypted with the vault can only start while the
+/// server holds the decrypted key. The browser unwraps the key's file key and sends it here;
+/// the server decrypts the key and holds it until the device is stopped. Ignored when the
+/// key is already held or not encrypted, so access tokens can start such a device while a
+/// browser start keeps it unlocked.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct StartAgentRequest {
+    /// The encrypted SSH key's file key, base64url.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ssh_key_file_key: Option<String>,
+}
+
+/// Optional body of `DELETE /api/v1/agents/{agent}`: the operation credential of an
+/// encrypted managed SSH key, so its line can be removed from the device first.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct DeleteSshAgentRequest {
+    /// The current encrypted SSH key's file key, base64url. Without it (and without a held
+    /// key) the key is only deleted locally.
+    #[serde(default)]
+    #[ts(optional)]
+    pub current_file_key: Option<String>,
+}
+
 /// Confirms that a managed supervisor accepted an idempotent start request.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

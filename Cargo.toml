@@ -70,6 +70,10 @@ getrandom = "0.4"
 # Generates and encodes the per-device ed25519 keys in-process, so no external tool writes them.
 ssh-key = { version = "0.6.7", default-features = false, features = ["ed25519", "std"] }
 zeroize = "1"
+# Signing and message framing of the in-process ssh-agent that hands ssh signatures from
+# managed keys without ever giving it the private key.
+signature = "2"
+ssh-encoding = { version = "0.2", default-features = false, features = ["alloc"] }
 # The `.redoorvault` file format: HKDF and HMAC for the header, ChaCha20-Poly1305 for the
 # STREAM payload. They share digest 0.11 with `sha2`.
 hkdf = "0.13"

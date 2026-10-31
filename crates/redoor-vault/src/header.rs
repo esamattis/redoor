@@ -6,7 +6,7 @@ use super::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use redoor_protocol::api::vault::{
-    VAULT_PAYLOAD_ALG, VAULT_WRAP_ALG, VaultFileHeader, VaultObjectKind,
+    SSH_KEY_CONTEXT_FIELDS, VAULT_PAYLOAD_ALG, VAULT_WRAP_ALG, VaultFileHeader, VaultObjectKind,
 };
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -191,9 +191,28 @@ fn validate_header(header: &VaultFileHeader) -> Result<(), VaultFormatError> {
     if header.vault_id.is_empty() || header.key_id.is_empty() {
         return invalid("the vault or key id is missing");
     }
-    // Files are bound to nothing; later kinds (SSH keys) define their own context.
-    if header.kind == VaultObjectKind::File && !header.context.is_empty() {
-        return invalid("a file header has no context");
+    match header.kind {
+        // Files are bound to nothing.
+        VaultObjectKind::File if !header.context.is_empty() => {
+            return invalid("a file header has no context");
+        }
+        VaultObjectKind::File => {}
+        // An SSH key is bound to exactly its account, device and public key; an extra or
+        // missing field would make the server compare less than it thinks it does.
+        VaultObjectKind::SshKey => {
+            let exact = header.context.len() == SSH_KEY_CONTEXT_FIELDS.len()
+                && SSH_KEY_CONTEXT_FIELDS.iter().all(|field| {
+                    header
+                        .context
+                        .get(*field)
+                        .is_some_and(|value| !value.is_empty())
+                });
+            if !exact {
+                return invalid(
+                    "an SSH key header needs exactly account, device_id and public_key",
+                );
+            }
+        }
     }
     if header.wrap.alg != VAULT_WRAP_ALG
         || decode_fixed::<WRAP_IV_LEN>(&header.wrap.iv).is_none()
@@ -339,6 +358,56 @@ pub(super) mod tests {
         json.extend_from_slice(&[0; 32]);
         assert!(matches!(
             read(&json).await.unwrap_err(),
+            VaultFormatError::InvalidHeader(_)
+        ));
+    }
+
+    /// An SSH key header is bound to exactly its account, device and public key, and a file
+    /// header to nothing, so neither can pass for the other.
+    #[test]
+    fn ssh_key_context_must_have_exactly_its_fields() {
+        let key = FileKey::generate();
+        let ssh_key_header = |fields: &[(&str, &str)]| VaultFileHeader {
+            kind: VaultObjectKind::SshKey,
+            context: fields
+                .iter()
+                .map(|(name, value)| (name.to_string(), value.to_string()))
+                .collect(),
+            ..test_header()
+        };
+        let complete = [
+            ("account", "alice"),
+            ("device_id", "dev_0123"),
+            ("public_key", "ssh-ed25519 AAAA"),
+        ];
+        // The complete context is accepted.
+        assert!(VaultPreamble::build(ssh_key_header(&complete), &key).is_ok());
+        // A missing field is refused.
+        assert!(matches!(
+            VaultPreamble::build(ssh_key_header(&complete[..2]), &key).unwrap_err(),
+            VaultFormatError::InvalidHeader(_)
+        ));
+        // An extra field is refused.
+        let mut extra = complete.to_vec();
+        extra.push(("comment", "x"));
+        assert!(matches!(
+            VaultPreamble::build(ssh_key_header(&extra), &key).unwrap_err(),
+            VaultFormatError::InvalidHeader(_)
+        ));
+        // An empty value is refused, because it would match any request.
+        let mut empty = complete.to_vec();
+        empty[0] = ("account", "");
+        assert!(matches!(
+            VaultPreamble::build(ssh_key_header(&empty), &key).unwrap_err(),
+            VaultFormatError::InvalidHeader(_)
+        ));
+        // A file header with an SSH key's context is refused too.
+        let file_with_context = VaultFileHeader {
+            kind: VaultObjectKind::File,
+            ..ssh_key_header(&complete)
+        };
+        assert!(matches!(
+            VaultPreamble::build(file_with_context, &key).unwrap_err(),
             VaultFormatError::InvalidHeader(_)
         ));
     }

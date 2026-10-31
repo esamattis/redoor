@@ -7,7 +7,7 @@ export type SshKeyEnrollmentResponse = {
 /**
  * `SHA256:` fingerprint of the new public key, as it appears in the device's logs. It
  * also identifies the key: the device's `authorized_keys` line carries it in its
- * `redoor:<device-id>:<fingerprint>` marker.
+ * `redoor:<device-id>:<account>:<fingerprint>` marker.
  */
 fingerprint: string, 
 /**

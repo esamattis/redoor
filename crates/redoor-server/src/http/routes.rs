@@ -218,7 +218,17 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route(
             "/api/v1/agents/{agent}/ssh-key",
-            post(super::ssh_keys::enroll_handler).delete(super::ssh_keys::remove_handler),
+            get(super::ssh_keys::status_handler)
+                .post(super::ssh_keys::enroll_handler)
+                .delete(super::ssh_keys::remove_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/ssh-key/rewrap",
+            post(super::vault_ssh_keys::rewrap_handler),
+        )
+        .route(
+            "/api/v1/vault/ssh-keys",
+            get(super::vault_ssh_keys::list_handler),
         )
         .route("/api/v1/local-agents", post(create_local_agent_handler))
         .route(

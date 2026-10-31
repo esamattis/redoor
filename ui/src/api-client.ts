@@ -69,6 +69,12 @@ import type { SshKeyEnrollmentResponse } from "#bindings/SshKeyEnrollmentRespons
 import type { SshKeyRemovalResponse } from "#bindings/SshKeyRemovalResponse";
 import type { PinSshHostKeyRequest } from "#bindings/PinSshHostKeyRequest";
 import type { SshHostKeyPinResponse } from "#bindings/SshHostKeyPinResponse";
+import type { SshKeyStatusResponse } from "#bindings/SshKeyStatusResponse";
+import type { RemoveSshKeyRequest } from "#bindings/RemoveSshKeyRequest";
+import type { RewrapSshKeyRequest } from "#bindings/RewrapSshKeyRequest";
+import type { VaultSshKeysResponse } from "#bindings/VaultSshKeysResponse";
+import type { StartAgentRequest } from "#bindings/StartAgentRequest";
+import type { DeleteSshAgentRequest } from "#bindings/DeleteSshAgentRequest";
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateLocalAgentResponse } from "#bindings/CreateLocalAgentResponse";
 import type { ManagedLocalAgentConfigurationResponse } from "#bindings/ManagedLocalAgentConfigurationResponse";
@@ -361,11 +367,21 @@ export class Agent {
         return this.info.supports_native_open;
     }
 
-    /** Requests desired-running without waiting for process preparation or registration. */
-    async start(): Promise<StartAgentResponse> {
+    /**
+     * Requests desired-running without waiting for process preparation or registration. A
+     * device whose SSH key is encrypted with the vault needs the key's file key in `request`
+     * unless the server still holds the key from an earlier start.
+     */
+    async start(request?: StartAgentRequest): Promise<StartAgentResponse> {
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
-            { method: "POST" },
+            request === undefined
+                ? { method: "POST" }
+                : {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext,
         );
     }
@@ -1477,13 +1493,55 @@ export class ApiClient {
         );
     }
 
-    /** Removes the managed SSH key from the device (when reachable) and from the server. */
-    async removeSshKey(agentId: string): Promise<SshKeyRemovalResponse> {
+    /**
+     * Removes the managed SSH key from the device (when reachable) and from the server. An
+     * encrypted key needs its file key in `request` to log in, unless the server holds it.
+     */
+    async removeSshKey(
+        agentId: string,
+        request?: RemoveSshKeyRequest,
+    ): Promise<SshKeyRemovalResponse> {
         return apiRequest<SshKeyRemovalResponse>(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key`,
-            { method: "DELETE" },
+            request === undefined
+                ? { method: "DELETE" }
+                : {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext(),
         );
+    }
+
+    /** Reads how an SSH device's managed key is stored: encrypted, held and its header. */
+    async getSshKeyStatus(agentId: string): Promise<SshKeyStatusResponse> {
+        return apiRequest<SshKeyStatusResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Moves an encrypted SSH key to the current vault generation. */
+    async rewrapSshKey(
+        agentId: string,
+        request: RewrapSshKeyRequest,
+    ): Promise<SshKeyStatusResponse> {
+        return apiRequest<SshKeyStatusResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key/rewrap`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Lists the account's SSH keys encrypted with the vault, for rotation. */
+    async listVaultSshKeys(): Promise<VaultSshKeysResponse> {
+        return this.vaultRequest("/ssh-keys", "GET");
     }
 
     /** Replaces one stopped SSH-backed managed-agent configuration. */
@@ -1544,16 +1602,26 @@ export class ApiClient {
         );
     }
 
-    /** Deletes through the collection that owns the managed-agent kind. */
+    /**
+     * Deletes through the collection that owns the managed-agent kind. An SSH device with an
+     * encrypted key may send the key's file key, so its line is removed from the device.
+     */
     async deleteManagedAgent(
         agentId: string,
         kind: "ssh" | "local",
+        request?: DeleteSshAgentRequest,
     ): Promise<DeleteManagedAgentResponse> {
         const collection = kind === "local" ? "local-agents" : "agents";
 
         return apiRequest<DeleteManagedAgentResponse>(
             `${this.baseUrl}/api/v1/${collection}/${encodeURIComponent(agentId)}`,
-            { method: "DELETE" },
+            request === undefined
+                ? { method: "DELETE" }
+                : {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext(),
         );
     }

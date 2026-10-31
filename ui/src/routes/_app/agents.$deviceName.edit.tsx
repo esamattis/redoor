@@ -22,7 +22,8 @@ import {
     serverInfoQueryOptions,
 } from "#ui/queries";
 import { useRouteAgent } from "#ui/use-active-agent";
-import { getErrorMessage } from "#ui/utils/error";
+import { currentSshKeyFileKey } from "#ui/vault/ssh-key-vault";
+import { vaultErrorMessage } from "#ui/vault/vault-errors";
 
 export const Route = createFileRoute("/_app/agents/$deviceName/edit")({
     loader: async ({ context, parentMatchPromise }) => {
@@ -48,7 +49,7 @@ export const Route = createFileRoute("/_app/agents/$deviceName/edit")({
 
 /** Updates or permanently removes one stopped managed local or SSH agent. */
 function EditManagedAgentPage() {
-    const { api, queryClient } = Route.useRouteContext();
+    const { api, queryClient, vault } = Route.useRouteContext();
     const { kind } = Route.useLoaderData();
     const { data: serverInfo } = useSuspenseQuery(serverInfoQueryOptions(api));
     // The id stays the same across a rename, so this page keeps editing the same device
@@ -68,6 +69,15 @@ function EditManagedAgentPage() {
 
     const isRunning = agent.status !== "stopped";
 
+    /**
+     * The file key of the device's encrypted SSH key, so the server can log in with it to
+     * remove the key's line from the device; `null` when the device has no encrypted key.
+     */
+    const sshKeyFileKey = (reason: string) =>
+        configuration.kind === "ssh" && configuration.value.has_managed_ssh_key
+            ? currentSshKeyFileKey({ api, vault, agentId: agent.id, reason })
+            : Promise.resolve(null);
+
     const updateMutation = useMutation({
         mutationFn: async (submission: ManagedAgentSubmitRequest) => {
             // The edit is about to drop the key; remove its line from the device first, while
@@ -77,7 +87,16 @@ function EditManagedAgentPage() {
                 submission.kind === "ssh" &&
                 submission.sshKey.action === "remove-first"
             ) {
-                const removal = await api.removeSshKey(agent.id);
+                const fileKey = await sshKeyFileKey(
+                    `Remove the SSH key of ${agent.name}`,
+                );
+
+                const removal = await api.removeSshKey(
+                    agent.id,
+                    fileKey === null
+                        ? undefined
+                        : { current_file_key: fileKey },
+                );
 
                 if (!removal.removed_from_device) {
                     setKeyLeftBehind(
@@ -118,7 +137,15 @@ function EditManagedAgentPage() {
     });
 
     const deleteMutation = useMutation({
-        mutationFn: () => api.deleteManagedAgent(agent.id, configuration.kind),
+        mutationFn: async () => {
+            const fileKey = await sshKeyFileKey(`Delete ${agent.name}`);
+
+            return api.deleteManagedAgent(
+                agent.id,
+                configuration.kind,
+                fileKey === null ? undefined : { current_file_key: fileKey },
+            );
+        },
         onSuccess: async () => {
             // Leave first: once the refreshed inventory drops the device, this page would
             // briefly report it as not found.
@@ -128,7 +155,7 @@ function EditManagedAgentPage() {
     });
 
     const mutationError = updateMutation.isError
-        ? getErrorMessage(updateMutation.error, "Failed to update device")
+        ? vaultErrorMessage(updateMutation.error, "Failed to update device")
         : null;
 
     const isBusy = updateMutation.isPending || deleteMutation.isPending;
@@ -201,7 +228,7 @@ function EditManagedAgentPage() {
                 isBusy={deleteMutation.isPending}
                 errorMessage={
                     deleteMutation.isError
-                        ? getErrorMessage(
+                        ? vaultErrorMessage(
                               deleteMutation.error,
                               "Failed to remove device",
                           )

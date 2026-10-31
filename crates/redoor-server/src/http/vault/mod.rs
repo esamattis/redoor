@@ -114,12 +114,14 @@ pub(crate) async fn rotate_handler(
     Ok(status(state.vault.rotate(request).await?))
 }
 
-/// Route: `POST /api/v1/vault/keys/{key_id}/destroy`.
+/// Route: `POST /api/v1/vault/keys/{key_id}/destroy`. Refused while an encrypted SSH key
+/// still uses the generation, because that device could no longer be started.
 pub(crate) async fn destroy_key_handler(
     State(state): State<ServerState>,
     Path(key_id): Path<String>,
     Json(request): Json<DestroyVaultKeyRequest>,
 ) -> Result<Json<VaultStatusResponse>, ApiError> {
+    super::vault_ssh_keys::require_no_ssh_key_on(&state, &key_id).await?;
     Ok(status(state.vault.destroy_key(&key_id, request).await?))
 }
 

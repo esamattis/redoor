@@ -2,5 +2,8 @@
 
 /**
  * What kind of object a vault file holds; the server compares it with what it expects.
+ *
+ * The browser binds the kind into the file key wrap's associated data, so a file key can
+ * never be presented as an SSH key's and vice versa.
  */
-export type VaultObjectKind = "file";
+export type VaultObjectKind = "file" | "ssh-key";

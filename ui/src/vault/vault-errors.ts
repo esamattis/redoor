@@ -30,6 +30,10 @@ const messages: Partial<Record<ApiErrorCode, string>> = {
     vault_file_changed: "The file changed on the device since it was opened.",
     agent_upgrade_required:
         "This device's agent is too old to write vault files. Upgrade the agent first.",
+    ssh_key_locked:
+        "This device's SSH key is encrypted with the vault. Unlock the vault to use it.",
+    vault_required:
+        "This account has a vault, so new SSH keys are encrypted with it. Unlock the vault and try again.",
 };
 
 /** The vault error code of a failure, if it has one. */

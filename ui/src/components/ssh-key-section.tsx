@@ -5,13 +5,16 @@ import {
     CheckCircle2,
     KeyRound,
     LoaderCircle,
+    LockKeyhole,
     RefreshCw,
     ShieldAlert,
     Trash2,
+    TriangleAlert,
 } from "lucide-react";
 
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
 import type { SshKeyRemovalResponse } from "#bindings/SshKeyRemovalResponse";
+import type { SshKeyStatusResponse } from "#bindings/SshKeyStatusResponse";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
@@ -22,8 +25,16 @@ import {
     type SshKeySetupMode,
 } from "#ui/components/ssh-key-setup-dialog";
 import { Toast } from "#ui/components/toast";
-import { queryKeys, sshHostKeyQueryOptions } from "#ui/queries";
+import {
+    invalidateSshKeyQueries,
+    queryKeys,
+    sshHostKeyQueryOptions,
+    sshKeyStatusQueryOptions,
+    vaultStatusQueryOptions,
+} from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
+import { currentSshKeyFileKey } from "#ui/vault/ssh-key-vault";
+import { vaultErrorMessage } from "#ui/vault/vault-errors";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -49,7 +60,20 @@ export function SshKeySection(props: {
 
     const [feedback, setFeedback] = React.useState<SshKeyFeedback | null>(null);
 
+    const { api } = rootRouteApi.useRouteContext();
     const hasKey = props.configuration.has_managed_ssh_key;
+
+    const keyStatus = useQuery({
+        ...sshKeyStatusQueryOptions(api, props.agentId),
+        enabled: hasKey,
+    });
+
+    const vaultStatus = useQuery(vaultStatusQueryOptions(api));
+    const hasVault = vaultStatus.data?.vault != null;
+
+    // An account with a vault keeps keys encrypted, so a plaintext key is rotated into one.
+    const rotatesToEncrypted =
+        hasVault && keyStatus.data !== undefined && !keyStatus.data.encrypted;
 
     return (
         <section
@@ -75,6 +99,9 @@ export function SshKeySection(props: {
                 ) : null}
                 <span>{authenticationSummary(props.configuration)}</span>
             </p>
+            {hasKey && keyStatus.data !== undefined ? (
+                <SshKeyStorage status={keyStatus.data} hasVault={hasVault} />
+            ) : null}
             <div className="mt-4 flex flex-wrap gap-2">
                 {hasKey ? (
                     <>
@@ -82,11 +109,27 @@ export function SshKeySection(props: {
                             type="button"
                             variant="secondary"
                             size="sm"
-                            tooltip="Replace the device's SSH key with a new one and remove the old key from the device"
+                            tooltip={
+                                rotatesToEncrypted
+                                    ? "Replace the plaintext key with a new key encrypted with your vault and remove the old key from the device"
+                                    : "Replace the device's SSH key with a new one and remove the old key from the device"
+                            }
                             onClick={() => setSetupMode("rotate")}
                         >
-                            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-                            Rotate key
+                            {rotatesToEncrypted ? (
+                                <LockKeyhole
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                            ) : (
+                                <RefreshCw
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                            )}
+                            {rotatesToEncrypted
+                                ? "Rotate to a vault-encrypted key"
+                                : "Rotate key"}
                         </Button>
                         <Button
                             type="button"
@@ -178,6 +221,70 @@ function authenticationSummary(
     return "This device logs in with this server's own SSH keys or ssh-agent. Set up a dedicated SSH key so the device gets a key that can be revoked on its own.";
 }
 
+/**
+ * How the device's key is stored on this server: encrypted with the vault (and whether the
+ * server holds it unlocked for the running device) or in plaintext, plus any problem that
+ * keeps it from being used.
+ */
+function SshKeyStorage(props: {
+    status: SshKeyStatusResponse;
+    hasVault: boolean;
+}) {
+    const keyStatus = props.status.key_status?.status;
+
+    const unusable =
+        props.status.problem ??
+        (props.status.encrypted &&
+        keyStatus !== undefined &&
+        keyStatus !== "current" &&
+        keyStatus !== "older"
+            ? "The key is encrypted with a vault key this vault cannot open. Remove the key and set it up again."
+            : null);
+
+    return (
+        <div className="mt-2 space-y-2 text-sm">
+            <p
+                aria-label="SSH key storage"
+                className="flex items-start gap-2 text-slate-300"
+            >
+                <LockKeyhole
+                    className={
+                        props.status.encrypted
+                            ? "mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
+                            : "mt-0.5 h-4 w-4 shrink-0 text-slate-500"
+                    }
+                    aria-hidden="true"
+                />
+                <span>
+                    {props.status.encrypted
+                        ? `Encrypted with vault. ${props.status.held ? "Unlocked on the server while the device runs." : "Starting the device asks for the vault."}`
+                        : props.hasVault
+                          ? "Plaintext. Rotate it to a key encrypted with your vault."
+                          : "Plaintext. Create a vault in Settings to encrypt SSH keys."}
+                </span>
+            </p>
+            {props.status.encrypted && keyStatus === "older" ? (
+                <p className="text-slate-400">
+                    Encrypted with an older vault key. Rewrap it in the vault
+                    settings.
+                </p>
+            ) : null}
+            {unusable !== null ? (
+                <p
+                    role="alert"
+                    className="flex items-start gap-2 text-amber-300"
+                >
+                    <TriangleAlert
+                        className="mt-0.5 h-4 w-4 shrink-0"
+                        aria-hidden="true"
+                    />
+                    <span>{unusable}</span>
+                </p>
+            ) : null}
+        </div>
+    );
+}
+
 /** Tells the user whether the key line is gone from the device or still has to be cleaned up. */
 function removalFeedback(
     deviceName: string,
@@ -204,18 +311,26 @@ function RemoveSshKeyDialog(props: {
     onClose: () => void;
     onRemoved: (result: SshKeyRemovalResponse) => void;
 }) {
-    const { api } = rootRouteApi.useRouteContext();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
 
     const removeMutation = useMutation({
-        mutationFn: () => api.removeSshKey(props.agentId),
+        mutationFn: async () => {
+            // An encrypted key logs in to remove its own line only once unlocked.
+            const fileKey = await currentSshKeyFileKey({
+                api,
+                vault,
+                agentId: props.agentId,
+                reason: `Remove the SSH key of ${props.deviceName}`,
+            });
+
+            return api.removeSshKey(
+                props.agentId,
+                fileKey === null ? undefined : { current_file_key: fileKey },
+            );
+        },
         onSuccess: async (result) => {
-            await Promise.all([
-                queryClient.invalidateQueries({ queryKey: queryKeys.agents() }),
-                queryClient.invalidateQueries({
-                    queryKey: queryKeys.agentConfiguration(props.agentId),
-                }),
-            ]);
+            await invalidateSshKeyQueries(queryClient, props.agentId);
             props.onRemoved(result);
         },
     });
@@ -230,7 +345,7 @@ function RemoveSshKeyDialog(props: {
             isBusy={removeMutation.isPending}
             errorMessage={
                 removeMutation.isError
-                    ? getErrorMessage(
+                    ? vaultErrorMessage(
                           removeMutation.error,
                           "Failed to remove the SSH key",
                       )

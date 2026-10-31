@@ -22,6 +22,9 @@ const API_ERROR_CODES = [
     "invalid_vault_file_key",
     "not_a_vault_path",
     "agent_upgrade_required",
+    "ssh_key_locked",
+    "vault_required",
+    "vault_key_in_use",
 ] as const satisfies readonly ApiErrorCode[];
 
 /** Fails to compile when the server gains a code this list does not name. */

@@ -48,6 +48,7 @@ pub(crate) mod upload_requests;
 pub(crate) mod user_state;
 mod vault;
 mod vault_files;
+mod vault_ssh_keys;
 pub(crate) mod watchdog;
 mod websocket_security;
 mod ws;

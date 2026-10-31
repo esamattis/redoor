@@ -1,10 +1,19 @@
-// Serial: adds and removes SSH devices in the shared device list.
-import { expect, test, type APIRequestContext } from "@playwright/test";
+// Serial: adds and removes SSH devices in the shared device list, and creates and deletes
+// the test account's vault, which encrypts SSH keys.
+import fs from "node:fs/promises";
+import path from "node:path";
+import {
+    expect,
+    test,
+    type APIRequestContext,
+    type Page,
+} from "@playwright/test";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";
 import type { SshHostKeyResponse } from "#bindings/SshHostKeyResponse";
 import type { SshKeyRemovalResponse } from "#bindings/SshKeyRemovalResponse";
+import type { SshKeyStatusResponse } from "#bindings/SshKeyStatusResponse";
 import { WEB_BASE_URL } from "../helpers";
 
 // Only the password user is used here: the integration tests enroll keys for `redoor`, and
@@ -14,6 +23,33 @@ const SSH_USER = "redoor-password";
 const ADDED_DEVICE = `playwright-ssh-key-${process.pid}`;
 
 const UPGRADED_DEVICE = `playwright-ssh-key-upgrade-${process.pid}`;
+
+const ENCRYPTED_DEVICE = `playwright-ssh-key-vault-${process.pid}`;
+
+const PASSPHRASE = "correct horse battery staple";
+
+/** The Playwright server's data directories, where the account's vault file lives. */
+const SERVER_SHARE = path.resolve(".test-playwright-home/.local/share");
+
+/** Deletes the account's vault, so the vault test starts and ends without one. */
+async function removeVault() {
+    const apps = await fs.readdir(SERVER_SHARE).catch(() => []);
+
+    await Promise.all(
+        apps.map((app) =>
+            fs.rm(
+                path.join(
+                    SERVER_SHARE,
+                    app,
+                    "users",
+                    "test-user",
+                    "vault.json",
+                ),
+                { force: true },
+            ),
+        ),
+    );
+}
 
 // Enrollment and the following connect provision the agent over the fixture, which can take
 // a minute under full-suite load.
@@ -50,6 +86,10 @@ async function getConfiguration(
 /**
  * Stops the device, removes its key line from the shared fixture account and deletes the
  * device, so no agent, authorized_keys line or config entry outlives the test.
+ *
+ * An encrypted key can only remove its line with its file key, which only the browser's
+ * vault has; the encrypted key test removes it through the UI, so this cleanup accepts a
+ * local-only removal for such a key after a failure.
  */
 async function removeDevice(
     request: APIRequestContext,
@@ -75,6 +115,8 @@ async function removeDevice(
     const configuration = await getConfiguration(request, agent.id);
 
     if (configuration.has_managed_ssh_key) {
+        const encrypted = (await getKeyStatus(request, agent.id)).encrypted;
+
         const removal = await request.delete(
             `${WEB_BASE_URL}/api/v1/agents/${agent.id}/ssh-key`,
         );
@@ -82,7 +124,7 @@ async function removeDevice(
         expect(removal.ok()).toBe(true);
         const body: SshKeyRemovalResponse = await removal.json();
         // A line left behind would keep a deleted device's key able to log in.
-        expect(body.removed_from_device).toBe(true);
+        expect(body.removed_from_device || encrypted).toBe(true);
     }
 
     const deletion = await request.delete(
@@ -90,6 +132,30 @@ async function removeDevice(
     );
 
     expect(deletion.ok()).toBe(true);
+}
+
+/** Answers the shared vault prompt with the passphrase. */
+async function unlockVault(page: Page): Promise<void> {
+    const unlock = page.getByRole("dialog", { name: "Unlock vault" });
+    await expect(unlock).toBeVisible({ timeout: 30_000 });
+    await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+    await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
+    // Argon2id takes a moment; the dialog closes once the vault is unlocked.
+    await expect(unlock).toBeHidden({ timeout: 30_000 });
+}
+
+/** Reads how the device's key is stored: encrypted with the vault or not. */
+async function getKeyStatus(
+    request: APIRequestContext,
+    agentId: string,
+): Promise<SshKeyStatusResponse> {
+    const response = await request.get(
+        `${WEB_BASE_URL}/api/v1/agents/${agentId}/ssh-key`,
+    );
+
+    expect(response.ok()).toBe(true);
+
+    return response.json();
 }
 
 /** Probes the host key the fixture presents, to compare with what the UI showed. */
@@ -116,12 +182,16 @@ test.describe.serial("Dedicated SSH device keys", () => {
     test.beforeEach(async ({ request }) => {
         await removeDevice(request, ADDED_DEVICE);
         await removeDevice(request, UPGRADED_DEVICE);
+        await removeDevice(request, ENCRYPTED_DEVICE);
+        await removeVault();
     });
 
     // Playwright has no onTestFinished; afterEach is its per-test cleanup hook.
     test.afterEach(async ({ request }) => {
         await removeDevice(request, ADDED_DEVICE);
         await removeDevice(request, UPGRADED_DEVICE);
+        await removeDevice(request, ENCRYPTED_DEVICE);
+        await removeVault();
     });
 
     test("adds a device with a dedicated key and connects with it", async ({
@@ -333,5 +403,122 @@ test.describe.serial("Dedicated SSH device keys", () => {
         await expect(
             page.getByRole("button", { name: "Set up SSH key" }),
         ).toBeVisible();
+    });
+
+    test("sets up a vault-encrypted key and starts the device through the unlock prompt", async ({
+        page,
+    }) => {
+        test.setTimeout(SSH_KEY_TEST_TIMEOUT);
+        const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+
+        if (password === undefined) {
+            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+        }
+
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+
+        const create = page.getByRole("dialog", { name: "Create vault" });
+        await create.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+        await create.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+        await create.getByRole("button", { name: "Create vault" }).click();
+        // Argon2id takes a moment; the dialog closes once the vault exists and is unlocked.
+        await expect(create).toBeHidden({ timeout: 30_000 });
+
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "redoor-ssh-test",
+                    username: SSH_USER,
+                    ssh_port: null,
+                    name: ENCRYPTED_DEVICE,
+                    remote_bin: null,
+                    home: null,
+                    log: null,
+                    password,
+                    clear_password: false,
+                },
+            },
+        );
+
+        expect(createResponse.ok()).toBe(true);
+        const agent = await findAgent(page.request, ENCRYPTED_DEVICE);
+
+        if (!agent) throw new Error(`${ENCRYPTED_DEVICE} missing after create`);
+
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page
+            .getByRole("link", { name: `Edit ${ENCRYPTED_DEVICE}` })
+            .click();
+        await page.getByRole("button", { name: "Set up SSH key" }).click();
+
+        const setup = page.getByRole("dialog", {
+            name: "Set up a dedicated SSH key",
+        });
+
+        // The dialog tells the user the key is encrypted with the vault.
+        await expect(
+            setup.getByText("encrypted with your vault"),
+        ).toBeVisible();
+        await expect(setup.getByLabel(/^Host key \(.+\) contents$/)).toHaveText(
+            /^SHA256:/,
+            { timeout: 30_000 },
+        );
+        await setup
+            .getByRole("button", { name: "Trust host key and install" })
+            .click();
+
+        // The page load locked the vault, and the new key needs it, so the setup asks first.
+        await unlockVault(page);
+
+        const installed = page.getByRole("dialog", {
+            name: "SSH key installed",
+        });
+
+        await expect(
+            installed.getByLabel("New key fingerprint contents"),
+        ).toHaveText(/^SHA256:/, { timeout: 60_000 });
+        await installed.getByRole("button", { name: "Done" }).click();
+
+        // The key was encrypted with the vault.
+        expect((await getKeyStatus(page.request, agent.id)).encrypted).toBe(
+            true,
+        );
+        // The configuration page says how the key is stored.
+        await expect(page.getByLabel("SSH key storage")).toContainText(
+            "Encrypted with vault",
+        );
+
+        // Loading the page again locks the vault, which was not kept on this device.
+        await page.goto(`${WEB_BASE_URL}/agents/${ENCRYPTED_DEVICE}`);
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+        // Starting a device whose key is locked asks for the vault ...
+        await unlockVault(page);
+        // ... and once unlocked, the start hands the key over and the device connects.
+        await expect(
+            page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, connected` }),
+        ).toHaveAttribute("aria-current", "page", { timeout: 90_000 });
+        // The server holds the key while the device runs.
+        expect((await getKeyStatus(page.request, agent.id)).held).toBe(true);
+
+        await page
+            .getByRole("link", { name: `Edit ${ENCRYPTED_DEVICE}` })
+            .click();
+        await page.getByRole("button", { name: "Remove key" }).click();
+        await page
+            .getByRole("dialog", {
+                name: `Remove the SSH key of ${ENCRYPTED_DEVICE}?`,
+            })
+            .getByRole("button", { name: "Remove key" })
+            .click();
+        // The unlocked vault gave the removal the key's file key, so the line left the device.
+        await expect(
+            page
+                .getByRole("status")
+                .filter({ hasText: "Removed the SSH key from" }),
+        ).toBeVisible({ timeout: 30_000 });
     });
 });

@@ -342,6 +342,7 @@ impl ServerRuntime {
         let watchdogs = WatchdogRegistry::new();
         let binaries = crate::binaries::BinaryCache::new(runtime.paths.clone());
         let ssh_keys = crate::ssh::keys::SshKeyStore::for_data_dir(&data_dir);
+        let held_ssh_keys = crate::ssh::held_keys::HeldSshKeys::default();
         let launcher = ManagedLauncher::new(
             config.port,
             config.agent_token,
@@ -349,6 +350,8 @@ impl ServerRuntime {
                 app_name: runtime.paths.app_name().to_string(),
                 binaries: binaries.clone(),
                 ssh_keys: ssh_keys.clone(),
+                held_ssh_keys: held_ssh_keys.clone(),
+                default_account: Some(auth.username().to_string()),
                 log_max_size: config.log_max_size,
                 // Empty until the first SSH provision, so servers that never provision a
                 // device never hash the debug build.
@@ -388,6 +391,7 @@ impl ServerRuntime {
             config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),
             editor_buffer_lock: Arc::default(),
             ssh_keys,
+            held_ssh_keys,
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
             auth_mode,
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),

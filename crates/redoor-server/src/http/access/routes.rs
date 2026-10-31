@@ -64,11 +64,13 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("GET" | "PUT", "/api/v1/agents/{agent}/logging-level")
         | ("POST", "/api/v1/agents/{agent}/echo") => Access::SessionOnly,
 
-        // SSH keys and host keys carry login passwords and change what the server can log
-        // in to.
+        // SSH keys and host keys carry login passwords and file keys and change what the
+        // server can log in to.
         ("GET", "/api/v1/agents/{agent}/ssh-host-key")
         | ("POST", "/api/v1/agents/{agent}/ssh-host-key/pin")
-        | ("POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key") => Access::SessionOnly,
+        | ("GET" | "POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key")
+        | ("POST", "/api/v1/agents/{agent}/ssh-key/rewrap")
+        | ("GET", "/api/v1/vault/ssh-keys") => Access::SessionOnly,
 
         // The vault and encrypted files: a token or MCP client may copy ciphertext through the
         // ordinary file routes, but never decrypt or change the vault.
@@ -324,6 +326,17 @@ mod tests {
                 "/api/v1/agents/{agent}/ssh-host-key",
                 Access::SessionOnly,
             ),
+            (
+                Method::GET,
+                "/api/v1/agents/{agent}/ssh-key",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/ssh-key/rewrap",
+                Access::SessionOnly,
+            ),
+            (Method::GET, "/api/v1/vault/ssh-keys", Access::SessionOnly),
             (Method::GET, "/api/v1/tokens", Access::SessionOnly),
             (Method::GET, "/api/v1/tokens/current", Access::AnyPrincipal),
             (

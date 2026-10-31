@@ -9,6 +9,8 @@
  */
 import type { CreateVaultRequest } from "#bindings/CreateVaultRequest";
 import type { VaultFileHeader } from "#bindings/VaultFileHeader";
+import type { VaultObjectKind } from "#bindings/VaultObjectKind";
+import type { SshKeyVaultSeal } from "#bindings/SshKeyVaultSeal";
 import type { VaultKdfParams } from "#bindings/VaultKdfParams";
 import type { VaultKeyEntry } from "#bindings/VaultKeyEntry";
 import type { VaultSlot } from "#bindings/VaultSlot";
@@ -388,9 +390,13 @@ export async function fileKeyForHeader(
     }
 }
 
-/** A new file key wrapped with the current generation, for one write. */
+/**
+ * A new file key wrapped with the current generation, for one write. `kind` is bound into
+ * the wrap, so the key of a user file can never open an SSH key and vice versa.
+ */
 export async function newWriteKeys(
     vault: UnlockedVault,
+    kind: VaultObjectKind = "file",
 ): Promise<VaultWriteKeys> {
     const key = vault.keys.get(vault.currentKeyId);
 
@@ -407,12 +413,30 @@ export async function newWriteKeys(
             wrap: await wrapFileKey(key, fileKey, {
                 vaultId: vault.vaultId,
                 keyId: vault.currentKeyId,
-                kind: "file",
+                kind,
             }),
         };
     } finally {
         wipe(fileKey);
     }
+}
+
+/**
+ * What the server needs to encrypt a new managed SSH key with the vault: a fresh file key
+ * and its wrap for the `ssh-key` kind. The server generates the key itself, so the browser
+ * never sees it.
+ */
+export async function newSshKeySeal(
+    vault: UnlockedVault,
+): Promise<SshKeyVaultSeal> {
+    const keys = await newWriteKeys(vault, "ssh-key");
+
+    return {
+        vault_id: vault.vaultId,
+        key_id: keys.keyId,
+        file_key: keys.fileKey,
+        file_key_wrap: keys.wrap,
+    };
 }
 
 /** The same file key wrapped with the current generation, for a header-only rewrap. */

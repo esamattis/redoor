@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
 import { HardDrive, LoaderCircle } from "lucide-react";
 
@@ -11,6 +12,8 @@ import { Tooltip } from "#ui/components/tooltip";
 import { queryKeys } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
+import { startAgent } from "#ui/vault/ssh-key-vault";
+import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import {
     formatAgentRecency,
     formatElapsedSecsMs,
@@ -20,12 +23,15 @@ import {
     useNow,
 } from "#ui/utils/agent-time";
 
+const rootRouteApi = getRouteApi("__root__");
+
 /** Presents explicit managed lifecycle controls while preserving pending filesystem destinations. */
 export function AgentLifecycle(props: {
     agent: Agent;
     preserveDestination?: boolean;
 }) {
     const queryClient = useQueryClient();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
     const state = startStates[props.agent.id];
@@ -43,7 +49,8 @@ export function AgentLifecycle(props: {
         });
 
     const startMutation = useMutation({
-        mutationFn: () => props.agent.start(),
+        // A device whose SSH key is encrypted with the vault asks for the vault first.
+        mutationFn: () => startAgent({ agent: props.agent, api, vault }),
         onMutate: () => {
             setStartStates((states) => ({
                 ...states,
@@ -60,7 +67,7 @@ export function AgentLifecycle(props: {
                 ...states,
                 [props.agent.id]: {
                     starting: false,
-                    error: getErrorMessage(error, "Failed to start agent"),
+                    error: vaultErrorMessage(error, "Failed to start agent"),
                     autoRedirect: props.preserveDestination !== true,
                 },
             }));

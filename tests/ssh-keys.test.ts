@@ -44,6 +44,7 @@ import {
     startAndWaitConnected,
     startAndWaitForIssue,
     fixturePassword,
+    keyMarker,
 } from "./ssh-key-test-utils";
 
 describe.skipIf(
@@ -211,9 +212,9 @@ describe.skipIf(
 
             const lines = await remoteDeviceLines(SSH_PASSWORD_USER, deviceId);
             // Exactly the restricted line for this key is installed on the device, marked
-            // with the device id and the key's fingerprint.
+            // with the device id, the account and the key's fingerprint.
             expect(lines).toEqual([
-                `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} redoor:${deviceId}:${enrolled.fingerprint}`,
+                `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} ${keyMarker(deviceId, enrolled.fingerprint)}`,
             ]);
 
             const connected = await startAndWaitConnected(fixture, deviceId);
@@ -366,9 +367,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             const lines = await remoteDeviceLines(SSH_TEST_USER, deviceId);
             // The old line is removed once the new key is current.
             expect(lines).toHaveLength(1);
-            expect(lines[0]).toContain(
-                `redoor:${deviceId}:${second.fingerprint}`,
-            );
+            expect(lines[0]).toContain(keyMarker(deviceId, second.fingerprint));
             // Locally the new key replaced the old one in place; no staged key is left.
             expect(localKeyFiles(fixture, deviceId)).toEqual(["id_ed25519"]);
             expect(
@@ -409,7 +408,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             const unrelatedMarker = `redoor-test-unrelated-${fixture.suffix}`;
             const unrelated = `ssh-ed25519   ${randomEd25519PublicKey()}  ${unrelatedMarker}\t#  odd   spacing `;
             const staleKey = randomEd25519PublicKey();
-            const stale = `restrict,port-forwarding ssh-ed25519 ${staleKey} redoor:${deviceId}:${fingerprintOf(staleKey)}`;
+            const stale = `restrict,port-forwarding ssh-ed25519 ${staleKey} ${keyMarker(deviceId, fingerprintOf(staleKey))}`;
 
             onTestFinished(async () => {
                 await sshTestCommand(
@@ -428,9 +427,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             const after = await remoteAuthorizedKeys(SSH_TEST_USER);
             const [newLine] = await remoteDeviceLines(SSH_TEST_USER, deviceId);
             // Only the new line remains for this device.
-            expect(newLine).toContain(
-                `redoor:${deviceId}:${enrolled.fingerprint}`,
-            );
+            expect(newLine).toContain(keyMarker(deviceId, enrolled.fingerprint));
             // Every other line, including odd whitespace, is copied unchanged and the stale
             // line of this device is dropped.
             expect(after).toBe(
