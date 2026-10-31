@@ -75,8 +75,9 @@ test.describe.serial("Git worktree list", () => {
         await expect(
             page.getByRole("region", { name: "Git repository" }),
         ).toContainText("feature");
+        // Exact, because the shared open files list may hold other specs' similarly named files.
         await expect(
-            page.getByRole("link", { name: "draft.txt" }),
+            page.getByRole("link", { name: "draft.txt", exact: true }),
         ).toBeVisible();
 
         await gitTabs.getByRole("link", { name: "Worktrees" }).click();
