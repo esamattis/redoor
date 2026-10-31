@@ -2286,7 +2286,10 @@ devices.
      `vault` (required with a vault, `vault_required` otherwise; refused without one). It is
      installed by a script over stdin that atomically rewrites `~/.ssh/authorized_keys`,
      keeping every other line, dropping this device's and account's lines whose key
-     fingerprint is not in the keep list, and refusing a non-regular file. The line is
+     fingerprint is not in the keep list. A symlinked file is written through (temp file
+     next to the link target, renamed over it) so the link survives, because Proxmox VE
+     links root's file into its cluster filesystem to share it between nodes; a dangling
+     link, a non-regular target or a target in an unwritable directory is refused. The line is
      `restrict,port-forwarding <key> redoor:<device-id>:<account>:<SHA256 fingerprint>`, so
      one account's setup, rotation and removal never touch another account's lines. The
      awk filter gets the marker and keep list through `ENVIRON` (no escape processing) and

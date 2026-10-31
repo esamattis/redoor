@@ -780,8 +780,15 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 /// appends the new line (dropping an older copy with the same fingerprint first, so running
 /// it again gives the same file) and moves the result over the file atomically, so sshd
 /// never sees a half-written file. Lines of other devices and other tools are copied
-/// unchanged. A symlinked or otherwise non-regular `authorized_keys` is left alone with an
-/// error, because replacing it would break whatever manages it.
+/// unchanged.
+///
+/// A symlinked `authorized_keys` is written through: the new file is built next to the link
+/// target and renamed over the target, so the link survives. Proxmox VE links root's file
+/// into its cluster filesystem (`/etc/pve/priv/authorized_keys`) to share it between nodes,
+/// and replacing the link with a regular file would quietly cut the node off from that.
+/// A link to a missing file, a non-regular target or a target in a directory we cannot
+/// write (such as a read-only store managed by another tool) is left alone with an error,
+/// because creating or replacing it would either fail half way or fight its owner.
 ///
 /// `new` is the new line and its key's fingerprint. Fingerprints contain `+`, `/` and
 /// possibly `=`, so the awk filter compares them only as literal strings (`index` and
@@ -804,18 +811,35 @@ new_line={new_line}
 skip={skip}
 ssh_dir="$HOME/.ssh"
 authorized_keys="$ssh_dir/authorized_keys"
-if [ -L "$authorized_keys" ] || {{ [ -e "$authorized_keys" ] && [ ! -f "$authorized_keys" ]; }}; then
-  echo "redoor: $authorized_keys is not a regular file (for example a symlink managed by another tool); refusing to replace it" >&2
+# A link is followed so the rename below replaces its target and keeps the link.
+target="$authorized_keys"
+if [ -L "$authorized_keys" ]; then
+  target=$(readlink -f "$authorized_keys" 2>/dev/null || realpath "$authorized_keys" 2>/dev/null) || target=""
+  if [ -z "$target" ] || [ ! -e "$target" ]; then
+    if [ -z "$new_line" ]; then
+      exit 0
+    fi
+    echo "redoor: $authorized_keys is a symlink to a missing file; refusing to create it" >&2
+    exit 3
+  fi
+fi
+if [ -e "$target" ] && [ ! -f "$target" ]; then
+  echo "redoor: $target is not a regular file; refusing to replace it" >&2
   exit 3
 fi
-if [ ! -e "$authorized_keys" ] && [ -z "$new_line" ]; then
+if [ ! -e "$target" ] && [ -z "$new_line" ]; then
   exit 0
 fi
 mkdir -p "$ssh_dir"
 chmod 700 "$ssh_dir"
-temp=$(mktemp "$ssh_dir/.authorized_keys.redoor.XXXXXX")
+target_dir=$(dirname "$target")
+if [ "$target" != "$authorized_keys" ] && [ ! -w "$target_dir" ]; then
+  echo "redoor: $authorized_keys links to $target in a directory that is not writable (for example a file managed by another tool); refusing to replace it" >&2
+  exit 3
+fi
+temp=$(mktemp "$target_dir/.authorized_keys.redoor.XXXXXX")
 trap 'rm -f "$temp"' EXIT
-if [ -f "$authorized_keys" ]; then
+if [ -f "$target" ]; then
   REDOOR_MARKER="$marker" REDOOR_KEEP="$keep" REDOOR_SKIP="$skip" awk '
     BEGIN {{
       marker = ENVIRON["REDOOR_MARKER"]
@@ -830,13 +854,19 @@ if [ -f "$authorized_keys" ]; then
         if (fingerprint == "" || fingerprint == skip || index(keep, " " fingerprint " ") == 0) next
       }}
       print
-    }}' "$authorized_keys" > "$temp"
+    }}' "$target" > "$temp"
 fi
 if [ -n "$new_line" ]; then
   printf '%s\n' "$new_line" >> "$temp"
 fi
-chmod 600 "$temp"
-mv -f "$temp" "$authorized_keys"
+# mktemp already created the file 0600. Filesystems behind a link, such as pmxcfs, may
+# enforce their own fixed modes and reject chmod, so only our own file must accept it.
+if [ "$target" = "$authorized_keys" ]; then
+  chmod 600 "$temp"
+else
+  chmod 600 "$temp" 2>/dev/null || true
+fi
+mv -f "$temp" "$target"
 trap - EXIT
 "#
     )
@@ -1055,13 +1085,17 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
         assert!(!home.path().join("pwned").exists());
     }
 
-    /// A symlinked authorized_keys belongs to some other setup and must not be replaced.
+    /// A symlinked authorized_keys (as Proxmox VE links root's into its cluster filesystem)
+    /// is updated through the link: the target gets the new line and the link stays a link,
+    /// so whatever shares the target keeps seeing the change.
     #[tokio::test]
-    async fn install_script_refuses_symlinked_authorized_keys() {
+    async fn install_script_writes_through_symlinked_authorized_keys() {
         let home = redoor_core::test_support::TempDir::create();
         let ssh_dir = home.path().join(".ssh");
         tokio::fs::create_dir(&ssh_dir).await.unwrap();
-        let target = home.path().join("managed_keys");
+        let shared_dir = home.path().join("shared");
+        tokio::fs::create_dir(&shared_dir).await.unwrap();
+        let target = shared_dir.join("authorized_keys");
         tokio::fs::write(&target, "ssh-ed25519 AAAAmanaged\n")
             .await
             .unwrap();
@@ -1069,17 +1103,17 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
             .await
             .unwrap();
         let device = AgentId::generate();
-        let script = install_script(
-            &device_marker(&device, "alice"),
-            &[],
-            Some(("restrict ssh-ed25519 AAAAnew redoor:x:alice:y", "y")),
-        );
-        let output = run_script(home.path(), &script).await;
+        let marker = device_marker(&device, "alice");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let output = run_script(
+            home.path(),
+            &install_script(&marker, &["y".to_string()], Some((&line, "y"))),
+        )
+        .await;
 
-        // The script fails with a message that says why.
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
-        // The symlink and its target are untouched.
+        // The script succeeds through the link.
+        assert!(output.status.success(), "{output:?}");
+        // The link is still a link, so the target's owner keeps sharing it ...
         assert!(
             tokio::fs::symlink_metadata(ssh_dir.join("authorized_keys"))
                 .await
@@ -1087,10 +1121,113 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
                 .file_type()
                 .is_symlink()
         );
+        // ... and the target got the new line after the lines it already had.
+        assert_eq!(
+            tokio::fs::read_to_string(&target).await.unwrap(),
+            format!("ssh-ed25519 AAAAmanaged\n{line}\n")
+        );
+        // The temp file was renamed into place next to the target, leaving nothing behind.
+        let mut entries = tokio::fs::read_dir(&shared_dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name());
+        }
+        assert_eq!(names, ["authorized_keys"]);
+
+        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
+        // Removing the key also goes through the link ...
+        assert!(output.status.success(), "{output:?}");
+        // ... and leaves only the lines that were there before.
         assert_eq!(
             tokio::fs::read_to_string(&target).await.unwrap(),
             "ssh-ed25519 AAAAmanaged\n"
         );
+    }
+
+    /// Link targets the script cannot safely replace are refused with a message that says
+    /// why, and nothing is created or changed: a link to a directory, a dangling link
+    /// (creating its target could fight whatever set it up) and a target in a directory
+    /// the user cannot write.
+    #[tokio::test]
+    async fn install_script_refuses_unusable_link_targets() {
+        use std::os::unix::fs::PermissionsExt;
+        let device = AgentId::generate();
+        let marker = device_marker(&device, "alice");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let script = install_script(&marker, &["y".to_string()], Some((&line, "y")));
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        tokio::fs::create_dir(home.path().join("dir"))
+            .await
+            .unwrap();
+        tokio::fs::symlink(home.path().join("dir"), ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &script).await;
+        // A directory behind the link is refused ...
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+        // ... and left empty.
+        assert!(
+            tokio::fs::read_dir(home.path().join("dir"))
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let missing = home.path().join("missing");
+        tokio::fs::symlink(&missing, ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
+        // Removing from a dangling link has nothing to remove, so it succeeds.
+        assert!(output.status.success(), "{output:?}");
+        let output = run_script(home.path(), &script).await;
+        // Installing through a dangling link is refused ...
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symlink to a missing file"));
+        // ... without creating the target.
+        assert!(!missing.exists());
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let store = home.path().join("store");
+        tokio::fs::create_dir(&store).await.unwrap();
+        let target = store.join("authorized_keys");
+        tokio::fs::write(&target, "ssh-ed25519 AAAAmanaged\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o500))
+            .await
+            .unwrap();
+        tokio::fs::symlink(&target, ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &script).await;
+        // Restores write access so the temp dir can be deleted.
+        tokio::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        // Root can write anywhere, so the read-only case only applies to other users.
+        if !nix::unistd::geteuid().is_root() {
+            // A target in a read-only directory is refused with a message that names it ...
+            assert_eq!(output.status.code(), Some(3), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("not writable"));
+            // ... and the target is unchanged.
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                "ssh-ed25519 AAAAmanaged\n"
+            );
+        }
     }
 
     /// A missing authorized_keys is created with private modes.
