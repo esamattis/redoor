@@ -34,6 +34,7 @@ import {
     newPasskeySlot,
     usablePasskeySlots,
 } from "#ui/vault/vault-passkeys";
+import { AUTO_LOCK_MS } from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -73,9 +74,12 @@ function KeepUnlockedOption(props: {
                 Keep unlocked on this device
             </Checkbox>
             <p id={descriptionId} className="mt-1 text-xs text-slate-500">
-                The vault stays unlocked across reloads and browser restarts,
-                with no automatic lock, until you lock it. Anyone who can use or
-                copy this browser profile can open your vault files until then.
+                When unticked, the vault locks after {AUTO_LOCK_MS / 60_000}{" "}
+                minutes without use, when you log out, or when the last redoor
+                tab is closed or reloaded. When ticked, it stays unlocked across
+                reloads and browser restarts until you lock it or log out, and
+                anyone who can use or copy this browser profile can open your
+                vault files until then.
             </p>
         </div>
     );
