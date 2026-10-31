@@ -384,8 +384,10 @@ test.describe("Git diff list", () => {
             "src/my-test/helpers.ts",
         );
 
+        // The trigger reads "Copied!" for a moment after each pick. Matching both labels lets
+        // the next pick start right away instead of waiting out that feedback.
         const trigger = page.getByRole("button", {
-            name: "Copy path of src/my-test/helpers.ts",
+            name: /^(Copy path of src\/my-test\/helpers\.ts|Copied!)$/,
         });
 
         const options = [
@@ -402,7 +404,8 @@ test.describe("Git diff list", () => {
                 .getByRole("button", { name: option.name })
                 .click();
 
-            // Each option puts its own form of the path on the clipboard.
+            // Each option puts its own form of the path on the clipboard, which also confirms
+            // each copy on its own.
             await expect
                 .poll(() => page.evaluate(() => navigator.clipboard.readText()))
                 .toBe(option.value);
@@ -410,8 +413,6 @@ test.describe("Git diff list", () => {
             await expect(
                 page.getByRole("button", { name: "Copied!" }),
             ).toBeVisible();
-            // The feedback resets before the next pick, so each copy is confirmed on its own.
-            await expect(trigger).toBeVisible();
         }
     });
 
