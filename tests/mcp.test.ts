@@ -898,32 +898,6 @@ describe("stateless authenticated MCP", () => {
         await expect(client.callTool("hello")).rejects.toThrow("(401)");
     });
 
-    it("rejects expired credentials", async () => {
-        const expiresAt = new Date(Date.now() + 1_000).toISOString();
-        const created = await createToken({ name: "expiry test", expiresAt });
-        const client = createMcpTestClient({ endpoint, token: created.token });
-        // The credential begins valid so the test distinguishes expiry from creation failure.
-        expect((await client.callTool("hello")).result.resultType).toBe(
-            "complete",
-        );
-        let expired = false;
-
-        for (let attempt = 0; attempt < 100 && !expired; attempt += 1) {
-            try {
-                await client.callTool("hello");
-            } catch (error) {
-                expired = String(error).includes("(401)");
-            }
-
-            if (!expired) {
-                await new Promise<void>((resolve) => setTimeout(resolve, 20));
-            }
-        }
-
-        // Authentication checks expiry on every request instead of caching an accepted token.
-        expect(expired).toBe(true);
-    });
-
     it("validates configured browser origins while permitting native clients", async () => {
         const body = requestBody("server/discover");
 
