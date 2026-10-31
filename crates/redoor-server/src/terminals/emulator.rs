@@ -11,7 +11,8 @@ use bytes::Bytes;
 use libghostty_vt::{
     Terminal, TerminalOptions,
     fmt::{Format, Formatter, FormatterOptions},
-    terminal::{CompressionMode, CompressionResult},
+    screen::Screen,
+    terminal::{CompressionMode, CompressionResult, Mode},
 };
 use redoor_core::log;
 use redoor_protocol::wire::{log::Level, terminal::TerminalSize};
@@ -26,6 +27,10 @@ pub(crate) const TERMINAL_SNAPSHOT_SCROLLBACK_LINES: usize = 1000;
 const MIRROR_QUEUE: usize = 4;
 /// Full reset, so a browser emulator reused after a takeover starts from a clean state.
 const RIS: &[u8] = b"\x1bc";
+/// Leaves a full-screen app's screen and restores the shell's cursor (mode 1049).
+const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
+/// Enters the alternate screen (saving the cursor) and homes the cursor there.
+const ENTER_ALTERNATE_SCREEN_AT_HOME: &[u8] = b"\x1b[?1049h\x1b[H";
 /// Nominal cell size passed on resize; only image protocols and pixel reports use it.
 const CELL_WIDTH_PX: u32 = 8;
 const CELL_HEIGHT_PX: u32 = 16;
@@ -192,17 +197,50 @@ impl MirrorState {
     }
 
     /// Serializes screen, scrollback, cursor and modes, plus the unfinished sequence.
-    fn snapshot(&self) -> Vec<u8> {
+    fn snapshot(&mut self) -> Vec<u8> {
         let mut snapshot = RIS.to_vec();
-        match format_vt(&self.terminal) {
-            Ok(formatted) => snapshot.extend_from_slice(&formatted),
-            Err(error) => log!(
-                Level::Warning,
-                "Failed to format a terminal mirror: {error}"
-            ),
-        }
+        snapshot.extend_from_slice(&self.screens());
         snapshot.extend_from_slice(self.tail.bytes());
         snapshot
+    }
+
+    /// Formats the screens a browser needs. The formatter only writes the active screen, so
+    /// while a full-screen app runs (mode 1049) the primary screen is formatted too, or
+    /// quitting the app after a reload would come back to a blank shell.
+    ///
+    /// The primary screen is reached by leaving the alternate screen, which also restores
+    /// the shell's cursor, and the mirror then replays the same bytes the browser gets to
+    /// return. The mirror thus stays identical to what every browser rebuilds.
+    fn screens(&mut self) -> Vec<u8> {
+        let on_alternate = self.terminal.active_screen().ok() == Some(Screen::Alternate)
+            && self.terminal.mode(Mode::ALT_SCREEN_SAVE).unwrap_or(false);
+        let Some(alternate) = self.format().filter(|_| on_alternate) else {
+            return self.format().unwrap_or_default();
+        };
+        self.terminal.vt_write(LEAVE_ALTERNATE_SCREEN);
+        let mut screens = self.format().unwrap_or_default();
+        // Entering saves the primary cursor and clears; a repeated enter inside the dump
+        // clears again but keeps that saved cursor. The dump assumes it starts at home.
+        let mut back = ENTER_ALTERNATE_SCREEN_AT_HOME.to_vec();
+        back.extend_from_slice(&alternate);
+        self.terminal.vt_write(&back);
+        // Switching screens aborted a sequence that output had started; the browser gets
+        // its prefix after the screens, so the mirror resumes it the same way.
+        self.terminal.vt_write(self.tail.bytes());
+        screens.extend_from_slice(&back);
+        screens
+    }
+
+    /// Formats the active screen, logging a failure.
+    fn format(&self) -> Option<Vec<u8>> {
+        format_vt(&self.terminal)
+            .inspect_err(|error| {
+                log!(
+                    Level::Warning,
+                    "Failed to format a terminal mirror: {error}"
+                );
+            })
+            .ok()
     }
 
     /// Compacts storage. Incremental steps continue only while no other work is queued, so
@@ -347,6 +385,80 @@ mod tests {
         assert_same_terminal(&restored, &source);
         // The split character arrived whole.
         assert!(plain(&restored).contains("ä€"));
+    }
+
+    #[tokio::test]
+    async fn quitting_a_full_screen_app_after_restore_shows_the_shell_again() {
+        let output: &[&[u8]] = &[
+            b"shell prompt line\r\n$ ",
+            b"\x1b[?1049h\x1b[2J\x1b[Hvim screen\x1b[3;4H",
+        ];
+        let mirror = ScreenMirror::spawn(size(80, 24)).expect("mirror");
+        for chunk in output {
+            mirror
+                .sender()
+                .reserve()
+                .await
+                .unwrap()
+                .feed(Bytes::copy_from_slice(chunk));
+        }
+        let snapshot = mirror.snapshot().await.unwrap().await.unwrap();
+        let mut source = browser(80, 24);
+        for chunk in output {
+            source.vt_write(chunk);
+        }
+        let mut restored = browser(80, 24);
+        restored.vt_write(&snapshot);
+        // While the app runs, the browser shows the app's screen where it left the cursor.
+        assert_same_terminal(&restored, &source);
+
+        // The app exits after the reload; the mirror sees the same bytes as the browser.
+        let quit: &[u8] = b"\x1b[?1049l";
+        source.vt_write(quit);
+        restored.vt_write(quit);
+        mirror
+            .sender()
+            .reserve()
+            .await
+            .unwrap()
+            .feed(Bytes::from_static(quit));
+        // The shell's screen and cursor come back instead of a blank screen.
+        assert_same_terminal(&restored, &source);
+        let mut later = browser(80, 24);
+        later.vt_write(&mirror.snapshot().await.unwrap().await.unwrap());
+        // Making the snapshot left the mirror itself in the app's state.
+        assert_same_terminal(&later, &source);
+    }
+
+    #[tokio::test]
+    async fn snapshot_inside_a_sequence_on_the_alternate_screen_keeps_the_mirror_in_step() {
+        let before: &[u8] = b"$ \x1b[?1049h\x1b[2J\x1b[Happ \x1b[38;5;";
+        let after: &[u8] = b"196mRED\x1b[0m";
+        let mirror = ScreenMirror::spawn(size(80, 24)).expect("mirror");
+        mirror
+            .sender()
+            .reserve()
+            .await
+            .unwrap()
+            .feed(Bytes::from_static(before));
+        let mut restored = browser(80, 24);
+        restored.vt_write(&mirror.snapshot().await.unwrap().await.unwrap());
+        restored.vt_write(after);
+        mirror
+            .sender()
+            .reserve()
+            .await
+            .unwrap()
+            .feed(Bytes::from_static(after));
+        let mut source = browser(80, 24);
+        source.vt_write(before);
+        source.vt_write(after);
+        // The browser finishes the split color sequence instead of printing it.
+        assert_same_terminal(&restored, &source);
+        let mut later = browser(80, 24);
+        later.vt_write(&mirror.snapshot().await.unwrap().await.unwrap());
+        // So does the mirror, so the next viewer gets the same screen.
+        assert_same_terminal(&later, &source);
     }
 
     #[tokio::test]
