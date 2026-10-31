@@ -136,8 +136,20 @@ enum IdTokenError {
     Expired,
     #[error("ID token nonce does not match the sign-in request")]
     Nonce,
-    #[error("subject '{0}' is not in an allowed group")]
-    NotAllowed(String),
+    /// Carries the token's groups next to the configured ones so an admin can see from the
+    /// log alone whether the provider sent the wrong groups or the config lists the wrong ones.
+    #[error(
+        "subject '{subject}' (username '{}') is not in an allowed group: token groups [{}], allowed groups [{}]",
+        .username.as_deref().unwrap_or("-"),
+        .groups.join(", "),
+        .allowed.join(", ")
+    )]
+    NotAllowed {
+        subject: String,
+        username: Option<String>,
+        groups: Vec<String>,
+        allowed: Vec<String>,
+    },
 }
 
 /// Short codes passed to the login page, which maps them to fixed messages. Codes instead
@@ -369,7 +381,12 @@ fn validate_id_token(
         .iter()
         .any(|group| expected.allowed_groups.contains(group))
     {
-        return Err(IdTokenError::NotAllowed(claims.sub));
+        return Err(IdTokenError::NotAllowed {
+            subject: claims.sub,
+            username: claims.preferred_username,
+            groups: claims.groups,
+            allowed: expected.allowed_groups.to_vec(),
+        });
     }
     Ok(SignedInUser {
         subject: claims.sub,
@@ -584,7 +601,7 @@ pub(crate) async fn oidc_callback_handler(
         Err(error) => {
             log!(Level::Warning, "OIDC sign-in rejected: {error}");
             let failure = match error {
-                IdTokenError::NotAllowed(_) => SignInFailure::Denied,
+                IdTokenError::NotAllowed { .. } => SignInFailure::Denied,
                 _ => SignInFailure::Failed,
             };
             return fail(&state, failure, &login.return_path);
@@ -695,7 +712,19 @@ mod tests {
         // A provider that omits groups must not be treated as "no restriction".
         assert_eq!(
             validate(no_groups),
-            Err(IdTokenError::NotAllowed("user-1".to_string()))
+            Err(IdTokenError::NotAllowed {
+                subject: "user-1".to_string(),
+                username: Some("alice".to_string()),
+                groups: vec![],
+                allowed: vec!["admins".to_string()],
+            })
+        );
+        let mut wrong_groups = claims();
+        wrong_groups["groups"] = serde_json::json!(["family", "guests"]);
+        // The log line must show both group lists so a denied sign-in can be diagnosed.
+        assert_eq!(
+            validate(wrong_groups).unwrap_err().to_string(),
+            "subject 'user-1' (username 'alice') is not in an allowed group: token groups [family, guests], allowed groups [admins]"
         );
         let mut no_nonce = claims();
         no_nonce.as_object_mut().unwrap().remove("nonce");
