@@ -3,6 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "zx";
 
+// Every SSH test file shares the one remote test host and its `authorized_keys`, so they must
+// run one at a time. Failing here makes a new SSH test file that was not added to
+// `SERIAL_INTEGRATION_TEST_FILES` fail loudly instead of racing the other SSH files.
+if (process.env.REDOOR_VITEST_LANE !== "serial") {
+    throw new Error(
+        "SSH integration tests must be listed in SERIAL_INTEGRATION_TEST_FILES in integration-test-lanes.ts",
+    );
+}
+
 /** SSH alias of the disposable test host the SSH integration tests provision. */
 export const SSH_TEST_HOST = "redoor-ssh-test";
 

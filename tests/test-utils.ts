@@ -20,6 +20,7 @@ import { onTestFinished } from "vitest";
 import { Toxiproxy } from "toxiproxy-node-client";
 import type Proxy from "toxiproxy-node-client/dist/Proxy";
 import { testPorts } from "#test-ports";
+import { INTEGRATION_LANES } from "../integration-test-lanes.ts";
 import { isErrorCode } from "#error-utils";
 import type WebSocket from "ws";
 import { z } from "zod";
@@ -236,8 +237,31 @@ export const SERVER_PATH =
 
 export const AGENT_PATH = SERVER_PATH;
 
-// A per-worktree port lets Vitest run alongside development and other worktrees.
-export const VITEST_SERVER_PORT = testPorts.vitest;
+const laneSchema = z.enum(["parallel", "serial"]);
+
+/**
+ * Picks this Vitest worker's server port from the per-worktree port block. Test files of
+ * different workers run at the same time and each starts its own server, so every worker
+ * needs a port of its own. The lane comes from the Vitest project's environment and the pool
+ * id, 1 to the lane's worker count, stays fixed for the life of the worker process.
+ */
+function vitestWorkerPort(): number {
+    const lane =
+        INTEGRATION_LANES[laneSchema.parse(process.env.REDOOR_VITEST_LANE)];
+
+    const poolId = z.coerce
+        .number()
+        .int()
+        .min(1)
+        .max(lane.workers)
+        .parse(process.env.VITEST_POOL_ID);
+
+    return testPorts.vitest + lane.firstPortOffset + poolId - 1;
+}
+
+// A per-worktree and per-worker port lets Vitest run alongside development, other worktrees
+// and its own other workers.
+export const VITEST_SERVER_PORT = vitestWorkerPort();
 
 export const TEST_USERNAME = "test-user";
 
@@ -481,7 +505,7 @@ password = "${TEST_PASSWORD}"
         await exit;
     }
 
-    /** Reaps every owned process before the next serial test file can reuse its port. */
+    /** Reaps every owned process before the worker's next test file reuses its port. */
     async killAll(): Promise<void> {
         const processes = [...this.processes.entries()];
 

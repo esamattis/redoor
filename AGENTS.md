@@ -30,6 +30,7 @@
 - The generated ts bindings are put in the `bindings` directory
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
+- Integration test files run concurrently in several workers (see `integration-test-lanes.ts`). Use `VITEST_SERVER_PORT` (never `testPorts.vitest`) and per-file names for agents, logs and data dirs. Files that use the shared SSH test host go into `SERIAL_INTEGRATION_TEST_FILES`
 - UI unit tests live next to the source in `ui/src` as `*.test.ts(x)`. Run with `pn test:unit` (also part of `pn test`)
 - Run Rust unit tests with `cargo nextest run --locked` (also part of `pn test`). Install the pinned runner with `mise install`.
 - Add comments to test assertions why they are there

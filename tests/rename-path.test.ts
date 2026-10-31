@@ -6,8 +6,8 @@ import {
     ProcessManager,
     TempFileManager,
     startServerAndAgent,
+    VITEST_SERVER_PORT,
 } from "./test-utils";
-import { testPorts } from "#test-ports";
 
 const AGENT_NAME = "rename-path-test-agent";
 
@@ -87,7 +87,7 @@ describe("Rename Path API", () => {
         { dir: "/tmp", old: "before.txt", new: ".." },
     ])("rejects rename paths that are not names in one absolute directory", async (request) => {
         const response = await fetch(
-            `http://127.0.0.1:${testPorts.vitest}/api/v1/agents/${encodeURIComponent(testAgent.id)}/rename`,
+            `http://127.0.0.1:${VITEST_SERVER_PORT}/api/v1/agents/${encodeURIComponent(testAgent.id)}/rename`,
             {
                 method: "POST",
                 headers: {
