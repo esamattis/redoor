@@ -286,9 +286,8 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             // The ~/.ssh/config IdentityFile got the enrollment in without any password.
             expect(enrolled.rotated).toBe(false);
 
-            const connected = await startAndWaitConnected(fixture, deviceId);
-            await connected.shutdown();
-
+            // Connecting with the enrolled key is covered by the other enrollment tests; this
+            // one only needs the key revoked again before the device first starts.
             await sshTestCommand(
                 `sed -i ${shellQuote(`/redoor:${deviceId}:/d`)} "$HOME/.ssh/authorized_keys"`,
             );
