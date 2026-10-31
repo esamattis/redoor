@@ -1103,7 +1103,7 @@ mod tests {
         default_remote_bin, remote_sniff_script, remote_upload_tmp_path,
         stale_debug_cleanup_script, upload_script,
     };
-    use crate::ssh::shell::sh_command;
+    use crate::ssh::shell::{quote, sh_command};
     use std::path::{Path, PathBuf};
     use tokio::io::AsyncWriteExt;
 
@@ -1127,24 +1127,26 @@ mod tests {
     }
 
     /// Writes an executable fake redoor that prints `version` and its arguments.
+    /// A separate writer process prevents concurrent forks in this test process from
+    /// inheriting a writable descriptor, which can cause ETXTBSY even after our write ends.
     async fn fake_binary(path: &Path, version: &str) {
-        tokio::fs::create_dir_all(path.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(
-            path,
-            format!(
-                r#"#!/bin/sh
+        let parent = path.parent().unwrap();
+        tokio::fs::create_dir_all(parent).await.unwrap();
+        let script = format!(
+            r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '{version}'; echo 'second line, with comma'; exit 0; fi
 printf 'agent:%s|' "$@"
 "#
-            ),
-        )
-        .await
-        .unwrap();
-        let mut permissions = tokio::fs::metadata(path).await.unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut permissions, 0o755);
-        tokio::fs::set_permissions(path, permissions).await.unwrap();
+        );
+        let quoted_path = quote(path.to_str().unwrap());
+        let command = format!("cat > {quoted_path} && chmod 755 {quoted_path}");
+        let output = run_remote(&command, script.as_bytes(), parent).await;
+        // Reaping the writer also guarantees every writable fixture descriptor is closed.
+        assert!(
+            output.status.success(),
+            "fixture creation failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     /// Splits stdout into lines the way the report reader does.
@@ -1156,14 +1158,12 @@ printf 'agent:%s|' "$@"
     }
 
     /// Sets the modification time of `path`, so a test can rewrite a file without the
-    /// cache noticing, or make it notice a rebuild that kept the same size.
+    /// cache noticing, or make it notice a rebuild that kept the same size. A read-only
+    /// descriptor can update timestamps without racing execution of the fixture.
     async fn set_modified(path: &Path, modified: std::time::SystemTime) {
         let path = path.to_path_buf();
         tokio::task::spawn_blocking(move || {
-            std::fs::File::options()
-                .write(true)
-                .open(path)
-                .and_then(|file| file.set_modified(modified))
+            std::fs::File::open(path).and_then(|file| file.set_modified(modified))
         })
         .await
         .unwrap()
