@@ -1,32 +1,25 @@
 # redoor
 
-Manage servers, laptops, workstations, and Android phones running Termux from one place.
+Web based file browser, editor, git viewer and terminal for multiple devices.
 
-Agents connect directly to the server via HTTP/WebSocket, or the server can provision and spawn agents using SSH. When direct connection is not possible in either direction, agents can connect via a relay agent that can reach both the server and the agent.
+Here's the thing. Today I work on multiple different devices: Servers, laptops, phones etc. and I need to be able to manage files on all of those and move the files between them. This is were Redoor comes in: It combines multiple devices behind a single interface. The devices can be accessed using direct SSH-connection or by spawning a Redoor Agent process on the device which connects to the Redoor Server.
 
-The server provides a unified Web UI for your devices with a file browser and remote shell. The file browser features search, file editing, download/upload and streaming file and directory copying between devices.
+Features
 
-A **device** is a machine you access through Redoor. A **Redoor agent** is the process running on that device. Connecting or disconnecting a managed device starts or stops its agent; restarting or updating an agent does not reboot or update the device's operating system.
-
-### Screenshots
-
-<table>
-  <tr>
-    <td width="50%"><img width="100%" alt="image" src="https://github.com/user-attachments/assets/cf863914-9347-4ba6-995a-810d2e045702" /></td>
-    <td width="50%"><img width="100%" alt="image" src="https://github.com/user-attachments/assets/c866c68f-20b4-4b62-aa47-4498976c02a6" /></td>
-  </tr>
-  <tr>
-    <td width="50%"><img width="100%" alt="image" src="https://github.com/user-attachments/assets/9bc00663-d730-443b-bedc-0c91e6bee7f3" /></td>
-    <td width="50%"><img width="941" height="729" alt="image" src="https://github.com/user-attachments/assets/08e4c3af-38c0-4f2d-ba50-57dfface3a97" /></td>
-  </tr>
-</table>
-
-
-<img width="1087" alt="image" src="https://github.com/user-attachments/assets/f8c5a045-92a9-436c-b7f0-7129b566d50c" />
-
-<img width="1087" alt="image" src="https://github.com/user-attachments/assets/9fe00af0-0229-4b96-974e-f3296df8e8d9" />
-
-
+- File browser
+- File editor with Git gutter and Vim-mode
+- Git history viewer
+- Terminal
+- Streaming resumable file transfers
+  - Download/upload files
+  - Transfers files directly between your devices
+- SSH key management secured by Passkey PRF based vaults
+- Stateless MCP support to allow your agents you devices
+- Remote CLI
+- Login via static credentials, PAM, or OIDC (Pocket ID, Keycloak etc.)
+- Easy deployment via a single static binary
+- One click updates via the Web UI
+- Automatic Systemd and Launchd config handling
 
 ### Architecture
 
@@ -40,7 +33,6 @@ graph TD
     Server --x|blocked| Server2
     Termux["Termux on Android\n$ redoor agent"] -->|http/ws| Server
 ```
-
 
 
 ## Install
@@ -61,14 +53,6 @@ $HOME/.local/bin/redoor server
 
 and see `$HOME/.local/bin/redoor --help`
 
-### Upgrade
-
-```bash
-redoor upgrade
-```
-
-This runs the same install script over the binary you invoked and restarts the local redoor server, agents and relays that run it, in place, including systemd and launchd services. The Update button next to the version on the web UI home page does the same for the server's binary. Pass a tag such as `redoor upgrade v1.3.1` to pick a release, or `--no-restart` to only replace the binary. Use `sudo redoor upgrade` when the binary or the services belong to root.
-
 ### Docker
 
 Run the `linux/amd64` or `linux/arm64` container with one command:
@@ -81,59 +65,6 @@ Open `http://127.0.0.1:7666` and log in with username `redoor` and password `red
 
 These credentials and the agent token built into the image are only for a local demo. See [Docker Compose deployment](docs/docker.md) for persistent storage and private credentials.
 
-## Remote CLI
-
-The `redoor remote` subcommand lists devices, copies, moves, searches and deletes files, and executes commands through your Redoor server. Use it to give AI agents control of multiple servers at once.
-
-```sh
-redoor remote login https://redoor.example.com
-redoor remote devices
-redoor remote cp ./report.csv workstation:/srv/report.csv
-redoor remote exec workstation -- uptime
-redoor remote ls workstation:/srv
-redoor remote grep workstation:/srv/app "TODO"
-```
-
-Remote paths are written `DEVICE:/absolute/path`. The commands are `devices`, `start`, `stop`,
-`exec`, `cp`, `mv`, `ls`, `stat`, `mkdir`, `rm` (to the trash unless `--permanent`), `find`
-and `grep`, plus `login`, `logout`, `status` and `create-token`. Most take `--json` for
-scripts.
-
-`redoor remote login` asks for your username and password, then lets you choose what the
-CLI may do. It creates an **access token** with those permissions and saves only the token;
-the password is not stored:
-
-```
-Permissions (space toggles, enter accepts):
-  [x] files:read — List, stat, read, search and download files
-  [x] files:write — Upload, create, overwrite and copy into files
-  [ ] files:delete — Trash and delete files, move sources
-  [x] commands:execute — Run commands as the agent's OS user (high trust)
-  [x] agents:manage — Start/stop managed agents, used by auto-start
-Devices: All devices (including devices added later)
-Token name: redoor remote on laptop
-Expires: 90 days
-```
-
-Every prompt also has a flag (`--username`, `--password-stdin`, `--permissions`,
-`--devices`, `--name`, `--expires`, `--yes`), so scripts can log in without a terminal.
-`redoor remote status` shows the token's permissions, and `redoor remote logout` revokes it.
-Tokens are listed, edited and revoked under **Access tokens** in the web UI. Earlier
-versions saved a browser session in `remote-session.json`; that file is no longer used and
-can be deleted.
-
-For CI jobs and AI agents, skip the login and pass a token through the environment:
-
-```sh
-export REDOOR_REMOTE_SERVER=https://redoor.example.com
-export REDOOR_REMOTE_TOKEN=redoor_at_...
-redoor remote devices
-```
-
-`redoor remote create-token` creates a token the same way but prints it as JSON instead of
-saving it, for configuring MCP clients (see [MCP](docs/mcp.md)).
-
-See `redoor remote --help` for available commands and options.
 
 ## Configuration
 
@@ -156,14 +87,6 @@ agent_token = "secret"
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
 
-# Optional "Sign in with ..." through an OpenID Connect provider; see docs/config.md.
-# [server.oidc]
-# issuer = "https://id.example.com"
-# client_id = "redoor"
-# client_secret = "..."
-# redirect_url = "https://redoor.example.com/api/v1/auth/oidc/callback"
-# allowed_groups = ["admins"]
-
 ## Automatically spawn agents via SSH
 [[agents]]
 target = "user@example.com"
@@ -181,7 +104,7 @@ Run it
 # Start immediately
 redoor server
 
-# or install and enable it at startup on Linux
+# or install and enable it at startup on Linux (works without root too)
 redoor server systemd install --start
 ```
 
@@ -205,25 +128,3 @@ redoor agent
 # or install and enable it at startup on Linux
 redoor agent systemd install --start
 ```
-
-## SSH relay
-
-Add a named relay to `config.toml`:
-
-```toml
-agent_token = "secret"
-
-[[relays]]
-id = "production"
-target = "user@host"
-server = "http://redoor.internal:7666"
-```
-
-```bash
-redoor agent relay start production --daemon
-
-# or install and enable it at startup on Linux
-redoor agent relay systemd install production --start
-```
-
-See [SSH relays](docs/relays.md) for lifecycle commands and configuration.
