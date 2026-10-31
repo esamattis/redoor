@@ -555,6 +555,7 @@ fn stopped_agent_response(
         supports_native_open: false,
         supports_move_to_trash: false,
         supports_trash: false,
+        supports_upload_preconditions: false,
         uid: None,
         is_root: false,
         duplicate_id: None,

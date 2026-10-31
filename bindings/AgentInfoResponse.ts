@@ -44,6 +44,11 @@ supports_move_to_trash: boolean,
  */
 supports_trash: boolean, 
 /**
+ * Whether the latest agent session checks upload preconditions, which encrypted vault
+ * writes require; older agents would ignore the check.
+ */
+supports_upload_preconditions: boolean, 
+/**
  * Effective UID from the latest registration so chmod gating does not need a details
  * round-trip; absent until first connect.
  */

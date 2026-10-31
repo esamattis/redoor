@@ -123,6 +123,7 @@ pub(crate) async fn cancel_handler(
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
+                code: None,
                 error: "Upload request is no longer active".into(),
             }),
         )
@@ -148,6 +149,7 @@ pub(crate) async fn cancel_handler(
         Ok(Err(CancelPublicTransferError::NotFound)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
+                code: None,
                 error: "Upload transfer no longer retained".into(),
             }),
         )
@@ -155,6 +157,7 @@ pub(crate) async fn cancel_handler(
         Ok(Err(CancelPublicTransferError::NotCancelable)) => (
             StatusCode::CONFLICT,
             Json(ErrorResponse {
+                code: None,
                 error: "Upload can no longer be canceled".into(),
             }),
         )

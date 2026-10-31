@@ -35,6 +35,7 @@ fn upgrade_binary_error_response(
     (
         status,
         Json(ErrorResponse {
+            code: None,
             error: error.to_string(),
         }),
     )
@@ -50,6 +51,7 @@ fn running_server_architecture_error(agent_arch: &str) -> Option<axum::response:
         (
             StatusCode::CONFLICT,
             Json(ErrorResponse {
+ code: None,
                 error: format!(
                     "Cannot install the running server binary: server architecture is {}, but agent architecture is {agent_arch}",
                     std::env::consts::ARCH
@@ -99,6 +101,7 @@ async fn upload_upgrade_binary(
         on_existing: redoor_protocol::api::transfers::CopyExistingMode::Override,
         ownership: redoor_protocol::api::files::CreationOwnershipOptions::default(),
         executable: false,
+        precondition: None,
     });
     let upload = AgentUpload::start(
         &state.router_ref,
@@ -153,6 +156,7 @@ pub(crate) async fn upgrade_agent_handler(
         return (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
+                code: None,
                 error: format!("Agent not found: {agent_id}"),
             }),
         )
@@ -162,6 +166,7 @@ pub(crate) async fn upgrade_agent_handler(
         return (
             StatusCode::CONFLICT,
             Json(ErrorResponse {
+                code: None,
                 error: format!("Agent is not connected: {agent_id}"),
             }),
         )
@@ -175,6 +180,7 @@ pub(crate) async fn upgrade_agent_handler(
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse {
+                code: None,
                 error: format!("Agent executable path is unusable: {}", details.exe_path),
             }),
         )
@@ -240,6 +246,7 @@ pub(crate) async fn upgrade_agent_handler(
                 return (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(ErrorResponse {
+                        code: None,
                         error: "Cannot locate the running server binary".to_string(),
                     }),
                 )

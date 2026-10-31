@@ -126,6 +126,7 @@ impl IntoResponse for ApiError {
         (
             self.status_code(),
             Json(ErrorResponse {
+                code: None,
                 error: self.to_string(),
             }),
         )

@@ -16,6 +16,7 @@ pub mod transfers;
 pub mod trash;
 pub mod ui_events;
 pub mod user_state;
+pub mod vault;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -25,4 +26,9 @@ use ts_rs::TS;
 #[ts(export)]
 pub struct ErrorResponse {
     pub error: String,
+    /// Set for failures a client must tell apart, such as the vault errors, so the UI can
+    /// choose a message without parsing text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub code: Option<vault::ApiErrorCode>,
 }

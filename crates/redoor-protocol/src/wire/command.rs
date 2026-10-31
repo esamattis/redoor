@@ -287,6 +287,20 @@ impl MoveSourceIdentity {
     }
 }
 
+/// What the destination of a raw upload must look like at publication time.
+///
+/// Encrypted vault writes replace whole files through staging and an atomic rename, and
+/// without this check a save could silently replace a version another client wrote after
+/// the editor read it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum UploadPrecondition {
+    /// Creating only: an existing entry of any kind is a conflict.
+    MustNotExist,
+    /// Replacing only the exact file that was read; any other state is a conflict.
+    Matches { identity: MoveSourceIdentity },
+}
+
 /// Returns move-specific metadata without exposing filesystem identity through the public API.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MoveMetadataResult {

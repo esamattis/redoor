@@ -182,6 +182,7 @@ fn state_io_error(error: anyhow::Error) -> axum::response::Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
         Json(ErrorResponse {
+            code: None,
             error: error.to_string(),
         }),
     )

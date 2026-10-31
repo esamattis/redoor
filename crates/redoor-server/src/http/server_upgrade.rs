@@ -52,7 +52,7 @@ pub(crate) async fn upgrade_server_handler(
 
 /// Builds the JSON error body shared by every refusal.
 fn error_response(status: StatusCode, error: String) -> Response {
-    (status, Json(ErrorResponse { error })).into_response()
+    (status, Json(ErrorResponse { code: None, error })).into_response()
 }
 
 impl ServerState {

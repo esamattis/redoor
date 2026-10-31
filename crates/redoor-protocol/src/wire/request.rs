@@ -257,6 +257,11 @@ pub struct RawUpload {
     /// filesystem, like Git history. A replaced file keeps its own permissions either way.
     #[serde(default)]
     pub executable: bool,
+    /// Refuses publication unless the destination is still in the state the server read,
+    /// checked right before the rename, so a vault save never overwrites a newer edit.
+    /// Only agents that announce `supports_upload_preconditions` honor it.
+    #[serde(default)]
+    pub precondition: Option<crate::wire::command::UploadPrecondition>,
 }
 
 /// Rewrites one existing regular-file inode after staging the complete body.

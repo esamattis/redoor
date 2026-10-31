@@ -82,6 +82,7 @@ pub(crate) async fn restart_server_handler(State(state): State<ServerState>) -> 
             (
                 status,
                 Json(ErrorResponse {
+                    code: None,
                     error: error.to_string(),
                 }),
             )

@@ -232,6 +232,10 @@ pub struct AgentInfoResponse {
     pub supports_move_to_trash: bool,
     /// Whether the latest agent session can also list and restore trash entries.
     pub supports_trash: bool,
+    /// Whether the latest agent session checks upload preconditions, which encrypted vault
+    /// writes require; older agents would ignore the check.
+    #[serde(default)]
+    pub supports_upload_preconditions: bool,
     /// Effective UID from the latest registration so chmod gating does not need a details
     /// round-trip; absent until first connect.
     #[ts(type = "number | null")]

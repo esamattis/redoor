@@ -640,6 +640,7 @@ mod tests {
                     supports_native_open: true,
                     supports_trash: true,
                     supports_move_to_trash: true,
+                    supports_upload_preconditions: false,
                 },
                 duplicate_id: None,
             }]

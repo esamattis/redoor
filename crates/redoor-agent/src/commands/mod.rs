@@ -234,6 +234,7 @@ impl RunCommand for Command {
                 on_existing,
                 ownership,
                 executable,
+                precondition,
             }) => {
                 let prepared = RawFileSink::prepare(
                     ctx.responder.request_id(),
@@ -242,6 +243,7 @@ impl RunCommand for Command {
                     ownership,
                     partial,
                     executable,
+                    precondition,
                     &ctx.services,
                 )
                 .await

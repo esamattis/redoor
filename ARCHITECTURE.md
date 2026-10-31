@@ -97,6 +97,11 @@ Infrastructure that more than one role needs:
   atomic name reservation).
 - `stream_credit`: the per-stream flow-control primitives that both the agent and server
   transfer paths use.
+- `vault`: the `.redoorvault` file format (see "Encrypted vault files"): preamble parsing and
+  building, the header MAC, and the STREAM payload as `EncryptingReader` and
+  `DecryptingReader` adapters over 64 KiB chunks, plus the size arithmetic in both
+  directions. It is the only implementation of the format, and lives in core so a future
+  CLI command can open files with a backup `vault.json` and no server.
 - `directory_measurement`: one directory walk that yields content bytes and the predicted
   tar size. The agent uses it for download totals and directory sizes, and the CLI uses it
   for the percentage of local directory uploads.
@@ -1021,6 +1026,13 @@ sequenceDiagram
   `UploadDriver`. They differ only in their `UploadSink`.
 - Raw file and tar directory uploads both default to `on_existing=error`. Replacing or merging
   into an existing entry must be requested explicitly, so no client overwrites by accident.
+- A raw upload can carry a **precondition**: `must_not_exist`, or `matches` with the
+  `MoveSourceIdentity` (device, inode, size, mtime) the server read. The agent checks it
+  before staging and again right before the rename, and a mismatch discards the staging and
+  fails with `already_exists` or `source_changed` (409). Encrypted vault writes depend on it
+  (see "Encrypted vault files"). Older agents would silently ignore the field, so agents
+  announce `supports_upload_preconditions` in `hello` and the server refuses vault writes to
+  agents without it.
 
 ## Copy and move between agents
 

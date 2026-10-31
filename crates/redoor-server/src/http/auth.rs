@@ -670,6 +670,7 @@ pub(crate) async fn login_handler(
         return (
             StatusCode::TOO_MANY_REQUESTS,
             Json(ErrorResponse {
+                code: None,
                 error: "Too many login attempts. Try again later.".to_string(),
             }),
         )
@@ -692,6 +693,7 @@ pub(crate) async fn login_handler(
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
+                    code: None,
                     error: "Invalid username or password".to_string(),
                 }),
             )
@@ -702,6 +704,7 @@ pub(crate) async fn login_handler(
             return (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(ErrorResponse {
+                    code: None,
                     error: "Authentication is busy. Try again later.".to_string(),
                 }),
             )
@@ -717,6 +720,7 @@ pub(crate) async fn login_handler(
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(ErrorResponse {
+                    code: None,
                     error: "Failed to create session".to_string(),
                 }),
             )
@@ -744,6 +748,7 @@ pub(crate) async fn logout_handler(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(ErrorResponse {
+                code: None,
                 error: "Failed to delete session".to_string(),
             }),
         )
