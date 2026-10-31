@@ -169,6 +169,8 @@ export const queryKeys = {
     editorBuffer: (key: string) =>
         [...queryKeys.all, "editor-buffer", key] as const,
     accessTokens: () => [...queryKeys.all, "access-tokens"] as const,
+    /** The vault status, which every vault change invalidates. */
+    vault: () => [...queryKeys.all, "vault"] as const,
     serverLoggingLevel: () =>
         [...queryKeys.all, "server-logging-level"] as const,
 };
@@ -400,6 +402,14 @@ export function sshHostKeyQueryOptions(api: ApiClient, agentId: string) {
         staleTime: 0,
         gcTime: 0,
         retry: false,
+    });
+}
+
+/** The vault without wrapped keys, shared by the vault dialog and the settings page. */
+export function vaultStatusQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.vault(),
+        queryFn: () => api.getVault(),
     });
 }
 

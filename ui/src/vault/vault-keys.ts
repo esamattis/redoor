@@ -471,15 +471,23 @@ export async function buildDestroy(options: {
     }
 }
 
-/** The slot input of an existing slot with a new wrap of the current key. */
+/** A new slot wrapping the current key; passkeys pick the slot id their KEK binds. */
 export async function addSlotInput(options: {
     material: VaultUnlockMaterialResponse;
     rawVaultKey: Uint8Array<ArrayBuffer>;
     kek: SlotKek;
+    slotId?: string;
 }): Promise<VaultSlotInput> {
     return slotInput(options.kek, options.rawVaultKey, {
         vaultId: options.material.vault_id,
-        slotId: newSlotId(),
+        slotId: options.slotId ?? newSlotId(),
         keyId: options.material.current_key_id,
     });
+}
+
+/** The proof of the generation a fresh unlock just unwrapped. */
+export async function proofFromRaw(
+    rawVaultKey: Uint8Array<ArrayBuffer>,
+): Promise<string> {
+    return deriveAuthProof(await importVaultKey(rawVaultKey));
 }

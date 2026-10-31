@@ -7,6 +7,7 @@ import {
     Ellipsis,
     Home,
     KeyRound,
+    LockKeyhole,
     LoaderCircle,
     LogOut,
     FileText,
@@ -55,7 +56,13 @@ const rootRouteApi = getRouteApi("__root__");
  * disagree about where the menu leads or what each icon is called.
  */
 type NavigationItem = {
-    to: "/" | "/agents" | "/logs" | "/transfers" | "/settings/tokens";
+    to:
+        | "/"
+        | "/agents"
+        | "/logs"
+        | "/transfers"
+        | "/settings/tokens"
+        | "/settings/vault";
     /** Short visible name, shown as the tooltip because the icon has no text beside it. */
     label: string;
     /** Accessible name; the existing names stay so tests and screen readers keep working. */
@@ -102,6 +109,13 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         icon: KeyRound,
         // Stays highlighted on a token's edit page.
         exact: false,
+    },
+    {
+        to: "/settings/vault",
+        label: "Vault",
+        ariaLabel: "Manage vault",
+        icon: LockKeyhole,
+        exact: true,
     },
 ];
 
@@ -233,7 +247,7 @@ function NavigationBar(props: { onRestart: () => void }) {
     const logout = useLogout();
 
     return (
-        <div className="grid grid-cols-6 gap-0.5 border-t border-slate-800 p-2">
+        <div className="grid grid-cols-7 gap-0.5 border-t border-slate-800 p-2">
             {navigationItems.map((item) => (
                 <NavigationLink
                     key={item.to}

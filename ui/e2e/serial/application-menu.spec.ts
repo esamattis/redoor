@@ -235,7 +235,7 @@ test.describe.serial("Application menu layout", () => {
             .getByLabel("app.log", { exact: true })
             .boundingBox();
 
-        // All six buttons share one row along the bottom, below the open files list.
+        // All seven buttons share one row along the bottom, below the open files list.
         expect(tokensBox?.y).toBe(homeBox?.y);
         expect(moreBox?.y).toBe(homeBox?.y);
         expect(moreBox?.x ?? 0).toBeGreaterThan(tokensBox?.x ?? 1);
