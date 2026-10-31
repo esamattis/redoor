@@ -112,7 +112,7 @@ img { max-width: 100%; display: block; }
 .nav-links .gh { display: inline-flex; align-items: center; gap: 8px; color: var(--text); border: 1px solid var(--border-strong); }
 .nav-links .gh svg { width: 18px; height: 18px; }
 @media (max-width: 720px) {
-    .nav-links a:not(.gh) { display: none; }
+    .nav-links a:not(.gh):not(.docs-link) { display: none; }
 }
 
 /* ---------- Buttons ---------- */
@@ -509,22 +509,6 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 .copy.done .cp { display: none; }
 .note { color: var(--muted); font-size: 15.5px; text-align: center; margin: 18px 0 0; }
 
-.docs { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 54px; }
-.docs a {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-    padding: 14px 16px;
-    border-radius: 11px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-size: 15px;
-    transition: border-color 0.15s, transform 0.15s;
-}
-.docs a:hover { border-color: rgb(59 130 246 / 0.5); color: var(--text-strong); transform: translateY(-1px); }
-.docs a::after { content: "→"; color: var(--faint); }
 
 /* ---------- Footer ---------- */
 
@@ -587,7 +571,6 @@ footer p { margin: 6px 0; }
     .showcase.reverse .showcase-text { order: 0; }
     .connect { grid-template-columns: 1fr; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .docs { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
     body { font-size: 16px; }
@@ -597,7 +580,6 @@ footer p { margin: 6px 0; }
     .hero-shot .window { transform: none; }
     .window-bar .url { display: none; }
     .grid { grid-template-columns: minmax(0, 1fr); }
-    .docs { grid-template-columns: 1fr; }
     .stack { padding-bottom: 30%; }
     .stack .back { width: 92%; }
     .stack .front { width: 70%; }
@@ -624,6 +606,7 @@ footer p { margin: 6px 0; }
         <div class="nav-links">
             <a href="#features">Features</a>
             <a href="#install">Install</a>
+            <a class="docs-link" href="https://github.com/esamattis/redoor#documentation">Docs</a>
             <a class="gh" href="https://github.com/esamattis/redoor"><svg><use href="#i-github"/></svg>GitHub</a>
         </div>
     </div>
@@ -952,16 +935,6 @@ footer p { margin: 6px 0; }
                 <p class="note">Open <code>http://127.0.0.1:7666</code> and log in with <code>redoor</code> / <code>redoor</code>. These demo credentials are for local testing only, see <a href="https://github.com/esamattis/redoor/blob/main/docs/docker.md">Docker Compose deployment</a> for a persistent setup.</p>
             </div>
 
-            <div class="docs">
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/config.md">Configuration</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/remote-cli.md">Remote CLI</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/mcp.md">MCP</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/relays.md">SSH relays</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/deployment.md">Reverse proxy</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/docker.md">Docker Compose</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/launchd.md">launchd on macOS</a>
-                <a href="https://github.com/esamattis/redoor/blob/main/docs/upgrade.md">Upgrading</a>
-            </div>
         </div>
     </div>
 </section>
