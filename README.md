@@ -9,7 +9,7 @@ Here's the thing. Today I work on multiple different devices: Servers, laptops, 
 - File browser
 - File editor with Git gutter and Vim-mode
 - Git history viewer
-- Terminal
+- Persistent terminal sessions
 - Streaming resumable file transfers
   - Download/upload files
   - Transfers files directly between your devices
