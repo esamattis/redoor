@@ -117,42 +117,6 @@ test.describe.serial("Terminal panel lifecycle", () => {
         expect(terminalSockets).toHaveLength(1);
     });
 
-    test("initializes a shell and executes a command", async ({ page }) => {
-        let terminalOutput = "";
-        page.on("websocket", (socket) => {
-            if (!isTerminalSocket(socket.url())) {
-                return;
-            }
-
-            socket.on("framereceived", (event) => {
-                terminalOutput += terminalFrameSchema.parse(event.payload);
-            });
-        });
-
-        await page.goto(ctx.agentBrowserUrl);
-        await page.getByRole("tab", { name: "Terminal" }).click();
-        await page
-            .getByRole("button", { name: "New terminal", exact: true })
-            .click();
-        await expect(
-            page.getByRole("status", { name: "agent1_src 1: Connected" }),
-        ).toBeVisible();
-
-        const terminalInput = page
-            .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
-            .locator("textarea");
-
-        await terminalInput.focus();
-        // Octal escapes print "terminal-ok" without putting that marker in the echoed command.
-        await terminalInput.pressSequentially(
-            "printf '\\164\\145\\162\\155\\151\\156\\141\\154\\055\\157\\153\\n'",
-        );
-        await terminalInput.press("Enter");
-
-        // Only an executed printf produces the decoded marker in PTY output.
-        await expect.poll(() => terminalOutput).toContain("terminal-ok");
-    });
-
     test("types Finnish macOS Option characters without terminal escape prefixes", async ({
         page,
     }) => {

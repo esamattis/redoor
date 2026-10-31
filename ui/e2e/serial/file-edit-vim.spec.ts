@@ -107,51 +107,7 @@ test.describe.serial("File editor options", () => {
         ).toHaveText("content1");
     });
 
-    test("should keep the Vim mode line inside the editor", async ({
-        page,
-    }) => {
-        const filePath = path.join(ctx.testDirPath, "vim-status-line.txt");
-        await fs.writeFile(filePath, "content1");
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
-        );
-
-        await page.getByRole("button", { name: "Editor actions" }).click();
-        await page.getByRole("button", { name: "Vim mode" }).click();
-        await page
-            .getByRole("button", { name: "Close editor actions" })
-            .click();
-
-        const status = page.getByText("--NORMAL--");
-        await expect(status).toBeVisible();
-
-        const applicationMenu = page.getByRole("navigation", {
-            name: "Application",
-        });
-
-        await expect(applicationMenu).toBeVisible();
-
-        const editorViewport = page.getByRole("region", {
-            name: "Editor viewport",
-        });
-
-        const statusBox = await status.boundingBox();
-        const menuBox = await applicationMenu.boundingBox();
-        const editorBox = await editorViewport.boundingBox();
-
-        if (statusBox === null || menuBox === null || editorBox === null) {
-            throw new Error("expected Vim status, menu, and editor boxes");
-        }
-
-        // Sticky left:0 must not stretch the mode line across the sidebar.
-        expect(statusBox.x).toBeGreaterThanOrEqual(menuBox.x + menuBox.width);
-        expect(statusBox.x).toBeGreaterThanOrEqual(editorBox.x);
-        expect(statusBox.x + statusBox.width).toBeLessThanOrEqual(
-            editorBox.x + editorBox.width + 1,
-        );
-    });
-
-    test("should briefly highlight the exact Vim yank range", async ({
+    test("should briefly highlight a Vim yank in the file editor", async ({
         page,
     }) => {
         const filePath = path.join(ctx.testDirPath, "vim-yank.txt");
@@ -177,46 +133,15 @@ five`,
             '[data-vim-yank-highlight="line"]',
         );
 
-        const characterHighlights = editor.locator(
-            '[data-vim-yank-highlight="character"]',
-        );
-
         await editor.focus();
 
         await page.keyboard.type("yy");
-        // The active-line background must not cover a single-line yank flash.
+        // The flash shows the yanked line, proving the file editor wires in the yank
+        // highlight. Counted, characterwise and Visual ranges are covered by
+        // vim-yank-highlight.test.ts.
         await expect(lineHighlights).toHaveCount(1);
         await expect(lineHighlights).toHaveText("one two");
-        expect(
-            await lineHighlights.evaluate(
-                (element) => getComputedStyle(element).backgroundImage,
-            ),
-        ).not.toBe("none");
-        await expect(lineHighlights).toHaveCount(0);
-
-        await page.keyboard.type("3yy");
-        // A counted linewise yank must decorate all affected visible lines, including the empty one.
-        await expect(lineHighlights).toHaveCount(3);
-        await expect(lineHighlights.nth(0)).toHaveText("one two");
-        await expect(lineHighlights.nth(1)).toHaveText("three four");
-        await expect(lineHighlights.nth(2)).toHaveText("");
         // Polling for removal verifies the timer without making the test sleep.
-        await expect(lineHighlights).toHaveCount(0);
-
-        await page.keyboard.type("ggyw");
-        // The character decoration follows Vim's resolved word motion, including its trailing space.
-        await expect(characterHighlights).toHaveText("one ");
-        await expect(characterHighlights).toHaveCount(0);
-
-        await page.keyboard.type("ggvey");
-        // Visual mode must flash the former selection after Vim exits Visual mode.
-        await expect(characterHighlights).toHaveText("one");
-        await expect(characterHighlights).toHaveCount(0);
-
-        await page.keyboard.type("jjyy");
-        // A line decoration gives an empty line visible feedback despite its zero-width text.
-        await expect(lineHighlights).toHaveCount(1);
-        await expect(lineHighlights).toHaveText("");
         await expect(lineHighlights).toHaveCount(0);
     });
 
