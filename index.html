@@ -414,7 +414,7 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 
 .grid {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 1px;
     background: var(--border);
     border: 1px solid var(--border);
@@ -428,6 +428,8 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 }
 .card:hover { background: var(--surface); }
 .card p { color: var(--muted); margin: 0; font-size: 16px; }
+/* Long commands in card text must wrap, or they widen the grid column past the screen. */
+.card code { white-space: normal; overflow-wrap: anywhere; }
 .card h3 { font-size: 18px; }
 .icon {
     width: 42px;
@@ -584,7 +586,7 @@ footer p { margin: 6px 0; }
     .showcase, .showcase.reverse { grid-template-columns: 1fr; gap: 36px; margin-bottom: 100px; }
     .showcase.reverse .showcase-text { order: 0; }
     .connect { grid-template-columns: 1fr; }
-    .grid { grid-template-columns: repeat(2, 1fr); }
+    .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .docs { grid-template-columns: repeat(2, 1fr); }
 }
 @media (max-width: 600px) {
@@ -594,7 +596,7 @@ footer p { margin: 6px 0; }
     .hero-shot { margin-top: 44px; }
     .hero-shot .window { transform: none; }
     .window-bar .url { display: none; }
-    .grid { grid-template-columns: 1fr; }
+    .grid { grid-template-columns: minmax(0, 1fr); }
     .docs { grid-template-columns: 1fr; }
     .stack { padding-bottom: 30%; }
     .stack .back { width: 92%; }
