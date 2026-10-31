@@ -1,7 +1,11 @@
-import { TriangleAlert } from "lucide-react";
+import React from "react";
+import { Dices, TriangleAlert } from "lucide-react";
 
+import { Button } from "#ui/components/button";
+import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Password } from "#ui/components/password";
 import { passphraseProblem } from "#ui/vault/vault-keys";
+import { generatePassphrase } from "#ui/vault/vault-passphrase";
 
 /**
  * The problem with a new passphrase and its repetition, or null. Checked before the slow
@@ -17,7 +21,11 @@ export function newPassphraseProblem(
     );
 }
 
-/** A new passphrase with its repetition, shared by every flow that sets one. */
+/**
+ * A new passphrase with its repetition and a "Generate" button. A generated passphrase is
+ * shown in full with a copy button, because the user has to store it somewhere: it is the
+ * way back in when every passkey is lost.
+ */
 export function NewPassphraseFields(props: {
     label: string;
     repeatLabel: string;
@@ -26,6 +34,9 @@ export function NewPassphraseFields(props: {
     disabled: boolean;
     onChange: (passphrase: string, repeated: string) => void;
 }) {
+    const [generated, setGenerated] = React.useState<string | null>(null);
+    const isGenerated = generated !== null && generated === props.passphrase;
+
     return (
         <div className="grid gap-4">
             <Password
@@ -45,6 +56,43 @@ export function NewPassphraseFields(props: {
                 disabled={props.disabled}
                 onChange={(value) => props.onChange(props.passphrase, value)}
             />
+            <div className="flex flex-wrap items-center gap-3">
+                <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    tooltip="Fill in a random passphrase with 125 bits of entropy"
+                    disabled={props.disabled}
+                    onClick={() => {
+                        const value = generatePassphrase();
+
+                        setGenerated(value);
+                        props.onChange(value, value);
+                    }}
+                >
+                    <Dices className="h-4 w-4" aria-hidden="true" />
+                    Generate
+                </Button>
+            </div>
+            {isGenerated ? (
+                <div className="grid gap-2">
+                    <CopyableCodeRow
+                        label="Generated passphrase"
+                        value={props.passphrase}
+                        copyAriaLabel="Copy passphrase"
+                        wrap
+                    />
+                    <p className="flex gap-2 text-xs text-amber-300">
+                        <TriangleAlert
+                            className="h-4 w-4 shrink-0"
+                            aria-hidden="true"
+                        />
+                        Store it in a password manager now. It is your way back
+                        in if you lose your passkeys, and redoor cannot show it
+                        again.
+                    </p>
+                </div>
+            ) : null}
         </div>
     );
 }

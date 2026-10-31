@@ -14,9 +14,6 @@ import {
 
 const PASSPHRASE = "correct horse battery staple";
 
-/** The passphrase added to a passwordless vault. */
-const SECOND = "another long passphrase";
-
 const MAGIC = Buffer.from("REDOORVAULT\0", "latin1");
 
 /** The Playwright server's data directories, where the account's vault file lives. */
@@ -290,7 +287,7 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
     });
 
-    test("creates a passwordless vault, adds a passphrase and removes it again", async ({
+    test("creates a passwordless vault, adds a generated passphrase and removes it again", async ({
         page,
     }) => {
         await addVirtualAuthenticator(page);
@@ -324,8 +321,19 @@ test.describe.serial("Vault", () => {
             .getByRole("button", { name: "Add passphrase", exact: true })
             .click();
         const add = page.getByRole("dialog", { name: "Add passphrase" });
-        await add.getByLabel("New passphrase", { exact: true }).fill(SECOND);
-        await add.getByLabel("Repeat new passphrase").fill(SECOND);
+        await add.getByRole("button", { name: "Generate" }).click();
+
+        const generated =
+            (await add
+                .getByLabel("Generated passphrase contents")
+                .textContent()) ?? "";
+
+        // The generated passphrase is shown in readable groups so it can be stored.
+        expect(generated).toMatch(/^[a-z2-9]{5}(-[a-z2-9]{5}){4}$/);
+        // Generating fills the repeat field too, so the user does not retype it.
+        await expect(add.getByLabel("Repeat new passphrase")).toHaveValue(
+            generated,
+        );
         await add.getByRole("button", { name: "Unlock with passkey" }).click();
         await expect(add.getByText("Unlocked with Virtual key")).toBeVisible();
         await add
@@ -337,8 +345,8 @@ test.describe.serial("Vault", () => {
 
         await page.getByRole("button", { name: "Lock now" }).click();
         await page.getByRole("button", { name: "Unlock", exact: true }).click();
-        await unlockInDialog(page, false, SECOND);
-        // The added passphrase wraps the same vault key.
+        await unlockInDialog(page, false, generated);
+        // The generated passphrase wraps the same vault key.
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
 
         await page

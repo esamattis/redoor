@@ -2133,6 +2133,8 @@ it.
   is no separate recovery code. Wherever a vault ends up without one (creation, removing
   the passphrase, a rotation that drops it) the UI warns that passkeys only work on their
   hostname and that losing them loses every file, which a `vault.json` backup cannot fix.
+  New passphrases can be generated (`vault-passphrase`: 25 symbols from a 32-symbol
+  alphabet without look-alikes, drawn with rejection sampling, 125 bits) and copied.
 - **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
   `evalByCredential` for every registered credential unlocks; registration refuses
   authenticators without PRF.
