@@ -130,6 +130,10 @@ export async function isolateTerminalSessions(page: Page): Promise<void> {
 export async function deleteIsolatedTerminalSessions(
     page: Page,
 ): Promise<void> {
+    // Drain response parsing before teardown disposes the context's API responses. Removing
+    // the routes first also stops session deletion events from starting more handlers.
+    await page.unrouteAll({ behavior: "wait" });
+
     const own = isolatedTerminalSessions.get(page);
 
     if (own === undefined || own.size === 0) {

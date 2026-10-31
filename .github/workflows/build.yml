@@ -49,7 +49,9 @@ jobs:
             target: x86_64-unknown-linux-musl
             archive_name: redoor-x86_64-linux
             cc: musl-gcc
-          - os: macos-latest
+          # Zig 0.15.2 cannot link its build runner against the macOS 26 SDK.
+          # Keep the Xcode 16.4 toolchain until Ghostty supports a newer Zig.
+          - os: macos-15
             target: aarch64-apple-darwin
             archive_name: redoor-aarch64-macos
             cc: clang
