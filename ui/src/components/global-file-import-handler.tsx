@@ -1,4 +1,5 @@
 import React from "react";
+import type { UnlockedVault } from "#ui/vault/vault-keys";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ClipboardPaste, Upload } from "lucide-react";
 import { type Agent } from "#ui/api-client";
@@ -38,7 +39,7 @@ type ImportState =
 type UploadFilesTo = (
     destination: DirectoryDestination,
     files: UploadSourceFile[],
-    directories?: string[],
+    options?: { directories?: string[]; encryptWith?: UnlockedVault | null },
 ) => Promise<void>;
 
 /**
@@ -295,7 +296,10 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
      * and asks before any upload would write over an entry that is already there.
      */
     const uploadFilesTo: UploadFilesTo = React.useCallback(
-        async (destination, files, directories = []) => {
+        async (destination, files, options = {}) => {
+            const directories = options.directories ?? [];
+            const encryptWith = options.encryptWith ?? null;
+
             if (files.length === 0 && directories.length === 0) {
                 return;
             }
@@ -326,6 +330,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                         files,
                         directories,
                         destinationEntries,
+                        encryptWith,
                     });
 
                     return;
@@ -346,6 +351,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                 files,
                 directories,
                 onExisting: "error",
+                encryptWith,
             });
         },
         [queryClient, enqueueUpload],
@@ -360,7 +366,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                 return;
             }
 
-            await uploadFilesTo(props.destination, files, directories);
+            await uploadFilesTo(props.destination, files, { directories });
         },
         [props.destination, showMissingDirectoryError, uploadFilesTo],
     );
@@ -380,7 +386,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                     agent: conflictingUpload.agent,
                     path: conflictingUpload.destinationPath,
                 },
-                upload,
+                { ...upload, encryptWith: conflictingUpload.encryptWith },
             );
         },
         importState,

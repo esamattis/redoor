@@ -1,4 +1,5 @@
 import { historyField } from "@codemirror/commands";
+import { isVaultPath } from "#ui/vault/vault-path";
 import {
     EditorSelection,
     EditorState,
@@ -886,9 +887,12 @@ export class EditorWorkspace extends ExternalStore<
             : buffer.state;
     }
 
-    /** Debounces a write of an open file's buffer. */
+    /**
+     * Debounces a write of an open file's buffer. Vault files are never written (see
+     * `write`), so they are not scheduled either.
+     */
     private schedule(key: string, delay: number) {
-        if (!this.openKeys.has(key)) {
+        if (!this.openKeys.has(key) || isVaultPath(key)) {
             return;
         }
 
@@ -928,7 +932,13 @@ export class EditorWorkspace extends ExternalStore<
     private async write(key: string, keepalive: boolean) {
         const buffer = this.buffers.get(key);
 
-        if (buffer === undefined || !this.openKeys.has(key)) {
+        // Every write path ends here, so this is the one check that keeps a vault file's
+        // plaintext draft in the browser.
+        if (
+            buffer === undefined ||
+            !this.openKeys.has(key) ||
+            isVaultPath(key)
+        ) {
             return;
         }
 

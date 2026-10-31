@@ -1,4 +1,9 @@
 import React from "react";
+import {
+    DecryptedDownloadMenuButton,
+    useDecryptedDownload,
+} from "#ui/components/vault/decrypted-download-button";
+import { isVaultPath } from "#ui/vault/vault-path";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
@@ -321,6 +326,8 @@ function PathActionMenuItems(props: {
     downloadUrl?: string;
     downloadName?: string;
     onDownloadDirectory?: () => void;
+    /** Present for vault files, which also offer a decrypted download. */
+    onDownloadDecrypted?: () => void;
     showUnarchive?: boolean;
     onUnarchive?: () => void;
     onCreateArchive?: () => void;
@@ -400,6 +407,14 @@ function PathActionMenuItems(props: {
                         </a>
                     </ActionMenuButton>
                 )
+            ) : null}
+            {props.showDownload && props.onDownloadDecrypted && !readOnly ? (
+                <DecryptedDownloadMenuButton
+                    onClick={() => {
+                        props.close();
+                        props.onDownloadDecrypted?.();
+                    }}
+                />
             ) : null}
             {props.showUnarchive && props.onUnarchive ? (
                 <ActionMenuButton
@@ -490,6 +505,9 @@ export function PathActionMenu(props: {
     triggerClassName?: string;
 }) {
     const canModify = getImmediateParentPath(props.path) !== null;
+    const decrypted = useDecryptedDownload(props.agent, props.path);
+
+    const isVaultFile = props.entryType === "file" && isVaultPath(props.path);
 
     return (
         <RenamePathAction
@@ -559,6 +577,11 @@ export function PathActionMenu(props: {
                                                 onDownloadDirectory={
                                                     props.onDownloadDirectory
                                                 }
+                                                onDownloadDecrypted={
+                                                    isVaultFile
+                                                        ? decrypted.start
+                                                        : undefined
+                                                }
                                                 showUnarchive={
                                                     props.showUnarchive
                                                 }
@@ -575,6 +598,7 @@ export function PathActionMenu(props: {
                                     {renameAction.dialog}
                                     {duplicateAction.dialog}
                                     {openNatively.toast}
+                                    {decrypted.toast}
                                 </>
                             )}
                         </OpenNativelyAction>

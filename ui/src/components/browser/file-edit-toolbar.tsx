@@ -1,4 +1,9 @@
 import React from "react";
+import {
+    DecryptedDownloadMenuButton,
+    useDecryptedDownload,
+} from "#ui/components/vault/decrypted-download-button";
+import { isVaultPath } from "#ui/vault/vault-path";
 import { useMutation } from "@tanstack/react-query";
 import {
     ClipboardCopy,
@@ -213,116 +218,132 @@ function EditorActionsMenu(props: {
     onDelete: () => void;
 }) {
     const [userState, setUserState] = useUserState();
+    const decrypted = useDecryptedDownload(props.agent, props.path);
+    const isVaultFile = !props.readOnly && isVaultPath(props.path);
 
     return (
-        <ActionMenu
-            label="Editor actions"
-            title="Editor actions"
-            closeAriaLabel="Close editor actions"
-            hideTitle={false}
-            icon={<MoreHorizontal className="h-4 w-4" />}
-            variant="icon"
-        >
-            {(close) => (
-                <>
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                disabled={!props.canEdit || props.isSaving}
+        <>
+            <ActionMenu
+                label="Editor actions"
+                title="Editor actions"
+                closeAriaLabel="Close editor actions"
+                hideTitle={false}
+                icon={<MoreHorizontal className="h-4 w-4" />}
+                variant="icon"
+            >
+                {(close) => (
+                    <>
+                        {props.readOnly ? null : (
+                            <>
+                                <ActionMenuButton
+                                    disabled={!props.canEdit || props.isSaving}
+                                    onClick={() => {
+                                        close();
+                                        props.onReload();
+                                    }}
+                                >
+                                    {props.isReloading ? (
+                                        <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
+                                    ) : (
+                                        <RefreshCw className="h-4 w-4 text-slate-400" />
+                                    )}
+                                    {props.isReloading
+                                        ? "Reloading..."
+                                        : "Reload"}
+                                </ActionMenuButton>
+                            </>
+                        )}
+                        {props.downloadUrl === null ? null : (
+                            <ActionMenuButton asChild>
+                                <a
+                                    href={props.downloadUrl}
+                                    download={props.fileName}
+                                    onClick={close}
+                                >
+                                    <Download className="h-4 w-4 text-slate-400" />
+                                    Download
+                                </a>
+                            </ActionMenuButton>
+                        )}
+                        {isVaultFile ? (
+                            <DecryptedDownloadMenuButton
                                 onClick={() => {
                                     close();
-                                    props.onReload();
+                                    decrypted.start();
                                 }}
-                            >
-                                {props.isReloading ? (
-                                    <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
-                                ) : (
-                                    <RefreshCw className="h-4 w-4 text-slate-400" />
-                                )}
-                                {props.isReloading ? "Reloading..." : "Reload"}
-                            </ActionMenuButton>
-                        </>
-                    )}
-                    {props.downloadUrl === null ? null : (
-                        <ActionMenuButton asChild>
-                            <a
-                                href={props.downloadUrl}
-                                download={props.fileName}
-                                onClick={close}
-                            >
-                                <Download className="h-4 w-4 text-slate-400" />
-                                Download
-                            </a>
-                        </ActionMenuButton>
-                    )}
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                tone="danger"
-                                disabled={
-                                    !props.canEdit ||
-                                    props.isSaving ||
-                                    getImmediateParentPath(props.path) === null
-                                }
-                                onClick={() => {
-                                    close();
-                                    props.onDelete();
-                                }}
-                            >
-                                <Trash2 className="h-4 w-4" />
-                                Delete file
-                            </ActionMenuButton>
-                            <div className="my-1 border-t border-slate-800" />
-                            <SelectPathMenuButton
-                                agent={props.agent}
-                                path={props.path}
-                                fileName={props.fileName}
-                                entryType="file"
-                                close={close}
                             />
-                            <BookmarkMenuButton
-                                bookmark={{
-                                    agentId: props.agent.id,
-                                    path: props.path,
-                                    name: props.fileName,
-                                    entryType: "file",
-                                }}
-                                close={close}
-                            />
-                            <div className="my-1 border-t border-slate-800" />
-                        </>
-                    )}
-                    <Checkbox
-                        checked={userState.wrapEditorLines}
-                        label="Wrap lines"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                wrapEditorLines: checked,
-                            }));
-                        }}
-                    >
-                        Wrap lines
-                    </Checkbox>
-                    <Checkbox
-                        checked={userState.vimMode}
-                        label="Vim mode"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                vimMode: checked,
-                            }));
-                        }}
-                    >
-                        Vim mode
-                    </Checkbox>
-                </>
-            )}
-        </ActionMenu>
+                        ) : null}
+                        {props.readOnly ? null : (
+                            <>
+                                <ActionMenuButton
+                                    tone="danger"
+                                    disabled={
+                                        !props.canEdit ||
+                                        props.isSaving ||
+                                        getImmediateParentPath(props.path) ===
+                                            null
+                                    }
+                                    onClick={() => {
+                                        close();
+                                        props.onDelete();
+                                    }}
+                                >
+                                    <Trash2 className="h-4 w-4" />
+                                    Delete file
+                                </ActionMenuButton>
+                                <div className="my-1 border-t border-slate-800" />
+                                <SelectPathMenuButton
+                                    agent={props.agent}
+                                    path={props.path}
+                                    fileName={props.fileName}
+                                    entryType="file"
+                                    close={close}
+                                />
+                                <BookmarkMenuButton
+                                    bookmark={{
+                                        agentId: props.agent.id,
+                                        path: props.path,
+                                        name: props.fileName,
+                                        entryType: "file",
+                                    }}
+                                    close={close}
+                                />
+                                <div className="my-1 border-t border-slate-800" />
+                            </>
+                        )}
+                        <Checkbox
+                            checked={userState.wrapEditorLines}
+                            label="Wrap lines"
+                            title={false}
+                            className="w-full px-3 py-2"
+                            onCheckedChange={(checked) => {
+                                setUserState((current) => ({
+                                    ...current,
+                                    wrapEditorLines: checked,
+                                }));
+                            }}
+                        >
+                            Wrap lines
+                        </Checkbox>
+                        <Checkbox
+                            checked={userState.vimMode}
+                            label="Vim mode"
+                            title={false}
+                            className="w-full px-3 py-2"
+                            onCheckedChange={(checked) => {
+                                setUserState((current) => ({
+                                    ...current,
+                                    vimMode: checked,
+                                }));
+                            }}
+                        >
+                            Vim mode
+                        </Checkbox>
+                    </>
+                )}
+            </ActionMenu>
+            {decrypted.toast}
+        </>
     );
 }
 

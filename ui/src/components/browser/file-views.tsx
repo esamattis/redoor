@@ -47,6 +47,14 @@ import {
 import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
+import {
+    useVaultFile,
+    useVaultUnloadWarning,
+    VaultFileBanners,
+    VaultLockedPanel,
+} from "#ui/components/browser/vault-file-editor";
+import { vaultFileContentQueryOptions } from "#ui/vault/vault-files";
+import { isVaultPath } from "#ui/vault/vault-path";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -314,8 +322,16 @@ function useFileBuffer(props: FileEditViewProps) {
     const queryClient = useQueryClient();
     const [userState] = useUserState();
     const readOnly = props.revision !== undefined;
+    // Encrypted files never store their draft on the server; see `useVaultFile`.
+    const isVault = !readOnly && isVaultPath(props.filePath);
     const fileQuery = fileContentQueryOptions(props.agent, props.filePath);
     const contentQuery = useEditorContentQuery(props);
+
+    const vaultFile = useVaultFile({
+        agent: props.agent,
+        path: props.filePath,
+        enabled: isVault,
+    });
 
     // A revision is a read-only preview of other text, so it never shares the file's buffer.
     const bufferKey = readOnly
@@ -324,7 +340,7 @@ function useFileBuffer(props: FileEditViewProps) {
 
     const storedQuery = useQuery({
         ...editorBufferQueryOptions(api, bufferKey),
-        enabled: !readOnly,
+        enabled: !readOnly && !isVault,
     });
 
     const statuses = React.useSyncExternalStore(
@@ -347,6 +363,13 @@ function useFileBuffer(props: FileEditViewProps) {
 
     const saveMutation = useMutation({
         mutationFn: async (nextContent: string) => {
+            if (isVault) {
+                return {
+                    nextContent,
+                    revision: await vaultFile.save(nextContent),
+                };
+            }
+
             await props.agent.editFile(
                 props.filePath,
                 new globalThis.File([nextContent], props.fileName, {
@@ -354,15 +377,20 @@ function useFileBuffer(props: FileEditViewProps) {
                 }),
             );
 
-            return nextContent;
+            return { nextContent, revision: null };
         },
-        onSuccess: async (nextContent) => {
+        onSuccess: async (saved) => {
             // A read that started before the write would bring back the old text as if the
             // device had changed it, and a clean buffer would follow it.
             await queryClient.cancelQueries({ queryKey: fileQuery.queryKey });
             // The buffer learns its new base before the cache update reaches it as device text.
-            editor.rebase(bufferKey, nextContent);
-            queryClient.setQueryData(fileQuery.queryKey, nextContent);
+            editor.rebase(bufferKey, saved.nextContent);
+
+            if (saved.revision === null) {
+                queryClient.setQueryData(fileQuery.queryKey, saved.nextContent);
+            } else {
+                vaultFile.adopt(saved.nextContent, saved.revision);
+            }
         },
     });
 
@@ -377,7 +405,9 @@ function useFileBuffer(props: FileEditViewProps) {
         isDirty: status?.isDirty === true,
         conflict: status?.conflict ?? null,
         // A failed server read must not keep the file from opening from the device.
-        isStoredReady: readOnly || !storedQuery.isPending,
+        isStoredReady: readOnly || isVault || !storedQuery.isPending,
+        isVault,
+        vaultFile,
     };
 }
 
@@ -443,6 +473,60 @@ function useCloseOpenFilesPanelOnFullWindowExit(isFullWindow: boolean) {
 
         wasFullWindow.current = isFullWindow;
     }, [isFullWindow, openMenu, setOpenMenu]);
+}
+
+/**
+ * The warnings above the editor: an encrypted file's key and save conflicts, or a plain
+ * file that changed on the device under unsaved edits.
+ */
+function FileEditBanners(props: {
+    agent: Agent;
+    filePath: string;
+    buffer: ReturnType<typeof useFileBuffer>;
+    onSave: () => void;
+}) {
+    const buffer = props.buffer;
+
+    return (
+        <>
+            {buffer.isVault ? (
+                <VaultFileBanners
+                    agent={props.agent}
+                    path={props.filePath}
+                    deviceName={props.agent.name}
+                    vaultFile={buffer.vaultFile}
+                    onOverwrite={() => {
+                        buffer.vaultFile.allowOverwrite();
+                        props.onSave();
+                    }}
+                    onDiscard={(content) =>
+                        buffer.editor.discard(buffer.bufferKey, content)
+                    }
+                />
+            ) : null}
+            {buffer.conflict === null ? null : (
+                <DeviceChangedBanner
+                    deviceName={props.agent.name}
+                    onKeep={() => {
+                        if (buffer.conflict !== null) {
+                            buffer.editor.rebase(
+                                buffer.bufferKey,
+                                buffer.conflict,
+                            );
+                        }
+                    }}
+                    onDiscard={() => {
+                        if (buffer.conflict !== null) {
+                            buffer.editor.discard(
+                                buffer.bufferKey,
+                                buffer.conflict,
+                            );
+                        }
+                    }}
+                />
+            )}
+        </>
+    );
 }
 
 /**
@@ -547,6 +631,7 @@ export function FileEditView(props: FileEditViewProps) {
     }, [buffer.bufferKey, buffer.editor, canEdit, isDirty, saveMutation]);
 
     useFileSaveShortcut(handleSave);
+    useVaultUnloadWarning(buffer.isVault && isDirty);
 
     const statusMessage = getFileEditorStatus({
         readOnly: buffer.readOnly,
@@ -600,70 +685,65 @@ export function FileEditView(props: FileEditViewProps) {
                     onReload={reloadFile}
                     onDelete={() => setDeleteConfirmationOpen(true)}
                 />
-                {buffer.conflict === null ? null : (
-                    <DeviceChangedBanner
-                        deviceName={props.agent.name}
-                        onKeep={() => {
-                            if (buffer.conflict !== null) {
-                                buffer.editor.rebase(
-                                    buffer.bufferKey,
-                                    buffer.conflict,
-                                );
-                            }
-                        }}
-                        onDiscard={() => {
-                            if (buffer.conflict !== null) {
-                                buffer.editor.discard(
-                                    buffer.bufferKey,
-                                    buffer.conflict,
-                                );
-                            }
-                        }}
-                    />
-                )}
+                <FileEditBanners
+                    agent={props.agent}
+                    filePath={props.filePath}
+                    buffer={buffer}
+                    onSave={handleSave}
+                />
 
                 <div className="flex min-h-0 flex-1 flex-col">
-                    <FileEditorSurface
-                        deviceName={props.agent.name}
-                        filePath={props.filePath}
-                        repositoryRoot={props.repositoryRoot}
-                        isPending={
-                            contentQuery.isPending || !buffer.isStoredReady
-                        }
-                        error={
-                            contentQuery.isError
-                                ? contentQuery.error
-                                : undefined
-                        }
-                        bufferKey={buffer.bufferKey}
-                        deviceContent={contentQuery.data ?? ""}
-                        stored={buffer.storedQuery.data ?? null}
-                        previewContent={previewContent}
-                        fileName={props.fileName}
-                        editable={canEdit}
-                        vimMode={userState.vimMode}
-                        wrapLines={userState.wrapEditorLines}
-                        preview={isPreviewShown}
-                        scrollToLine={props.scrollToLine}
-                        reveal={buffer.reveal}
-                        onBecameDirty={() => {
-                            if (saveMutation.isSuccess) saveMutation.reset();
-
-                            if (!buffer.readOnly) {
-                                keepOpen();
+                    {buffer.vaultFile.isLocked ? (
+                        <VaultLockedPanel
+                            fileName={props.fileName}
+                            onUnlock={buffer.vaultFile.unlock}
+                        />
+                    ) : (
+                        <FileEditorSurface
+                            deviceName={props.agent.name}
+                            filePath={props.filePath}
+                            repositoryRoot={props.repositoryRoot}
+                            isPending={
+                                contentQuery.isPending || !buffer.isStoredReady
                             }
-                        }}
-                        // A revision is not the working file, so there is nothing to open.
-                        onDoubleClick={buffer.readOnly ? undefined : keepOpen}
-                        onFocus={reloadFile}
-                        onSave={handleSave}
-                        onSelectionChange={setSelection}
-                        searchHandleRef={searchHandleRef}
-                        isSearchOpen={isSearchOpen}
-                        onSearchOpenChange={setIsSearchOpen}
-                        onClosePreview={() => props.onPreviewChange(false)}
-                        gitGutter={gitGutter}
-                    />
+                            error={
+                                contentQuery.isError
+                                    ? contentQuery.error
+                                    : undefined
+                            }
+                            bufferKey={buffer.bufferKey}
+                            deviceContent={contentQuery.data ?? ""}
+                            stored={buffer.storedQuery.data ?? null}
+                            previewContent={previewContent}
+                            fileName={props.fileName}
+                            editable={canEdit}
+                            vimMode={userState.vimMode}
+                            wrapLines={userState.wrapEditorLines}
+                            preview={isPreviewShown}
+                            scrollToLine={props.scrollToLine}
+                            reveal={buffer.reveal}
+                            onBecameDirty={() => {
+                                if (saveMutation.isSuccess)
+                                    saveMutation.reset();
+
+                                if (!buffer.readOnly) {
+                                    keepOpen();
+                                }
+                            }}
+                            // A revision is not the working file, so there is nothing to open.
+                            onDoubleClick={
+                                buffer.readOnly ? undefined : keepOpen
+                            }
+                            onFocus={reloadFile}
+                            onSave={handleSave}
+                            onSelectionChange={setSelection}
+                            searchHandleRef={searchHandleRef}
+                            isSearchOpen={isSearchOpen}
+                            onSearchOpenChange={setIsSearchOpen}
+                            onClosePreview={() => props.onPreviewChange(false)}
+                            gitGutter={gitGutter}
+                        />
+                    )}
                 </div>
             </article>
             {deleteConfirmationOpen ? (
@@ -690,10 +770,28 @@ function useEditorContentQuery(props: {
     revision?: string;
 }) {
     const readOnly = props.revision !== undefined;
+    const isVault = !readOnly && isVaultPath(props.filePath);
+    const { vault } = rootRouteApi.useRouteContext();
+
+    const vaultState = React.useSyncExternalStore(
+        vault.subscribe,
+        vault.getSnapshot,
+    );
 
     const worktreeContentQuery = useQuery({
         ...fileContentQueryOptions(props.agent, props.filePath),
-        enabled: !readOnly,
+        enabled: !readOnly && !isVault,
+    });
+
+    // Shares the cache entry of `useVaultFile`, which also needs the revision.
+    const vaultContentQuery = useQuery({
+        ...vaultFileContentQueryOptions({
+            agent: props.agent,
+            path: props.filePath,
+            vault,
+            keyId: isVault ? vaultState.currentKeyId : null,
+        }),
+        select: (data) => data.content,
     });
 
     const revisionContentQuery = useQuery({
@@ -704,6 +802,10 @@ function useEditorContentQuery(props: {
         ),
         enabled: readOnly,
     });
+
+    if (isVault) {
+        return vaultContentQuery;
+    }
 
     return readOnly ? revisionContentQuery : worktreeContentQuery;
 }

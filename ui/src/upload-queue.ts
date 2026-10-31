@@ -1,4 +1,5 @@
 import { MutationObserver, type QueryClient } from "@tanstack/react-query";
+import { newWriteKeys, type UnlockedVault } from "#ui/vault/vault-keys";
 
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { Agent } from "#ui/api-client";
@@ -26,6 +27,11 @@ export type UploadBatch = {
     directories?: string[];
     /** The conflict policy the user chose for this batch, so uploads never replace silently. */
     onExisting: CopyExistingMode;
+    /**
+     * Encrypts every file with this unlocked vault; the relative paths already carry the
+     * `.redoorvault` suffix, so conflicts are checked against the encrypted names.
+     */
+    encryptWith?: UnlockedVault | null;
 };
 
 /** A queued file with its progress, kept after completion so the queue view can settle. */
@@ -34,6 +40,7 @@ export type UploadQueueItem = UploadSourceFile & {
     agentId: string;
     destinationPath: string;
     onExisting: CopyExistingMode;
+    encryptWith: UnlockedVault | null;
     status: "waiting" | "uploading" | "done";
     error: string | null;
 };
@@ -78,6 +85,7 @@ type UploadOperation =
           path: string;
           file: File;
           onExisting: CopyExistingMode;
+          encryptWith: UnlockedVault | null;
       };
 
 /** Rejects paths that could address files outside the selected destination. */
@@ -141,6 +149,17 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                     return;
                 }
 
+                if (operation.encryptWith) {
+                    // A fresh file key for every file, wrapped with the current generation.
+                    await operation.agent.vaultUpload(operation.path, {
+                        content: operation.file,
+                        keys: await newWriteKeys(operation.encryptWith),
+                        on_existing: operation.onExisting,
+                    });
+
+                    return;
+                }
+
                 await operation.agent.upload(operation.path, operation.file, {
                     on_existing: operation.onExisting,
                 });
@@ -177,6 +196,7 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                 agentId: batch.agentId,
                 destinationPath: batch.destinationPath,
                 onExisting: batch.onExisting,
+                encryptWith: batch.encryptWith ?? null,
                 status: "waiting" as const,
                 error: null,
             }));
@@ -352,6 +372,7 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                       ),
                       file: item.file,
                       onExisting: item.onExisting,
+                      encryptWith: item.encryptWith,
                   }),
               )
             : Promise.reject(new Error("Upload agent is unavailable."));

@@ -2098,6 +2098,46 @@ store and the existing `OutputStream` and `AgentUpload` services.
   read keys from `/proc/<pid>/mem` or attach a debugger. macOS has no equivalent that keeps
   crash reporting, so there a same-user process remains a risk while a request decrypts.
 
+### Browser vault
+
+`ui/src/vault/` holds the browser side; nothing in it is React except the components that use
+it.
+
+- `vault-crypto` (WebCrypto, HKDF, Argon2id through `hash-wasm`) and `vault-keys` (creating,
+  unlocking, the chain walk, rotation and destroy requests) are pure functions, so the
+  integration tests run the same key handling as the UI.
+- **`VaultSession`** (router context `vault`) is the page's lock state. It holds the
+  non-extractable keys of every reachable generation, shares them with the other tabs over a
+  `BroadcastChannel`, locks after 15 idle minutes, and with "Keep unlocked on this device"
+  keeps them in IndexedDB instead (no idle lock). On load, kept keys of another generation
+  than the server's current one are deleted, because the vault was rotated elsewhere; a
+  rotation in this tab locks every other tab and deletes kept keys. "Lock now" deletes the
+  kept copy before it locks, so a reload cannot undo it.
+- Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
+  unlocked and otherwise opens the one `VaultDialog` in the app shell (create or unlock with
+  the passphrase or one prompt for every passkey of this hostname). The editor, uploads,
+  downloads, file creation and the settings page share it.
+- **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
+  `evalByCredential` for every registered credential unlocks; registration refuses
+  authenticators without PRF. Rotation needs the passphrase and confirms each kept passkey
+  with its own prompt.
+- **Editor.** A `.redoorvault` path opens in the editor even though the agent cannot call
+  ciphertext editable. Its content query (`vault-files`) reads the header, unwraps the file
+  key and reads the plaintext; it is keyed by the unlocked generation and has `gcTime: 0`,
+  so locking drops the plaintext from the cache. Saves send a new file key and the revision
+  the editor read; a conflict offers overwrite or discard. The editor workspace never writes
+  a vault file's buffer to the server (the server also refuses such keys), a `beforeunload`
+  warning protects unsaved drafts, and highlighting uses the inner extension. Files on an
+  older generation show a banner that rewraps them.
+- **Uploads and downloads.** "Upload encrypted files" queues files under `name.redoorvault`
+  with the unlocked vault; the queue encrypts each with a new file key through the vault
+  upload route, and the usual conflict check sees the encrypted names. "Download decrypted"
+  posts a hidden form into a hidden frame, so the browser streams the plaintext to disk.
+- **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
+  (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice
+  where it is optional) and scan the connected devices' default directories for vault files
+  with the file search, grouping them by generation and offering rewrap and re-encryption.
+
 ## SSH device keys
 
 An SSH device can log in with an ed25519 key that redoor creates for that device only,

@@ -1,4 +1,5 @@
 import { cpp } from "@codemirror/lang-cpp";
+import { stripVaultSuffix } from "#ui/vault/vault-path";
 import { css } from "@codemirror/lang-css";
 import { go } from "@codemirror/lang-go";
 import { html } from "@codemirror/lang-html";
@@ -174,7 +175,8 @@ export function syntaxLanguageFromFileName(
     fileName: string,
     content = "",
 ): SupportedSyntaxLanguage | undefined {
-    const baseName = fileName.split("/").pop() ?? fileName;
+    // An encrypted `secrets.env.redoorvault` highlights as the file it holds.
+    const baseName = stripVaultSuffix(fileName.split("/").pop() ?? fileName);
     const lowerName = baseName.toLowerCase();
 
     if (SHELL_BASENAMES.has(lowerName) || lowerName.startsWith(".env.")) {
