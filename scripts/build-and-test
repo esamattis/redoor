@@ -59,6 +59,29 @@ run_test_suites() {
     return "$exit_code"
 }
 
+# Run the independent static checks at once; each is mostly single-threaded and only a few
+# seconds long, so running them one by one left most cores idle.
+run_static_checks() {
+    local pids=()
+    silent_unless_error pn types &
+    pids+=($!)
+    silent_unless_error pn test:anti-slop &
+    pids+=($!)
+    silent_unless_error pn test:unit &
+    pids+=($!)
+    silent_unless_error pn lint &
+    pids+=($!)
+    silent_unless_error cargo clippy --all-targets -- -D warnings &
+    pids+=($!)
+    local exit_code=0
+    local pid
+    # Wait for every check even after a failure, so all failures are reported together.
+    for pid in "${pids[@]}"; do
+        wait "$pid" || exit_code=$?
+    done
+    return "$exit_code"
+}
+
 started=$SECONDS
 silent_unless_error cargo fmt
 silent_unless_error pn format
@@ -72,11 +95,8 @@ if [ "$(uname -s)" = "Linux" ] && systemctl --user cat redoor-dev &>/dev/null; t
     echo "Restarting the redoor-dev.service"
     silent_unless_error ./scripts/install-and-restart-redoor-dev
 fi
-silent_unless_error pn types
-silent_unless_error pn test:anti-slop
-silent_unless_error pn test:unit
-silent_unless_error pn lint
-silent_unless_error cargo clippy --all-targets -- -D warnings
+# The formatters above already rewrote every file, so no format check follows them.
+run_static_checks
 if cargo ndk --version &>/dev/null; then
     silent_unless_error env RUSTFLAGS=-Dwarnings cargo ndk --target arm64-v8a --platform 24 check --locked
 else
