@@ -4,6 +4,10 @@
 //! control request asks it to start. Once desired-running, it owns spawning,
 //! registration tracking, stale-session recovery, bounded restart backoff, and
 //! intentional shutdown without coupling the generic lifecycle code to Axum.
+//!
+//! It never gives up on a desired-running agent: every failure is retried on the shared
+//! [`Backoff`] schedule, and a child that stays without a connection is replaced. The only
+//! wait without a timer is for a locked SSH key, which no retry can unlock.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -13,20 +17,20 @@ use std::time::{Duration, Instant};
 use tokio::process::Child;
 use tokio::sync::{mpsc, oneshot};
 
+use redoor_core::backoff::Backoff;
 use redoor_core::log;
 use redoor_core::rotating_log::{LogFileSpec, RotatingLogFile};
 use redoor_protocol::api::agents::{AgentConnectionStatus, ProvisioningStatusMessage};
 use redoor_protocol::ids::{SocketId, UnixTimestampMillis};
 use redoor_protocol::wire::log::Level;
 
-/// Backoff for the first retry after a quick failure.
-const INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-/// Caps retries so a broken managed host does not spin continuously.
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// Resets retry escalation after a subprocess has remained useful for a while.
-const STABLE_RUNTIME: Duration = Duration::from_secs(30);
 /// Surfaces a useful issue when a live child has not registered promptly.
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a live child may stay without a connection, after its start or after its
+/// socket closed, before it is replaced. The agent gives up on its own after its stale
+/// timeout; this also covers a child that cannot tell, such as an `ssh` whose remote side
+/// hangs, and is long enough for a slow SSH login and launch.
+const CONNECTION_DEADLINE: Duration = Duration::from_secs(60);
 /// Bounds browser-visible subprocess output so repeated failures cannot grow API responses.
 const MAX_EXIT_DIAGNOSTIC_BYTES: u64 = 8 * 1024;
 /// Supervisor mailbox size; senders wait (rather than grow memory) while a child is reaped.
@@ -299,11 +303,15 @@ impl WatchdogHandle {
     }
 
     /// Requests desired-running and immediately publishes an optimistic starting state.
+    ///
+    /// An agent that is already desired-running still gets the Start: one that waits for its
+    /// SSH key to be unlocked resumes with it, and every other state ignores it.
     pub async fn start(&self) -> Result<(), WatchdogError> {
         let permit = self.reserve().await?;
         let should_publish = {
             let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
             if snapshot.desired_running {
+                permit.send(SupervisorCommand::Start);
                 false
             } else {
                 snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
@@ -592,12 +600,12 @@ async fn run_supervisor(
     watchdog: WatchdogHandle,
     mut commands: mpsc::Receiver<SupervisorCommand>,
 ) {
-    'idle: loop {
+    loop {
         match wait_until_running(&watchdog, &mut commands).await {
             IdleWait::Exit => break,
             IdleWait::Start => {}
         }
-        let mut backoff = INITIAL_BACKOFF;
+        let mut backoff = Backoff::default();
         loop {
             // Shutdown changes intent before queue processing so a stale Start command
             // cannot revive preparation while its shutdown acknowledgement is pending.
@@ -620,31 +628,44 @@ async fn run_supervisor(
                     return;
                 }
                 CommandAction::Stop => break,
-                // Already published as stopped for exactly this attempt; publishing again
-                // could overwrite a Start that arrived meanwhile.
-                CommandAction::Halt => continue 'idle,
                 CommandAction::Restart => {
-                    backoff = INITIAL_BACKOFF;
+                    backoff.reset();
                     continue;
                 }
-                CommandAction::Continue => {
-                    if started.elapsed() >= STABLE_RUNTIME && cycle.was_connected {
-                        backoff = INITIAL_BACKOFF;
+                CommandAction::WaitForStart => {
+                    log!(
+                        Level::Info,
+                        "Watchdog waiting for the next start: key={}",
+                        key
+                    );
+                    match wait_for_start(&watchdog, &mut commands).await {
+                        CommandAction::Stop => break,
+                        CommandAction::Exit => {
+                            publish_stopped(&watchdog);
+                            return;
+                        }
+                        _ => {
+                            backoff.reset();
+                            continue;
+                        }
                     }
+                }
+                CommandAction::Continue => {
+                    if cycle.was_connected {
+                        backoff.reset_if_stable(started.elapsed());
+                    }
+                    let delay = backoff.next_delay();
                     log!(
                         Level::Info,
                         "Watchdog retry scheduled: key={}, backoff={:?}",
                         key,
-                        backoff
+                        delay
                     );
-                    match wait_for_restart(&watchdog, &mut commands, backoff).await {
-                        CommandAction::Continue => {
-                            backoff = (backoff * 2).min(MAX_BACKOFF);
-                        }
+                    match wait_for_restart(&watchdog, &mut commands, delay).await {
+                        CommandAction::Continue => {}
                         CommandAction::Stop => break,
-                        CommandAction::Halt => continue 'idle,
-                        CommandAction::Restart => {
-                            backoff = INITIAL_BACKOFF;
+                        CommandAction::Restart | CommandAction::WaitForStart => {
+                            backoff.reset();
                             continue;
                         }
                         CommandAction::Exit => {
@@ -709,7 +730,9 @@ async fn run_started_cycle(
 }
 
 /// Publishes why an attempt produced no child; the supervisor retries after backoff, unless
-/// retrying cannot help (a locked SSH key), which stops the agent with the issue shown.
+/// retrying cannot help (a locked SSH key). The agent then stays desired-running with the
+/// issue shown and waits for the Start that unlocks the key, instead of stopping and making
+/// the operator notice that it needs to be started again.
 fn report_spawn_failure(
     watchdog: &WatchdogHandle,
     attempt_generation: u64,
@@ -723,25 +746,14 @@ fn report_spawn_failure(
         watchdog.key(),
         retryable
     );
-    if !retryable {
-        // Only this attempt is stopped. A shutdown or retry that changed the generation
-        // meanwhile has its command queued; the ordinary retry path below then handles it.
-        let stopped = watchdog.publish_attempt_update(attempt_generation, |snapshot| {
-            snapshot.desired_running = false;
-            snapshot.status = AgentConnectionStatus::Stopped;
-            snapshot.socket_id = None;
-            snapshot.connection_issue = Some(issue.clone());
-        });
-        if stopped {
-            return CycleResult {
-                action: CommandAction::Halt,
-                was_connected: false,
-            };
-        }
-    }
     publish_issue(watchdog, attempt_generation, issue);
     CycleResult {
-        action: CommandAction::Continue,
+        // A shutdown or retry queued meanwhile still wins: the wait handles it first.
+        action: if retryable {
+            CommandAction::Continue
+        } else {
+            CommandAction::WaitForStart
+        },
         was_connected: false,
     }
 }
@@ -773,14 +785,37 @@ fn handle_pre_spawn_command(
             publish_stopped(watchdog);
             CommandAction::Exit
         }
-        Some(SupervisorCommand::Start)
-        | Some(SupervisorCommand::Disconnected(_))
-        | Some(SupervisorCommand::Stale(_)) => CommandAction::Continue,
+        Some(SupervisorCommand::Disconnected(socket_id)) => {
+            // The child watcher starts from this socket, so a closed one must not linger.
+            publish_disconnected(watchdog, &socket_id);
+            CommandAction::Continue
+        }
+        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Stale(_)) => {
+            CommandAction::Continue
+        }
         None => CommandAction::Exit,
     }
 }
 
-/// Watches child exit, registration timeout, and serialized lifecycle controls concurrently.
+/// Clears the current socket when `socket_id` is it, so late events of replaced sockets
+/// change nothing. Returns whether the current connection ended.
+fn publish_disconnected(watchdog: &WatchdogHandle, socket_id: &SocketId) -> bool {
+    if watchdog.snapshot().socket_id.as_ref() != Some(socket_id) {
+        return false;
+    }
+    watchdog.publish_update(|snapshot| {
+        snapshot.desired_running = true;
+        snapshot.status = AgentConnectionStatus::Starting;
+        snapshot.socket_id = None;
+    });
+    true
+}
+
+/// Watches child exit, registration timeouts, and serialized lifecycle controls concurrently.
+///
+/// A child that has no connection for [`CONNECTION_DEADLINE`], after its start or after its
+/// socket closed, is killed so the next cycle starts a fresh one: a running process is no
+/// proof that the agent will ever reach the server again.
 async fn wait_for_child(
     mut child: Child,
     watchdog: &WatchdogHandle,
@@ -798,7 +833,11 @@ async fn wait_for_child(
     let output_reader = spawn_output_reader(&mut child, log_file);
     let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
     tokio::pin!(startup_timeout);
-    let mut connected = false;
+    let connection_deadline = tokio::time::sleep(CONNECTION_DEADLINE);
+    tokio::pin!(connection_deadline);
+    // The agent can register while the spawn future is still running; that registration
+    // already counts, or the deadline would replace a healthy agent.
+    let mut connected = watchdog.snapshot().socket_id.is_some();
     let mut timeout_reported = false;
 
     loop {
@@ -818,15 +857,49 @@ async fn wait_for_child(
                 timeout_reported = true;
                 publish_issue(watchdog, attempt_generation, "Agent process started but has not connected within 15 seconds".to_string());
             }
+            _ = &mut connection_deadline, if !connected => {
+                return replace_unconnected_child(&mut child, watchdog, attempt_generation).await;
+            }
             command = commands.recv() => {
+                let was_connected = connected;
                 match handle_running_command(watchdog, command, &mut child, &mut connected, attempt_generation).await {
                     RunningCommandAction::Continue => {}
                     RunningCommandAction::Finish(action) => {
                         return CycleResult { action, was_connected: connected };
                     }
                 }
+                if was_connected && !connected {
+                    connection_deadline.as_mut().reset(tokio::time::Instant::now() + CONNECTION_DEADLINE);
+                }
             }
         }
+    }
+}
+
+/// Kills a child that stayed without a connection past [`CONNECTION_DEADLINE`] and lets the
+/// supervisor start a fresh one after the usual backoff.
+async fn replace_unconnected_child(
+    child: &mut Child,
+    watchdog: &WatchdogHandle,
+    attempt_generation: u64,
+) -> CycleResult {
+    log!(
+        Level::Warning,
+        "Managed agent has no connection; replacing it: key={}",
+        watchdog.key()
+    );
+    kill_and_reap(child).await;
+    publish_issue(
+        watchdog,
+        attempt_generation,
+        format!(
+            "Agent process had no connection for {} seconds and was replaced",
+            CONNECTION_DEADLINE.as_secs()
+        ),
+    );
+    CycleResult {
+        action: CommandAction::Continue,
+        was_connected: false,
     }
 }
 
@@ -861,13 +934,8 @@ async fn handle_running_command(
             RunningCommandAction::Continue
         }
         Some(SupervisorCommand::Disconnected(socket_id)) => {
-            if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
+            if publish_disconnected(watchdog, &socket_id) {
                 *connected = false;
-                watchdog.publish_update(|snapshot| {
-                    snapshot.desired_running = true;
-                    snapshot.status = AgentConnectionStatus::Starting;
-                    snapshot.socket_id = None;
-                });
             }
             RunningCommandAction::Continue
         }
@@ -918,6 +986,24 @@ async fn wait_for_restart(
     }
 }
 
+/// Parks a desired-running agent whose start needs an operator (a locked SSH key) until a
+/// Start or Retry arrives, while shutdown and removal still win at once.
+async fn wait_for_start(
+    watchdog: &WatchdogHandle,
+    commands: &mut mpsc::Receiver<SupervisorCommand>,
+) -> CommandAction {
+    loop {
+        let command = commands.recv().await;
+        if matches!(command, Some(SupervisorCommand::Start)) {
+            return CommandAction::Restart;
+        }
+        match apply_restart_command(watchdog, command) {
+            CommandAction::Continue => {}
+            action => return action,
+        }
+    }
+}
+
 /// Applies one idle-backoff command without growing the `tokio::select!` arm.
 fn apply_restart_command(
     watchdog: &WatchdogHandle,
@@ -959,9 +1045,9 @@ enum CommandAction {
     /// An explicit operator retry skips automatic backoff and begins a clean attempt.
     Restart,
     Stop,
-    /// The attempt failed in a way retrying cannot fix and was already published as
-    /// stopped; the supervisor goes idle without publishing again.
-    Halt,
+    /// The attempt failed in a way retrying cannot fix (a locked SSH key); the agent stays
+    /// desired-running with the issue shown until the next Start or Retry.
+    WaitForStart,
     /// Configuration replacement must end the task, not just return it to idle.
     Exit,
 }
@@ -1441,6 +1527,253 @@ mod tests {
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
         // Acknowledgement cancels the failed attempt instead of letting its backoff respawn it.
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+    }
+
+    /// Spawns a long-running child that keeps running until the supervisor kills it.
+    fn idle_child() -> SpawnResult {
+        Command::new("sh")
+            .arg("-c")
+            .arg("cat")
+            .kill_on_drop(true)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(SpawnError::Spawn)
+    }
+
+    /// Moves the paused clock forward in small steps until `predicate` holds, so timers
+    /// fire without the test waiting in real time. Returns whether it held.
+    async fn advance_until(limit: Duration, mut predicate: impl FnMut() -> bool) -> bool {
+        let step = Duration::from_millis(250);
+        let mut advanced = Duration::ZERO;
+        while !predicate() {
+            if advanced >= limit {
+                return false;
+            }
+            tokio::time::advance(step).await;
+            advanced += step;
+            // Lets the supervisor and the process driver run between clock steps.
+            for _ in 0..100 {
+                tokio::task::yield_now().await;
+            }
+        }
+        true
+    }
+
+    /// A locked SSH key cannot be unlocked by retrying, but the agent must not drop out of
+    /// desired-running either: it waits for the Start that hands the key over.
+    #[tokio::test(start_paused = true)]
+    async fn locked_key_waits_for_the_next_start_instead_of_stopping() {
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let observed_spawns = spawn_count.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "locked".into(),
+                SpawnFn::new(move |_status| {
+                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
+                    async move {
+                        if attempt == 1 {
+                            Err(SpawnError::Provision(
+                                crate::ssh::ProvisionError::SshKeyLocked("key locked".into()),
+                            ))
+                        } else {
+                            idle_child()
+                        }
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("locked").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| handle.snapshot().connection_issue.is_some()).await;
+
+        // The operator sees why the agent is not coming up ...
+        assert_eq!(
+            handle.snapshot().connection_issue.as_deref(),
+            Some("key locked")
+        );
+        // ... while the agent stays wanted, so unlocking needs no second Start decision.
+        assert!(handle.snapshot().desired_running);
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Starting);
+        // Retrying on a timer cannot unlock the key, so no attempt is made without a Start.
+        assert!(
+            !advance_until(Duration::from_secs(120), || {
+                spawn_count.load(Ordering::SeqCst) > 1
+            })
+            .await
+        );
+
+        handle.start().await.expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 2).await;
+        // The Start of an already desired-running agent wakes the waiting supervisor.
+        assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
+        handle.shutdown().await.expect("shutdown acknowledged");
+    }
+
+    /// A live child is no proof the agent will connect again; one without a connection for
+    /// the deadline, after its start or after its socket closed, is replaced.
+    #[tokio::test(start_paused = true)]
+    async fn child_without_a_connection_is_replaced_after_the_deadline() {
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let observed_spawns = spawn_count.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "unconnected".into(),
+                SpawnFn::new(move |_status| {
+                    observed_spawns.fetch_add(1, Ordering::SeqCst);
+                    async { idle_child() }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("unconnected").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+
+        // A child that never connects is replaced once the deadline passes.
+        assert!(
+            advance_until(CONNECTION_DEADLINE * 2, || {
+                spawn_count.load(Ordering::SeqCst) == 2
+            })
+            .await
+        );
+        // The replacement is explained to the operator.
+        assert!(
+            handle
+                .snapshot()
+                .connection_issue
+                .is_some_and(|issue| issue.contains("had no connection"))
+        );
+
+        let socket = SocketId::new();
+        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
+        // A connected child is left alone however long it runs.
+        assert!(
+            !advance_until(CONNECTION_DEADLINE * 2, || {
+                spawn_count.load(Ordering::SeqCst) > 2
+            })
+            .await
+        );
+
+        handle.mark_disconnected(socket);
+        // After a clean close the child gets the deadline again to reconnect, then is replaced.
+        assert!(
+            advance_until(CONNECTION_DEADLINE * 2, || {
+                spawn_count.load(Ordering::SeqCst) == 3
+            })
+            .await
+        );
+        handle.shutdown().await.expect("shutdown acknowledged");
+    }
+
+    /// An agent can register before its spawn future finishes (an SSH launch reads the
+    /// script's report first); that connection must count, or the deadline kills it.
+    #[tokio::test(start_paused = true)]
+    async fn registration_during_spawn_counts_against_the_deadline() {
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let observed_spawns = spawn_count.clone();
+        let spawn_release = release.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "early-registration".into(),
+                SpawnFn::new(move |_status| {
+                    observed_spawns.fetch_add(1, Ordering::SeqCst);
+                    let release = spawn_release.clone();
+                    async move {
+                        release.notified().await;
+                        idle_child()
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry
+            .lookup("early-registration")
+            .expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+
+        let socket = SocketId::new();
+        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
+        release.notify_one();
+
+        // The healthy agent outlives the deadline instead of being replaced.
+        assert!(
+            !advance_until(CONNECTION_DEADLINE * 2, || {
+                spawn_count.load(Ordering::SeqCst) > 1
+            })
+            .await
+        );
+        handle.shutdown().await.expect("shutdown acknowledged");
+    }
+
+    /// A socket that registered and closed again before the spawn finished is no
+    /// connection; the child still gets replaced after the deadline.
+    #[tokio::test(start_paused = true)]
+    async fn socket_closed_during_spawn_does_not_count_as_connected() {
+        let spawn_count = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(tokio::sync::Notify::new());
+        let observed_spawns = spawn_count.clone();
+        let spawn_release = release.clone();
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "early-disconnect".into(),
+                SpawnFn::new(move |_status| {
+                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
+                    let release = spawn_release.clone();
+                    async move {
+                        if attempt == 1 {
+                            release.notified().await;
+                        }
+                        idle_child()
+                    }
+                }),
+                &registry,
+                callback(),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("early-disconnect").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+
+        let socket = SocketId::new();
+        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
+        handle.mark_disconnected(socket);
+        // The closed socket is forgotten even though no child is being watched yet.
+        assert!(
+            advance_until(Duration::from_secs(1), || handle
+                .snapshot()
+                .socket_id
+                .is_none())
+            .await
+        );
+        release.notify_one();
+
+        // The closed socket does not keep the deadline off, so the child is replaced.
+        assert!(
+            advance_until(CONNECTION_DEADLINE * 2, || {
+                spawn_count.load(Ordering::SeqCst) == 2
+            })
+            .await
+        );
+        handle.shutdown().await.expect("shutdown acknowledged");
     }
 
     /// Output of a child with a configured log is forwarded into the log, and only the

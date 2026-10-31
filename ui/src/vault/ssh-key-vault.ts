@@ -9,6 +9,7 @@
  */
 import type { SshKeyVaultSeal } from "#bindings/SshKeyVaultSeal";
 import type { VaultSshKey } from "#bindings/VaultSshKey";
+import type { RetryAgentStartResponse } from "#bindings/RetryAgentStartResponse";
 import type { StartAgentResponse } from "#bindings/StartAgentResponse";
 import type { Agent, ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
@@ -76,6 +77,36 @@ export async function startAgent(options: {
     });
 
     return options.agent.start(
+        fileKey === null ? undefined : { ssh_key_file_key: fileKey },
+    );
+}
+
+/**
+ * Retries a device's start. A device whose vault-encrypted SSH key the server does not hold
+ * waits for that key, and its retry is refused with `ssh_key_locked` like a start; the vault
+ * is then unlocked and the retry repeated with the key's file key.
+ */
+export async function retryAgentStart(options: {
+    agent: Agent;
+    api: ApiClient;
+    vault: VaultSession;
+}): Promise<RetryAgentStartResponse> {
+    try {
+        return await options.agent.retryStart();
+    } catch (error) {
+        if (!(error instanceof ApiError) || error.code !== "ssh_key_locked") {
+            throw error;
+        }
+    }
+
+    const fileKey = await currentSshKeyFileKey({
+        api: options.api,
+        vault: options.vault,
+        agentId: options.agent.id,
+        reason: `Start ${options.agent.name}`,
+    });
+
+    return options.agent.retryStart(
         fileKey === null ? undefined : { ssh_key_file_key: fileKey },
     );
 }

@@ -2,7 +2,7 @@
 
 use crate::http::access::ResolvedDevice;
 use axum::{Json, extract::State as AxumState};
-use redoor_protocol::api::agents::RetryAgentStartResponse;
+use redoor_protocol::api::agents::{RetryAgentStartRequest, RetryAgentStartResponse};
 
 use super::{
     agents::{
@@ -14,14 +14,28 @@ use super::{
 };
 
 /// Route: `POST /api/v1/agents/{agent}/retry-start` replaces one managed startup attempt.
+///
+/// Like Start, a device with a vault-encrypted SSH key the server does not hold needs the
+/// key's file key, or the retry fails at once with `ssh_key_locked`: retrying without the
+/// key would only end in the same wait for it.
 pub(crate) async fn retry_agent_start_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
+    request: Option<Json<RetryAgentStartRequest>>,
 ) -> Result<Json<RetryAgentStartResponse>, ApiError> {
+    let request = request.map(|Json(request)| request).unwrap_or_default();
     // Configuration replacement and lifecycle controls must resolve against one supervisor identity.
     let _edit_guard = state.config_edit_lock.lock().await;
     let snapshot = managed_agent_snapshot(&state, &agent_id).await?;
     let watchdog = managed_watchdog(&state, &snapshot)?;
+    super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
+        .await?;
+    if request.ssh_key_file_key.is_some() {
+        // Reconnects use the keys and pin of the account that unlocked the device.
+        state
+            .held_ssh_keys
+            .record_start(&agent_id, state.auth.username());
+    }
 
     let mut retry_snapshot = watchdog.snapshot();
     retry_snapshot.status = redoor_protocol::api::agents::AgentConnectionStatus::Starting;

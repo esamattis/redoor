@@ -5,6 +5,7 @@
 
 pub mod app_name;
 pub mod atomic_rename;
+pub mod backoff;
 pub mod bounded_tail;
 pub mod config;
 pub mod desktop;

@@ -26,8 +26,9 @@ pub(crate) type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Why an authenticated upgrade failed.
 ///
-/// A wrong token or an incompatible protocol cannot fix itself by retrying, so the runtime must
-/// tell these apart from transport errors to stop instead of looping on reconnects.
+/// A wrong token or an incompatible protocol cannot fix itself by retrying soon, so the runtime
+/// tells these apart from transport errors: it retries them only at the slowest pace, and a
+/// supervised agent leaves them to its owner.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConnectError {
     /// The server answered `401`: the agent token is wrong.
@@ -48,8 +49,8 @@ pub(crate) enum ConnectError {
 }
 
 impl ConnectError {
-    /// Whether a later reconnect could succeed without operator action.
-    pub(crate) fn is_fatal(&self) -> bool {
+    /// Whether only an operator can make a later attempt succeed.
+    pub(crate) fn needs_operator(&self) -> bool {
         !matches!(self, Self::Transport(_))
     }
 
@@ -419,9 +420,9 @@ mod tests {
         (url, server)
     }
 
-    /// Verifies a 401 is classified as a fatal token error and the upgrade carried credentials.
+    /// Verifies a 401 is classified as a token error and the upgrade carried credentials.
     #[tokio::test]
-    async fn unauthorized_upgrade_is_fatal_and_carries_credentials() {
+    async fn unauthorized_upgrade_needs_operator_and_carries_credentials() {
         let (url, server) =
             answer_upgrade("HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".into()).await;
         let connection = AgentConnection::new(url.clone(), None, false).unwrap();
@@ -431,9 +432,9 @@ mod tests {
             .await
             .expect_err("401 must fail the upgrade");
 
-        // A wrong token cannot fix itself, so the runtime must stop instead of reconnecting.
+        // A wrong token cannot fix itself, so the runtime only retries it slowly.
         assert!(matches!(error, super::ConnectError::Unauthorized));
-        assert!(error.is_fatal());
+        assert!(error.needs_operator());
         let request = server.await.unwrap();
         // The token travels in the upgrade, never in a websocket frame.
         assert!(request.contains("authorization: bearer secret-token"));
@@ -445,7 +446,7 @@ mod tests {
 
     /// Verifies a 426 names both protocols so the operator knows which side to upgrade.
     #[tokio::test]
-    async fn protocol_mismatch_is_fatal_and_names_both_versions() {
+    async fn protocol_mismatch_needs_operator_and_names_both_versions() {
         let body = r#"{"server_protocol":"redoor.v4","server_version":"9.9.9","message":"m"}"#;
         let (url, _server) = answer_upgrade(format!(
             "HTTP/1.1 426 Upgrade Required\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
@@ -459,8 +460,8 @@ mod tests {
             .await
             .expect_err("426 must fail the upgrade");
 
-        // Mismatched builds must not loop on reconnects.
-        assert!(error.is_fatal());
+        // Mismatched builds must not reconnect at the fast pace.
+        assert!(error.needs_operator());
         let message = error.to_string();
         // The log line explains which protocol each side speaks and what to do.
         assert!(message.contains("redoor.v4") && message.contains("redoor.v3"));
@@ -480,8 +481,8 @@ mod tests {
             .await
             .expect_err("503 must fail the upgrade");
 
-        // A restarting server or proxy hiccup must keep the reconnect loop going.
-        assert!(!error.is_fatal());
+        // A restarting server or proxy hiccup keeps the fast reconnect schedule.
+        assert!(!error.needs_operator());
     }
 
     /// Rejects misuse of insecure mode before any reconnect loop starts.

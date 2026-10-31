@@ -223,8 +223,8 @@ The agent runtime and the implementation of every command.
     `pending_tail`, which keeps the bytes of an unfinished escape sequence for snapshots.
   - `http/terminal_sessions` (list, create, delete) and `http/terminals` (the attach
     websocket) are thin handlers over the registry.
-- `watchdog`: one dormant-until-started supervisor per managed agent, with restart backoff
-  and generation counters.
+- `watchdog`: one dormant-until-started supervisor per managed agent, with restart backoff,
+  a reconnect deadline and generation counters.
 - `ssh/`: preparing remote hosts (OS and architecture probe, binary install), launching
   agents through SSH reverse forwards, and the standalone `relay`.
   - `transport`: `SshHost` with a `HostKeyPolicy` and an `AuthPolicy`. `build_ssh_command`
@@ -533,8 +533,10 @@ sequenceDiagram
 
 - **Authentication and negotiation happen during the HTTP upgrade.** An unauthenticated or
   incompatible client never gets a socket, so no session state exists for it. The agent
-  treats `401` (wrong token) and `426` (other protocol version) as fatal and exits with a
-  clear log line instead of reconnecting forever.
+  treats `401` (wrong token) and `426` (other protocol version) as needing an operator: a
+  standalone agent logs a clear error and keeps retrying at the slowest backoff step, so it
+  connects once the token or the server is fixed; a supervised agent exits and leaves the
+  retry to its owner (see "Connection recovery").
 - A refused protocol mismatch is remembered, so a standalone agent of another release shows
   up in the Devices view instead of only in its own logs. Managed local and SSH agents are
   always provisioned with the server's own binary, so they never mismatch. There is no
@@ -660,7 +662,8 @@ from reconnects (clones usually keep them), so the router detects the eviction l
 - A rejected agent logs how to fix it (delete `<data_dir>/agent-id` on one machine, or check
   for duplicate config ids when it was started with `--agent-id`) and retries with its normal
   backoff, so a fixed clone, or a real reconnect after the current connection died, gets
-  through. Other rejections still make the agent exit.
+  through. Other rejections make a supervised agent exit, so its owner shows the problem
+  and restarts it; a standalone agent retries them at the slowest backoff step.
 - On `evicted`, managed agents and relays exit as before, so an SSH-launched process that
   outlived its tunnel does not linger. A standalone agent holds the single-instance lock on
   its data dir, so being replaced means another machine has its id; it reconnects with
@@ -671,6 +674,41 @@ from reconnects (clones usually keep them), so the router detects the eviction l
 Managed agents get their id from their own config entry, and duplicate config ids fail
 startup, so in practice this only affects standalone agents. Like every agent check, it
 trusts self-reported behavior.
+
+## Connection recovery
+
+redoor tries hard to keep every agent connected and never gives up on one that should run.
+Each connection has exactly one owner of its recovery, and all owners retry on the same
+schedule, `redoor_core::backoff::Backoff`: 1 s doubling to a 30 s cap, each wait drawn from
+the upper half of its step so agents that lost the same server spread out without ever
+waiting past the cap. The schedule starts over only after a connection stayed up for 30 s,
+so a peer that accepts and drops at once is not retried at the shortest delay forever.
+
+- **Standalone agents own their connection.** The agent pings the server every keepalive
+  period and drops the socket after `stale_timeout` without any inbound frame; the server
+  pings too, so a live link is never silent that long. It then reconnects on the backoff.
+  It never exits on its own: refusals that only an operator can fix (`401`, `426`, a
+  `rejected` hello) are logged and retried at the cap, because a standalone agent has
+  nobody to restart it.
+- **Supervised agents leave recovery to their owner.** An agent started with `--agent-id`
+  (by the watchdog or a relay) reconnects through its tunnel only for `stale_timeout`, then
+  exits; it also exits on a refusal or eviction. The tunnel may be dead in a way only a new
+  SSH session fixes, and the exit ends that session, which the owner notices at once.
+- **The watchdog owns managed agents.** Server-side, the session pings the agent and asks
+  the watchdog to replace it after `stale_timeout` of silence. The watchdog also replaces
+  a child that has no connection 60 s after its start or after its socket closed, because
+  a running process (an `ssh` whose remote side hangs) is no proof the agent comes back.
+  Every restart waits on the backoff.
+- **Relays own their SSH session** and relaunch it on the backoff whenever it exits. They
+  cannot see the agent's socket, so liveness comes from both ends of the session: ssh runs
+  with `ServerAliveInterval=10` unless the user's config sets one, which ends a session over
+  a dead network in about 30 s, and the remote agent exits when the tunnel stops reaching
+  the server.
+- The only wait without a timer is a locked SSH key: no retry can unlock it, so the agent
+  stays `Starting` with the issue shown until a Start or Retry brings the key (see "SSH
+  device keys").
+- `REDOOR_RECONNECT_DELAY` replaces the agent's backoff with a fixed delay so tests do not
+  wait for it; the watchdog and relays always use the real schedule.
 
 ## Managed agent lifecycle
 
@@ -689,7 +727,7 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
   |---|---|---|
   | Start | `POST /api/v1/agents/{agent}/start` | Marks the agent desired-running; the supervisor spawns it. A vault-encrypted SSH key's file key may come with it (see "SSH device keys") |
   | Disconnect | `POST /api/v1/agents/{agent}/shutdown` | Cancels provisioning or backoff, kills and reaps the child, evicts its socket |
-  | Retry start | `POST /api/v1/agents/{agent}/retry-start` | Abandons the current attempt and starts a fresh one with the backoff reset |
+  | Retry start | `POST /api/v1/agents/{agent}/retry-start` | Abandons the current attempt and starts a fresh one with the backoff reset. Takes the same optional SSH key file key as Start |
   | Restart | `POST /api/v1/agents/{agent}/restart` | Not a watchdog action: the agent re-executes itself, so it works for any connected agent |
 
 - **Agent log files are forwarded, not inherited.** When a managed agent has a `log`, its
@@ -701,11 +739,13 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
   report is read one byte at a time, so the output after it stays in the pipe for the
   watchdog. Relays forward their SSH output the same way into the relay log.
 - **Supervision.** While an agent is desired-running, the watchdog restarts it when spawning or
-  provisioning fails, when the child exits and when its heartbeat goes stale. The backoff
-  starts at 1 s and doubles up to 30 s, and resets after 30 s of stable connection. The
-  watchdog never gives up, except when an SSH key is encrypted and not held by the server:
-  retrying cannot unlock it, so the agent goes back to `Stopped` with the issue shown. The
-  latest error is shown as the agent's `connection_issue` while it stays `Starting`.
+  provisioning fails, when the child exits, when its heartbeat goes stale and when the child
+  has had no connection for 60 s after its start or after its socket closed. Restarts wait
+  on the shared backoff (see "Connection recovery"). The watchdog never gives up. When an
+  SSH key is encrypted and not held by the server, retrying cannot unlock it, so the agent
+  stays desired-running and `Starting` and waits for the next Start or Retry instead of a
+  timer. The latest error is shown as the agent's `connection_issue` while it stays
+  `Starting`.
 - **SSH provisioning runs on every attempt**, so the UI always shows current results. The
   agent is started by a launch script that first reports the OS, architecture and version
   of the binary at the default install path, and `exec`s it only when the version matches
@@ -794,7 +834,8 @@ half-written file.
   unsupervised processes need the same single restart path once every build has it.
 - **All current builds are signalled before any is awaited.** A restarting server stops
   accepting at once, so restarted agents reconnect to the new server and not to the old one,
-  which would reject a newer protocol with `426` and make the agent exit. On Linux the
+  which would reject a newer protocol with `426` and leave the agent retrying at the
+  slowest backoff step until it is upgraded. On Linux the
   upgrade then waits until `/proc/<pid>/exe` names the new file and the handler is back.
 - **The server is not dumpable** (see "Encrypted files"), which hides its `exe` link
   and environment even from its own user. Process discovery falls back to an absolute
@@ -2342,8 +2383,12 @@ devices.
     with the process (including self-restarts; nothing is handed to the re-exec'd server).
     The browser's "Lock now" does not drop held keys, because that must not break the
     reconnects of running devices. Restarting a running agent keeps its key.
-  - A spawn that finds an encrypted key not held (a race with Stop) is a configuration
-    failure that stops the agent with "The SSH key is locked" instead of retrying.
+  - A spawn that finds an encrypted key not held (a race with Stop) shows "The SSH key is
+    locked" and waits, desired-running, for the next Start or Retry instead of retrying on
+    a timer. `POST …/retry-start` takes the same optional body as Start and refuses with
+    `ssh_key_locked` when the key is neither held nor given, so the device page's Retry
+    unlocks the vault like a Start. A Start of an already desired-running agent still
+    reaches the waiting watchdog.
   - Plaintext keys are not held; every spawn reads them from disk.
 - **In-process ssh-agent.** ssh only accepts a key from a file or from an ssh-agent, so
   `ssh/ssh_agent.rs` implements the OpenSSH key agent protocol in the server (named

@@ -35,8 +35,9 @@ const AGENT_MAILBOX_CAPACITY: usize = 256;
 
 /// Runs an agent after resolving settings with CLI > env > config file > default.
 ///
-/// Returns a failure exit code when the server rejects the agent (for example an invalid
-/// token), so supervisors see the same status as before without a `process::exit`.
+/// Returns a failure exit code when a supervised agent is refused or loses its server for
+/// too long, so its watchdog or relay restarts it, without a `process::exit`. Standalone
+/// agents never end on their own.
 pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
     let exit_on_stdin_eof = args.exit_on_stdin_eof;
     let loaded_config_path = locate_config(&args, &runtime.paths).await?;
@@ -125,7 +126,7 @@ pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
         .await;
     Ok(match exit {
         AgentExit::Shutdown => ExitCode::SUCCESS,
-        AgentExit::Rejected => ExitCode::FAILURE,
+        AgentExit::Failure => ExitCode::FAILURE,
     })
 }
 

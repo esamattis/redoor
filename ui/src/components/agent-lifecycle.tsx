@@ -12,7 +12,7 @@ import { Tooltip } from "#ui/components/tooltip";
 import { queryKeys } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
-import { startAgent } from "#ui/vault/ssh-key-vault";
+import { retryAgentStart, startAgent } from "#ui/vault/ssh-key-vault";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import {
     formatAgentRecency,
@@ -75,7 +75,8 @@ export function AgentLifecycle(props: {
     });
 
     const retryMutation = useMutation({
-        mutationFn: () => props.agent.retryStart(),
+        // A device waiting for its vault-encrypted SSH key asks for the vault first.
+        mutationFn: () => retryAgentStart({ agent: props.agent, api, vault }),
         onMutate: () => {
             setStartStates((states) => ({
                 ...states,
@@ -94,7 +95,7 @@ export function AgentLifecycle(props: {
                 ...states,
                 [props.agent.id]: {
                     starting: true,
-                    error: getErrorMessage(error, "Failed to start agent"),
+                    error: vaultErrorMessage(error, "Failed to start agent"),
                     autoRedirect:
                         props.preserveDestination !== true &&
                         (states[props.agent.id]?.autoRedirect ?? true),

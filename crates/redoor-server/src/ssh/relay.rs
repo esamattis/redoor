@@ -4,13 +4,19 @@
 //! relaunches the SSH session whenever it exits, each time on a fresh random reverse
 //! port. OpenSSH's forwarding failure for an occupied port is detected on stderr so it
 //! is reported as such rather than as an unexplained exit.
+//!
+//! It never gives up, and it retries on the same [`Backoff`] schedule as agents and the
+//! watchdog. The relay only sees the SSH session, so liveness comes from its two ends: ssh's
+//! keepalive ends a session over a dead network, and the remote agent exits when it cannot
+//! reach the server through the tunnel for its stale timeout.
 
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 
+use redoor_core::backoff::Backoff;
 use redoor_core::config::{RelayConfig, SshBackedAgentConfig};
 use redoor_core::paths::AppPaths;
 use redoor_core::rotating_log::RotatingLogFile;
@@ -23,13 +29,6 @@ use super::prepare::{
     Preparation, PreparedSshBackedAgent, RelayOptions, SecureRelayServer, TunnelDestination,
 };
 use crate::watchdog::ProvisioningStatusSink;
-
-/// Initial delay keeps transient SSH failures responsive without spinning.
-const RELAY_INITIAL_BACKOFF: Duration = Duration::from_secs(1);
-/// Maximum delay bounds how long a persistent relay remains unavailable between attempts.
-const RELAY_MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// A long-lived SSH session proves the route is healthy enough to reset retry escalation.
-const RELAY_STABLE_RUNTIME: Duration = Duration::from_secs(30);
 
 /// Stable fragment emitted by OpenSSH when `ExitOnForwardFailure` rejects a
 /// remote listener, independent of the particular port that was occupied.
@@ -185,10 +184,8 @@ impl Relay {
                     "Relay SSH attempt failed; relay will retry"
                 ),
             }
-            if started.elapsed() >= RELAY_STABLE_RUNTIME {
-                self.backoff.reset();
-            }
-            self.backoff.wait().await;
+            self.backoff.reset_if_stable(started.elapsed());
+            self.wait().await;
             if binary_missing {
                 log!(
                     Level::Warning,
@@ -207,10 +204,17 @@ impl Relay {
                 Ok(prepared) => return prepared,
                 Err(error) => {
                     log_error!(anyhow::Error::new(error), "Relay preparation failed");
-                    self.backoff.wait().await;
+                    self.wait().await;
                 }
             }
         }
+    }
+
+    /// Waits for the next backoff step so unavailable SSH hosts do not consume a CPU core.
+    async fn wait(&mut self) {
+        let delay = self.backoff.next_delay();
+        log!(Level::Info, "Relay retry scheduled: backoff={delay:?}");
+        tokio::time::sleep(delay).await;
     }
 
     /// Runs one preparation with the relay-specific options.
@@ -268,42 +272,6 @@ impl Relay {
                 status,
             }
         })
-    }
-}
-
-/// Exponential retry delay shared by preparation and relaunch.
-struct Backoff {
-    /// Delay used by the next `wait`.
-    current: Duration,
-}
-
-impl Default for Backoff {
-    /// Starts at the shortest delay so the first retry is quick.
-    fn default() -> Self {
-        Self {
-            current: RELAY_INITIAL_BACKOFF,
-        }
-    }
-}
-
-impl Backoff {
-    /// Returns to the shortest delay after a session proved the route healthy.
-    fn reset(&mut self) {
-        self.current = RELAY_INITIAL_BACKOFF;
-    }
-
-    /// Returns the delay to wait now and doubles the next one up to the cap.
-    fn advance(&mut self) -> Duration {
-        let delay = self.current;
-        self.current = (self.current * 2).min(RELAY_MAX_BACKOFF);
-        delay
-    }
-
-    /// Waits so unavailable SSH hosts do not consume a CPU core.
-    async fn wait(&mut self) {
-        let delay = self.advance();
-        log!(Level::Info, "Relay retry scheduled: backoff={delay:?}");
-        tokio::time::sleep(delay).await;
     }
 }
 
@@ -413,22 +381,5 @@ mod tests {
         assert!(!detector.observe(b"Warning: remote port forward"));
         // Completing the phrase across the next chunk must identify the occupied port.
         assert!(detector.observe(b"ing failed for listen port 52000\n"));
-    }
-
-    /// The delay doubles per failure, stays capped, and resets after a healthy session.
-    #[test]
-    fn backoff_doubles_caps_and_resets() {
-        let mut backoff = Backoff::default();
-        // Consecutive failures wait progressively longer.
-        assert_eq!(backoff.advance(), Duration::from_secs(1));
-        assert_eq!(backoff.advance(), Duration::from_secs(2));
-        for _ in 0..10 {
-            backoff.advance();
-        }
-        // Repeated failures must never wait longer than the documented maximum.
-        assert_eq!(backoff.advance(), RELAY_MAX_BACKOFF);
-        backoff.reset();
-        // A stable session makes the next failure retry quickly again.
-        assert_eq!(backoff.current, RELAY_INITIAL_BACKOFF);
     }
 }

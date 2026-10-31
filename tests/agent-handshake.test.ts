@@ -258,7 +258,7 @@ describe("agent websocket handshake", () => {
         expect((await listed.echo("ignored")).message).toBe("from fake");
     });
 
-    it("stops a real agent with a wrong token instead of reconnecting", async () => {
+    it("keeps a standalone agent with a wrong token retrying instead of exiting", async () => {
         const agentPid = processes.spawnAgent({
             wsAddress: `ws://127.0.0.1:${serverPort}/api/v1/agent/ws`,
             name: "handshake-wrong-token",
@@ -266,7 +266,25 @@ describe("agent websocket handshake", () => {
             token: "not-the-agent-token",
         });
 
-        // A token error cannot fix itself, so the agent exits with a failure status.
-        expect(await processes.waitForExit(agentPid)).not.toBe(0);
+        // Only the ERROR line, not the WARN line that schedules the retry.
+        const refusals = () =>
+            (
+                processes
+                    .getStdout(agentPid)
+                    .match(/\[ERROR\] Server refused the agent connection/g) ?? []
+            ).length;
+
+        await waitForValue({
+            description: "a second refused connection attempt",
+            predicate: async () => (refusals() >= 2 ? true : undefined),
+        });
+        // Nobody restarts a standalone agent, so a fixable refusal is retried, not fatal.
+        expect(refusals()).toBeGreaterThanOrEqual(2);
+        // The agent is still running, ready to connect once the token is fixed.
+        expect(processes.getProcess(agentPid)?.exitCode).toBeNull();
+        // The log tells the operator it keeps trying instead of failing silently.
+        expect(processes.getStdout(agentPid)).toContain(
+            "Retrying in the background until it is fixed",
+        );
     });
 });

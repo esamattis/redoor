@@ -15,6 +15,7 @@ import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { DuplicateIdWarning } from "#bindings/DuplicateIdWarning";
 import type { AgentConnectionStatus } from "#bindings/AgentConnectionStatus";
 import type { StartAgentResponse } from "#bindings/StartAgentResponse";
+import type { RetryAgentStartRequest } from "#bindings/RetryAgentStartRequest";
 import type { RetryAgentStartResponse } from "#bindings/RetryAgentStartResponse";
 import type { ShutdownAgentResponse } from "#bindings/ShutdownAgentResponse";
 import type { TransferProgressListResponse } from "#bindings/TransferProgressListResponse";
@@ -390,11 +391,22 @@ export class Agent {
         );
     }
 
-    /** Cancels the current managed startup attempt before immediately beginning a clean one. */
-    async retryStart(): Promise<RetryAgentStartResponse> {
+    /**
+     * Cancels the current managed startup attempt before immediately beginning a clean one.
+     * A device waiting for its vault-encrypted SSH key needs the key's file key, like a start.
+     */
+    async retryStart(
+        request?: RetryAgentStartRequest,
+    ): Promise<RetryAgentStartResponse> {
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/retry-start`,
-            { method: "POST" },
+            request === undefined
+                ? { method: "POST" }
+                : {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext,
         );
     }

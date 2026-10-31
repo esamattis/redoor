@@ -20,6 +20,7 @@ use links::{
     BULK_QUEUE_CAPACITY, CONTROL_QUEUE_CAPACITY, ConnectionLanes, ControlLink,
     INTERACTIVE_QUEUE_CAPACITY,
 };
+use redoor_core::backoff::Backoff;
 use redoor_core::{log, log_error};
 use redoor_protocol::wire::handshake::RejectReason;
 use redoor_protocol::wire::registration::{AgentCapabilities, AgentIdentity};
@@ -33,27 +34,7 @@ use redoor_protocol::{
 use responder::{OutboundFrame, Responder};
 use sessions::Sessions;
 use tokio::sync::{mpsc, watch};
-
-/// Number of quick reconnect attempts allowed before switching to the slower window.
-const QUICK_RECONNECT_ATTEMPTS: u32 = 10;
-/// Inclusive jitter window for quick reconnect attempts.
-const QUICK_RECONNECT_DELAY_SECONDS: std::ops::RangeInclusive<u64> = 2..=5;
-/// Inclusive jitter window used after quick reconnect attempts are exhausted.
-const SLOW_RECONNECT_DELAY_SECONDS: std::ops::RangeInclusive<u64> = 30..=60;
-
-/// Returns the retry window for an attempt so outages back off without synchronizing agents.
-fn reconnect_delay_range(attempt: u32) -> std::ops::RangeInclusive<u64> {
-    if attempt <= QUICK_RECONNECT_ATTEMPTS {
-        QUICK_RECONNECT_DELAY_SECONDS
-    } else {
-        SLOW_RECONNECT_DELAY_SECONDS
-    }
-}
-
-/// Selects one jittered reconnect delay from the window assigned to an attempt.
-fn reconnect_delay(attempt: u32) -> tokio::time::Duration {
-    tokio::time::Duration::from_secs(fastrand::u64(reconnect_delay_range(attempt)))
-}
+use tokio::time::Instant;
 
 /// Internal events consumed by the single agent runtime actor.
 pub(crate) enum AgentMsg {
@@ -176,8 +157,9 @@ struct StartupNotification {
 pub(crate) enum AgentExit {
     /// Requested shutdown (stdin EOF of an SSH-launched agent, closed mailboxes).
     Shutdown,
-    /// The server rejected this agent; a failure status lets supervisors notice.
-    Rejected,
+    /// A supervised agent was refused, replaced or could not reach the server for a while;
+    /// the failure status lets its watchdog or relay notice and start a fresh one.
+    Failure,
 }
 
 /// Long-lived agent runtime that owns connection lifecycle and running work.
@@ -189,8 +171,14 @@ pub(crate) struct AgentRuntime {
     sessions: Sessions,
     dispatcher: Dispatcher,
     notification: StartupNotification,
-    /// Counts consecutive reconnect attempts so prolonged outages use a slower retry window.
-    reconnect_attempts: u32,
+    /// Retry schedule shared with the watchdog and relays, so no reconnect waits over 30s.
+    backoff: Backoff,
+    /// When the current connection was established; decides whether its loss restarts the
+    /// fast retries or keeps backing off from a server that keeps dropping the agent.
+    connected_at: Option<Instant>,
+    /// Since when the agent has had no connection. A supervised agent gives up after its
+    /// window so its owner rebuilds the tunnel, which the agent cannot repair from inside.
+    disconnected_since: Instant,
 }
 
 impl AgentRuntime {
@@ -213,7 +201,9 @@ impl AgentRuntime {
                 generation: None,
                 sent: false,
             },
-            reconnect_attempts: 0,
+            backoff: Backoff::default(),
+            connected_at: None,
+            disconnected_since: Instant::now(),
         }
     }
 
@@ -312,7 +302,7 @@ impl AgentRuntime {
             AgentMsg::ExitWithError => {
                 let error = anyhow::anyhow!("agent received fatal exit signal");
                 log_error!(error, "Exiting agent due to error");
-                return Some(AgentExit::Rejected);
+                return Some(AgentExit::Failure);
             }
         }
         None
@@ -342,10 +332,30 @@ impl AgentRuntime {
                     );
                     return;
                 }
-                self.invalidate_connection().await;
+                self.drop_connection().await;
                 self.schedule_reconnect(handle, &format!("Connection lost: {reason}"));
             }
         }
+    }
+
+    /// Tears the current connection down and starts the disconnected clock.
+    ///
+    /// A connection that stayed up for a while restarts the fast retries; one the server
+    /// dropped right away keeps backing off, so a flapping server is not hammered.
+    async fn drop_connection(&mut self) {
+        self.invalidate_connection().await;
+        if let Some(connected_at) = self.connected_at.take() {
+            self.backoff.reset_if_stable(connected_at.elapsed());
+        }
+        self.disconnected_since = Instant::now();
+    }
+
+    /// Whether the process was started by a watchdog or relay (`--agent-id`).
+    ///
+    /// Such an agent leaves recovery to its owner: it exits instead of retrying refusals,
+    /// and gives up reconnecting after its window so the owner can rebuild the SSH tunnel.
+    fn is_supervised(&self) -> bool {
+        matches!(self.profile.id_source, DeviceIdSource::Assigned)
     }
 
     /// Handles a frame of the current connection that was read before its loss was
@@ -420,11 +430,7 @@ impl AgentRuntime {
                 message,
             } => self.retry_after_duplicate_id(handle, &message).await,
             ServerToAgent::Rejected { reason, message } => {
-                log_error!(
-                    anyhow::anyhow!("{message} ({reason:?})"),
-                    "Server rejected the agent"
-                );
-                Self::request_exit(handle);
+                self.handle_rejection(handle, reason, message).await
             }
             ServerToAgent::Evicted { message } => self.handle_eviction(handle, message).await,
             ServerToAgent::Credit { stream, frames } => self
@@ -527,6 +533,35 @@ impl AgentRuntime {
         }
     }
 
+    /// Reacts to a refused `hello` other than `duplicate_id`.
+    ///
+    /// A supervised agent exits: `stopped` means its owner was told to stop it, and for the
+    /// other reasons the owner restarts it with its own backoff and shows the problem. A
+    /// standalone agent has nobody to restart it, so it keeps retrying at the slowest pace
+    /// and connects as soon as an operator fixes the name or the server.
+    async fn handle_rejection(
+        &mut self,
+        handle: AgentHandle,
+        reason: RejectReason,
+        message: String,
+    ) {
+        if self.is_supervised() {
+            log_error!(
+                anyhow::anyhow!("{message} ({reason:?})"),
+                "Server rejected the agent"
+            );
+            Self::request_exit(handle);
+            return;
+        }
+        log_error!(
+            anyhow::anyhow!("{message} ({reason:?})"),
+            "Server rejected the agent. Retrying in the background until it is accepted"
+        );
+        self.backoff.saturate();
+        self.reconnect_after_refusal(handle, "Server rejected the agent")
+            .await;
+    }
+
     /// Drops a connection the server refused or ended and retries with the normal backoff.
     ///
     /// When the socket's loss was already processed, that handler scheduled the retry, so
@@ -535,7 +570,7 @@ impl AgentRuntime {
         if self.control.sender().is_none() {
             return;
         }
-        self.invalidate_connection().await;
+        self.drop_connection().await;
         self.schedule_reconnect(handle, reason);
     }
 
@@ -635,22 +670,30 @@ impl AgentRuntime {
         });
     }
 
-    /// Schedules the next connection attempt with jitter and escalates after repeated failures.
+    /// Schedules the next connection attempt on the shared backoff schedule.
+    ///
+    /// A supervised agent that has been without a connection for its window exits instead:
+    /// its tunnel may be dead in a way only a new SSH session fixes, and its watchdog or
+    /// relay notices the exit at once and builds that session with the same schedule. It
+    /// also exits when the next wait would end past the window, rather than sleeping over it.
     fn schedule_reconnect(&mut self, handle: AgentHandle, reason: &str) {
-        self.reconnect_attempts = self.reconnect_attempts.saturating_add(1);
-        let attempt = self.reconnect_attempts;
         let delay = self
             .profile
             .ws_timeouts
             .reconnect_delay
-            .unwrap_or_else(|| reconnect_delay(attempt));
-        log!(
-            Level::Warning,
-            "{}, scheduling reconnect attempt {} in {:?}",
-            reason,
-            attempt,
-            delay
-        );
+            .unwrap_or_else(|| self.backoff.next_delay());
+        let window = self.profile.ws_timeouts.stale_timeout;
+        let disconnected_for = self.disconnected_since.elapsed();
+        if self.is_supervised() && disconnected_for + delay >= window {
+            log_error!(
+                anyhow::anyhow!("{reason}"),
+                "No server connection for {:?}; exiting so the supervisor can start a fresh agent",
+                disconnected_for
+            );
+            Self::request_exit(handle);
+            return;
+        }
+        log!(Level::Warning, "{}, reconnecting in {:?}", reason, delay);
         tokio::spawn(async move {
             tokio::time::sleep(delay).await;
             // Awaits bounded mailbox capacity so a due reconnect cannot be silently discarded.
@@ -707,9 +750,10 @@ impl AgentRuntime {
 
     /// Opens a websocket connection and wires the connection tasks into the runtime channels.
     ///
-    /// Returns an exit when the server refused the upgrade for a reason no retry can fix
-    /// (wrong token, incompatible protocol), so a misconfigured agent stops with a clear error
-    /// instead of reconnecting forever.
+    /// A refusal that only an operator can fix (wrong token, incompatible protocol) ends a
+    /// supervised agent, whose owner shows the error and keeps restarting it. A standalone
+    /// agent logs the error and keeps retrying at the slowest pace instead, so it connects
+    /// once the token or the server is fixed without anyone restarting it.
     async fn connect(&mut self, handle: AgentHandle) -> Option<AgentExit> {
         log!(
             Level::Info,
@@ -727,12 +771,21 @@ impl AgentRuntime {
         .await;
         let ws_stream = match connection_result {
             Ok(Ok(connected)) => connected,
-            Ok(Err(error)) if error.is_fatal() => {
+            Ok(Err(error)) if error.needs_operator() && self.is_supervised() => {
                 log_error!(
                     anyhow::Error::new(error),
-                    "Server refused the agent connection; not retrying"
+                    "Server refused the agent connection; leaving the retry to the supervisor"
                 );
-                return Some(AgentExit::Rejected);
+                return Some(AgentExit::Failure);
+            }
+            Ok(Err(error)) if error.needs_operator() => {
+                log_error!(
+                    anyhow::Error::new(error),
+                    "Server refused the agent connection. Retrying in the background until it is fixed"
+                );
+                self.backoff.saturate();
+                self.schedule_reconnect(handle, "Server refused the agent connection");
+                return None;
             }
             Ok(Err(error)) => {
                 self.schedule_reconnect(handle, &format!("Connection failed: {error:#}"));
@@ -748,7 +801,7 @@ impl AgentRuntime {
                 return None;
             }
         };
-        self.reconnect_attempts = 0;
+        self.connected_at = Some(Instant::now());
         log!(Level::Info, "Connected to {}", self.connection.server_url());
         log!(
             Level::Info,
@@ -901,37 +954,6 @@ mod tests {
         );
         runtime.sessions.rebind(runtime.control.scope());
         (control_rx, bulk_rx)
-    }
-
-    /// Verifies the first ten reconnect attempts retain the quick jitter window.
-    #[test]
-    fn first_ten_reconnect_attempts_use_quick_window() {
-        // The first retry must not be delayed by the prolonged-outage policy.
-        assert_eq!(reconnect_delay_range(1), 2..=5);
-        // The tenth retry is the final attempt in the quick window.
-        assert_eq!(reconnect_delay_range(10), 2..=5);
-    }
-
-    /// Verifies reconnect attempts after the first ten use the slower jitter window.
-    #[test]
-    fn later_reconnect_attempts_use_slow_window() {
-        // The eleventh retry must back off to avoid aggressive reconnect traffic.
-        assert_eq!(reconnect_delay_range(11), 30..=60);
-        // Saturated counters must remain in the prolonged-outage retry window.
-        assert_eq!(reconnect_delay_range(u32::MAX), 30..=60);
-    }
-
-    /// Verifies generated delays always remain inside their assigned inclusive windows.
-    #[test]
-    fn reconnect_delay_is_jittered_within_policy_windows() {
-        for attempt in [1, 10, 11, u32::MAX] {
-            let expected_range = reconnect_delay_range(attempt);
-            for _ in 0..100 {
-                let delay = reconnect_delay(attempt).as_secs();
-                // Jitter must never reconnect earlier or later than the policy permits.
-                assert!(expected_range.contains(&delay));
-            }
-        }
     }
 
     /// Verifies a delayed writer failure cannot clear a newer live connection.
@@ -1123,28 +1145,63 @@ mod tests {
         assert!(matches!(receiver.recv().await, Some(AgentMsg::Connect)));
     }
 
-    /// Other refusals still end the process, since retrying cannot fix them.
+    /// Other refusals end a supervised agent, whose owner restarts it and shows the error,
+    /// but never a standalone one, which has nobody to restart it.
     #[tokio::test(start_paused = true)]
-    async fn invalid_identity_rejection_still_exits() {
-        let mut runtime = runtime_with_source(standalone());
-        let (_control_rx, _bulk_rx) = attach_links(&mut runtime);
-        let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+    async fn invalid_identity_rejection_exits_only_supervised_agents() {
+        for (id_source, exits) in [(standalone(), false), (DeviceIdSource::Assigned, true)] {
+            let mut runtime = runtime_with_source(id_source);
+            let (_control_rx, _bulk_rx) = attach_links(&mut runtime);
+            let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
 
-        runtime
-            .handle_server_frame(
-                handle,
-                ServerToAgent::Rejected {
-                    reason: RejectReason::InvalidIdentity,
-                    message: "bad id".to_string(),
-                },
-            )
-            .await;
+            runtime
+                .handle_server_frame(
+                    handle,
+                    ServerToAgent::Rejected {
+                        reason: RejectReason::InvalidIdentity,
+                        message: "bad id".to_string(),
+                    },
+                )
+                .await;
 
-        // A misconfigured agent stops with a failure status instead of retrying forever.
-        assert!(matches!(
-            receiver.recv().await,
-            Some(AgentMsg::ExitWithError)
-        ));
+            let next = receiver.recv().await;
+            if exits {
+                // The supervisor sees a failure status and keeps restarting with its backoff.
+                assert!(matches!(next, Some(AgentMsg::ExitWithError)));
+            } else {
+                // A standalone agent keeps retrying so a fixed server lets it in.
+                assert!(matches!(next, Some(AgentMsg::Connect)));
+                // A refusal only an operator can fix is retried at the slowest pace.
+                assert!(
+                    runtime.backoff.clone().next_delay() >= redoor_core::backoff::MAX_BACKOFF / 2
+                );
+            }
+        }
+    }
+
+    /// A supervised agent leaves a dead tunnel to its owner after its window; a standalone
+    /// agent keeps retrying however long the outage lasts.
+    #[tokio::test(start_paused = true)]
+    async fn only_supervised_agents_give_up_reconnecting_after_their_window() {
+        for (id_source, exits) in [(standalone(), false), (DeviceIdSource::Assigned, true)] {
+            let mut runtime = runtime_with_source(id_source);
+            let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+
+            runtime.schedule_reconnect(handle.clone(), "first failure");
+            // Inside the window every agent retries.
+            assert!(matches!(receiver.recv().await, Some(AgentMsg::Connect)));
+
+            tokio::time::advance(runtime.profile.ws_timeouts.stale_timeout).await;
+            runtime.schedule_reconnect(handle, "still unreachable");
+            let next = receiver.recv().await;
+            if exits {
+                // The exit ends the SSH session, so the watchdog or relay builds a new one.
+                assert!(matches!(next, Some(AgentMsg::ExitWithError)));
+            } else {
+                // Standalone agents never give up.
+                assert!(matches!(next, Some(AgentMsg::Connect)));
+            }
+        }
     }
 
     /// A replaced standalone agent reconnects, so clones keep competing until the server

@@ -294,6 +294,20 @@ pub struct StartAgentResponse {
     pub agent: AgentInfoResponse,
 }
 
+/// Optional body of `POST /api/v1/agents/{agent}/retry-start`.
+///
+/// A device whose vault-encrypted SSH key the server does not hold waits for that key
+/// instead of stopping. Its retry carries the key's file key like a Start does, so the
+/// retry the device page offers can unlock it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct RetryAgentStartRequest {
+    /// The encrypted SSH key's file key, base64url.
+    #[serde(default)]
+    #[ts(optional)]
+    pub ssh_key_file_key: Option<String>,
+}
+
 /// Confirms that the previous managed startup attempt was canceled before its replacement began.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]

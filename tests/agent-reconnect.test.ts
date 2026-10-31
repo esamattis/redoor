@@ -3,6 +3,7 @@ import { connect, createServer, type Socket } from "node:net";
 import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import {
+    generateDeviceId,
     ProcessManager,
     TEST_PASSWORD,
     TEST_USERNAME,
@@ -18,6 +19,21 @@ const tcpAddressSchema = z.object({ port: z.number().int().positive() });
 afterAll(async () => {
     await processManager.killAll();
 });
+
+/** A TCP port nothing listens on, so connection attempts to it are refused at once. */
+async function closedPort(): Promise<number> {
+    const server = createServer();
+
+    await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", resolve);
+    });
+    const { port } = tcpAddressSchema.parse(server.address());
+
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+
+    return port;
+}
 
 /** Relays TCP while allowing tests to discard server-to-agent bytes without closing sockets. */
 async function createDownstreamBlackholeProxy(upstreamPort: number): Promise<{
@@ -165,4 +181,34 @@ describe("Agent connection recovery", () => {
             initialAgent.connectionId,
         );
     }, 30_000);
+
+    it("exits a supervised agent that cannot reach its server for the stale timeout", async () => {
+        const port = await closedPort();
+
+        // `--agent-id` marks an agent started by the watchdog or a relay.
+        const agentPid = processManager.spawnAgent({
+            wsAddress: `ws://127.0.0.1:${port}/api/v1/agent/ws`,
+            name: "supervised-unreachable-agent",
+            agentId: generateDeviceId(),
+            cwd: process.cwd(),
+            home: process.cwd(),
+        });
+
+        const exitCode = await processManager.waitForExit(agentPid, 15_000);
+
+        // The failure status is what the watchdog or relay reacts to with a fresh SSH session.
+        expect(exitCode).not.toBe(0);
+        // The agent says why it left, so a relay log explains the relaunch.
+        expect(processManager.getStdout(agentPid)).toContain(
+            "exiting so the supervisor can start a fresh agent",
+        );
+        // It retried inside its window before giving up, so short outages need no relaunch.
+        expect(
+            (
+                processManager
+                    .getStdout(agentPid)
+                    .match(/Attempting to connect/g) ?? []
+            ).length,
+        ).toBeGreaterThan(1);
+    });
 });

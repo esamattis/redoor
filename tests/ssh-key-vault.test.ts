@@ -312,11 +312,27 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
                     startWithClient(token, deviceId),
                     "ssh_key_locked",
                 );
+                // Retry Start needs the key just like Start, since retrying without it
+                // would only wait for the key again.
+                await expectCode(
+                    (await findAgent(fixture, deviceId)).retryStart(),
+                    "ssh_key_locked",
+                );
+                // The refusal came before the watchdog, so the device stays stopped.
+                expect((await findAgent(fixture, deviceId)).status).toBe(
+                    "stopped",
+                );
 
+                // With the file key, Retry Start unlocks the key and starts the device,
+                // which is how the device page resumes a device waiting for its key.
                 await (
                     await findAgent(fixture, deviceId)
-                ).start({ ssh_key_file_key: fileKey });
+                ).retryStart({ ssh_key_file_key: fileKey });
                 await waitReconnected(fixture, deviceId, connected.connectionId);
+                // The retry handed the key over, so the server holds it while it runs.
+                expect(
+                    (await fixture.apiClient.getSshKeyStatus(deviceId)).held,
+                ).toBe(true);
 
                 await restartServerAndWait({
                     apiClient: fixture.apiClient,
