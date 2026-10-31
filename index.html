@@ -676,7 +676,7 @@ footer p { margin: 6px 0; }
                 <p>Every connected device shows up in the sidebar with its bookmarks. Jump between machines without opening a single SSH session by hand.</p>
                 <ul class="checks">
                     <li>Fast file browser with sorting, filtering and selection</li>
-                    <li>Search files by name or by content</li>
+                    <li>Bookmark the folders and files you visit most on each device</li>
                     <li>Open files stay one click away, across devices</li>
                     <li>Copy, move, upload, download and trash</li>
                 </ul>
@@ -693,7 +693,29 @@ footer p { margin: 6px 0; }
 
         <div class="showcase reverse">
             <div class="showcase-text reveal">
-                <span class="kicker">02 / Editor &amp; terminal</span>
+                <span class="kicker">02 / Search</span>
+                <h2>Find anything, on any device</h2>
+                <p>Search a device by file path or by file contents. The search runs on the device itself using the same libraries as ripgrep, so even large trees answer quickly.</p>
+                <ul class="checks">
+                    <li>Path and content search with regex and case sensitivity toggles</li>
+                    <li>Respects <code>.gitignore</code>, with hidden files on demand</li>
+                    <li>Start from any directory or jump to the Git root</li>
+                    <li>Matches shown with context lines, one click to open the file</li>
+                </ul>
+            </div>
+            <div class="showcase-media reveal">
+                <div class="media-glow"></div>
+                <div class="window">
+                    <button class="shot" type="button" data-full="screenshots/search.webp" data-caption="Content search with surrounding context lines">
+                        <img src="screenshots/search.webp" alt="Search device dialog showing content search results with context lines" loading="lazy" width="1250" height="1054">
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="showcase">
+            <div class="showcase-text reveal">
+                <span class="kicker">03 / Editor &amp; terminal</span>
                 <h2>Edit with Vim mode. Build in the terminal below.</h2>
                 <p>A real code editor with syntax highlighting, a Git gutter and Vim keybindings, paired with terminal sessions that keep running when you close the tab.</p>
                 <ul class="checks">
@@ -713,9 +735,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase reverse">
             <div class="showcase-text reveal">
-                <span class="kicker">03 / Git</span>
+                <span class="kicker">04 / Git</span>
                 <h2>Read your history, not just your files</h2>
                 <p>Redoor understands Git repositories on every device. Step through commits, review diffs, and browse the whole tree as it was at any point in time.</p>
                 <ul class="checks">
@@ -735,9 +757,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse">
+        <div class="showcase">
             <div class="showcase-text reveal">
-                <span class="kicker">04 / SSH keys &amp; vault</span>
+                <span class="kicker">05 / SSH keys &amp; vault</span>
                 <h2>SSH keys managed for you, locked by your passkey</h2>
                 <p>Redoor manages the SSH keys of your devices and their rotation, and keeps them in a vault encrypted with your passkey. The same encryption protects any file you choose, so devices only ever store ciphertext.</p>
                 <ul class="checks">
@@ -764,9 +786,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase reverse">
             <div class="showcase-text reveal">
-                <span class="kicker">05 / Automation</span>
+                <span class="kicker">06 / Automation</span>
                 <h2>Let your AI agents in, with scoped keys</h2>
                 <p>A stateless MCP endpoint and a remote CLI give scripts and AI agents access to all your devices at once. Every token is limited to the permissions and devices you pick.</p>
                 <ul class="checks">
