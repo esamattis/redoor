@@ -131,9 +131,11 @@ impl RawFileSink {
         check_precondition(destination, precondition.as_ref()).await?;
         // The precondition decides replacement: a new file must be published without
         // replacing anything, and a matching file is replaced whatever the caller asked.
+        // A file merge is one rename over the old file, so readers never see it missing;
+        // an override would move the old file aside first.
         let on_existing = match precondition {
             Some(UploadPrecondition::MustNotExist) => CopyExistingMode::Error,
-            Some(UploadPrecondition::Matches { .. }) => CopyExistingMode::Override,
+            Some(UploadPrecondition::Matches { .. }) => CopyExistingMode::Merge,
             None => on_existing,
         };
         check_existing_destination(destination, on_existing, false)
