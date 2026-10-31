@@ -36,6 +36,49 @@ function loadWTermModules(): Promise<WTermModules> {
     return moduleLoad;
 }
 
+/**
+ * Resolves once no ancestor of the host is animating, such as the bottom drawer growing to
+ * its height as it opens. The size wterm measures at init is the size the tab attaches to
+ * its server session with, so measuring mid-animation would resize the shared shell through
+ * sizes nobody looks at: a full-screen app redraws for each of them, the server's screen
+ * mirror crops its screen to them, and an app that ends up back at its old size never
+ * repaints the cropped rows.
+ *
+ * Animations run on the document timeline, so this does not depend on timers or frames.
+ * A host that is not animating resolves at once.
+ */
+async function waitForAncestorAnimations(host: HTMLElement): Promise<void> {
+    for (;;) {
+        const running: Animation[] = [];
+
+        for (
+            let element = host.parentElement;
+            element !== null;
+            element = element.parentElement
+        ) {
+            for (const animation of element.getAnimations()) {
+                // An endless animation would never settle and does not move the layout.
+                if (
+                    animation.playState === "running" &&
+                    animation.effect?.getComputedTiming().endTime !== Infinity
+                ) {
+                    running.push(animation);
+                }
+            }
+        }
+
+        if (running.length === 0) {
+            return;
+        }
+
+        // A cancelled animation rejects; it stopped moving either way. Another may start
+        // meanwhile, such as the drawer turning around, so the ancestors are checked again.
+        await Promise.allSettled(
+            running.map((animation) => animation.finished),
+        );
+    }
+}
+
 /** Lets macOS layouts commit Option text instead of wterm encoding it as Escape-prefixed input. */
 function preserveOptionText(event: KeyboardEvent, terminal: WTerm): void {
     if (
@@ -85,16 +128,18 @@ export async function createWTerm(
     options: CreateWTermOptions,
 ): Promise<WTermSession> {
     const modules = await loadWTermModules();
+    await waitForAncestorAnimations(options.host);
 
     const core = await modules.GhosttyCore.load({
         imageStorageLimit: 0,
         scrollbackLimit: 5000,
     });
 
+    // No explicit cols and rows: wterm only measures the host on init when they are left
+    // out, and otherwise starts at 80x24 until its resize observer catches up. A restored tab
+    // attaches right after init, so it would join its session at 80x24.
     const terminal = new modules.WTerm(options.host, {
         autoResize: true,
-        cols: 80,
-        rows: 24,
         cursorBlink: true,
         core,
         onData: options.onData,
