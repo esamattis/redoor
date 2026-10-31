@@ -22,6 +22,12 @@ const MAX_SSH_DIAGNOSTIC_BYTES: usize = 8 * 1024;
 /// Bounds how long OpenSSH may spend establishing its transport before a retry.
 const SSH_CONNECT_TIMEOUT_SECONDS: u32 = 15;
 
+/// How often ssh checks its server is alive when the user's config does not say. With
+/// OpenSSH's default of three unanswered checks, a dead network ends the session in about
+/// 30 seconds instead of after the hours TCP keepalive takes, so the watchdog or relay
+/// notices the exit and builds a new tunnel.
+const SSH_SERVER_ALIVE_INTERVAL_SECONDS: u32 = 10;
+
 /// One reverse forward: SSH listens on `remote_port` at the remote host and
 /// asks the local SSH client to connect to `destination_host:destination_port`.
 /// Keeping the destination explicit lets a relay machine route agent traffic
@@ -1254,13 +1260,14 @@ fn ssh_argv(
     // and makes every step of an enrollment authenticate on its own.
     ssh_options.set("ControlMaster", "no");
     ssh_options.set("ControlPath", "none");
-    if !routing.is_some_and(|routing| {
-        routing
-            .options
-            .iter()
-            .any(|(name, _)| name == "ConnectTimeout")
-    }) {
+    let routing_sets = |option: &str| {
+        routing.is_some_and(|routing| routing.options.iter().any(|(name, _)| name == option))
+    };
+    if !routing_sets("ConnectTimeout") {
         ssh_options.set("ConnectTimeout", SSH_CONNECT_TIMEOUT_SECONDS);
+    }
+    if !routing_sets("ServerAliveInterval") {
+        ssh_options.set("ServerAliveInterval", SSH_SERVER_ALIVE_INTERVAL_SECONDS);
     }
     host.host_key.write_options(&mut ssh_options);
     host.auth.write_options(&mut ssh_options, ssh_agent);
@@ -1337,7 +1344,11 @@ impl ResolvedRouting {
     fn from_dump(dump: &SshConfigDump) -> Self {
         let mut options = Vec::new();
         for (key, name) in ROUTING_SAFELIST {
-            if let Some(value) = dump.get(key).filter(|value| *value != "none") {
+            // `ssh -G` prints `none` for unset options and `0` for a disabled
+            // `ServerAliveInterval`; both leave the option to redoor's default.
+            let unset =
+                |value: &&str| *value == "none" || (*key == "serveraliveinterval" && *value == "0");
+            if let Some(value) = dump.get(key).filter(|value| !unset(value)) {
                 options.push((name.to_string(), value.to_string()));
             }
         }
@@ -2081,6 +2092,7 @@ proxyjump bob@j1:2201,carol@j2
                     ("ExitOnForwardFailure", Some("yes")),
                     ("ControlMaster", Some("no")),
                     ("ConnectTimeout", Some("15")),
+                    ("ServerAliveInterval", Some("10")),
                 ];
                 for (name, value) in expected {
                     let values = option_values(&argv, name);
@@ -2183,6 +2195,39 @@ connecttimeout 37
         );
         // A slow route may need the user's timeout rather than redoor's 15-second fallback.
         assert_eq!(option_values(&argv, "ConnectTimeout"), ["37"]);
+    }
+
+    /// A configured keepalive interval wins over redoor's default, and a disabled one gets
+    /// the default so a dead network still ends the session.
+    #[test]
+    fn server_alive_interval_defaults_unless_configured() {
+        let argv_for = |dump: &str| {
+            let routing = super::ResolvedRouting::from_dump(&super::SshConfigDump::parse(dump));
+            let host = super::SshHost::new("device".to_string())
+                .auth(super::AuthPolicy::ManagedKey { key: test_key() });
+            super::ssh_argv(
+                &host,
+                Some(&routing),
+                None,
+                "true",
+                &[],
+                &super::SshRunOptions::default(),
+            )
+        };
+        let configured = argv_for(
+            "hostname example.test
+serveraliveinterval 45
+",
+        );
+        // The user's own interval is kept, exactly once.
+        assert_eq!(option_values(&configured, "ServerAliveInterval"), ["45"]);
+        let disabled = argv_for(
+            "hostname example.test
+serveraliveinterval 0
+",
+        );
+        // OpenSSH's "off" must not disable the dead-link detection redoor relies on.
+        assert_eq!(option_values(&disabled, "ServerAliveInterval"), ["10"]);
     }
 
     /// Device targets are data, even if a caller supplies a string resembling an SSH flag.
