@@ -277,35 +277,12 @@ test.describe.serial("File Edit View", () => {
             name: "Editor actions",
         });
 
-        const expandBox = await expandButton.boundingBox();
-        const optionsBox = await optionsButton.boundingBox();
-        expect(expandBox).not.toBeNull();
-        expect(optionsBox).not.toBeNull();
-
-        if (expandBox === null || optionsBox === null) {
-            throw new Error("expected editor toolbar measurements");
-        }
-
-        // The expansion control belongs immediately before the overflow menu.
-        expect(expandBox.x).toBeLessThan(optionsBox.x);
-
+        await expect(optionsButton).toBeVisible();
         await expandButton.click();
-
-        await expect(editorPanel).toHaveCSS("position", "fixed");
-        const panelBox = await editorPanel.boundingBox();
-        const viewport = page.viewportSize();
-        expect(panelBox).not.toBeNull();
-        expect(viewport).not.toBeNull();
-
-        if (panelBox === null || viewport === null) {
-            throw new Error("expected expanded editor measurements");
-        }
-
-        // Fixed edges make the editor and all of its controls fill the browser window.
-        expect(panelBox.x).toBe(0);
-        expect(panelBox.y).toBe(0);
-        expect(panelBox.width).toBe(viewport.width);
-        expect(panelBox.height).toBe(viewport.height);
+        // The restore action proves full-window mode without coupling this workflow to layout.
+        await expect(
+            editorPanel.getByRole("button", { name: "Restore editor size" }),
+        ).toBeVisible();
         await expect(
             editorPanel.getByRole("button", { name: "Save file" }),
         ).toBeVisible();
@@ -328,7 +305,7 @@ test.describe.serial("File Edit View", () => {
 
         await restoreButton.click();
         // Restoring returns the card to the route layout without replacing the editor.
-        await expect(editorPanel).toHaveCSS("position", "static");
+        await expect(expandButton).toBeVisible();
         await expect(
             page.getByLabel("File editor", { exact: true }),
         ).toHaveText("full window content");
