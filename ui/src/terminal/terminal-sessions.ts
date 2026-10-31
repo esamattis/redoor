@@ -69,6 +69,14 @@ export type TerminalSessionsOptions = {
     createEmulator?: CreateEmulator;
 };
 
+/**
+ * Where a request to focus the shell stands: waiting for the shell to connect, given up
+ * because the user went back to the editor first, or settled. A cancelled request is kept
+ * until the shell connects, because creating the emulator grabs focus and the editor has to
+ * take it back then.
+ */
+type FocusRequest = "none" | "pending" | "cancelled";
+
 /** One create request, with the device that runs it. */
 type CreateVariables = {
     agent: Agent;
@@ -133,7 +141,7 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
     private isPickerOpen = false;
     private focusEpoch = 0;
     private isPanelVisible = false;
-    private pendingFocus = false;
+    private focusRequest: FocusRequest = "none";
     private theme: "dark" | "light" = "dark";
     private nextTabId = 1;
     private readonly nextNumberByAgent = new Map<string, number>();
@@ -669,14 +677,19 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
 
     /** Drops a pending focus request, because the user already went back to the editor. */
     cancelPendingFocus(): void {
-        this.pendingFocus = false;
+        if (this.focusRequest === "pending") {
+            this.focusRequest = "cancelled";
+        }
     }
 
     /**
      * Moves focus into the active shell once it can take it: displayed and connected. The
      * view calls this after each render that could have made that true, because a tab that
      * was just revealed is still inert until React has committed it. A late connection after
-     * the user returned to the editor must not keep the shell, so the editor takes focus back.
+     * the user returned to the editor must not keep the shell, so the editor takes focus back
+     * once. Only a cancelled request does that: a shell that reconnects or is taken back from
+     * another window while the user types in it must keep its focus, or the app in it would
+     * get a focus-out report and the next keys would land in the editor.
      */
     flushFocus(tabId: number): void {
         const session = this.sessions.find((entry) => entry.tab.id === tabId);
@@ -691,7 +704,10 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
         }
 
         // Asking for a shell that another window has is asking to take it back.
-        if (this.pendingFocus && session.tab.state.type === "taken_over") {
+        if (
+            this.focusRequest === "pending" &&
+            session.tab.state.type === "taken_over"
+        ) {
             session.takeOver();
 
             return;
@@ -701,10 +717,16 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
             return;
         }
 
-        if (this.pendingFocus) {
-            session.focus();
-            this.pendingFocus = false;
+        const request = this.focusRequest;
+        this.focusRequest = "none";
 
+        if (request === "pending") {
+            session.focus();
+
+            return;
+        }
+
+        if (request !== "cancelled") {
             return;
         }
 
@@ -751,7 +773,7 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
 
     /** Remembers that the user asked for the shell, to focus it as soon as it is ready. */
     private requestFocus(): void {
-        this.pendingFocus = true;
+        this.focusRequest = "pending";
         this.focusEpoch += 1;
         this.emit();
     }

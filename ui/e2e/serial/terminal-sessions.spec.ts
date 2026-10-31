@@ -151,6 +151,49 @@ test.describe.serial("Persistent terminal sessions", () => {
         await other.close();
     });
 
+    test("keeps typing in a terminal that was clicked back from another window", async ({
+        page,
+        context,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page
+            .getByRole("link", { name: ctx.testDirName, exact: true })
+            .click();
+        await page
+            .getByRole("link", { name: "file1.txt", exact: true })
+            .click();
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("content1");
+        // Opening the shell from the editor is a focus request, which arms the rule that
+        // hands focus back to the editor when the user left the shell before it connected.
+        await editor.press("Alt+t");
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const other = await context.newPage();
+        await other.goto(page.url());
+        await other.getByRole("tab", { name: "Terminal" }).click();
+        await expect(
+            page.getByRole("status", {
+                name: "agent1_src 1: Open in another window",
+            }),
+        ).toBeVisible();
+
+        await terminalScreen(page, "agent1_src 1").click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        await page.keyboard.type(printPid("CLICKED"));
+        await page.keyboard.press("Enter");
+        // The keys reach the shell that was clicked back, so its reconnect did not move
+        // focus to the editor.
+        await printedPid(page, "agent1_src 1", "CLICKED");
+        // Nothing typed after the takeover ended up in the file.
+        await expect(editor).toHaveText("content1");
+        await other.close();
+    });
+
     test("shows the last screen and exit status of an exited terminal after a reload", async ({
         page,
     }) => {
