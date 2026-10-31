@@ -15,7 +15,7 @@ import {
 import { queryKeys } from "#ui/queries";
 import { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import type { CreateEmulator } from "#ui/terminal/wterm";
-import { defaultUserState } from "#ui/user-state";
+import { defaultUserState, type UserState } from "#ui/user-state";
 
 /** Stands in for wterm, which is wasm and draws into a real layout; tabs only need a size. */
 const createIdleEmulator: CreateEmulator = async () => ({
@@ -390,7 +390,9 @@ describe("TerminalSessions following the server's session list", () => {
             owner.terminals.getSnapshot().tabs.map((tab) => tab.sessionId),
         ).toEqual(["s-new"]);
     });
+});
 
+describe("TerminalSessions restoring tabs", () => {
     test("restores tabs in the saved order and follows other windows", () => {
         const owner = createOwner();
         owner.queryClient.setQueryData(queryKeys.agents(), [
@@ -546,5 +548,42 @@ describe("TerminalSessions following the server's session list", () => {
         ).toEqual(["alpha 1"]);
         // The tab waits for a new session of its own.
         expect(owner.terminals.getSnapshot().tabs[0]?.sessionId).toBeNull();
+    });
+
+    test("focusing an existing terminal saves it as the active tab", () => {
+        const owner = createOwner();
+
+        owner.queryClient.setQueryData(queryKeys.agents(), [
+            agentInfo("alpha", "Alpha"),
+        ]);
+        followList(owner, [
+            sessionInfo({
+                id: "s-1",
+                agentId: "alpha",
+                number: 1,
+                createdAt: 1,
+            }),
+            sessionInfo({
+                id: "s-2",
+                agentId: "alpha",
+                number: 2,
+                createdAt: 2,
+            }),
+        ]);
+
+        owner.terminals.openOrFocus({
+            agent: owner.alpha,
+            cwd: "/home/alpha",
+        });
+
+        // The shortcut picked a tab, so a reload must come back to that same tab.
+        expect(
+            owner.queryClient.getQueryData<UserState>(queryKeys.userState())
+                ?.terminalTabs.active,
+        ).toBe(
+            owner.terminals.sessionFor(
+                owner.terminals.getSnapshot().activeTabId ?? -1,
+            )?.sessionId,
+        );
     });
 });

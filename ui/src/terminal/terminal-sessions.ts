@@ -552,6 +552,7 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
             this.activeTabId = existing.tab.id;
             this.revealTerminal();
             this.requestFocus();
+            this.persistTabs();
         } else {
             this.create(target);
         }
