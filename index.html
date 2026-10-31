@@ -715,21 +715,20 @@ footer p { margin: 6px 0; }
 
         <div class="showcase">
             <div class="showcase-text reveal">
-                <span class="kicker">03 / Editor &amp; terminal</span>
-                <h2>Edit with Vim mode. Build in the terminal below.</h2>
-                <p>A real code editor with syntax highlighting, a Git gutter and Vim keybindings, paired with terminal sessions that keep running when you close the tab.</p>
+                <span class="kicker">03 / Editor</span>
+                <h2>A text editor, right in the browser</h2>
+                <p>Open any file on any device in a real code editor and save it straight back. No local copy, no sync step.</p>
                 <ul class="checks">
                     <li>Syntax highlighting, code folding and in-file search</li>
                     <li>Git gutter shows what changed since the last commit</li>
                     <li>Optional Vim mode for muscle memory</li>
-                    <li>Persistent terminal sessions you can reattach from any browser</li>
                 </ul>
             </div>
             <div class="showcase-media reveal">
                 <div class="media-glow red"></div>
                 <div class="window">
-                    <button class="shot crop" type="button" data-full="screenshots/editor.webp" data-caption="Editor in Vim mode with a terminal running cargo build">
-                        <img src="screenshots/editor.webp" alt="Editor showing Rust code in Vim normal mode, with a terminal below running cargo build" loading="lazy" width="1600" height="1646">
+                    <button class="shot" type="button" data-full="screenshots/editor-only.webp" data-caption="Editor in Vim mode">
+                        <img src="screenshots/editor-only.webp" alt="Editor showing Rust code in Vim normal mode, with open files listed in the sidebar" loading="lazy" width="1600" height="1040">
                     </button>
                 </div>
             </div>
@@ -737,7 +736,29 @@ footer p { margin: 6px 0; }
 
         <div class="showcase reverse">
             <div class="showcase-text reveal">
-                <span class="kicker">04 / Git</span>
+                <span class="kicker">04 / Terminal</span>
+                <h2>Terminals that outlive your tab</h2>
+                <p>Open a shell on any device from anywhere in the app. Sessions keep running on the device when you close the browser, so you can pick up where you left off from your laptop or your phone.</p>
+                <ul class="checks">
+                    <li>Available from every view in the bottom drawer, or full window</li>
+                    <li>Persistent sessions you can reattach from any browser</li>
+                    <li>Several sessions across devices, side by side as tabs</li>
+                    <li>Full-screen terminal apps like btop and vim just work</li>
+                </ul>
+            </div>
+            <div class="showcase-media reveal">
+                <div class="media-glow green"></div>
+                <div class="window">
+                    <button class="shot" type="button" data-full="screenshots/terminal.webp" data-caption="Terminal sessions on several devices, running btop">
+                        <img src="screenshots/terminal.webp" alt="Terminal drawer with sessions on several devices, running btop" loading="lazy" width="1600" height="1142">
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="showcase">
+            <div class="showcase-text reveal">
+                <span class="kicker">05 / Git</span>
                 <h2>Read your history, not just your files</h2>
                 <p>Redoor understands Git repositories on every device. Step through commits, review diffs, and browse the whole tree as it was at any point in time.</p>
                 <ul class="checks">
@@ -757,9 +778,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase reverse">
             <div class="showcase-text reveal">
-                <span class="kicker">05 / SSH keys &amp; vault</span>
+                <span class="kicker">06 / SSH keys &amp; vault</span>
                 <h2>SSH keys managed for you, locked by your passkey</h2>
                 <p>Redoor manages the SSH keys of your devices and their rotation, and keeps them in a vault encrypted with your passkey. The same encryption protects any file you choose, so devices only ever store ciphertext.</p>
                 <ul class="checks">
@@ -786,9 +807,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse">
+        <div class="showcase">
             <div class="showcase-text reveal">
-                <span class="kicker">06 / Automation</span>
+                <span class="kicker">07 / Automation</span>
                 <h2>Let your AI agents in, with scoped keys</h2>
                 <p>A stateless MCP endpoint and a remote CLI give scripts and AI agents access to all your devices at once. Every token is limited to the permissions and devices you pick.</p>
                 <ul class="checks">
