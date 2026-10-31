@@ -542,6 +542,8 @@ pub enum RouterMsg {
         agent_id: AgentId,
         stream: RequestId,
     },
+    /// A terminal session was created, closed or exited; open windows refresh their tabs.
+    TerminalsChanged,
     /// Periodic tick: prunes abandoned replies, publishes stream progress, releases
     /// throttled UI refreshes and ends device id conflicts that went quiet.
     CheckPendingUiRefresh,

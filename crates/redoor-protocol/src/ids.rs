@@ -153,6 +153,40 @@ impl fmt::Display for SocketId {
     }
 }
 
+/// Identifies one server-owned terminal session across REST, the attach websocket and
+/// every browser window that shows it as a tab.
+///
+/// A random v4 UUID because the id is the only handle to a running shell: it must not be
+/// guessable from other sessions and needs no coordination to stay unique.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[ts(type = "string")]
+pub struct TerminalSessionId(pub Uuid);
+
+impl TerminalSessionId {
+    /// Creates a fresh random id for a new terminal session.
+    pub fn new() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    /// Parses a path segment; anything that is not a UUID cannot name a session.
+    pub fn parse(value: &str) -> Option<Self> {
+        Uuid::parse_str(value).ok().map(Self)
+    }
+}
+
+impl Default for TerminalSessionId {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl fmt::Display for TerminalSessionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Correlates one router command request with its eventual response.
 ///
 /// This is used for internal command routing between the server router,

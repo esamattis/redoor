@@ -436,12 +436,6 @@ impl OutputReceiver {
         self.fault_reported = true;
         Some(message)
     }
-
-    /// Takes one already queued frame without waiting and without returning credit; used to
-    /// drain output that precedes a terminal's exit event.
-    pub(crate) fn try_recv(&mut self) -> Option<StreamChunk> {
-        self.chunks.try_recv().ok()
-    }
 }
 
 #[cfg(test)]

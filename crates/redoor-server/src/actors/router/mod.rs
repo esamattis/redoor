@@ -428,6 +428,7 @@ impl RouterState {
             RouterMsg::OpenTerminal(request) => self.open_terminal(request),
             RouterMsg::OpenAgentLogStream(request) => self.open_log_stream(request),
             RouterMsg::CloseStream { agent_id, stream } => self.close_stream(&agent_id, stream),
+            RouterMsg::TerminalsChanged => self.notify_terminals_changed(),
             RouterMsg::CheckPendingUiRefresh => self.tick(),
             RouterMsg::Shutdown => {}
         }

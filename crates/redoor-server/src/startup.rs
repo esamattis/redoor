@@ -378,6 +378,7 @@ impl ServerRuntime {
             launcher: launcher.clone(),
             router_ref: router.clone(),
             agents: crate::http::agent_client::AgentClient::new(router.clone()),
+            terminals: crate::terminals::registry::TerminalRegistry::new(router.clone()),
             transfers: transfer_service,
             watchdog_registry: watchdogs.clone(),
             one_time_token_registry: OneTimeTokenRegistry::new(),

@@ -1,7 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { request as httpRequest } from "node:http";
 import {
     ProcessManager,
     TempFileManager,
@@ -123,41 +122,27 @@ describe("absolute filesystem path contract", () => {
             );
         }
 
-        const terminalResponse = await new Promise<{
-            status: number | undefined;
-            body: string;
-        }>((resolve, reject) => {
-            const request = httpRequest(
-                `${api.baseUrl}/api/v1/agents/${agentId}/terminal/ws?rows=24&cols=80&cwd=relative`,
-                {
-                    headers: {
-                        Connection: "Upgrade",
-                        Upgrade: "websocket",
-                        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
-                        "Sec-WebSocket-Version": "13",
-                        ...api.getAuthHeaders(),
-                    },
+        const terminalResponse = await fetch(
+            `${api.baseUrl}/api/v1/agents/${agentId}/terminals`,
+            {
+                method: "POST",
+                headers: {
+                    ...api.getAuthHeaders(),
+                    "Content-Type": "application/json",
                 },
-                (response) => {
-                    let body = "";
-                    response.setEncoding("utf8");
-                    response.on("data", (chunk: string) => {
-                        body += chunk;
-                    });
-                    response.on("end", () =>
-                        resolve({ status: response.statusCode, body }),
-                    );
-                },
-            );
+                body: JSON.stringify({
+                    cwd: "relative",
+                    title: "relative",
+                    number: 1,
+                    size: { rows: 24, cols: 80 },
+                }),
+            },
+        );
 
-            request.on("error", reject);
-            request.end();
-        });
-
-        // Terminal setup validates cwd before accepting a WebSocket upgrade.
+        // Terminal session creation validates cwd before contacting the agent.
         expect(terminalResponse.status).toBe(400);
         // The terminal boundary reports the same malformed-path contract.
-        expect(terminalResponse.body).toBe(
+        expect(await terminalResponse.text()).toBe(
             JSON.stringify({ error: "Filesystem path must be absolute" }),
         );
 

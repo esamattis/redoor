@@ -37,6 +37,7 @@ mod server_upgrade;
 pub(crate) mod services;
 pub(crate) mod ssh_keys;
 pub mod state;
+mod terminal_sessions;
 mod terminals;
 pub(crate) mod tokens;
 mod transfer_cancellation;

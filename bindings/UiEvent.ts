@@ -4,4 +4,4 @@
  * Coarse invalidation hints pushed to browsers so they refetch only when state changed
  * instead of polling every resource.
  */
-export type UiEvent = { "type": "agents_changed" } | { "type": "routes_changed" } | { "type": "transfers_changed" };
+export type UiEvent = { "type": "agents_changed" } | { "type": "routes_changed" } | { "type": "transfers_changed" } | { "type": "terminals_changed" };

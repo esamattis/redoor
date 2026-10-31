@@ -35,6 +35,10 @@ import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { MoveFileRequest } from "#bindings/MoveFileRequest";
 import type { MoveFileResponse } from "#bindings/MoveFileResponse";
 import type { TerminalSize } from "#bindings/TerminalSize";
+import type { TerminalSessionList } from "#bindings/TerminalSessionList";
+import type { CreateTerminalSessionRequest } from "#bindings/CreateTerminalSessionRequest";
+import type { CreateTerminalSessionResponse } from "#bindings/CreateTerminalSessionResponse";
+import type { CloseTerminalSessionResponse } from "#bindings/CloseTerminalSessionResponse";
 import type { LoginRequest } from "#bindings/LoginRequest";
 import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LoginMethodsResponse } from "#bindings/LoginMethodsResponse";
@@ -972,23 +976,24 @@ export class Agent {
         return url.toString();
     }
 
-    /** Builds one terminal socket with the directory captured by its UI tab. */
-    getTerminalWebSocketUrl(size: TerminalSize, cwd: string): string {
-        if (!cwd.startsWith("/")) {
+    /**
+     * Starts a shell on this device that lives on the server until its tab is closed, so a
+     * reload or a network change can attach to it again.
+     */
+    async createTerminalSession(
+        request: CreateTerminalSessionRequest,
+    ): Promise<CreateTerminalSessionResponse> {
+        if (!request.cwd.startsWith("/")) {
             throw new Error("Filesystem path must be absolute");
         }
 
-        const url = new URL(
-            `/api/v1/agents/${encodeURIComponent(this.info.id)}/terminal/ws`,
-            this.baseUrl,
+        return this.postJson<
+            CreateTerminalSessionResponse,
+            CreateTerminalSessionRequest
+        >(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/terminals`,
+            request,
         );
-
-        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-        url.searchParams.set("rows", String(size.rows));
-        url.searchParams.set("cols", String(size.cols));
-        url.searchParams.set("cwd", cwd);
-
-        return url.toString();
     }
 
     async upload(
@@ -1930,6 +1935,40 @@ export class ApiClient {
         request: RestoreVaultBackupRequest,
     ): Promise<VaultStatusResponse> {
         return this.vaultRequest("/backup", "PUT", request);
+    }
+
+    /** Lists every terminal session of the server, so a reloaded window restores its tabs. */
+    async listTerminalSessions(): Promise<TerminalSessionList> {
+        return apiRequest<TerminalSessionList>(
+            `${this.baseUrl}/api/v1/terminals`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Stops a session's shell and forgets it, for a closed tab. */
+    async deleteTerminalSession(
+        id: string,
+    ): Promise<CloseTerminalSessionResponse> {
+        return apiRequest<CloseTerminalSessionResponse>(
+            `${this.baseUrl}/api/v1/terminals/${encodeURIComponent(id)}`,
+            { method: "DELETE" },
+            this.requestContext(),
+        );
+    }
+
+    /** Builds the socket that attaches this window to a session, taking it over. */
+    getTerminalSessionWebSocketUrl(id: string, size: TerminalSize): string {
+        const url = new URL(
+            `/api/v1/terminals/${encodeURIComponent(id)}/ws`,
+            this.baseUrl,
+        );
+
+        url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+        url.searchParams.set("rows", String(size.rows));
+        url.searchParams.set("cols", String(size.cols));
+
+        return url.toString();
     }
 
     /** Loads the opaque JSON document stored for the authenticated account. */

@@ -7,16 +7,15 @@ import {
     onTestFinished,
 } from "vitest";
 import WebSocket from "ws";
-import { z } from "zod";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
 import type { ExecEvent } from "#bindings/ExecEvent";
+import { openTerminal as openTerminalSession } from "./terminal-test-utils";
 import {
     ProcessManager,
     TempFileManager,
     startServerAndAgent,
     waitForValue,
-    webSocketDataToString,
 } from "./test-utils";
 
 const AGENT_NAME = "stream-isolation-agent";
@@ -32,9 +31,6 @@ const BULK_UPLOAD_BYTES = 256 * 1024 * 1024;
 
 /** One megabyte of upload body, produced on demand so the test never buffers the upload. */
 const UPLOAD_CHUNK = Buffer.alloc(1024 * 1024, "u");
-
-/** Only the lifecycle fields the terminal round trip needs. */
-const terminalEventSchema = z.object({ type: z.string() });
 
 describe("Per-stream transfer isolation", () => {
     const processManager = new ProcessManager();
@@ -113,37 +109,22 @@ describe("Per-stream transfer isolation", () => {
         return stalledPath;
     }
 
-    /** Opens a terminal and resolves once its PTY is ready. */
+    /** Opens a terminal session and resolves once its PTY is ready. */
     async function openTerminal(): Promise<WebSocket> {
-        const socket = new WebSocket(
-            testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }, testAgent.cwd ?? "/"),
-            { headers: testAgent.getAuthHeaders() },
+        const { viewer } = await openTerminalSession(
+            apiClient,
+            testAgent,
+            testAgent.cwd ?? "/",
         );
 
-        socket.binaryType = "arraybuffer";
-        onTestFinished(() => socket.close());
-        await new Promise<void>((resolve, reject) => {
-            socket.on("message", (data, isBinary) => {
-                if (isBinary) {
-                    return;
-                }
-
-                const event = terminalEventSchema.parse(JSON.parse(webSocketDataToString(data)));
-
-                if (event.type === "ready") {
-                    resolve();
-                } else {
-                    reject(new Error(`terminal failed to start: ${event.type}`));
-                }
-            });
-            socket.once("error", reject);
-        });
-
-        return socket;
+        return viewer.socket;
     }
 
     /** Types `marker` into the terminal and resolves with the time until it is echoed. */
-    async function echoLatency(socket: WebSocket, marker: string): Promise<number> {
+    async function echoLatency(
+        socket: WebSocket,
+        marker: string,
+    ): Promise<number> {
         const started = performance.now();
         const decoder = new TextDecoder();
         let output = "";
@@ -154,9 +135,10 @@ describe("Per-stream transfer isolation", () => {
                     return;
                 }
 
-                output = `${output}${decoder.decode(new Uint8Array(data), { stream: true })}`.slice(
-                    -4096,
-                );
+                output =
+                    `${output}${decoder.decode(new Uint8Array(data), { stream: true })}`.slice(
+                        -4096,
+                    );
 
                 if (output.includes(marker)) {
                     socket.off("message", onMessage);
@@ -232,9 +214,9 @@ describe("Per-stream transfer isolation", () => {
             const started = performance.now();
 
             // Each echo is a full command round trip on the connection the upload saturates.
-            expect((await testAgent.echo(`during-upload-${index}`)).message).toBe(
-                `during-upload-${index}`,
-            );
+            expect(
+                (await testAgent.echo(`during-upload-${index}`)).message,
+            ).toBe(`during-upload-${index}`);
             latencies.push(performance.now() - started);
         }
 

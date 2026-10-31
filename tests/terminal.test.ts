@@ -1,23 +1,18 @@
-import {
-    afterAll,
-    beforeAll,
-    describe,
-    expect,
-    it,
-    onTestFinished,
-} from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { mkdirSync } from "node:fs";
-import WebSocket from "ws";
 import { join } from "node:path";
-import { z } from "zod";
 import {
     ProcessManager,
     TempFileManager,
     startServerAndAgent,
     waitForValue,
 } from "./test-utils";
-import type { Agent } from "#ui/api-client";
-import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
+import {
+    TerminalViewer,
+    createTerminalSession,
+    openTerminal,
+} from "./terminal-test-utils";
+import type { Agent, ApiClient } from "#ui/api-client";
 
 const processManager = new ProcessManager();
 
@@ -29,18 +24,14 @@ const alternateCwd = join(agentCwd, "alternate");
 
 mkdirSync(alternateCwd);
 
+let api: ApiClient;
+
 let testAgent: Agent;
 
-const terminalServerMessageSchema: z.ZodType<TerminalServerMessage> =
-    z.discriminatedUnion("type", [
-        z.object({ type: z.literal("ready") }),
-        z.object({
-            type: z.literal("exit"),
-            code: z.number().nullable(),
-            signal: z.number().nullable(),
-        }),
-        z.object({ type: z.literal("error"), message: z.string() }),
-    ]);
+let agentPid: number;
+
+/** The router's cap on terminal streams per agent connection. */
+const MAX_TERMINALS_PER_AGENT = 8;
 
 beforeAll(async () => {
     const started = await startServerAndAgent({
@@ -49,7 +40,9 @@ beforeAll(async () => {
         agentCwd,
     });
 
+    api = started.apiClient;
     testAgent = started.testAgent;
+    agentPid = started.agentPid;
 }, 30_000);
 
 afterAll(async () => {
@@ -57,307 +50,367 @@ afterAll(async () => {
     tempFiles.cleanup();
 });
 
-/** Opens a dedicated terminal and waits for its typed ready notification. */
-async function openTerminal(
-    cwd = agentCwd,
-    rows = 24,
-    cols = 80,
-): Promise<WebSocket> {
-    const socket = new WebSocket(
-        testAgent.getTerminalWebSocketUrl({ rows, cols }, cwd),
-        { headers: testAgent.getAuthHeaders() },
+/** Whether a local process still exists; the agent runs on this machine. */
+function isRunning(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/** Waits until a process is gone. */
+async function waitForExit(pid: number, description: string): Promise<void> {
+    await waitForValue({
+        predicate: async () => (isRunning(pid) ? undefined : true),
+        timeoutMs: 5_000,
+        intervalMs: 50,
+        description,
+    });
+}
+
+/** Asks the shell for its pid and returns it. */
+async function shellPid(viewer: TerminalViewer, tag: string): Promise<number> {
+    viewer.type(`printf '__PID_${tag}_%s__\\n' $$\n`);
+
+    const output = await viewer.waitForOutputMatching(
+        new RegExp(`__PID_${tag}_(\\d+)__`),
     );
 
-    socket.binaryType = "arraybuffer";
-    onTestFinished(() => socket.close());
-    await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-            () => reject(new Error("terminal did not become ready")),
-            10_000,
-        );
+    const pid = Number(output.match(new RegExp(`__PID_${tag}_(\\d+)__`))?.[1]);
+    // A numeric pid proves the command ran in the shell behind this socket.
+    expect(pid).toBeGreaterThan(0);
 
-        socket.addEventListener(
-            "error",
-            () => {
-                clearTimeout(timeout);
-                reject(new Error("terminal websocket failed"));
-            },
-            { once: true },
-        );
-        socket.addEventListener("message", (event) => {
-            const controlFrame = z.string().safeParse(event.data);
-
-            if (!controlFrame.success) {
-                return;
-            }
-
-            const message = terminalServerMessageSchema.parse(
-                JSON.parse(controlFrame.data),
-            );
-
-            if (message.type === "error") {
-                clearTimeout(timeout);
-                reject(new Error(message.message));
-            } else if (message.type === "ready") {
-                clearTimeout(timeout);
-                resolve();
-            }
-        });
-    });
-
-    return socket;
+    return pid;
 }
 
-/** Waits for the transport to open so a test can exercise the pre-ready setup window. */
-async function waitForSocketOpen(socket: WebSocket): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-        socket.addEventListener("open", () => resolve(), { once: true });
-        socket.addEventListener(
-            "error",
-            () => reject(new Error("terminal websocket failed to open")),
-            { once: true },
-        );
+/** Waits for a session's listed status. */
+async function waitForListedStatus(id: string, type: string) {
+    return waitForValue({
+        description: `terminal session ${id} to be ${type}`,
+        predicate: async () =>
+            (await api.listTerminalSessions()).sessions.find(
+                (session) => session.id === id && session.status.type === type,
+            ),
     });
 }
 
-/** Waits for the typed ready lifecycle without assuming it is the first frame. */
-async function waitForReady(socket: WebSocket): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-            () => reject(new Error("terminal did not become ready")),
-            10_000,
+describe("terminal sessions", () => {
+    it("keeps an idle terminal usable across keepalive pings", async () => {
+        const { viewer } = await openTerminal(api, testAgent, agentCwd);
+        await new Promise<void>((resolve) =>
+            viewer.socket.once("ping", () => resolve()),
         );
-
-        socket.addEventListener("message", (event) => {
-            const controlFrame = z.string().safeParse(event.data);
-
-            if (!controlFrame.success) {
-                return;
-            }
-
-            const message = terminalServerMessageSchema.parse(
-                JSON.parse(controlFrame.data),
-            );
-
-            if (message.type === "error") {
-                clearTimeout(timeout);
-                reject(new Error(message.message));
-            } else if (message.type === "ready") {
-                clearTimeout(timeout);
-                resolve();
-            }
-        });
-    });
-}
-
-/** Reads only a bounded rolling window until a deterministic marker appears. */
-function waitForMarker(socket: WebSocket, marker: string): Promise<string> {
-    return new Promise((resolve, reject) => {
-        const decoder = new TextDecoder();
-        let output = "";
-
-        const timeout = setTimeout(
-            () => reject(new Error(`terminal marker not received: ${marker}`)),
-            10_000,
-        );
-
-        const onMessage = (event: WebSocket.MessageEvent) => {
-            if (!(event.data instanceof ArrayBuffer)) {
-                return;
-            }
-
-            output =
-                `${output}${decoder.decode(new Uint8Array(event.data), { stream: true })}`.slice(
-                    -65_536,
-                );
-
-            if (output.includes(marker)) {
-                clearTimeout(timeout);
-                socket.removeEventListener("message", onMessage);
-                resolve(output);
-            }
-        };
-
-        socket.addEventListener("message", onMessage);
-    });
-}
-
-/** Resolves when the browser-facing relay writes its periodic control frame. */
-async function waitForPing(socket: WebSocket): Promise<void> {
-    await new Promise<void>((resolve, reject) => {
-        const timeout = setTimeout(
-            () => reject(new Error("idle terminal websocket did not receive a ping")),
-            // The suite sets REDOOR_WEBSOCKET_KEEPALIVE=200ms, so a live ping arrives far sooner than production's 10s.
-            2_000,
-        );
-
-        socket.once("ping", () => {
-            clearTimeout(timeout);
-            resolve();
-        });
-    });
-}
-
-describe("dedicated terminal tunnel", () => {
-    it("keeps an idle terminal usable until normal disconnect cleanup", async () => {
-        const socket = await openTerminal();
-        await waitForPing(socket);
         const marker = "__REDOOR_IDLE_TERMINAL__";
-        const outputPromise = waitForMarker(socket, marker);
-        socket.send(new TextEncoder().encode(`printf '${marker}'\n`));
-        const output = await outputPromise;
+        viewer.type(`printf '${marker}'\n`);
 
-        // Successful output after the keepalive proves no reconnect or terminal reset occurred.
-        expect(output).toContain(marker);
-    }, 5_000);
+        // Output after the keepalive proves no reconnect or terminal reset occurred.
+        expect(await viewer.waitForOutput(marker)).toContain(marker);
+    });
 
     it("starts concurrent shells in their requested working directories", async () => {
-        const firstSocket = await openTerminal(agentCwd);
-        const secondSocket = await openTerminal(alternateCwd);
-        const firstMarker = `__REDOOR_CWD__${agentCwd}__`;
-        const secondMarker = `__REDOOR_CWD__${alternateCwd}__`;
-        const firstOutputPromise = waitForMarker(firstSocket, firstMarker);
-        const secondOutputPromise = waitForMarker(secondSocket, secondMarker);
+        const first = await openTerminal(api, testAgent, agentCwd);
+        const second = await openTerminal(api, testAgent, alternateCwd);
+        const command = "printf '__REDOOR_CWD__%s__\\n' \"$PWD\"\n";
+        first.viewer.type(command);
+        second.viewer.type(command);
 
-        firstSocket.send(
-            new TextEncoder().encode(
-                "printf '__REDOOR_CWD__%s__\\n' \"$PWD\"\n",
-            ),
-        );
-        secondSocket.send(
-            new TextEncoder().encode(
-                "printf '__REDOOR_CWD__%s__\\n' \"$PWD\"\n",
-            ),
-        );
-
-        const [firstOutput, secondOutput] = await Promise.all([
-            firstOutputPromise,
-            secondOutputPromise,
-        ]);
-
-        // The first marker proves its bootstrap cwd reached shell process creation.
-        expect(firstOutput).toContain(firstMarker);
-        // The distinct second marker proves concurrent terminals do not share mutable cwd state.
-        expect(secondOutput).toContain(secondMarker);
-    });
-
-    it("streams PTY bytes, resizes, and destroys the shell on disconnect", async () => {
-        const socket = await openTerminal();
-        const marker = "__REDOOR_TERMINAL_MARKER__";
-        const outputPromise = waitForMarker(socket, marker);
-        socket.send(
-            new TextEncoder().encode(
-                "trap '' HUP; sleep 60 & child=$!; trap - HUP; printf '__REDOOR_%s__%s__%s__\\n' TERMINAL_MARKER $$ $child\n",
-            ),
-        );
-        const output = await outputPromise;
-
-        const pidMatch = output.match(
-            /__REDOOR_TERMINAL_MARKER__(\d+)__(\d+)__/,
-        );
-
-        // Receiving both PIDs proves bytes crossed the tunnel and the shell launched a separate background job.
-        expect(pidMatch?.[1]).toBeDefined();
-        expect(pidMatch?.[2]).toBeDefined();
-        const shellPid = Number(pidMatch?.[1]);
-        const backgroundPid = Number(pidMatch?.[2]);
-
-        socket.send(
-            JSON.stringify({ type: "resize", size: { rows: 31, cols: 97 } }),
-        );
-        const resizeMarker = "__REDOOR_SIZE__";
-        const resizeOutputPromise = waitForMarker(socket, resizeMarker);
-        socket.send(
-            new TextEncoder().encode(
-                "stty size; printf '__REDOOR_%s__' SIZE\n",
-            ),
-        );
-        const resizeOutput = await resizeOutputPromise;
-        // The observed dimensions prove validated resize controls reached the PTY ioctl.
-        expect(resizeOutput).toContain("31 97");
-
-        socket.close();
-        await waitForValue({
-            predicate: async () => {
-                try {
-                    process.kill(shellPid, 0);
-                } catch {
-                    try {
-                        process.kill(backgroundPid, 0);
-                    } catch {
-                        return true;
-                    }
-                }
-
-                return undefined;
-            },
-            timeoutMs: 5_000,
-            intervalMs: 50,
-            description: "terminal shell and background process to exit",
-        });
-        // Both disappearances prove teardown reaches jobs outside the shell's process group.
-        expect(() => process.kill(shellPid, 0)).toThrow();
-        expect(() => process.kill(backgroundPid, 0)).toThrow();
-    });
-
-    it("reports the shell's exit status after its last output", async () => {
-        const socket = await openTerminal();
-        const marker = `exit-marker-${Date.now()}`;
-        const lifecycle: TerminalServerMessage[] = [];
-        let output = "";
-
-        const closed = new Promise<WebSocket.CloseEvent>((resolve) => {
-            socket.addEventListener("message", (event) => {
-                const controlFrame = z.string().safeParse(event.data);
-
-                if (controlFrame.success) {
-                    lifecycle.push(
-                        terminalServerMessageSchema.parse(
-                            JSON.parse(controlFrame.data),
-                        ),
-                    );
-
-                    return;
-                }
-
-                if (event.data instanceof ArrayBuffer) {
-                    output += new TextDecoder().decode(event.data);
-                }
-            });
-            socket.addEventListener("close", resolve, { once: true });
-        });
-
-        socket.send(Buffer.from(`echo ${marker}; exit 3\r`));
-        const closeEvent = await closed;
-
-        // The shell's own status reaches the browser instead of a generic disconnect. The close
-        // code tells a dropped socket (1006) from the relay's own close (1005) if this fails.
+        // Each shell starts in the directory its session was created with.
         expect(
-            lifecycle,
-            `close ${closeEvent.code} ${closeEvent.reason}, output ${JSON.stringify(output)}`,
-        ).toContainEqual({ type: "exit", code: 3, signal: null });
-        // Output written right before exiting is delivered before the exit event.
-        expect(output).toContain(marker);
+            await first.viewer.waitForOutput(`__REDOOR_CWD__${agentCwd}__`),
+        ).toBeTruthy();
+        expect(
+            await second.viewer.waitForOutput(
+                `__REDOOR_CWD__${alternateCwd}__`,
+            ),
+        ).toBeTruthy();
     });
 
-    it("preserves bounded terminal input sent before the agent is ready", async () => {
-        const socket = new WebSocket(
-            testAgent.getTerminalWebSocketUrl({ rows: 24, cols: 80 }, agentCwd),
-            { headers: testAgent.getAuthHeaders() },
+    it("lists a created session with its metadata", async () => {
+        const session = await createTerminalSession(api, testAgent, agentCwd);
+        const listed = await waitForListedStatus(session.id, "running");
+
+        // The list carries what another window needs to restore the tab.
+        expect(listed).toMatchObject({
+            agent_id: testAgent.id,
+            cwd: agentCwd,
+            title: `${testAgent.name} test`,
+            number: 1,
+        });
+    });
+
+    it("re-attaches to the same shell with its screen after the socket closes", async () => {
+        const { session, viewer } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
         );
 
-        socket.binaryType = "arraybuffer";
-        onTestFinished(() => socket.close());
+        const pid = await shellPid(viewer, "FIRST");
+        viewer.type(
+            "trap '' HUP; sleep 120 & printf '__BG_%s__\\n' $!; echo marker-before-detach\n",
+        );
+
+        const output = await viewer.waitForOutputMatching(
+            /__BG_(\d+)__[\s\S]*marker-before-detach\r?\n/,
+        );
+
+        const backgroundPid = Number(output.match(/__BG_(\d+)__/)?.[1]);
+        viewer.socket.close();
+        await viewer.waitForClose();
+
+        const reattached = new TerminalViewer(api, session.id, {
+            rows: 24,
+            cols: 80,
+        });
+
+        await reattached.waitForReady();
+        // The snapshot restores what was on screen before the socket closed.
+        expect(
+            await reattached.waitForOutput("marker-before-detach"),
+        ).toBeTruthy();
+        // It is the same shell, not a new one.
+        expect(await shellPid(reattached, "SECOND")).toBe(pid);
+        // A job started before detaching is still running.
+        expect(isRunning(backgroundPid)).toBe(true);
+    });
+
+    it("hands the session to a second viewer and only takes its input", async () => {
+        const { session, viewer: first } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
+        );
+
+        const second = new TerminalViewer(api, session.id, {
+            rows: 24,
+            cols: 80,
+        });
+
+        await second.waitForReady();
+
+        // The first viewer is told it was taken over, then disconnected.
+        expect(await first.waitForEvent("taken_over")).toEqual({
+            type: "taken_over",
+        });
+        await first.waitForClose();
+        first.type("echo typed-by-first\n");
+        second.type("echo typed-by-second\n");
+        // Only the current viewer types into the shell.
+        expect(
+            await second.waitForOutputMatching(/typed-by-second\r?\n/),
+        ).not.toContain("typed-by-first");
+    });
+
+    it("streams resizes to the PTY", async () => {
+        const { viewer } = await openTerminal(api, testAgent, agentCwd);
+        viewer.resize(31, 97);
+        viewer.type("stty size; printf '__REDOOR_%s__' SIZE\n");
+
+        // The dimensions prove validated resizes reached the PTY ioctl.
+        expect(await viewer.waitForOutput("__REDOOR_SIZE__")).toContain(
+            "31 97",
+        );
+    });
+
+    it("kills the shell and its jobs on delete and tells the attached viewer", async () => {
+        const { session, viewer } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
+        );
+
+        viewer.type(
+            "trap '' HUP; sleep 60 & child=$!; trap - HUP; printf '__REDOOR_%s__%s__%s__\\n' KILL $$ $child\n",
+        );
+
+        const output = await viewer.waitForOutputMatching(
+            /__REDOOR_KILL__\d+__\d+__/,
+        );
+
+        const [, shell, background] =
+            output.match(/__REDOOR_KILL__(\d+)__(\d+)__/) ?? [];
+
+        await api.deleteTerminalSession(session.id);
+
+        // The attached viewer learns the session was closed rather than seeing a drop.
+        expect(await viewer.waitForEvent("closed")).toEqual({ type: "closed" });
+        await waitForExit(Number(shell), "terminal shell to exit");
+        await waitForExit(
+            Number(background),
+            "terminal background job to exit",
+        );
+        // The session is gone from the list every window restores from.
+        expect(
+            (await api.listTerminalSessions()).sessions.some(
+                (listed) => listed.id === session.id,
+            ),
+        ).toBe(false);
+    });
+
+    it("keeps an exited session with its last screen and exit status", async () => {
+        const { session, viewer } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
+        );
+
+        const marker = `exit-marker-${Date.now()}`;
+        viewer.type(`echo ${marker}; exit 3\r`);
+
+        // The shell's status reaches the viewer after its last output.
+        expect(await viewer.waitForEvent("exit")).toEqual({
+            type: "exit",
+            code: 3,
+            signal: null,
+        });
+        expect(viewer.output).toContain(marker);
+        await viewer.waitForClose();
+
+        const listed = await waitForListedStatus(session.id, "exited");
+        // The listing tells a reloaded window why the shell ended.
+        expect(listed.status).toEqual({
+            type: "exited",
+            message: "Shell exited with code 3",
+        });
+
+        const reattached = new TerminalViewer(api, session.id, {
+            rows: 24,
+            cols: 80,
+        });
+
+        // Attaching later shows the last screen, then the exit status, then closes.
+        expect(await reattached.waitForEvent("exit")).toEqual({
+            type: "exit",
+            code: 3,
+            signal: null,
+        });
+        expect(reattached.output).toContain(marker);
+        await reattached.waitForClose();
+    });
+
+    it("preserves input sent before the shell is ready", async () => {
+        const session = await createTerminalSession(api, testAgent, agentCwd);
+
+        const viewer = new TerminalViewer(api, session.id, {
+            rows: 24,
+            cols: 80,
+        });
+
+        await new Promise<void>((resolve) =>
+            viewer.socket.once("open", () => resolve()),
+        );
         const marker = "__REDOOR_EARLY_INPUT__";
-        const outputPromise = waitForMarker(socket, marker);
-        const readyPromise = waitForReady(socket);
+        viewer.type(`printf '${marker}'\n`);
 
-        await waitForSocketOpen(socket);
-        socket.send(new TextEncoder().encode(`printf '${marker}'\n`));
-        await readyPromise;
-        const output = await outputPromise;
+        // Input typed during setup waits for the PTY instead of being dropped.
+        expect(await viewer.waitForOutput(marker)).toContain(marker);
+    });
 
-        // Seeing the marker proves setup buffered valid input instead of treating it as cancellation.
-        expect(output).toContain(marker);
+    it("refuses a session beyond the agent's terminal limit until one is closed", async () => {
+        const sessions = [];
+
+        for (let index = 0; index < MAX_TERMINALS_PER_AGENT; index += 1) {
+            sessions.push(
+                await createTerminalSession(api, testAgent, agentCwd),
+            );
+        }
+
+        // A full agent is a clear conflict at creation, not a dead tab.
+        await expect(
+            testAgent.createTerminalSession({
+                cwd: agentCwd,
+                title: "one too many",
+                number: 9,
+                size: { rows: 24, cols: 80 },
+            }),
+        ).rejects.toMatchObject({
+            status: 409,
+            message: "Too many terminals are open on this agent",
+        });
+
+        const first = sessions[0];
+
+        if (first === undefined) {
+            throw new Error("no session was created");
+        }
+
+        await api.deleteTerminalSession(first.id);
+        // Closing a session frees its slot.
+        expect(
+            (await createTerminalSession(api, testAgent, agentCwd)).status.type,
+        ).toBe("starting");
+    });
+
+    it("answers unknown or malformed session ids with 404", async () => {
+        const unknown = "00000000-0000-4000-8000-000000000000";
+
+        for (const id of [unknown, "not-a-uuid"]) {
+            // A missing session, such as after a server restart, is a 404.
+            await expect(
+                api.deleteTerminalSession(id),
+                id,
+            ).rejects.toMatchObject({
+                status: 404,
+            });
+        }
+
+        const attachStatus = await new Promise<number>((resolve, reject) => {
+            const socket = new TerminalViewer(api, unknown, {
+                rows: 24,
+                cols: 80,
+            }).socket;
+
+            socket.on("unexpected-response", (_request, response) => {
+                resolve(response.statusCode ?? 0);
+                socket.terminate();
+            });
+            socket.on("open", () =>
+                reject(new Error("attached to an unknown session")),
+            );
+        });
+
+        // The attach socket is refused before the upgrade, so a reloaded tab can tell.
+        expect(attachStatus).toBe(404);
+    });
+
+    it("rejects a relative working directory", async () => {
+        const response = await fetch(
+            `${api.baseUrl}/api/v1/agents/${testAgent.id}/terminals`,
+            {
+                method: "POST",
+                headers: {
+                    ...api.getAuthHeaders(),
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    cwd: "relative",
+                    title: "t",
+                    number: 1,
+                    size: { rows: 24, cols: 80 },
+                }),
+            },
+        );
+
+        // Session creation validates cwd like every other path-taking route.
+        expect(response.status).toBe(400);
+        expect(await response.json()).toEqual({
+            error: "Filesystem path must be absolute",
+        });
+    });
+
+    // Last: it stops the suite's agent.
+    it("marks running sessions exited when the agent disconnects", async () => {
+        const { session } = await openTerminal(api, testAgent, agentCwd);
+        processManager.kill(agentPid);
+
+        const listed = await waitForListedStatus(session.id, "exited");
+        // The session stays, with the reason, so its tab can show why the shell ended.
+        expect(listed.status).toEqual({
+            type: "exited",
+            message: "Agent disconnected",
+        });
     });
 });

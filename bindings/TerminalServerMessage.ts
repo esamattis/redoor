@@ -2,5 +2,9 @@
 
 /**
  * Lifecycle notifications sent from the agent terminal to the browser.
+ *
+ * `Ready`, `Exit` and `Error` come from the agent. `TakenOver` and `Closed` are only ever
+ * sent by the server to an attached browser, because the server owns the session and
+ * decides who views it; an agent sending them is ignored.
  */
-export type TerminalServerMessage = { "type": "ready" } | { "type": "exit", code: number | null, signal: number | null, } | { "type": "error", message: string, };
+export type TerminalServerMessage = { "type": "ready" } | { "type": "exit", code: number | null, signal: number | null, } | { "type": "error", message: string, } | { "type": "taken_over" } | { "type": "closed" };

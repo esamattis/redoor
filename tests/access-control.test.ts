@@ -688,7 +688,10 @@ describe("Route access table", () => {
             ["GET", "/api/v1/ui/ws"],
             ["GET", "/api/v1/server/logs/ws"],
             ["GET", `/api/v1/agents/${agentA}/logs/ws`],
-            ["GET", `/api/v1/agents/${agentA}/terminal/ws`],
+            ["GET", "/api/v1/terminals"],
+            ["POST", `/api/v1/agents/${agentA}/terminals`],
+            ["DELETE", `/api/v1/terminals/${someId}`],
+            ["GET", `/api/v1/terminals/${someId}/ws`],
         ];
 
         for (const [method, path] of routes) {
@@ -706,7 +709,9 @@ describe("Route access table", () => {
 
         // The managed agent's configuration survived the refused delete.
         expect(
-            (await api.listAgents()).some((agent) => agent.name === managedAgent),
+            (await api.listAgents()).some(
+                (agent) => agent.name === managedAgent,
+            ),
         ).toBe(true);
     });
 });
@@ -906,7 +911,7 @@ describe("Session-only routes and authentication", () => {
 
         const statusCode = await new Promise<number>((resolve, reject) => {
             const socket = new WebSocket(
-                `ws://127.0.0.1:${VITEST_SERVER_PORT}/api/v1/agents/${agentA}/terminal/ws`,
+                `ws://127.0.0.1:${VITEST_SERVER_PORT}/api/v1/terminals/00000000-0000-4000-8000-000000000000/ws?rows=24&cols=80`,
                 { headers: { Authorization: `Bearer ${bearer}` } },
             );
 

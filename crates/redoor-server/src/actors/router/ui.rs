@@ -116,6 +116,12 @@ impl RouterState {
         self.broadcast_event(UiEvent::RoutesChanged);
     }
 
+    /// Broadcasts terminal session changes at once; they are rare and a window waiting for
+    /// a tab to appear or disappear should not wait for a throttle window.
+    pub(crate) fn notify_terminals_changed(&mut self) {
+        self.broadcast_event(UiEvent::TerminalsChanged);
+    }
+
     /// Broadcasts one UI event to all live subscribers and drops closed senders.
     fn broadcast_event(&mut self, event: UiEvent) {
         self.ui.subscribers.retain(|subscriber_id, sender| {

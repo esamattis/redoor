@@ -55,7 +55,11 @@ use super::{
     retry_agent_start::retry_agent_start_handler,
     server_info::server_info_handler,
     state::ServerState,
-    terminals::browser_terminal_websocket_handler,
+    terminal_sessions::{
+        create_terminal_session_handler, delete_terminal_session_handler,
+        list_terminal_sessions_handler,
+    },
+    terminals::attach_terminal_websocket_handler,
     transfer_cancellation::cancel_transfer_handler,
     transfer_progress::list_transfer_progress_handler,
     trash::{empty_trash_handler, list_trash_handler, restore_trash_handler},
@@ -95,9 +99,18 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/agents/{agent}/logs/ws",
             get(browser_agent_logs_websocket_handler),
         )
+        .route("/api/v1/terminals", get(list_terminal_sessions_handler))
         .route(
-            "/api/v1/agents/{agent}/terminal/ws",
-            get(browser_terminal_websocket_handler),
+            "/api/v1/agents/{agent}/terminals",
+            post(create_terminal_session_handler),
+        )
+        .route(
+            "/api/v1/terminals/{id}",
+            axum::routing::delete(delete_terminal_session_handler),
+        )
+        .route(
+            "/api/v1/terminals/{id}/ws",
+            get(attach_terminal_websocket_handler),
         )
         .route(
             "/api/v1/agents",

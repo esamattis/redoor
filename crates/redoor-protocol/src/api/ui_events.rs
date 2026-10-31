@@ -16,4 +16,6 @@ pub enum UiEvent {
     RoutesChanged,
     /// Transfer progress changed without requiring unrelated route loaders to rerun.
     TransfersChanged,
+    /// A terminal session was created, closed or exited, so open windows update their tabs.
+    TerminalsChanged,
 }

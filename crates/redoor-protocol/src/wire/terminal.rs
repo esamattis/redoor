@@ -13,7 +13,7 @@ pub const MAX_TERMINAL_DIMENSION: u16 = 1000;
 pub struct InvalidTerminalSize;
 
 /// Validated terminal cell dimensions shared by browser, server, and agent.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct TerminalSize {
     pub rows: u16,
@@ -49,7 +49,11 @@ pub enum TerminalClientMessage {
 }
 
 /// Lifecycle notifications sent from the agent terminal to the browser.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+///
+/// `Ready`, `Exit` and `Error` come from the agent. `TakenOver` and `Closed` are only ever
+/// sent by the server to an attached browser, because the server owns the session and
+/// decides who views it; an agent sending them is ignored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
 pub enum TerminalServerMessage {
@@ -61,6 +65,10 @@ pub enum TerminalServerMessage {
     Error {
         message: String,
     },
+    /// Another browser window attached to the session, so this one stopped viewing it.
+    TakenOver,
+    /// The session was closed (deleted) while this browser was attached.
+    Closed,
 }
 
 #[cfg(test)]

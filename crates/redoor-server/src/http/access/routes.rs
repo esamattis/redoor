@@ -49,8 +49,12 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
             "/api/v1/ui/ws"
             | "/api/v1/server/logs/ws"
             | "/api/v1/agents/{agent}/logs/ws"
-            | "/api/v1/agents/{agent}/terminal/ws",
+            | "/api/v1/terminals/{id}/ws",
         )
+        // Interactive shells: a token or MCP client must never list, open or take over one.
+        | ("GET", "/api/v1/terminals")
+        | ("POST", "/api/v1/agents/{agent}/terminals")
+        | ("DELETE", "/api/v1/terminals/{id}")
         | ("GET", "/api/v1/protocol-mismatches" | "/api/v1/server")
         | ("GET" | "PUT", "/api/v1/server/logging-level" | "/api/v1/user/state")
         | ("GET" | "PUT" | "DELETE", "/api/v1/user/editor-buffers/{key}")
@@ -309,9 +313,20 @@ mod tests {
                 "/api/v1/agents/{agent}/start",
                 Access::Device(&[AgentsManage]),
             ),
+            (Method::GET, "/api/v1/terminals", Access::SessionOnly),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/terminals",
+                Access::SessionOnly,
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/terminals/{id}",
+                Access::SessionOnly,
+            ),
             (
                 Method::GET,
-                "/api/v1/agents/{agent}/terminal/ws",
+                "/api/v1/terminals/{id}/ws",
                 Access::SessionOnly,
             ),
             (Method::POST, "/api/v1/server/restart", Access::SessionOnly),
