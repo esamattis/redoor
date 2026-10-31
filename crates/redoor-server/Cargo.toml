@@ -28,6 +28,7 @@ zeroize.workspace = true
 headers.workspace = true
 jiff.workspace = true
 libc.workspace = true
+libghostty-vt.workspace = true
 nix.workspace = true
 reqwest.workspace = true
 url.workspace = true

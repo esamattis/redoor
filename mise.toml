@@ -6,3 +6,6 @@ idiomatic_version_file_enable_tools = ["node", "pnpm"]
 "aqua:EmbarkStudios/cargo-deny" = "0.20.2"
 # Keep local Rust unit tests on the same nextest version as CI.
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.150"
+# Builds the vendored libghostty-vt (the server's headless terminal emulator) from source.
+# Ghostty's build.zig.zon requires at least this version.
+zig = "0.15.2"

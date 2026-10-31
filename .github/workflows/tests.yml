@@ -28,6 +28,13 @@ jobs:
               with:
                   build-warnings: warn
 
+            # Zig builds libghostty-vt, the server's headless terminal emulator. The version comes
+            # from mise.toml so CI and local builds share one pin.
+            - name: Install Zig
+              uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+              with:
+                  install_args: zig
+
             - name: Install dependencies
               run: pnpm install --frozen-lockfile
 

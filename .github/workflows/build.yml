@@ -87,6 +87,14 @@ jobs:
           cache-key: ${{ matrix.target }}
           build-warnings: warn
 
+      # Zig builds libghostty-vt, the server's headless terminal emulator. The version comes from
+      # mise.toml so CI and local builds share one pin. The Android build also needs the NDK,
+      # which Ghostty finds through ANDROID_NDK_HOME, preset on GitHub's Ubuntu runners.
+      - name: Install Zig
+        uses: jdx/mise-action@6612f0ef07ed2a736cd1e00a94a065522dd41195 # v5.2.5
+        with:
+          install_args: zig
+
       - name: Install cargo-ndk
         if: matrix.target == 'aarch64-linux-android'
         run: cargo install cargo-ndk --locked --version 4.1.2
