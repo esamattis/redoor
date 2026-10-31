@@ -1,8 +1,8 @@
-# redoor
+# Redoor
 
 Web based file browser, editor, git viewer and terminal for multiple devices.
 
-Here's the thing. Today I work on multiple different devices: Servers, laptops, phones etc. and I need to be able to manage files on all of those and move the files between them. This is where Redoor comes in: It combines multiple devices behind a single interface. The devices can be accessed using direct SSH-connection or by spawning a Redoor Agent process on the device which connects to the Redoor Server.
+Here's the thing. Today I work on multiple different devices: Servers, laptops, phones etc. and I need to be able to manage files on all of those and move files between them. This is where Redoor comes in: It combines multiple devices behind a single interface. The devices can be accessed using direct SSH-connection or by starting a Redoor Agent process on the device which connects to the Redoor Server.
 
 ### Features
 
@@ -35,13 +35,15 @@ Here's the thing. Today I work on multiple different devices: Servers, laptops, 
 
 ### Architecture
 
+
+
 ```mermaid
 graph TD
     Server["Web UI\n$ redoor server"]
     Server -->|ssh| LinuxServer["Linux Server 1\n$ redoor agent"]
     LinuxDesktop["Linux desktop\n$ redoor agent"] -->|http/ws| Server
     macOS["macOS\n$ redoor agent\n$ redoor relay"] -->|http/ws| Server
-    macOS -->|"ssh relay"| Server2["Firewalled Linux Server\n$ redoor agent"]
+    macOS -->|"redoor ssh relay"| Server2["Firewalled Linux Server\n$ redoor agent"]
     Server --x|blocked| Server2
     Termux["Termux on Android\n$ redoor agent"] -->|http/ws| Server
 ```
