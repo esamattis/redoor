@@ -133,7 +133,7 @@ export function TerminalTabActions(props: {
                                     close();
                                 }}
                             >
-                                <HardDrive className="h-4 w-4 text-slate-500" />
+                                <HardDrive className="h-4 w-4 shrink-0 text-slate-500" />
                                 <span className="truncate">{agent.name}</span>
                             </ActionMenuButton>
                         ))}
