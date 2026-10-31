@@ -20,6 +20,7 @@ compiler enforces that agent and server code never depend on each other.
 flowchart BT
     protocol["redoor-protocol<br/><i>wire + REST types</i>"]
     core["redoor-core<br/><i>shared runtime infrastructure</i>"]
+    vault["redoor-vault<br/><i>.redoorvault file format</i>"]
     agent["redoor-agent<br/><i>agent runtime + commands</i>"]
     server["redoor-server<br/><i>HTTP, router, watchdog, SSH</i>"]
     cli["redoor-cli<br/><i>remote REST client</i>"]
@@ -30,6 +31,8 @@ flowchart BT
     agent --> protocol
     server --> core
     server --> protocol
+    server --> vault
+    vault --> protocol
     cli --> core
     cli --> protocol
     bin --> agent
@@ -97,11 +100,6 @@ Infrastructure that more than one role needs:
   atomic name reservation).
 - `stream_credit`: the per-stream flow-control primitives that both the agent and server
   transfer paths use.
-- `vault`: the `.redoorvault` file format (see "Encrypted vault files"): preamble parsing and
-  building, the header MAC, and the STREAM payload as `EncryptingReader` and
-  `DecryptingReader` adapters over 64 KiB chunks, plus the size arithmetic in both
-  directions. It is the only implementation of the format, and lives in core so a future
-  CLI command can open files with a backup `vault.json` and no server.
 - `directory_measurement`: one directory walk that yields content bytes and the predicted
   tar size. The agent uses it for download totals and directory sizes, and the CLI uses it
   for the percentage of local directory uploads.
@@ -110,6 +108,18 @@ Infrastructure that more than one role needs:
 - `upgrade`: installing releases and restarting the processes of a replaced binary, shared by
   `redoor upgrade` and the server. `upgrade::install` embeds the repository's `install.sh`
   (`include_str!`) and runs it with bash; it is the only code that downloads releases.
+
+### `redoor-vault`
+
+The `.redoorvault` file format (see "Encrypted vault files"): preamble parsing and building,
+the header MAC, and the STREAM payload as `EncryptingReader` and `DecryptingReader` adapters
+over 64 KiB chunks, plus the size arithmetic in both directions. It is the only
+implementation of the format and the only Rust code that handles file keys.
+
+It is a crate of its own, not a core module, so only the roles that may hold file keys link
+it: the server, and later a CLI command that opens files with a backup `vault.json` and no
+server. `redoor-agent` cannot depend on it, so "agents only ever see ciphertext" is enforced
+by the compiler, and the crypto crates stay out of the infrastructure every role builds.
 
 ### `redoor-agent`
 
@@ -2062,7 +2072,7 @@ one.
 
 ### File format
 
-`redoor_core::vault` is the one implementation: a 15-byte prefix (magic, version, header
+`redoor-vault` is the one implementation: a 15-byte prefix (magic, version, header
 length), a JSON header (`VaultFileHeader`: vault id and label, key id, kind, context, FK
 wrap, payload parameters), an HMAC-SHA256 over those bytes, then STREAM chunks of 64 KiB
 plaintext each followed by a Poly1305 tag. The nonce is a chunk counter plus a final-chunk

@@ -430,8 +430,8 @@ impl VaultStore {
 /// compared in constant time.
 fn check_proof(verifier: &str, proof: &str) -> Result<(), ApiError> {
     let (Some(verifier), Some(proof)) = (
-        redoor_core::vault::decode_fixed::<32>(verifier),
-        redoor_core::vault::decode_fixed::<32>(proof),
+        redoor_vault::decode_fixed::<32>(verifier),
+        redoor_vault::decode_fixed::<32>(proof),
     ) else {
         return Err(proof_invalid());
     };

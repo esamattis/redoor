@@ -3508,21 +3508,15 @@ name = "redoor-core"
 version = "1.9.2"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
  "blake3",
- "chacha20poly1305",
  "fastrand",
  "getrandom 0.4.3",
- "hkdf",
- "hmac 0.13.0",
  "jiff",
  "libc",
  "nix",
  "redoor-protocol",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "subtle",
  "sysinfo",
  "thiserror",
  "tokio",
@@ -3531,7 +3525,6 @@ dependencies = [
  "ts-rs",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -3572,6 +3565,7 @@ dependencies = [
  "nix",
  "redoor-core",
  "redoor-protocol",
+ "redoor-vault",
  "reqwest",
  "rust-embed",
  "semver",
@@ -3587,6 +3581,23 @@ dependencies = [
  "tower-http",
  "url",
  "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "redoor-vault"
+version = "1.9.2"
+dependencies = [
+ "base64 0.22.1",
+ "chacha20poly1305",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hmac 0.13.0",
+ "redoor-protocol",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
+ "tokio",
  "zeroize",
 ]
 

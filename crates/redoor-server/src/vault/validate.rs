@@ -7,11 +7,11 @@
 use std::collections::HashSet;
 
 use axum::http::StatusCode;
-use redoor_core::vault::{WRAP_CT_LEN, WRAP_IV_LEN, decode_fixed};
 use redoor_protocol::api::vault::{
     ApiErrorCode, VAULT_DOCUMENT_VERSION, VAULT_KDF_ALG, VAULT_WRAP_ALG, VaultDocument,
     VaultKdfParams, VaultKeyWrap, VaultSlotInput, VaultSlotKind,
 };
+use redoor_vault::{WRAP_CT_LEN, WRAP_IV_LEN, decode_fixed};
 
 use crate::http::error::ApiError;
 

@@ -249,8 +249,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for DecryptingReader<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vault::header::tests::test_header;
-    use crate::vault::{payload_len, plaintext_len};
+    use crate::header::tests::test_header;
+    use crate::{payload_len, plaintext_len};
     use tokio::io::AsyncReadExt;
 
     /// Deterministic content that differs at every offset, so reordering shows.

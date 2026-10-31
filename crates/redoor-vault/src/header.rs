@@ -213,7 +213,7 @@ fn validate_header(header: &VaultFileHeader) -> Result<(), VaultFormatError> {
 #[cfg(test)]
 pub(super) mod tests {
     use super::*;
-    use crate::vault::{encode_base64url, random_base64url};
+    use crate::{encode_base64url, random_base64url};
     use redoor_protocol::api::vault::{VaultKeyWrap, VaultPayloadParams};
 
     /// A valid header with random wraps; the wrap is never opened by the server.
@@ -231,7 +231,7 @@ pub(super) mod tests {
             },
             payload: VaultPayloadParams {
                 alg: VAULT_PAYLOAD_ALG.to_string(),
-                chunk_size: super::super::CHUNK_SIZE as u32,
+                chunk_size: crate::CHUNK_SIZE as u32,
                 salt: random_base64url(PAYLOAD_SALT_LEN),
             },
         }

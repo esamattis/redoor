@@ -2,10 +2,10 @@
 
 use super::*;
 use redoor_core::test_support::TempDir;
-use redoor_core::vault::{encode_base64url, random_base64url};
 use redoor_protocol::api::vault::{
     VaultKdfParams, VaultKeyWrap, VaultObjectKind, VaultPayloadParams,
 };
+use redoor_vault::{encode_base64url, random_base64url};
 
 /// A proof and its verifier, as the browser derives them from a vault key.
 struct Proof {

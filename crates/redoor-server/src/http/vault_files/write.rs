@@ -13,10 +13,6 @@ use axum::{
     http::{HeaderMap, StatusCode},
 };
 use futures_util::TryStreamExt;
-use redoor_core::vault::{
-    CHUNK_SIZE, DecryptingReader, EncryptingReader, FileKey, PAYLOAD_SALT_LEN, VaultFormatError,
-    VaultPreamble, payload_len, random_base64url,
-};
 use redoor_protocol::api::{
     transfers::CopyExistingMode,
     vault::{
@@ -29,6 +25,10 @@ use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::{
     command::{Command, CommandErrorKind, UploadPrecondition},
     request,
+};
+use redoor_vault::{
+    CHUNK_SIZE, DecryptingReader, EncryptingReader, FileKey, PAYLOAD_SALT_LEN, VaultFormatError,
+    VaultPreamble, payload_len, random_base64url,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio_util::io::StreamReader;

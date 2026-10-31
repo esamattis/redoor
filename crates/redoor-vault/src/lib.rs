@@ -12,8 +12,12 @@
 //!
 //! This is the one implementation of the format: the browser only wraps and unwraps file
 //! keys, and the server builds headers, checks MACs and streams the payload through
-//! [`EncryptingReader`] and [`DecryptingReader`]. It lives in core so a future command line
-//! tool can open files without a server.
+//! [`EncryptingReader`] and [`DecryptingReader`].
+//!
+//! It is a crate of its own so that only the roles allowed to hold file keys link it: the
+//! server now, and a future command line tool that opens files with a backup `vault.json`
+//! and no server. The agent crate cannot depend on it, which makes "agents only see
+//! ciphertext" a property the compiler checks.
 //!
 //! Both readers hold at most one chunk of plaintext, and never release plaintext from a
 //! chunk they have not authenticated, so large files stream in constant memory and a

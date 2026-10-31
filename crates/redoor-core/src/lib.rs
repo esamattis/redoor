@@ -28,5 +28,4 @@ pub mod systemd_notify;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod upgrade;
-pub mod vault;
 pub mod websocket;

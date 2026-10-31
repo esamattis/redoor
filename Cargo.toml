@@ -21,6 +21,7 @@ debug = "line-tables-only"
 blake3 = "1.8"
 redoor-protocol = { path = "crates/redoor-protocol" }
 redoor-core = { path = "crates/redoor-core" }
+redoor-vault = { path = "crates/redoor-vault" }
 redoor-agent = { path = "crates/redoor-agent" }
 redoor-server = { path = "crates/redoor-server" }
 redoor-cli = { path = "crates/redoor-cli" }

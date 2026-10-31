@@ -71,7 +71,7 @@ pub(crate) async fn put_editor_buffer_handler(
     let key = decode_key(&encoded_key)?;
     // A vault file's draft is plaintext; the browser never sends it, and this keeps a buggy
     // client from writing it to the server's disk anyway.
-    if redoor_core::vault::is_vault_path(&key) {
+    if redoor_vault::is_vault_path(&key) {
         return Err(ApiError::bad_request(
             "Editor buffers of vault files are never stored",
         ));

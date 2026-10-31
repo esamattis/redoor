@@ -23,13 +23,13 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::Response,
 };
-use redoor_core::vault::{
-    DecryptingReader, FileKey, MAX_PREAMBLE_LEN, VaultFormatError, VaultPreamble, VaultReadError,
-    is_vault_path, plaintext_len,
-};
 use redoor_protocol::api::vault::{ApiErrorCode, VAULT_FILE_SUFFIX, VaultFileHeaderResponse};
 use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::{command::Command, command::MoveSourceIdentity, request};
+use redoor_vault::{
+    DecryptingReader, FileKey, MAX_PREAMBLE_LEN, VaultFormatError, VaultPreamble, VaultReadError,
+    is_vault_path, plaintext_len,
+};
 use tokio_util::io::{ReaderStream, StreamReader};
 
 use super::{
@@ -49,7 +49,7 @@ pub(crate) const KEY_HEADER: &str = "redoor-vault-key";
 pub(crate) const REVISION_HEADER: &str = "redoor-vault-revision";
 
 /// Bytes handed to the HTTP body at a time: one plaintext chunk.
-const BODY_CAPACITY: usize = redoor_core::vault::CHUNK_SIZE;
+const BODY_CAPACITY: usize = redoor_vault::CHUNK_SIZE;
 
 /// The opaque revision of a file: a hash of its identity (device, inode, size, mtime).
 /// Every vault write replaces the inode, so a revision changes with every save, and the

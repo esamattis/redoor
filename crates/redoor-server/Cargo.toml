@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 redoor-protocol.workspace = true
 redoor-core.workspace = true
+redoor-vault.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
 async-compression.workspace = true
