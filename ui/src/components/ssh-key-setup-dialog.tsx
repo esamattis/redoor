@@ -28,7 +28,10 @@ import {
     newSshKeySealIfVault,
 } from "#ui/vault/ssh-key-vault";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
-import type { VaultSession } from "#ui/vault/vault-session";
+import {
+    VaultUnlockCancelled,
+    type VaultSession,
+} from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -161,12 +164,16 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
         !enrollMutation.isPending &&
         (!needsHostKeyConfirmation || hostKey !== undefined);
 
-    const errorMessage = enrollMutation.isError
-        ? vaultErrorMessage(
-              enrollMutation.error,
-              "Failed to set up the SSH key",
-          )
-        : null;
+    // Closing the vault dialog is the user's own choice, so it returns to the form as it
+    // was instead of reporting a failure.
+    const errorMessage =
+        enrollMutation.isError &&
+        !(enrollMutation.error instanceof VaultUnlockCancelled)
+            ? vaultErrorMessage(
+                  enrollMutation.error,
+                  "Failed to set up the SSH key",
+              )
+            : null;
 
     const hasVault =
         vaultStatus.data === undefined ? null : vaultStatus.data.vault !== null;

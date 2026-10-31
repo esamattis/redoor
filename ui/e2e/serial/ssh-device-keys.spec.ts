@@ -470,7 +470,29 @@ test.describe.serial("Dedicated SSH device keys", () => {
             .click();
 
         // The page load locked the vault, and the new key needs it, so the setup asks first.
-        await unlockVault(page);
+        const unlock = page.getByRole("dialog", { name: "Unlock vault" });
+        await expect(unlock).toBeVisible({ timeout: 30_000 });
+        await unlock.getByRole("button", { name: "Cancel" }).first().click();
+        await expect(unlock).toBeHidden();
+        // Cancelling the unlock is the user's choice, so the setup returns to its form
+        // without reporting it as a failure.
+        await expect(setup.getByRole("alert")).toHaveCount(0);
+        await expect(
+            setup.getByRole("button", { name: "Trust host key and install" }),
+        ).toBeEnabled();
+
+        await setup
+            .getByRole("button", { name: "Trust host key and install" })
+            .click();
+        await expect(unlock).toBeVisible({ timeout: 30_000 });
+        await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+        await unlock
+            .getByRole("button", { name: "Unlock", exact: true })
+            .click();
+        // Escape while the unlock runs must not cancel the waiting setup; otherwise the
+        // vault would unlock after the setup had already failed.
+        await page.keyboard.press("Escape");
+        await expect(unlock).toBeHidden({ timeout: 30_000 });
 
         const installed = page.getByRole("dialog", {
             name: "SSH key installed",
