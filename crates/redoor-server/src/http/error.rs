@@ -6,7 +6,10 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use redoor_protocol::{api::ErrorResponse, wire::command::CommandErrorKind};
+use redoor_protocol::{
+    api::{ErrorResponse, vault::ApiErrorCode},
+    wire::command::CommandErrorKind,
+};
 use std::time::Duration;
 
 /// Every failure a REST handler can report.
@@ -38,6 +41,14 @@ pub(crate) enum ApiError {
     /// A failure with an explicit status decided by the handler (validation, conflicts).
     #[error("{message}")]
     Status { status: StatusCode, message: String },
+    /// A failure the client must tell apart from others, such as the vault errors; the code
+    /// travels in the error body.
+    #[error("{message}")]
+    Coded {
+        status: StatusCode,
+        code: ApiErrorCode,
+        message: String,
+    },
 }
 
 impl ApiError {
@@ -74,6 +85,27 @@ impl ApiError {
         }
     }
 
+    /// Builds a failure that carries a machine-readable code.
+    pub(crate) fn coded(
+        status: StatusCode,
+        code: ApiErrorCode,
+        message: impl Into<String>,
+    ) -> Self {
+        Self::Coded {
+            status,
+            code,
+            message: message.into(),
+        }
+    }
+
+    /// The machine-readable code of this failure, if it has one.
+    pub(crate) fn code(&self) -> Option<ApiErrorCode> {
+        match self {
+            Self::Coded { code, .. } => Some(*code),
+            _ => None,
+        }
+    }
+
     /// The HTTP status of this failure; the only place REST statuses for errors are chosen.
     pub(crate) fn status_code(&self) -> StatusCode {
         match self {
@@ -82,7 +114,7 @@ impl ApiError {
             Self::RouterUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE,
             Self::Timeout(_) => StatusCode::GATEWAY_TIMEOUT,
             Self::Unexpected(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            Self::Status { status, .. } => *status,
+            Self::Status { status, .. } | Self::Coded { status, .. } => *status,
         }
     }
 }
@@ -126,7 +158,7 @@ impl IntoResponse for ApiError {
         (
             self.status_code(),
             Json(ErrorResponse {
-                code: None,
+                code: self.code(),
                 error: self.to_string(),
             }),
         )

@@ -83,7 +83,7 @@ async fn write_user_state(
 
 /// Creates the login account's private directory, so every per-user file (preferences,
 /// editor buffers) shares one owner check and mode instead of each writer repeating it.
-pub(super) async fn prepare_account_directory(
+pub(crate) async fn prepare_account_directory(
     paths: &redoor_core::paths::AppPaths,
     username: &str,
 ) -> anyhow::Result<PathBuf> {
@@ -103,7 +103,7 @@ pub(super) async fn prepare_account_directory(
 
 /// Replaces `path` through `temporary_path` in the same directory, so a crash or a
 /// concurrent reader never sees a truncated file.
-pub(super) async fn write_private_file_atomically(
+pub(crate) async fn write_private_file_atomically(
     temporary_path: &Path,
     path: &Path,
     contents: &[u8],
@@ -127,7 +127,7 @@ fn user_state_path(
 }
 
 /// Keeps each login name as one path component so a crafted username cannot escape the data dir.
-pub(super) fn account_directory(
+pub(crate) fn account_directory(
     paths: &redoor_core::paths::AppPaths,
     username: &str,
 ) -> anyhow::Result<PathBuf> {

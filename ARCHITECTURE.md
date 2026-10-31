@@ -171,6 +171,8 @@ The agent runtime and the implementation of every command.
   - `error.rs`: `ApiError`, which owns all HTTP status mapping.
   - `user_state` and `editor_buffers`: per-account files in the account's private data
     directory (the preference document and one file per open file's editor buffer).
+  - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
+    "Encrypted vault files").
   - `git/`: Git REST handlers split by the same feature areas as the protocol, sharing
     path and revision validation in `git/mod.rs`.
   - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec)
@@ -210,6 +212,7 @@ The agent runtime and the implementation of every command.
     directory, writes a temp file, marks it executable and renames it into place.
   - `keys` (`SshKeyStore`) and `managed_keys`: per-device SSH keys and pinned host keys,
     see "SSH device keys" below.
+- `vault`: `VaultStore`, the per-account `vault.json` with its proof checks and validation.
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
 
@@ -1979,6 +1982,113 @@ device, or to another device.
   every selected item whose name repeats an earlier one, so two versions never land on one
   destination path.
 
+## Encrypted vault files
+
+Files ending in `.redoorvault` are stored encrypted on devices. The user opens, edits,
+uploads and downloads them through redoor, and the server encrypts and decrypts them as a
+stream. A per-user **vault** holds the key, unlocked in the browser by a passphrase or a
+passkey (WebAuthn PRF).
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        VK["vault key VK<br/><i>non-extractable</i>"]
+    end
+    subgraph Server
+        store["vault.json<br/><i>wrapped keys + verifier</i>"]
+        crypt["vault_files<br/><i>STREAM encrypt/decrypt</i>"]
+    end
+    subgraph Device
+        file[".redoorvault<br/><i>ciphertext only</i>"]
+    end
+    VK -- "file key FK of one file, per request" --> crypt
+    store -- "wrapped keys" --> VK
+    crypt <-- "ciphertext (raw download / upload)" --> file
+```
+
+**Trust boundary.** Agents and their devices only ever see ciphertext and never a key. The
+vault key never leaves the browser. The server only gets the file key of the one file a
+request handles, and only for the duration of that request; `vault.json` holds only wrapped
+keys. This protects against devices (other OS users, stolen disks, backups), a stolen copy of
+the server data directory (the passphrase slot is only as strong as the passphrase) and
+access tokens or MCP clients. It does not protect against a compromised server, which serves
+the UI's JavaScript and can already run commands on every agent.
+
+### Keys
+
+```
+passphrase ──Argon2id──► KEK_pw ─┐
+passkey A ──PRF──HKDF──► KEK_a ──┼─ AES-256-GCM wrap ─► vault key VK (browser only)
+                                                          │ HKDF subkeys
+                                                          ├─► file wrap key ─► wraps FK (per file version)
+                                                          ├─► chain key ─► wraps the next older VK
+                                                          ├─► auth proof
+                                                          └─► key id (public fingerprint)
+FK ──HKDF──► header MAC key, payload key (ChaCha20-Poly1305 STREAM)
+```
+
+- The browser keeps VK as a non-extractable HKDF `CryptoKey` and derives every other key
+  from it (`ui/src/vault/vault-crypto.ts`), so one key never serves two algorithms. Every
+  wrap binds its context (vault, slot, generation, file kind) in the GCM associated data.
+- **FK** is random and new for every encryption. The header stores it wrapped with the
+  current generation; the browser unwraps it and sends it with the request in the
+  `Redoor-Vault-Key` header (or a JSON or form field), never in a URL.
+- **Proof of possession.** `vault.json` stores `auth_verifier = SHA-256(HKDF(VK, "auth"))`.
+  Every change of the vault (slots, label, rotation, destroying a generation, restoring a
+  backup) sends the proof, which the server hashes and compares in constant time, so a
+  stolen session cookie cannot add a passkey or swap the vault. Restoring a backup over an
+  installed vault needs proofs for both.
+- **Generations.** A rotation creates a new VK for all new writes and wraps the previous VK
+  under it, so `keys` in `vault.json` is a chain from the current generation through every
+  older one. Slots wrap only the current generation. Destroying a generation relinks the
+  next older one under the next newer one and keeps only its fingerprint and dates in
+  `retired_keys`, so files on it get a precise error. Every write must use the current
+  generation (`stale_vault_key` otherwise), which catches tabs that missed a rotation.
+
+### Storage
+
+`crate::vault::VaultStore` owns `<data_dir>/users/<username>/vault.json` (0600 in the 0700
+account directory, written atomically). The file is small and changes rarely, so the store
+re-reads it under one lock on every request instead of caching it. The document is also the
+backup format: it holds only wrapped keys, so "Download vault backup" is safe anywhere.
+The server validates the shape of everything the browser submits (id formats, wrap and
+salt lengths, Argon2id parameters of at least 64 MiB and 3 passes, a passphrase slot, an
+unbroken chain) but never sees a key, so it cannot check that a wrap really wraps the right
+one.
+
+### File format
+
+`redoor_core::vault` is the one implementation: a 15-byte prefix (magic, version, header
+length), a JSON header (`VaultFileHeader`: vault id and label, key id, kind, context, FK
+wrap, payload parameters), an HMAC-SHA256 over those bytes, then STREAM chunks of 64 KiB
+plaintext each followed by a Poly1305 tag. The nonce is a chunk counter plus a final-chunk
+flag, which detects truncation, reordering and appended data. The header has no dates, and
+the sizes are computable in both directions, so `Content-Length` and progress keep working.
+
+### Requests
+
+`http/vault` serves the vault itself and `http/vault_files` the files, both thin over the
+store and the existing `OutputStream` and `AgentUpload` services.
+
+- **Reads** (`header`, `read`, the form-`POST` `download`): `MoveMetadata` gives the file's
+  identity, a `RawDownload` pinned to that identity streams it, and `VaultPreamble::read`
+  checks magic, version and header before the response starts, then the vault id and
+  generation, then the MAC with FK. Each failure is a JSON error with its own
+  `ApiErrorCode`. After that, `DecryptingReader` releases only authenticated chunks; a chunk
+  that fails later aborts the body. The revision a read reports is a hash of the identity.
+- **Writes** (`edit`, `raw`, `rewrap`, `reencrypt`) go through the raw upload flow (staging
+  and an atomic rename), never the in-place edit flow, with a precondition the agent checks
+  right before the rename: `matches` the identity of the version the browser read, or
+  `must_not_exist` for new files. A failed write leaves the previous file intact, and a
+  stale one is `vault_file_changed` (409). A rewrap checks the old MAC with FK (proving the
+  key belongs to the file), writes a new header and copies the payload bytes unchanged; a
+  re-encryption chains `DecryptingReader` into `EncryptingReader`.
+- **Decrypted downloads** are a form `POST` navigation, so the browser saves the response as
+  a stream; the route checks `Origin` and `Sec-Fetch-Site` itself because form posts are
+  not protected by CORS. One-time links never decrypt.
+- Plaintext never touches a temporary file on the server; it passes one 64 KiB chunk at a
+  time. Keys live in zeroizing types with redacted `Debug`.
+
 ## SSH device keys
 
 An SSH device can log in with an ed25519 key that redoor creates for that device only,
@@ -2181,8 +2291,11 @@ to the scope.
 - **Default deny.** A route missing from the table is session-only, so a new route is not
   reachable with a token until someone classifies it.
 - **Session-only routes.** Server and agent configuration, creating SSH or local agents,
-  restart, log levels, terminals, log streams, the UI websocket, user state, editor buffers
-  and token management are never grantable. A token could otherwise widen its own access, for
+  restart, log levels, terminals, log streams, the UI websocket, user state, editor buffers,
+  the vault and every encrypted-file route (`/api/v1/vault/...`,
+  `/api/v1/agents/{agent}/vault/...`) and token management are never grantable. Tokens and
+  MCP clients can copy, move and read `.redoorvault` ciphertext through the ordinary file
+  routes, but never decrypt it or change the vault. A token could otherwise widen its own access, for
   example by adding a local agent or minting a broader token. The exception is
   `/api/v1/tokens/current`, where a token reads or deletes itself.
 - **Limit of the model.** Permissions describe what a token may do through redoor, not

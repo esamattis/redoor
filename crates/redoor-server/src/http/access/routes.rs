@@ -70,6 +70,26 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("POST", "/api/v1/agents/{agent}/ssh-host-key/pin")
         | ("POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key") => Access::SessionOnly,
 
+        // The vault and encrypted files: a token or MCP client may copy ciphertext through the
+        // ordinary file routes, but never decrypt or change the vault.
+        ("GET" | "POST" | "PATCH", "/api/v1/vault")
+        | ("GET", "/api/v1/vault/unlock-material")
+        | ("POST", "/api/v1/vault/slots" | "/api/v1/vault/rotate")
+        | ("PATCH" | "DELETE", "/api/v1/vault/slots/{id}")
+        | ("POST", "/api/v1/vault/slots/{id}/used" | "/api/v1/vault/keys/{key_id}/destroy")
+        | ("GET" | "PUT", "/api/v1/vault/backup")
+        | ("GET", "/api/v1/agents/{agent}/vault/header")
+        | (
+            "POST",
+            "/api/v1/agents/{agent}/vault/read"
+            | "/api/v1/agents/{agent}/vault/download"
+            | "/api/v1/agents/{agent}/vault/rewrap"
+            | "/api/v1/agents/{agent}/vault/reencrypt",
+        )
+        | ("PUT", "/api/v1/agents/{agent}/vault/edit" | "/api/v1/agents/{agent}/vault/raw") => {
+            Access::SessionOnly
+        }
+
         // Token management: never grantable, so a token cannot mint a broader one.
         ("GET" | "POST", "/api/v1/tokens")
         | ("PUT" | "DELETE", "/api/v1/tokens/{token_id}")

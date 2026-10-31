@@ -21,7 +21,7 @@ use super::{
 };
 
 /// Finds the retained inventory row whose registration decides which trash commands it knows.
-async fn inventory_entry(
+pub(crate) async fn inventory_entry(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<AgentInfoResponse, ApiError> {

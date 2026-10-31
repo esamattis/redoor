@@ -75,7 +75,15 @@ impl VaultPreamble {
     /// checked here, because reading headers must work without the file key.
     pub async fn read<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, VaultReadError> {
         let mut prefix = [0u8; PREFIX_LEN];
-        read_exact(reader, &mut prefix[..MAGIC.len()]).await?;
+        // A file shorter than the magic is "not a vault file", not a truncated one.
+        let mut magic_len = 0;
+        while magic_len < MAGIC.len() {
+            match reader.read(&mut prefix[magic_len..MAGIC.len()]).await {
+                Ok(0) => break,
+                Ok(count) => magic_len += count,
+                Err(error) => return Err(VaultReadError::Io(error)),
+            }
+        }
         if prefix[..MAGIC.len()] != MAGIC {
             return Err(VaultFormatError::BadMagic.into());
         }
@@ -316,6 +324,8 @@ pub(super) mod tests {
         let full = VaultPreamble::build(test_header(), &key)
             .unwrap()
             .to_bytes();
+        // A file shorter than the magic is not a vault file at all.
+        assert_eq!(read(b"just").await.unwrap_err(), VaultFormatError::BadMagic);
         // A file that ends inside the preamble is truncated.
         assert_eq!(
             read(&full[..full.len() - 1]).await.unwrap_err(),

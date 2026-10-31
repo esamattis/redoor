@@ -43,6 +43,7 @@ function agentInfo(
         supports_native_open: false,
         supports_move_to_trash: false,
         supports_trash: false,
+        supports_upload_preconditions: false,
         uid: 1000,
         is_root: false,
         duplicate_id: null,

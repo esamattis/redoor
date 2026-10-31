@@ -343,7 +343,10 @@ impl ServerRuntime {
             router.clone(),
             runtime.paths.data_dir()?,
         );
+        let vault =
+            crate::vault::VaultStore::new(runtime.paths.clone(), auth.username().to_string());
         let state = ServerState {
+            vault,
             runtime,
             binaries,
             launcher: launcher.clone(),
