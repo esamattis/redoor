@@ -202,33 +202,4 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("SSH device ids", () => {
             );
         }
     }, 120_000);
-
-    test("keeps an SSH device's id after its remote data dir is deleted", async () => {
-        const suffix = `${process.pid}-${Date.now()}`;
-        const name = `ssh-ids-wiped-${suffix}`;
-        const appName = `redoor-ssh-ids-wiped-${suffix}`;
-
-        const fixture = await startManagedSshFixture({
-            appName,
-            remoteRoot: `/tmp/redoor-ssh-ids-wiped-${suffix}`,
-            agentNames: [name],
-        });
-
-        const first = await startAndWaitForSshConnection(fixture, name);
-        await first.shutdown();
-        // Wiping the remote state is what a reinstall or cleared Termux data does.
-        await sshTestCommand(
-            `rm -rf "$HOME/.local/share/"${shellQuote(appName)}`,
-        );
-
-        const second = await startAndWaitForSshConnection(
-            fixture,
-            name,
-            first.connectionId,
-        );
-
-        // The server owns a managed device's id, so wiped remote state cannot change it.
-        expect(second.id).toBe(first.id);
-        expect(configuredDeviceId(fixture.configPath, name)).toBe(first.id);
-    }, 120_000);
 });

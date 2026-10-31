@@ -420,7 +420,7 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
 describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
     "TOML-managed SSH agents",
     () => {
-        test("starts, controls, and restarts an [[agents]] entry through redoor-ssh-test", async () => {
+        test("starts, controls, and restarts an [[agents]] entry through redoor-ssh-test, keeping its id over wiped remote state", async () => {
             const processManager = new ProcessManager();
 
             const home = mkdtempSync(
@@ -643,6 +643,10 @@ log = "${agentLogPath}"
                 throw new Error("Stopped managed SSH agent disappeared");
             }
 
+            // Wiping the remote state is what a reinstall or cleared Termux data does.
+            await sshTestCommand(
+                `rm -rf "$HOME/.local/share/"${shellQuote(appName)}`,
+            );
             await stoppedAgent.start();
 
             const replacement = await waitForValue({
@@ -663,6 +667,8 @@ log = "${agentLogPath}"
             const restartedEcho = await replacement.echo("managed-restarted");
             // A new usable connection proves the watchdog can respawn the prepared SSH agent.
             expect(restartedEcho.message).toBe("managed-restarted");
+            // The server owns a managed device's id, so wiped remote state cannot change it.
+            expect(replacement.id).toBe(firstConnection.id);
         }, 120_000);
     },
 );
