@@ -46,7 +46,7 @@
         "preintegration-test": "node scripts/test/ensure-test-ports.mts vitest",
         "integration-test": "node scripts/test/run-integration-tests.mts",
         "test:anti-slop": "node tools/oxlint/anti-slop/test.mjs",
-        "test:unit": "vitest run --config vitest.config.ts ui/src",
+        "test:unit": "vitest run --config vitest.unit.config.ts",
         "test": "./scripts/build-and-test"
     },
     "dependencies": {
