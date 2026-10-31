@@ -259,6 +259,65 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
+    test("deletes a vault file from the editor while the vault is locked", async ({
+        page,
+    }) => {
+        const fileName = "locked-delete.txt.redoorvault";
+        const filePath = path.join(ctx.testDirPath, fileName);
+        await createVaultFile(page, ctx, fileName);
+        await createVaultInDialog(page);
+        const editor = page.getByRole("textbox", { name: "File editor" });
+        await editor.click();
+        await editor.fill("to be deleted");
+        await page.getByRole("button", { name: "Save file" }).click();
+        await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+
+        await page.reload();
+        // Without "keep unlocked" the reload locks the vault, so the editor waits for an unlock.
+        await expect(
+            page.getByRole("button", { name: "Unlock vault" }),
+        ).toBeVisible();
+        // The status names the lock instead of claiming the file is loading.
+        await expect(
+            page.getByText("Vault locked", { exact: true }),
+        ).toBeVisible();
+
+        await page.getByRole("button", { name: "Editor actions" }).click();
+
+        const deleteButton = page.getByRole("button", {
+            name: "Delete file",
+            exact: true,
+        });
+
+        // Deleting only removes ciphertext, so it needs no key and stays available while locked.
+        await expect(deleteButton).toBeEnabled();
+        // Reload needs the decrypted content, so it stays disabled while locked.
+        await expect(
+            page.getByRole("button", { name: "Reload", exact: true }),
+        ).toBeDisabled();
+        await deleteButton.click();
+
+        const dialog = page.getByRole("dialog", { name: "Delete this file?" });
+        // The usual delete confirmation still guards the locked file.
+        await expect(dialog).toBeVisible();
+        await dialog
+            .getByRole("checkbox", { name: "Delete permanently" })
+            .click();
+        await dialog
+            .getByRole("button", { name: "Delete file", exact: true })
+            .click();
+
+        // The encrypted file is gone from the device.
+        await expect
+            .poll(async () =>
+                fs.stat(filePath).then(
+                    () => "exists",
+                    (error: NodeJS.ErrnoException) => error.code,
+                ),
+            )
+            .toBe("ENOENT");
+    });
+
     test("unlocks with a registered passkey", async ({ page }) => {
         await addVirtualAuthenticator(page);
 

@@ -233,6 +233,8 @@ function FileEditorSurface(props: {
 /** Chooses the single editor status announced beside file actions. */
 function getFileEditorStatus(props: {
     readOnly: boolean;
+    /** A locked vault file's content query is disabled and stays pending, but nothing is loading. */
+    isVaultLocked: boolean;
     isLoading: boolean;
     loadError?: Error;
     isSaving: boolean;
@@ -240,6 +242,8 @@ function getFileEditorStatus(props: {
     saveError?: Error;
     isDirty: boolean;
 }): string | null {
+    if (props.isVaultLocked) return "Vault locked";
+
     if (props.isLoading) return "Loading file...";
 
     if (props.loadError) {
@@ -578,6 +582,11 @@ export function FileEditView(props: FileEditViewProps) {
     // Saving must not flip CodeMirror read-only, or Mod-s and :w steal editor focus.
     const canEdit = contentQuery.isSuccess && !buffer.readOnly;
 
+    // Deleting a vault file only removes ciphertext, so it needs no key and works while locked.
+    const canDelete =
+        !buffer.readOnly &&
+        (contentQuery.isSuccess || buffer.vaultFile.isLocked);
+
     const isMarkdown =
         syntaxLanguageFromFileName(props.fileName) === "markdown";
 
@@ -633,6 +642,7 @@ export function FileEditView(props: FileEditViewProps) {
 
     const statusMessage = getFileEditorStatus({
         readOnly: buffer.readOnly,
+        isVaultLocked: buffer.vaultFile.isLocked,
         isLoading: contentQuery.isPending,
         loadError: contentQuery.isError ? contentQuery.error : undefined,
         isSaving: saveMutation.isPending,
@@ -660,6 +670,7 @@ export function FileEditView(props: FileEditViewProps) {
                     hasError={contentQuery.isError || saveMutation.isError}
                     isSaved={saveMutation.isSuccess && !isDirty}
                     canEdit={canEdit}
+                    canDelete={canDelete}
                     isDirty={isDirty}
                     isSaving={saveMutation.isPending}
                     agent={props.agent}

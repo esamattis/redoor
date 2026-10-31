@@ -214,6 +214,8 @@ function EditorActionsMenu(props: {
     /** Hides file operations, which would act on the working file rather than the revision. */
     readOnly: boolean;
     canEdit: boolean;
+    /** Separate from canEdit: a locked vault file has no content yet, but deleting it needs no key. */
+    canDelete: boolean;
     isReloading: boolean;
     isSaving: boolean;
     downloadUrl: string | null;
@@ -281,7 +283,7 @@ function EditorActionsMenu(props: {
                                 <ActionMenuButton
                                     tone="danger"
                                     disabled={
-                                        !props.canEdit ||
+                                        !props.canDelete ||
                                         props.isSaving ||
                                         getImmediateParentPath(props.path) ===
                                             null
@@ -357,6 +359,7 @@ function FileEditorSecondaryActions(props: {
     fileName: string;
     readOnly: boolean;
     canEdit: boolean;
+    canDelete: boolean;
     isReloading: boolean;
     isSaving: boolean;
     downloadUrl: string | null;
@@ -378,6 +381,7 @@ function FileEditorSecondaryActions(props: {
                 fileName={props.fileName}
                 readOnly={props.readOnly}
                 canEdit={props.canEdit}
+                canDelete={props.canDelete}
                 isReloading={props.isReloading}
                 isSaving={props.isSaving}
                 downloadUrl={props.downloadUrl}
@@ -424,6 +428,8 @@ export function FileEditHeader(props: {
     hasError: boolean;
     isSaved: boolean;
     canEdit: boolean;
+    /** Deleting only needs the path, so it can be allowed while the content is unavailable. */
+    canDelete: boolean;
     isDirty: boolean;
     isSaving: boolean;
     agent: Agent;
@@ -508,6 +514,7 @@ export function FileEditHeader(props: {
                         fileName={props.fileName}
                         readOnly={props.readOnly}
                         canEdit={props.canEdit}
+                        canDelete={props.canDelete}
                         isReloading={props.isReloading}
                         isSaving={props.isSaving}
                         downloadUrl={props.downloadUrl}
