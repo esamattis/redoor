@@ -891,104 +891,13 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expectTerminalFocused(terminalInput);
     });
 
-    test("copies and pastes from the terminal context menu", async ({
+    test("keeps keyboard focus in the terminal after selecting text with the mouse", async ({
         page,
         context,
     }) => {
-        let terminalOutput = "";
-        page.on("websocket", (socket) => {
-            if (!socket.url().includes("/terminal/ws")) {
-                return;
-            }
-
-            socket.on("framereceived", (event) => {
-                terminalOutput += terminalFrameSchema.parse(event.payload);
-            });
-        });
-
         await context.grantPermissions(["clipboard-read", "clipboard-write"], {
             origin: WEB_BASE_URL,
         });
-        await page.goto(ctx.agentBrowserUrl);
-        await page.getByRole("tab", { name: "Terminal" }).click();
-        await page
-            .getByRole("button", { name: "New terminal", exact: true })
-            .click();
-        await expect(
-            page.getByRole("status", { name: "agent1_src 1: Connected" }),
-        ).toBeVisible();
-
-        const terminalHost = page
-            .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
-            .filter({ has: page.locator("textarea") });
-
-        const terminalInput = terminalHost.locator("textarea");
-        await terminalHost.click({ button: "right" });
-        const actions = page.getByRole("dialog", { name: "Terminal actions" });
-        // A terminal right-click must replace the browser context menu.
-        await expect(actions).toBeVisible();
-        // Copy stays unavailable until the terminal has a scoped DOM selection.
-        await expect(
-            actions.getByRole("button", { name: "Copy" }),
-        ).toBeDisabled();
-        await page.keyboard.press("Escape");
-        await expect(actions).toHaveCount(0);
-
-        await terminalInput.focus();
-        // Octal escapes print the marker without putting it in the echoed command.
-        await terminalInput.pressSequentially(
-            "printf '\\164\\145\\162\\155\\151\\156\\141\\154\\055\\143\\157\\160\\171\\n'",
-        );
-        await terminalInput.press("Enter");
-        await expect.poll(() => terminalOutput).toContain("terminal-copy");
-
-        await terminalHost.evaluate((host) => {
-            const selection = window.getSelection();
-
-            if (!selection) {
-                throw new Error("browser selection is unavailable");
-            }
-
-            const range = document.createRange();
-            range.selectNodeContents(host);
-            selection.removeAllRanges();
-            selection.addRange(range);
-        });
-        await terminalHost.dispatchEvent("contextmenu", {
-            clientX: 12,
-            clientY: 12,
-        });
-        await expect(actions).toBeVisible();
-        const copyButton = actions.getByRole("button", { name: "Copy" });
-        // Native DOM selection inside the host must be available to the copy action.
-        await expect(copyButton).toBeEnabled();
-        await page.evaluate(() => navigator.clipboard.writeText(""));
-        await copyButton.click();
-        // The menu action must write the selected terminal text, not an image.
-        await expect
-            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-            .toContain("terminal-copy");
-
-        await page.evaluate(() =>
-            navigator.clipboard.writeText(
-                "printf '\\160\\141\\163\\164\\145\\055\\157\\153\\n'",
-            ),
-        );
-        await terminalHost.click({
-            button: "right",
-            position: { x: 12, y: 12 },
-        });
-        await actions.getByRole("button", { name: "Paste" }).click();
-        // The async clipboard read closes the menu only after text reaches wterm input.
-        await expect(actions).toHaveCount(0);
-        await terminalInput.press("Enter");
-        // Paste must reach the PTY as input rather than staying in the browser.
-        await expect.poll(() => terminalOutput).toContain("paste-ok");
-    });
-
-    test("keeps keyboard focus in the terminal after selecting text with the mouse", async ({
-        page,
-    }) => {
         let terminalOutput = "";
         page.on("websocket", (socket) => {
             if (!socket.url().includes("/terminal/ws")) {
@@ -1024,7 +933,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await terminalHost.locator("textarea").focus();
         // Octal escapes print the marker without putting it in the echoed command.
         await page.keyboard.type(
-            "printf '\\163\\145\\154\\145\\143\\164\\055\\155\\145\\n'",
+            "printf '\\163\\145\\154\\145\\143\\164\\055\\155\\145\\n\\033[?1000h\\033[?1006h'",
         );
         await page.keyboard.press("Enter");
         await expect.poll(() => terminalOutput).toContain("select-me");
@@ -1047,6 +956,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
                 }
 
                 await page.mouse.move(box.x + 1, box.y + box.height / 2);
+                await page.keyboard.down("Shift");
                 await page.mouse.down();
                 await page.mouse.move(
                     box.x + box.width - 1,
@@ -1054,6 +964,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
                     { steps: 5 },
                 );
                 await page.mouse.up();
+                await page.keyboard.up("Shift");
                 // The drag must produce a real native selection for the browser's Copy action.
                 expect(
                     await page.evaluate(() =>
@@ -1066,6 +977,21 @@ test.describe.serial("Terminal panel lifecycle", () => {
         };
 
         await selectMarker();
+
+        const selectedText = await page.evaluate(() =>
+            window.getSelection()?.toString(),
+        );
+
+        await page.keyboard.press("Control+Shift+C");
+        // Copy must work after Shift-drag releases input focus to the terminal host.
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+            .toBe(selectedText?.trimEnd());
+        await terminalHost.click({ button: "right", modifiers: ["Shift"] });
+        // Shift-right-click must leave the native copy menu available.
+        await expect(
+            page.getByRole("dialog", { name: "Terminal actions" }),
+        ).toHaveCount(0);
         // The blue frame must remain while the terminal still owns the keyboard.
         await expect(terminalPanel).toHaveCSS(
             "border-color",

@@ -1158,6 +1158,12 @@ sequenceDiagram
   and composition events so keyboard layouts can produce characters such as Finnish `|`.
   The wterm adapter bypasses Escape-prefix encoding for these keys; non-text Alt keys
   continue through the terminal's normal key encoder.
+- WTerm's OSC 52 callback writes application-provided text to the browser clipboard;
+  clipboard reads are never exposed to the PTY. If browser permissions reject a write,
+  the session retains it and offers a user-triggered Copy action. Selection copying uses
+  WTerm's selection API, including virtualized history. Ctrl+Shift+C also works when
+  mouse selection leaves focus on the terminal host. Shift-drag seeds a document caret before
+  the browser selects, avoiding the hidden input's selection; Shift+right-click keeps the native menu.
 - Live logs (`log_stream_open`) send NDJSON `LogEvent` lines that may span frames; the bridge
   reassembles each line (bounded by the largest valid event) and validates it before
   relaying it to the browser.

@@ -34,6 +34,8 @@ export type TerminalTabSnapshot = {
     readonly title: string;
     readonly cwd: string;
     readonly state: TerminalState;
+    /** Retains denied OSC 52 writes so a user gesture can retry browser clipboard access. */
+    readonly pendingClipboardWrite: string | null;
 };
 
 /** Everything a session needs from its owner at creation. */
@@ -93,24 +95,6 @@ function waitForTerminalSizing(): Promise<void> {
     return new Promise((resolve) => requestAnimationFrame(() => resolve()));
 }
 
-/** Returns only native browser selection whose endpoints both belong to this terminal. */
-function getTerminalSelection(host: HTMLElement): string {
-    const selection = window.getSelection();
-
-    if (
-        !selection ||
-        selection.isCollapsed ||
-        !selection.anchorNode ||
-        !selection.focusNode ||
-        !host.contains(selection.anchorNode) ||
-        !host.contains(selection.focusNode)
-    ) {
-        return "";
-    }
-
-    return selection.toString();
-}
-
 /** Removes control escapes and adds shell paste guards only when the PTY requested them. */
 function formatTerminalPaste(terminal: WTerm, text: string): string {
     const safeText = text.replaceAll("\x1b", "");
@@ -155,6 +139,7 @@ export class TerminalSession {
             title: options.title,
             cwd: options.cwd,
             state: { type: "not_started" },
+            pendingClipboardWrite: null,
         };
 
         this.element = document.createElement("div");
@@ -178,6 +163,45 @@ export class TerminalSession {
         );
         this.element.addEventListener("paste", (event) =>
             this.handleHostPaste(event),
+        );
+        // Shift-drag must start a document selection rather than extend the hidden textarea's
+        // selection. Move focus before the browser's mousedown default action chooses its owner.
+        this.element.addEventListener(
+            "mousedown",
+            (event) => {
+                if (event.shiftKey && event.button === 0) {
+                    this.element.focus({ preventScroll: true });
+                    const document = this.element.ownerDocument;
+                    const selection = document.getSelection();
+
+                    if (!this.getSelection()) {
+                        const caret = document.caretPositionFromPoint?.(
+                            event.clientX,
+                            event.clientY,
+                        );
+
+                        if (caret && this.element.contains(caret.offsetNode)) {
+                            selection?.collapse(caret.offsetNode, caret.offset);
+                        } else {
+                            const range = document.caretRangeFromPoint?.(
+                                event.clientX,
+                                event.clientY,
+                            );
+
+                            if (
+                                range &&
+                                this.element.contains(range.startContainer)
+                            ) {
+                                selection?.collapse(
+                                    range.startContainer,
+                                    range.startOffset,
+                                );
+                            }
+                        }
+                    }
+                }
+            },
+            true,
         );
     }
 
@@ -203,6 +227,14 @@ export class TerminalSession {
             (event.ctrlKey || event.metaKey) &&
             !event.altKey &&
             event.key.toLowerCase() === "c";
+
+        if (isCopy && event.ctrlKey && event.shiftKey && this.getSelection()) {
+            event.preventDefault();
+            event.stopPropagation();
+            this.element.ownerDocument.execCommand("copy");
+
+            return;
+        }
 
         if (!isModifierOnly && !isCopy) {
             this.focus();
@@ -299,9 +331,33 @@ export class TerminalSession {
         this.terminal?.focus();
     }
 
-    /** Returns the selected text if, and only if, both ends of the selection are inside. */
+    /** Uses terminal cell semantics so copying also includes virtualized history selections. */
     getSelection(): string {
-        return getTerminalSelection(this.element);
+        return this.terminal?.getSelectionText() ?? "";
+    }
+
+    /** Releases a pending application copy after the user copies or dismisses it. */
+    clearClipboardRequest(): void {
+        this.tabSnapshot = { ...this.tabSnapshot, pendingClipboardWrite: null };
+        this.options.onChange();
+    }
+
+    /** Tries OSC 52 writes immediately, retaining denied writes for a user-initiated retry. */
+    private async writeApplicationClipboard(
+        text: string,
+        generation: number,
+    ): Promise<void> {
+        try {
+            await navigator.clipboard.writeText(text);
+        } catch {
+            if (this.generation === generation) {
+                this.tabSnapshot = {
+                    ...this.tabSnapshot,
+                    pendingClipboardWrite: text,
+                };
+                this.options.onChange();
+            }
+        }
     }
 
     /** Pastes with the shell's requested framing, through the same ready-gated input path. */
@@ -393,6 +449,9 @@ export class TerminalSession {
                 host: this.element,
                 onData: (data) => this.sendInput(data),
                 onResize: (cols, rows) => this.sendResize(cols, rows),
+                onClipboardWrite: (text) => {
+                    void this.writeApplicationClipboard(text, generation);
+                },
             });
 
             if (this.generation !== generation) {

@@ -20,6 +20,7 @@ type CreateWTermOptions = {
     host: HTMLDivElement;
     onData: (data: string) => void;
     onResize: (cols: number, rows: number) => void;
+    onClipboardWrite: (text: string) => void;
 };
 
 /** Loads the renderer modules once without sharing mutable terminal state across tabs. */
@@ -75,6 +76,7 @@ export async function createWTerm(
         core,
         onData: options.onData,
         onResize: options.onResize,
+        onClipboardWrite: options.onClipboardWrite,
     });
 
     try {

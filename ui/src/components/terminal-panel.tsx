@@ -3,6 +3,8 @@ import { useAtomValue } from "jotai";
 
 import type { Agent } from "#ui/api-client";
 import { ActionMenuButton } from "#ui/components/action-menu";
+import { Button } from "#ui/components/button";
+import { Tooltip } from "#ui/components/tooltip";
 import { ContextMenu } from "#ui/components/context-menu";
 import { TerminalTabActions } from "#ui/components/terminal-tabs";
 import { TerminalToolbar } from "#ui/components/terminal-toolbar";
@@ -153,7 +155,7 @@ function TerminalView(props: {
     const [contextMenu, setContextMenu] = React.useState<{
         x: number;
         y: number;
-        canCopy: boolean;
+        text: string;
     } | null>(null);
 
     const [clipboardError, setClipboardError] = React.useState<string | null>(
@@ -177,12 +179,16 @@ function TerminalView(props: {
 
         /** Replaces the browser menu so terminal copy and paste stay available. */
         const handleContextMenu = (event: MouseEvent) => {
+            if (event.shiftKey) {
+                return;
+            }
+
             event.preventDefault();
             event.stopPropagation();
             setContextMenu({
                 x: event.clientX,
                 y: event.clientY,
-                canCopy: session.getSelection().length > 0,
+                text: session.getSelection(),
             });
         };
 
@@ -216,7 +222,7 @@ function TerminalView(props: {
 
     /** Copies only selection rendered inside this terminal's DOM host. */
     const copySelection = async () => {
-        const text = session.getSelection();
+        const text = contextMenu?.text;
 
         if (!text) {
             return;
@@ -265,14 +271,16 @@ function TerminalView(props: {
             >
                 {(close) => (
                     <>
-                        <ActionMenuButton
-                            disabled={!contextMenu?.canCopy}
-                            onClick={() => {
-                                void copySelection().finally(close);
-                            }}
-                        >
-                            Copy
-                        </ActionMenuButton>
+                        <Tooltip content="Copy terminal selection (Ctrl+Shift+C or ⌘C)">
+                            <ActionMenuButton
+                                disabled={!contextMenu?.text}
+                                onClick={() => {
+                                    void copySelection().finally(close);
+                                }}
+                            >
+                                Copy
+                            </ActionMenuButton>
+                        </Tooltip>
                         <ActionMenuButton
                             onClick={() => {
                                 void pasteClipboard().finally(close);
@@ -283,6 +291,35 @@ function TerminalView(props: {
                     </>
                 )}
             </ContextMenu>
+            {props.tab.pendingClipboardWrite !== null ? (
+                <Toast
+                    tone="info"
+                    dismissAriaLabel="Dismiss terminal copy request"
+                    onDismiss={() => session.clearClipboardRequest()}
+                >
+                    <span>
+                        The terminal application requested a clipboard
+                        copy.{" "}
+                    </span>
+                    <Button
+                        onClick={() => {
+                            const text = props.tab.pendingClipboardWrite;
+
+                            if (text !== null) {
+                                void navigator.clipboard.writeText(text).then(
+                                    () => session.clearClipboardRequest(),
+                                    () =>
+                                        setClipboardError(
+                                            "Could not copy from the terminal",
+                                        ),
+                                );
+                            }
+                        }}
+                    >
+                        Copy requested text
+                    </Button>
+                </Toast>
+            ) : null}
             {clipboardError ? (
                 <Toast
                     tone="error"
