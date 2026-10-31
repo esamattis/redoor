@@ -18,11 +18,27 @@ export function shellQuote(value: string): string {
 export const SSH_PASSWORD_USER = "redoor-password";
 
 /**
+ * Shares one SSH connection per account between the many remote checks and cleanups the
+ * tests run. A fresh connection costs about 0.2 s of handshake, which added up to tens of
+ * seconds across the suite. This only affects the tests' own inspection commands; the
+ * server under test still opens its own connections. The short `/tmp` path stays within
+ * the Unix socket path limit on macOS, and idle masters exit soon after the suite ends.
+ */
+const SSH_MULTIPLEX_OPTIONS = [
+    "-o",
+    "ControlMaster=auto",
+    "-o",
+    "ControlPath=/tmp/redoor-test-ssh-%C",
+    "-o",
+    "ControlPersist=30",
+];
+
+/**
  * Runs a command on the SSH test host as the required redoor user. Returns stdout so tests
  * can inspect remote state such as `authorized_keys`.
  */
 export async function sshTestCommand(command: string): Promise<string> {
-    const { stdout } = await $`ssh -l ${SSH_TEST_USER} ${SSH_TEST_HOST} ${command}`.quiet();
+    const { stdout } = await $`ssh ${SSH_MULTIPLEX_OPTIONS} -l ${SSH_TEST_USER} ${SSH_TEST_HOST} ${command}`.quiet();
 
     return stdout;
 }
@@ -61,7 +77,7 @@ printf '%s' "$REDOOR_SSH_TEST_PASSWORD"
                 SSH_ASKPASS: askpassPath,
                 SSH_ASKPASS_REQUIRE: "force",
             },
-        })`ssh -l ${username} ${SSH_TEST_HOST} ${command}`.quiet();
+        })`ssh ${SSH_MULTIPLEX_OPTIONS} -l ${username} ${SSH_TEST_HOST} ${command}`.quiet();
 
         return stdout;
     } finally {
