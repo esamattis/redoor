@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVaultSession } from "#ui/components/vault-dialog";
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
@@ -8,6 +9,7 @@ import {
     Home,
     KeyRound,
     LockKeyhole,
+    LockOpen,
     LoaderCircle,
     LogOut,
     FileText,
@@ -301,6 +303,31 @@ function NavigationBar(props: { onRestart: () => void }) {
     );
 }
 
+/**
+ * The vault destination's look while the vault is unlocked in this browser: an open lock in
+ * the warning color, so an unlocked vault on a shared or unattended screen is noticed.
+ */
+function useVaultIndicator(item: NavigationItem) {
+    const { state } = useVaultSession();
+
+    const unlocked =
+        item.to === "/settings/vault" && state.status === "unlocked";
+
+    return unlocked
+        ? {
+              icon: LockOpen,
+              label: `${item.ariaLabel} (unlocked)`,
+              tooltip: `${item.label}: unlocked`,
+              className: "text-amber-300",
+          }
+        : {
+              icon: item.icon,
+              label: item.ariaLabel,
+              tooltip: item.label,
+              className: null,
+          };
+}
+
 /** Renders one destination as an icon whose tooltip names it, marking the current page. */
 function NavigationLink(props: {
     item: NavigationItem;
@@ -308,13 +335,14 @@ function NavigationLink(props: {
     tooltipClassName?: string;
 }) {
     const closeMenu = useCloseSideMenu();
-    const Icon = props.item.icon;
+    const shown = useVaultIndicator(props.item);
+    const Icon = shown.icon;
 
     return (
         <IconLinkButton
             to={props.item.to}
-            label={props.item.ariaLabel}
-            tooltip={props.item.label}
+            label={shown.label}
+            tooltip={shown.tooltip}
             tooltipClassName={props.tooltipClassName}
             activeOptions={{ exact: props.item.exact }}
             variant="ghost"
@@ -322,6 +350,7 @@ function NavigationLink(props: {
             className={cn(
                 "aria-[current=page]:bg-tint-strong aria-[current=page]:text-slate-100",
                 props.className,
+                shown.className,
             )}
         >
             <Icon className="h-4 w-4" aria-hidden="true" />
