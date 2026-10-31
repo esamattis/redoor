@@ -122,6 +122,13 @@ jobs:
         run: |
           file target/${{ matrix.target }}/release/redoor | grep -Eq "ELF 64-bit.*ARM aarch64"
           readelf --program-headers target/${{ matrix.target }}/release/redoor | grep -Fq "/system/bin/linker64"
+          # Bionic refuses to start an arm64 binary whose TLS segment is aligned below 64 bytes.
+          # Zig thread-locals from libghostty-vt broke this once; bionic_tls_align.S is the fix.
+          tls_align=$(readelf --program-headers --wide target/${{ matrix.target }}/release/redoor | awk '$1 == "TLS" { print $NF }')
+          if [ -n "$tls_align" ] && [ $((tls_align)) -lt 64 ]; then
+            echo "TLS segment alignment is $tls_align, Bionic needs at least 64 on arm64"
+            exit 1
+          fi
 
       - name: Package binary
         run: tar czf ${{ matrix.archive_name }}.tar.gz -C target/${{ matrix.target }}/release redoor

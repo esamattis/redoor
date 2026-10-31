@@ -52,6 +52,14 @@ commit and fetches a few Zig packages at build time, and for Android needs the N
 `ANDROID_NDK_HOME`. `.cargo/config.toml` sets `LIBGHOSTTY_VT_SYS_OPTIMIZE=ReleaseSafe`, so Zig's
 bounds and overflow checks stay on in release builds (see "Authentication and trust").
 
+Zig's standard library gives the binary native ELF thread-locals, which Rust code on Android
+never has because Rust uses emulated TLS there. On arm64 Bionic refuses to start an executable
+whose TLS segment is aligned below 64 bytes, and Zig aligns its thread-locals to only 8. So
+`redoor-server`'s build script links `bionic_tls_align.S` into arm64 Android builds: a single
+64-byte-aligned thread-local, kept through `--gc-sections` by its retain flag and linked with
+`+whole-archive` since nothing references it. The CI Android build fails if the TLS segment
+alignment drops below 64 again.
+
 ### `redoor-protocol`
 
 The contract between all parties, with no runtime dependencies (no tokio).
