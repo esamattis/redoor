@@ -326,7 +326,7 @@ function PathActionMenuItems(props: {
     downloadUrl?: string;
     downloadName?: string;
     onDownloadDirectory?: () => void;
-    /** Present for vault files, which also offer a decrypted download. */
+    /** Present for encrypted files, which also offer a decrypted download. */
     onDownloadDecrypted?: () => void;
     showUnarchive?: boolean;
     onUnarchive?: () => void;

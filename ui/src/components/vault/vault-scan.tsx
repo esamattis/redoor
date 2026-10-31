@@ -20,7 +20,7 @@ const rootRouteApi = getRouteApi("__root__");
 /** How long each device may search. */
 const SEARCH_SECONDS = 20;
 
-/** One `.redoorvault` file a scan found, with its header or why it could not be read. */
+/** One `.redoorencrypted` file a scan found, with its header or why it could not be read. */
 export type ScannedVaultFile = {
     agent: Agent;
     path: string;
@@ -48,7 +48,7 @@ function groupOf(file: ScannedVaultFile): (typeof groups)[number]["key"] {
 async function scanAgent(agent: Agent): Promise<ScannedVaultFile[]> {
     const root = agent.cwd ?? "/";
 
-    const found = await agent.searchFiles(root, ".redoorvault", {
+    const found = await agent.searchFiles(root, ".redoorencrypted", {
         timeoutSeconds: SEARCH_SECONDS,
         includeHidden: true,
         respectGitignore: false,
@@ -57,7 +57,8 @@ async function scanAgent(agent: Agent): Promise<ScannedVaultFile[]> {
     const paths = found.results
         .filter(
             (entry) =>
-                entry.type === "file" && entry.name.endsWith(".redoorvault"),
+                entry.type === "file" &&
+                entry.name.endsWith(".redoorencrypted"),
         )
         .map((entry) => entry.path);
 
@@ -86,7 +87,7 @@ async function scanAgent(agent: Agent): Promise<ScannedVaultFile[]> {
 }
 
 /**
- * Finds vault files on the connected devices with the file search, reads only their headers
+ * Finds encrypted files on the connected devices with the file search, reads only their headers
  * (which works while locked) and groups them by vault and key generation. Files on an older
  * generation can be rewrapped (a new header, same payload); any file of this vault can be
  * re-encrypted with a new file key, for files a compromised server may have seen.
@@ -120,7 +121,7 @@ export function VaultScan(props: {
             setBusyPath(`${file.agent.id}:${file.path}`);
 
             const unlocked = await vault.requestUnlock(
-                "Updating vault files needs the vault key",
+                "Updating encrypted files needs the vault key",
             );
 
             if (request.mode === "rewrap") {
@@ -170,22 +171,22 @@ export function VaultScan(props: {
     };
 
     return (
-        <section aria-label="Vault files" className="grid gap-3">
+        <section aria-label="Encrypted files" className="grid gap-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="text-sm text-slate-400">
                     Searches the default directory of every connected device (
-                    {agents.length}) for <code>*.redoorvault</code>.
+                    {agents.length}) for <code>*.redoorencrypted</code>.
                 </p>
                 <Button
                     type="button"
                     variant="secondary"
-                    tooltip="Search the connected devices for vault files"
+                    tooltip="Search the connected devices for encrypted files"
                     isLoading={scan.isPending}
                     disabled={agents.length === 0}
                     onClick={() => scan.mutate()}
                 >
                     <Search className="h-4 w-4" aria-hidden="true" />
-                    Find vault files
+                    Find encrypted files
                 </Button>
             </div>
             {scan.error || update.error ? (
@@ -197,7 +198,9 @@ export function VaultScan(props: {
                 </p>
             ) : null}
             {props.files === null ? null : props.files.length === 0 ? (
-                <p className="text-sm text-slate-400">No vault files found.</p>
+                <p className="text-sm text-slate-400">
+                    No encrypted files found.
+                </p>
             ) : (
                 groups.map((group) => {
                     const files = props.files?.filter(

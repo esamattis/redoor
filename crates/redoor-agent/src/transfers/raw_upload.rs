@@ -531,7 +531,7 @@ mod tests {
     #[tokio::test]
     async fn precondition_detects_existing_and_replaced_destinations() {
         let temp = TempDir::create();
-        let destination = temp.path().join("secret.redoorvault");
+        let destination = temp.path().join("secret.redoorencrypted");
         // No precondition and a missing file both leave creation allowed.
         assert!(check_precondition(&destination, None).await.is_ok());
         assert!(

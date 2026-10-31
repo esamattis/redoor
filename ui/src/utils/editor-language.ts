@@ -175,7 +175,7 @@ export function syntaxLanguageFromFileName(
     fileName: string,
     content = "",
 ): SupportedSyntaxLanguage | undefined {
-    // An encrypted `secrets.env.redoorvault` highlights as the file it holds.
+    // An encrypted `secrets.env.redoorencrypted` highlights as the file it holds.
     const baseName = stripVaultSuffix(fileName.split("/").pop() ?? fileName);
     const lowerName = baseName.toLowerCase();
 

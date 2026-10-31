@@ -45,7 +45,10 @@ const AGENT_NAME = "vault-test-agent";
 
 const PASSPHRASE = "correct horse battery staple";
 
-const MAGIC = Buffer.from("REDOORVAULT\0", "latin1");
+const MAGIC = Buffer.from("REDOORENCRYPTED\0", "latin1");
+
+/** Magic, version and header length, before the JSON header. */
+const PREFIX_LENGTH = MAGIC.length + 3;
 
 /** The account's vault file, which every test starts without. */
 const VAULT_PATH = join(
@@ -88,10 +91,10 @@ async function expectCode(
     throw new Error(`expected the call to fail with ${code}`);
 }
 
-/** Splits a vault file into its preamble and payload. */
+/** Splits an encrypted file into its preamble and payload. */
 function splitVaultFile(bytes: Buffer) {
-    const headerLength = bytes.readUInt16BE(13);
-    const preambleLength = 15 + headerLength + 32;
+    const headerLength = bytes.readUInt16BE(MAGIC.length + 1);
+    const preambleLength = PREFIX_LENGTH + headerLength + 32;
 
     return {
         preamble: bytes.subarray(0, preambleLength),
@@ -179,11 +182,11 @@ describe("Vault", () => {
         return (await unlock()).vault;
     }
 
-    /** Uploads plaintext encrypted to a new vault file and returns its path and file key. */
+    /** Encrypts plaintext into a new file and returns its path and file key. */
     async function encryptedFile(
         vault: UnlockedVault,
         content: string | Uint8Array<ArrayBuffer>,
-        name = "secret.env.redoorvault",
+        name = "secret.env.redoorencrypted",
     ): Promise<{ path: string; fileKey: string }> {
         const path = join(tempFiles.tempDirectory(), name);
         const keys = await newWriteKeys(vault);
@@ -357,8 +360,8 @@ describe("Vault", () => {
         const plaintext = "API_KEY=very-secret-value\n";
         const { path, fileKey } = await encryptedFile(vault, plaintext);
         const onDisk = fs.readFileSync(path);
-        // The device holds a vault file, recognizable by its magic.
-        expect(onDisk.subarray(0, 12).equals(MAGIC)).toBe(true);
+        // The device holds an encrypted file, recognizable by its magic.
+        expect(onDisk.subarray(0, MAGIC.length).equals(MAGIC)).toBe(true);
         // No plaintext reaches the device.
         expect(onDisk.includes(Buffer.from("very-secret-value"))).toBe(false);
         const header = await agent.vaultHeader(path);
@@ -472,7 +475,7 @@ describe("Vault", () => {
         const { path } = await encryptedFile(
             vault,
             content,
-            "big.bin.redoorvault",
+            "big.bin.redoorencrypted",
         );
 
         const header = await agent.vaultHeader(path);
@@ -518,25 +521,25 @@ describe("Vault", () => {
     it("reports each format error with its own code", async () => {
         const vault = await createVault();
         const directory = tempFiles.tempDirectory();
-        const plain = join(directory, "plain.redoorvault");
+        const plain = join(directory, "plain.redoorencrypted");
         fs.writeFileSync(plain, "just text");
-        // A file without the magic is not a vault file.
+        // A file without the magic is not an encrypted file.
         await expectCode(agent.vaultHeader(plain), "not_a_vault_file");
         const { path } = await encryptedFile(vault, "payload");
         const good = fs.readFileSync(path);
-        const newer = join(directory, "newer.redoorvault");
+        const newer = join(directory, "newer.redoorencrypted");
         const newerBytes = Buffer.from(good);
-        newerBytes[12] = 2;
+        newerBytes[MAGIC.length] = 2;
         fs.writeFileSync(newer, newerBytes);
         // A newer format version is named as such.
         await expectCode(agent.vaultHeader(newer), "vault_format_unsupported");
-        const corrupt = join(directory, "corrupt.redoorvault");
+        const corrupt = join(directory, "corrupt.redoorencrypted");
         const corruptBytes = Buffer.from(good);
-        corruptBytes[15] = "]".charCodeAt(0);
+        corruptBytes[PREFIX_LENGTH] = "]".charCodeAt(0);
         fs.writeFileSync(corrupt, corruptBytes);
         // A header that is not JSON is corrupted.
         await expectCode(agent.vaultHeader(corrupt), "vault_header_corrupted");
-        const truncated = join(directory, "truncated.redoorvault");
+        const truncated = join(directory, "truncated.redoorencrypted");
         // "payload" encrypts to 23 payload bytes; 13 are less than one tag.
         fs.writeFileSync(truncated, good.subarray(0, good.length - 10));
         // A payload length no encryption produces is truncation.
@@ -544,7 +547,7 @@ describe("Vault", () => {
             agent.vaultHeader(truncated),
             "vault_payload_corrupted",
         );
-        const tampered = join(directory, "tampered.redoorvault");
+        const tampered = join(directory, "tampered.redoorencrypted");
         const tamperedBytes = Buffer.from(good);
         tamperedBytes.writeUInt8(
             tamperedBytes.readUInt8(tamperedBytes.length - 1) ^ 1,
@@ -615,7 +618,7 @@ describe("Vault", () => {
         const { path: newerPath } = await encryptedFile(
             rotated,
             "newer",
-            "newer.redoorvault",
+            "newer.redoorencrypted",
         );
 
         const newerKey = await fileKeyForHeader(
@@ -658,13 +661,13 @@ describe("Vault", () => {
         const rewrapped = await encryptedFile(
             original,
             "rewrap me",
-            "a.redoorvault",
+            "a.redoorencrypted",
         );
 
         const reencrypted = await encryptedFile(
             original,
             "reencrypt me",
-            "b.redoorvault",
+            "b.redoorencrypted",
         );
 
         const vault = await rotate();
@@ -741,7 +744,7 @@ describe("Vault", () => {
         const oldest = await encryptedFile(
             first,
             "oldest",
-            "oldest.redoorvault",
+            "oldest.redoorencrypted",
         );
 
         const middleVault = await rotate();
@@ -749,7 +752,7 @@ describe("Vault", () => {
         const middle = await encryptedFile(
             middleVault,
             "middle",
-            "middle.redoorvault",
+            "middle.redoorencrypted",
         );
 
         await rotate();
@@ -826,7 +829,7 @@ describe("Vault", () => {
             [
                 "upload",
                 () =>
-                    tokenAgent.vaultUpload(`${path}.2.redoorvault`, {
+                    tokenAgent.vaultUpload(`${path}.2.redoorencrypted`, {
                         content: new Blob(["x"]),
                         keys: keys,
                     }),

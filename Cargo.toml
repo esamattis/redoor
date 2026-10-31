@@ -74,7 +74,7 @@ zeroize = "1"
 # managed keys without ever giving it the private key.
 signature = "2"
 ssh-encoding = { version = "0.2", default-features = false, features = ["alloc"] }
-# The `.redoorvault` file format: HKDF and HMAC for the header, ChaCha20-Poly1305 for the
+# The `.redoorencrypted` file format: HKDF and HMAC for the header, ChaCha20-Poly1305 for the
 # STREAM payload. They share digest 0.11 with `sha2`.
 hkdf = "0.13"
 hmac = "0.13"

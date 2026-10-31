@@ -832,7 +832,7 @@ export class Agent {
         );
     }
 
-    /** Reads a vault file's plaintext header and revision; works while the vault is locked. */
+    /** Reads an encrypted file's plaintext header and revision; works while the vault is locked. */
     async vaultHeader(path: string): Promise<VaultFileHeaderResponse> {
         return apiRequest<VaultFileHeaderResponse>(
             this.filesystemUrl("vault/header", path),
@@ -842,7 +842,7 @@ export class Agent {
     }
 
     /**
-     * Reads a vault file's decrypted content. The file key travels in a header, never in the
+     * Reads an encrypted file's decrypted content. The file key travels in a header, never in the
      * URL. Returns the streamed response and the revision a later save must name.
      */
     async vaultRead(
@@ -888,7 +888,7 @@ export class Agent {
         );
     }
 
-    /** Uploads content encrypted; also creates new vault files. */
+    /** Uploads content encrypted; also creates new encrypted files. */
     async vaultUpload(
         path: string,
         upload: {
@@ -917,7 +917,7 @@ export class Agent {
         );
     }
 
-    /** Moves a vault file to the current key generation without touching its content. */
+    /** Moves an encrypted file to the current key generation without touching its content. */
     async vaultRewrap(
         path: string,
         request: RewrapVaultFileRequest,
@@ -925,7 +925,7 @@ export class Agent {
         return this.postJson(this.filesystemUrl("vault/rewrap", path), request);
     }
 
-    /** Encrypts a vault file again with a new file key. */
+    /** Encrypts a file again with a new file key. */
     async vaultReencrypt(
         path: string,
         request: ReencryptVaultFileRequest,

@@ -383,7 +383,7 @@ export type FileContext = {
 /** The associated data of a file key wrap; changing these header fields breaks the wrap. */
 function fileAssociatedData(context: FileContext): Uint8Array<ArrayBuffer> {
     return associatedData(
-        "redoorvault v1 wrap",
+        "redoorencrypted v1 wrap",
         context.vaultId,
         context.keyId,
         context.kind,

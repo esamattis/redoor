@@ -20,7 +20,7 @@ compiler enforces that agent and server code never depend on each other.
 flowchart BT
     protocol["redoor-protocol<br/><i>wire + REST types</i>"]
     core["redoor-core<br/><i>shared runtime infrastructure</i>"]
-    vault["redoor-vault<br/><i>.redoorvault file format</i>"]
+    vault["redoor-vault<br/><i>.redoorencrypted file format</i>"]
     agent["redoor-agent<br/><i>agent runtime + commands</i>"]
     server["redoor-server<br/><i>HTTP, router, watchdog, SSH</i>"]
     cli["redoor-cli<br/><i>remote REST client</i>"]
@@ -111,7 +111,7 @@ Infrastructure that more than one role needs:
 
 ### `redoor-vault`
 
-The `.redoorvault` file format (see "Encrypted vault files"): preamble parsing and building,
+The `.redoorencrypted` file format (see "Encrypted files"): preamble parsing and building,
 the header MAC, and the STREAM payload as `EncryptingReader` and `DecryptingReader` adapters
 over 64 KiB chunks, plus the size arithmetic in both directions. It is the only
 implementation of the format and the only Rust code that handles file keys.
@@ -182,7 +182,7 @@ The agent runtime and the implementation of every command.
   - `user_state` and `editor_buffers`: per-account files in the account's private data
     directory (the preference document and one file per open file's editor buffer).
   - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
-    "Encrypted vault files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
+    "Encrypted files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
     with the vault.
   - `ssh_keys`: the SSH key and host key routes, and unlocking an encrypted SSH key for a
     device Start (see "SSH device keys").
@@ -780,7 +780,7 @@ half-written file.
   accepting at once, so restarted agents reconnect to the new server and not to the old one,
   which would reject a newer protocol with `426` and make the agent exit. On Linux the
   upgrade then waits until `/proc/<pid>/exe` names the new file and the handler is back.
-- **The server is not dumpable** (see "Encrypted vault files"), which hides its `exe` link
+- **The server is not dumpable** (see "Encrypted files"), which hides its `exe` link
   and environment even from its own user. Process discovery falls back to an absolute
   `argv[0]` for processes of the same user, and the wait treats a hidden `exe` like macOS:
   the signal delivery is the last thing it can check.
@@ -1054,7 +1054,7 @@ sequenceDiagram
   `MoveSourceIdentity` (device, inode, size, mtime) the server read. The agent checks it
   before staging and again right before the rename, and a mismatch discards the staging and
   fails with `already_exists` or `source_changed` (409). Encrypted vault writes depend on it
-  (see "Encrypted vault files"). Older agents would silently ignore the field, so agents
+  (see "Encrypted files"). Older agents would silently ignore the field, so agents
   announce `supports_upload_preconditions` in `hello` and the server refuses vault writes to
   agents without it.
 
@@ -2003,9 +2003,9 @@ device, or to another device.
   every selected item whose name repeats an earlier one, so two versions never land on one
   destination path.
 
-## Encrypted vault files
+## Encrypted files
 
-Files ending in `.redoorvault` are stored encrypted on devices. The user opens, edits,
+Files ending in `.redoorencrypted` are stored encrypted on devices. The user opens, edits,
 uploads and downloads them through redoor, and the server encrypts and decrypts them as a
 stream. A per-user **vault** holds the key, unlocked in the browser by any of its slots:
 passkeys (WebAuthn PRF) and an optional passphrase.
@@ -2020,7 +2020,7 @@ flowchart LR
         crypt["vault_files<br/><i>STREAM encrypt/decrypt</i>"]
     end
     subgraph Device
-        file[".redoorvault<br/><i>ciphertext only</i>"]
+        file[".redoorencrypted<br/><i>ciphertext only</i>"]
     end
     VK -- "file key FK of one file, per request" --> crypt
     store -- "wrapped keys" --> VK
@@ -2092,7 +2092,7 @@ because nothing could unlock it again.
 
 ### File format
 
-`redoor-vault` is the one implementation: a 15-byte prefix (magic, version, header
+`redoor-vault` is the one implementation: a 19-byte prefix (magic `REDOORENCRYPTED\0`, version, header
 length), a JSON header (`VaultFileHeader`: vault id and label, key id, kind, context, FK
 wrap, payload parameters), an HMAC-SHA256 over those bytes, then STREAM chunks of 64 KiB
 plaintext each followed by a Poly1305 tag. The nonce is a chunk counter plus a final-chunk
@@ -2166,21 +2166,21 @@ it.
   passkey is confirmed with its own prompt (the first confirmation is also the fresh
   unlock, so a single-passkey vault rotates with one prompt), a kept passphrase is typed,
   and anything unconfirmed is removed after a consent that names it.
-- **Editor.** A `.redoorvault` path opens in the editor even though the agent cannot call
+- **Editor.** A `.redoorencrypted` path opens in the editor even though the agent cannot call
   ciphertext editable. Its content query (`vault-files`) reads the header, unwraps the file
   key and reads the plaintext; it is keyed by the unlocked generation and has `gcTime: 0`,
   so locking drops the plaintext from the cache. Saves send a new file key and the revision
   the editor read; a conflict offers overwrite or discard. The editor workspace never writes
-  a vault file's buffer to the server (the server also refuses such keys), a `beforeunload`
+  an encrypted file's buffer to the server (the server also refuses such keys), a `beforeunload`
   warning protects unsaved drafts, and highlighting uses the inner extension. Files on an
   older generation show a banner that rewraps them.
-- **Uploads and downloads.** "Upload encrypted files" queues files under `name.redoorvault`
+- **Uploads and downloads.** "Upload encrypted files" queues files under `name.redoorencrypted`
   with the unlocked vault; the queue encrypts each with a new file key through the vault
   upload route, and the usual conflict check sees the encrypted names. "Download decrypted"
   posts a hidden form into a hidden frame, so the browser streams the plaintext to disk.
 - **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
   (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice
-  where it is optional) and scan the connected devices' default directories for vault files
+  where it is optional) and scan the connected devices' default directories for encrypted files
   with the file search, grouping them by generation and offering rewrap and re-encryption.
 
 ## SSH device keys
@@ -2197,10 +2197,10 @@ devices.
 
   ```
   <data_dir>/users/<account>/ssh/<device-id>/
-      known_hosts                    pinned host key
-      id_ed25519                     plaintext key (account without a vault)
-      id_ed25519.redoorvault         key encrypted with the account's vault
-      id_ed25519.next[.redoorvault]  staged key, only while a setup or rotation runs
+      known_hosts                          pinned host key
+      id_ed25519                           plaintext key (account without a vault)
+      id_ed25519.redoorencrypted           key encrypted with the account's vault
+      id_ed25519.next[.redoorencrypted]    staged key, only while a setup or rotation runs
   ```
 
   Directories are 0700 and files 0600, written with their final mode and renamed into
@@ -2216,7 +2216,7 @@ devices.
   `managed_ssh_key` and `password`. Keys are generated in-process (`ssh-key` crate), so the
   browser never sees them. The account name is a login name (`parse_server_username`), so
   it cannot escape the data directory or contain `:` and whitespace.
-- **Encrypted keys** are `.redoorvault` files of kind `ssh-key`: the payload is the OpenSSH
+- **Encrypted keys** are `.redoorencrypted` files of kind `ssh-key`: the payload is the OpenSSH
   private key text, the header context binds it to the account and device and carries the
   OpenSSH public key. The public key keeps the fingerprint, the status and the
   `authorized_keys` cleanup working while the key is locked. For a new key the browser only
@@ -2415,7 +2415,7 @@ credential only works on its own endpoints:
   `<data_dir>/users/<account>/ssh/<device-id>/`. A key of an account with a vault is
   encrypted with it, so a copy of the data dir alone does not log in; the server holds it
   decrypted only while the device runs after a browser Start, which carries the same
-  residual risk as vault files (a compromised server, root, and on macOS a same-user
+  residual risk as encrypted files (a compromised server, root, and on macOS a same-user
   process). A plaintext key (account without a vault, or not yet rotated) lets anyone who
   can read the data dir or a copy of it log in to that device; the exposure is limited to
   that device and revocable by removing the key. The SSH key routes (setup, rotation,
@@ -2487,7 +2487,7 @@ to the scope.
   `/api/v1/agents/{agent}/vault/...`), the SSH key and host key routes
   (`/api/v1/agents/{agent}/ssh-key...`, `/api/v1/agents/{agent}/ssh-host-key...`) and token
   management are never grantable. Tokens and
-  MCP clients can copy, move and read `.redoorvault` ciphertext through the ordinary file
+  MCP clients can copy, move and read `.redoorencrypted` ciphertext through the ordinary file
   routes, but never decrypt it or change the vault. A token could otherwise widen its own access, for
   example by adding a local agent or minting a broader token. The exception is
   `/api/v1/tokens/current`, where a token reads or deletes itself.

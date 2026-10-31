@@ -53,7 +53,7 @@ function postDecryptedDownload(agent: Agent, path: string, fileKey: string) {
 }
 
 /**
- * Starts decrypted downloads of one vault file and owns their error feedback, so the menu
+ * Starts decrypted downloads of one encrypted file and owns their error feedback, so the menu
  * that starts one can close without losing the message. The plain "Download" keeps saving
  * the ciphertext. The header is read first, so format and vault errors show here instead of
  * failing silently in the hidden frame.

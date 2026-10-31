@@ -39,7 +39,7 @@ const LOG_FORMAT_ENV: &str = "REDOOR_SERVER_LOG_FORMAT";
 
 /// Keeps processes of the same OS user from reading this process's memory.
 ///
-/// The server holds vault file keys while a request decrypts, and local managed agents run
+/// The server holds file keys of encrypted files while a request decrypts, and local managed agents run
 /// as the server's user, so without this an agent (or anything else running as that user)
 /// could read keys from `/proc/<pid>/mem` or attach a debugger. Non-dumpable processes are
 /// only accessible to root. Linux and Termux only: macOS's equivalent (`PT_DENY_ATTACH`)

@@ -1,6 +1,6 @@
 //! Managed SSH private keys stored as vault objects (`kind: "ssh-key"`).
 //!
-//! The file is an ordinary `.redoorvault` file: the payload is the OpenSSH private key text,
+//! The file is an ordinary `.redoorencrypted` file: the payload is the OpenSSH private key text,
 //! and the header context binds it to one account and one device and carries the OpenSSH
 //! public key. The header MAC (keyed by the file key) covers the context, so a key file
 //! copied to another device's or account's directory, or a header whose public key was
@@ -61,7 +61,7 @@ pub(crate) struct SshKeySeal {
 /// Why an encrypted SSH key could not be opened.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum SshKeyOpenError {
-    /// The bytes are not a valid vault file, or the file key does not open it.
+    /// The bytes are not a valid encrypted file, or the file key does not open it.
     #[error(transparent)]
     Format(#[from] VaultFormatError),
     /// The file is valid but belongs to another account, device or key, or is not an SSH

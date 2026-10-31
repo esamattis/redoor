@@ -230,7 +230,7 @@ export class EditorWorkspace extends ExternalStore<
     start(target: Window) {
         target.addEventListener("pagehide", () => this.flush());
 
-        // A vault file's draft is never stored on the server, so it lives only in this page,
+        // An encrypted file's draft is never stored on the server, so it lives only in this page,
         // whether or not its editor is shown; leaving would lose it.
         target.addEventListener("beforeunload", (event) => {
             if (this.hasDirtyVaultBuffer()) {
@@ -263,7 +263,7 @@ export class EditorWorkspace extends ExternalStore<
             : this.currentState(buffer).doc.toString();
     }
 
-    /** Whether any vault file has edits that exist only in this page. */
+    /** Whether any encrypted file has edits that exist only in this page. */
     private hasDirtyVaultBuffer(): boolean {
         return [...this.buffers.values()].some(
             (buffer) => buffer.isDirty && isVaultPath(buffer.key),
@@ -903,7 +903,7 @@ export class EditorWorkspace extends ExternalStore<
     }
 
     /**
-     * Debounces a write of an open file's buffer. Vault files are never written (see
+     * Debounces a write of an open file's buffer. Encrypted files are never written (see
      * `write`), so they are not scheduled either.
      */
     private schedule(key: string, delay: number) {
@@ -947,7 +947,7 @@ export class EditorWorkspace extends ExternalStore<
     private async write(key: string, keepalive: boolean) {
         const buffer = this.buffers.get(key);
 
-        // Every write path ends here, so this is the one check that keeps a vault file's
+        // Every write path ends here, so this is the one check that keeps an encrypted file's
         // plaintext draft in the browser.
         if (
             buffer === undefined ||

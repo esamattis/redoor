@@ -233,7 +233,7 @@ function FileEditorSurface(props: {
 /** Chooses the single editor status announced beside file actions. */
 function getFileEditorStatus(props: {
     readOnly: boolean;
-    /** A locked vault file's content query is disabled and stays pending, but nothing is loading. */
+    /** A locked encrypted file's content query is disabled and stays pending, but nothing is loading. */
     isVaultLocked: boolean;
     isLoading: boolean;
     loadError?: Error;
@@ -582,7 +582,7 @@ export function FileEditView(props: FileEditViewProps) {
     // Saving must not flip CodeMirror read-only, or Mod-s and :w steal editor focus.
     const canEdit = contentQuery.isSuccess && !buffer.readOnly;
 
-    // Deleting a vault file only removes ciphertext, so it needs no key and works while locked.
+    // Deleting an encrypted file only removes ciphertext, so it needs no key and works while locked.
     const canDelete =
         !buffer.readOnly &&
         (contentQuery.isSuccess || buffer.vaultFile.isLocked);

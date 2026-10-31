@@ -1,4 +1,4 @@
-//! The prefix, the JSON header and the header MAC of a vault file.
+//! The prefix, the JSON header and the header MAC of an encrypted file.
 
 use super::{
     FORMAT_VERSION, FileKey, HEADER_MAC_LEN, MAGIC, MAX_HEADER_LEN, PAYLOAD_SALT_LEN, PREFIX_LEN,
@@ -12,11 +12,11 @@ use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 /// HKDF info of the header MAC key.
-const HEADER_KEY_INFO: &[u8] = b"redoorvault v1 header";
+const HEADER_KEY_INFO: &[u8] = b"redoorencrypted v1 header";
 /// HKDF info of the payload key; the payload salt is the HKDF salt.
-const PAYLOAD_KEY_INFO: &[u8] = b"redoorvault v1 payload";
+const PAYLOAD_KEY_INFO: &[u8] = b"redoorencrypted v1 payload";
 
-/// Why reading a preamble failed: the bytes are not a valid vault file, or the source
+/// Why reading a preamble failed: the bytes are not a valid encrypted file, or the source
 /// itself failed. Callers report the two differently (a corrupt file is the user's
 /// problem, a failed transfer is the device's).
 #[derive(Debug, thiserror::Error)]
@@ -75,7 +75,7 @@ impl VaultPreamble {
     /// checked here, because reading headers must work without the file key.
     pub async fn read<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Self, VaultReadError> {
         let mut prefix = [0u8; PREFIX_LEN];
-        // A file shorter than the magic is "not a vault file", not a truncated one.
+        // A file shorter than the magic is "not an encrypted file", not a truncated one.
         let mut magic_len = 0;
         while magic_len < MAGIC.len() {
             match reader.read(&mut prefix[magic_len..MAGIC.len()]).await {
@@ -92,7 +92,8 @@ impl VaultPreamble {
         if version != FORMAT_VERSION {
             return Err(VaultFormatError::UnsupportedVersion(version).into());
         }
-        let header_len = u16::from_be_bytes([prefix[13], prefix[14]]) as usize;
+        let header_len =
+            u16::from_be_bytes([prefix[MAGIC.len() + 1], prefix[MAGIC.len() + 2]]) as usize;
         if header_len > MAX_HEADER_LEN {
             return Err(VaultFormatError::InvalidHeader(format!(
                 "the header is {header_len} bytes, more than {MAX_HEADER_LEN}"
@@ -297,10 +298,10 @@ pub(super) mod tests {
             .to_bytes();
         let mut magic = bytes.clone();
         magic[0] ^= 1;
-        // A damaged magic is "not a vault file".
+        // A damaged magic is "not an encrypted file".
         assert_eq!(read(&magic).await.unwrap_err(), VaultFormatError::BadMagic);
         let mut version = bytes.clone();
-        version[12] = 2;
+        version[MAGIC.len()] = 2;
         // A newer version is reported as such, not as corruption.
         assert_eq!(
             read(&version).await.unwrap_err(),
@@ -343,7 +344,7 @@ pub(super) mod tests {
         let full = VaultPreamble::build(test_header(), &key)
             .unwrap()
             .to_bytes();
-        // A file shorter than the magic is not a vault file at all.
+        // A file shorter than the magic is not an encrypted file at all.
         assert_eq!(read(b"just").await.unwrap_err(), VaultFormatError::BadMagic);
         // A file that ends inside the preamble is truncated.
         assert_eq!(

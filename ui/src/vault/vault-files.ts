@@ -1,5 +1,5 @@
 /**
- * Reading and writing `.redoorvault` files from the UI: path rules and the editor's content
+ * Reading and writing `.redoorencrypted` files from the UI: path rules and the editor's content
  * query.
  *
  * Decrypted content is cached only while an editor shows it (`gcTime: 0`), and its query key
@@ -21,7 +21,7 @@ export class VaultLockedError extends Error {
     }
 }
 
-/** What the editor needs from a vault file. */
+/** What the editor needs from an encrypted file. */
 export type VaultFileContent = {
     content: string;
     /** Sent back with a save, so it never overwrites a newer version. */
@@ -29,7 +29,7 @@ export type VaultFileContent = {
     keyStatus: VaultFileKeyStatus;
 };
 
-/** The decrypted content of a vault file, while the vault is unlocked. */
+/** The decrypted content of an encrypted file, while the vault is unlocked. */
 export function vaultFileContentQueryOptions(options: {
     agent: Agent;
     path: string;

@@ -52,7 +52,7 @@ function UploadFilesAction(props: {
     const encryptedInputRef = React.useRef<FileInputHandle>(null);
 
     /**
-     * Encrypts each picked file into `name.redoorvault`. The vault is unlocked after the pick
+     * Encrypts each picked file into `name.redoorencrypted`. The vault is unlocked after the pick
      * and before the conflict check, so the check sees the encrypted names.
      */
     const handleEncryptedSelection = (selectedFiles: File[]) => {
@@ -210,7 +210,7 @@ function CreateFileDialog(props: {
         mutationFn: async (name: string) => {
             const path = joinBrowserPath(props.directoryPath, name);
 
-            // A `.redoorvault` file is encrypted from the start, so it never exists as an
+            // A `.redoorencrypted` file is encrypted from the start, so it never exists as an
             // empty plaintext file on the device.
             if (isVaultPath(name)) {
                 const unlocked = await vault.requestUnlock(
@@ -249,7 +249,7 @@ function CreateFileDialog(props: {
             kind="File"
             fieldLabel="File name"
             placeholder="notes.txt"
-            fieldDescription="The name of the new empty text file. Names ending in .redoorvault are encrypted with your vault."
+            fieldDescription="The name of the new empty text file. Names ending in .redoorencrypted are encrypted with your vault."
             initialName=""
             preview={{
                 label: "File path",

@@ -1,4 +1,4 @@
-//! REST handlers that open and write `.redoorvault` files on devices.
+//! REST handlers that open and write `.redoorencrypted` files on devices.
 //!
 //! Encryption and decryption run here, as a stream: agents only ever see ciphertext, and
 //! the server only gets the key of the one file a request handles, for that request. The
@@ -9,7 +9,7 @@
 //! Reads check the preamble before the response starts, so every format and vault error is
 //! a JSON error with its own code; a payload chunk that fails later can only abort the body.
 //! Writes go through the raw upload flow (staging and an atomic rename) with a precondition
-//! on the file the browser read, so a failed write never leaves a partial vault file and a
+//! on the file the browser read, so a failed write never leaves a partial encrypted file and a
 //! stale one never overwrites a newer version.
 
 mod write;
@@ -68,7 +68,7 @@ pub(crate) fn revision(identity: &MoveSourceIdentity) -> String {
     hasher.finalize().to_hex()[..32].to_string()
 }
 
-/// Accepts only paths with a name before the `.redoorvault` suffix, so the vault endpoints
+/// Accepts only paths with a name before the `.redoorencrypted` suffix, so the vault endpoints
 /// cannot be pointed at ordinary files.
 fn vault_path(path: Option<String>) -> Result<String, ApiError> {
     let path = absolute_path_from_url(path.unwrap_or_default());
@@ -78,7 +78,7 @@ fn vault_path(path: Option<String>) -> Result<String, ApiError> {
         Err(ApiError::coded(
             StatusCode::BAD_REQUEST,
             ApiErrorCode::NotAVaultPath,
-            format!("Vault files must end in {VAULT_FILE_SUFFIX}"),
+            format!("Encrypted files must end in {VAULT_FILE_SUFFIX}"),
         ))
     }
 }
@@ -138,7 +138,7 @@ pub(crate) fn file_changed() -> ApiError {
     )
 }
 
-/// A vault file on a device, opened for reading: its preamble is parsed and the stream
+/// An encrypted file on a device, opened for reading: its preamble is parsed and the stream
 /// stands at the first payload byte.
 pub(crate) struct VaultSource {
     pub(crate) preamble: VaultPreamble,
@@ -220,7 +220,7 @@ impl VaultSource {
             ApiError::coded(
                 StatusCode::UNPROCESSABLE_ENTITY,
                 ApiErrorCode::VaultPayloadCorrupted,
-                "The vault file is truncated or has data appended",
+                "The encrypted file is truncated or has data appended",
             )
         })
     }
@@ -321,7 +321,7 @@ fn require_same_origin(headers: &HeaderMap) -> Result<(), ApiError> {
 }
 
 /// Route: `POST /api/v1/agents/{agent}/vault/download`: a decrypted download, saved by the
-/// browser without the `.redoorvault` suffix.
+/// browser without the `.redoorencrypted` suffix.
 pub(crate) async fn download_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     State(state): State<ServerState>,

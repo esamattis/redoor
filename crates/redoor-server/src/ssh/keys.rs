@@ -2,11 +2,11 @@
 //!
 //! ```text
 //! <data_dir>/users/<account>/ssh/<device-id>/
-//!     known_hosts                    0600, pinned host key (per account)
-//!     id_ed25519                     0600, plaintext key (account without a vault)
-//!     id_ed25519.redoorvault         0600, key encrypted with the account's vault
-//!     id_ed25519.next                0600, staged plaintext key during setup or rotation
-//!     id_ed25519.next.redoorvault    0600, staged encrypted key during setup or rotation
+//!     known_hosts                         0600, pinned host key (per account)
+//!     id_ed25519                          0600, plaintext key (account without a vault)
+//!     id_ed25519.redoorencrypted          0600, key encrypted with the account's vault
+//!     id_ed25519.next                     0600, staged plaintext key during setup or rotation
+//!     id_ed25519.next.redoorencrypted     0600, staged encrypted key during setup or rotation
 //! ```
 //!
 //! Keys and pins belong to the account that set them up, next to its `vault.json`, because
@@ -39,11 +39,11 @@ use super::encrypted_keys::{EncryptedKeyFile, MAX_SSH_KEY_FILE_LEN, SshKeySeal, 
 /// File name of the device's current plaintext private key.
 const PLAINTEXT_KEY_FILE: &str = "id_ed25519";
 /// File name of the device's current private key encrypted with the account's vault.
-const ENCRYPTED_KEY_FILE: &str = "id_ed25519.redoorvault";
+const ENCRYPTED_KEY_FILE: &str = "id_ed25519.redoorencrypted";
 /// File name of a plaintext key that is installed and verified but not yet current.
 const STAGED_PLAINTEXT_KEY_FILE: &str = "id_ed25519.next";
 /// File name of an encrypted key that is installed and verified but not yet current.
-const STAGED_ENCRYPTED_KEY_FILE: &str = "id_ed25519.next.redoorvault";
+const STAGED_ENCRYPTED_KEY_FILE: &str = "id_ed25519.next.redoorencrypted";
 /// File name of the pinned host key inside a device directory.
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
 /// Directory of every account's files inside the data directory.

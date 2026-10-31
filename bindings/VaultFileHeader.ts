@@ -4,7 +4,7 @@ import type { VaultObjectKind } from "./VaultObjectKind";
 import type { VaultPayloadParams } from "./VaultPayloadParams";
 
 /**
- * The plaintext JSON header of a `.redoorvault` file. It has no dates on purpose: it is
+ * The plaintext JSON header of a `.redoorencrypted` file. It has no dates on purpose: it is
  * readable by anyone holding the file.
  */
 export type VaultFileHeader = { vault_id: string, vault_label: string, key_id: string, kind: VaultObjectKind, 

@@ -120,7 +120,7 @@ async fn require_preconditions(state: &ServerState, agent_id: &AgentId) -> Resul
         Err(ApiError::coded(
             StatusCode::CONFLICT,
             ApiErrorCode::AgentUpgradeRequired,
-            "Upgrade this device's agent to write vault files",
+            "Upgrade this device's agent to write encrypted files",
         ))
     }
 }
@@ -208,7 +208,7 @@ impl Publication<'_> {
         .await
         .map_err(write_error)?;
         let UploadStart::Ready(mut upload) = upload else {
-            return Err(ApiError::internal("A vault file is never empty"));
+            return Err(ApiError::internal("An encrypted file is never empty"));
         };
         if let Some(guard) = request_guard {
             guard.activate(upload.request_id().as_transfer_id())?;
@@ -295,7 +295,7 @@ pub(crate) struct UploadQuery {
 }
 
 /// Route: `PUT /api/v1/agents/{agent}/vault/raw/{*path}`: an encrypted upload, also used to
-/// create a new vault file. The path already carries the `.redoorvault` suffix.
+/// create a new encrypted file. The path already carries the `.redoorencrypted` suffix.
 pub(crate) async fn upload_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     Path(AgentFilePath { path }): Path<AgentFilePath>,

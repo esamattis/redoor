@@ -14,7 +14,7 @@ import {
 
 const PASSPHRASE = "correct horse battery staple";
 
-const MAGIC = Buffer.from("REDOORVAULT\0", "latin1");
+const MAGIC = Buffer.from("REDOORENCRYPTED\0", "latin1");
 
 /** The Playwright server's data directories, where the account's vault file lives. */
 const SERVER_SHARE = path.resolve(".test-playwright-home/.local/share");
@@ -88,7 +88,7 @@ async function signIn(page: Page) {
     await expect(page).toHaveURL(`${WEB_BASE_URL}/`);
 }
 
-/** Creates a vault file from the directory's New menu. */
+/** Creates an encrypted file from the directory's New menu. */
 async function createVaultFile(page: Page, ctx: TestContext, fileName: string) {
     await page.goto(deviceBrowserUrl(ctx.agentName, ctx.testDirPath));
     await page.getByRole("button", { name: "New", exact: true }).click();
@@ -144,7 +144,7 @@ test.describe.serial("Vault", () => {
     test("creates, saves, reopens, uploads and downloads encrypted files", async ({
         page,
     }) => {
-        const fileName = "secret.env.redoorvault";
+        const fileName = "secret.env.redoorencrypted";
         const filePath = path.join(ctx.testDirPath, fileName);
         await createVaultFile(page, ctx, fileName);
         // The first encrypted file asks for a vault, since none exists yet.
@@ -164,8 +164,8 @@ test.describe.serial("Vault", () => {
         // The save went through the encrypted write endpoint.
         await expect(page.getByText("Saved", { exact: true })).toBeVisible();
         const onDisk = await fs.readFile(filePath);
-        // The device holds a vault file, never the plaintext.
-        expect(onDisk.subarray(0, 12).equals(MAGIC)).toBe(true);
+        // The device holds an encrypted file, never the plaintext.
+        expect(onDisk.subarray(0, MAGIC.length).equals(MAGIC)).toBe(true);
         expect(onDisk.includes(Buffer.from("very-secret"))).toBe(false);
 
         await page.reload();
@@ -197,12 +197,17 @@ test.describe.serial("Vault", () => {
             });
         // The reload locked the vault again, so the encrypted upload asks for it first.
         await unlockInDialog(page);
-        const uploaded = path.join(ctx.testDirPath, "notes.txt.redoorvault");
+
+        const uploaded = path.join(
+            ctx.testDirPath,
+            "notes.txt.redoorencrypted",
+        );
+
         // The upload is written encrypted under the suffixed name.
         await expect
             .poll(async () =>
                 (await fs.readFile(uploaded).catch(() => Buffer.alloc(0)))
-                    .subarray(0, 12)
+                    .subarray(0, MAGIC.length)
                     .equals(MAGIC),
             )
             .toBe(true);
@@ -215,7 +220,7 @@ test.describe.serial("Vault", () => {
         page,
         browser,
     }) => {
-        const fileName = "kept.txt.redoorvault";
+        const fileName = "kept.txt.redoorencrypted";
         await createVaultFile(page, ctx, fileName);
         await createVaultInDialog(page, true);
         const editor = page.getByRole("textbox", { name: "File editor" });
@@ -272,7 +277,7 @@ test.describe.serial("Vault", () => {
         // A session of its own, because logging out revokes the session shared by the specs.
         await page.context().clearCookies();
         await signIn(page);
-        await createVaultFile(page, ctx, "logout.txt.redoorvault");
+        await createVaultFile(page, ctx, "logout.txt.redoorencrypted");
         await createVaultInDialog(page, true);
         await expect(
             page.getByRole("textbox", { name: "File editor" }),
@@ -296,10 +301,10 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
-    test("deletes a vault file from the editor while the vault is locked", async ({
+    test("deletes an encrypted file from the editor while the vault is locked", async ({
         page,
     }) => {
-        const fileName = "locked-delete.txt.redoorvault";
+        const fileName = "locked-delete.txt.redoorencrypted";
         const filePath = path.join(ctx.testDirPath, fileName);
         await createVaultFile(page, ctx, fileName);
         await createVaultInDialog(page);

@@ -17,19 +17,19 @@ const messages: Partial<Record<ApiErrorCode, string>> = {
         "A vault keeps at least one unlock method. Add another one before removing this one.",
     vault_proof_invalid:
         "The vault key in this tab is out of date. Unlock the vault again.",
-    not_a_vault_file: "Not a redoor vault file, or the file is corrupted.",
+    not_a_vault_file: "Not a redoor encrypted file, or the file is corrupted.",
     vault_format_unsupported:
-        "This vault file was created by a newer redoor. Upgrade the server to open it.",
-    vault_header_corrupted: "The vault file header is corrupted.",
+        "This encrypted file was created by a newer redoor. Upgrade the server to open it.",
+    vault_header_corrupted: "The encrypted file header is corrupted.",
     vault_header_tampered:
-        "The vault file header was tampered with, or the file key is wrong.",
+        "The encrypted file header was tampered with, or the file key is wrong.",
     vault_payload_corrupted:
-        "The vault file is corrupted or truncated, so its content cannot be trusted.",
+        "The encrypted file is corrupted or truncated, so its content cannot be trusted.",
     stale_vault_key:
         "The vault key was rotated in another tab or browser. Unlock the vault again.",
     vault_file_changed: "The file changed on the device since it was opened.",
     agent_upgrade_required:
-        "This device's agent is too old to write vault files. Upgrade the agent first.",
+        "This device's agent is too old to write encrypted files. Upgrade the agent first.",
     ssh_key_locked:
         "This device's SSH key is encrypted with the vault. Unlock the vault to use it.",
     vault_required:

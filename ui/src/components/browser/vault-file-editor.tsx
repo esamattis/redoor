@@ -16,7 +16,7 @@ import { VaultUnlockCancelled } from "#ui/vault/vault-session";
 const rootRouteApi = getRouteApi("__root__");
 
 /**
- * The editor's view of one vault file: its decrypted content while unlocked, the revision a
+ * The editor's view of one encrypted file: its decrypted content while unlocked, the revision a
  * save must name, and the save itself.
  *
  * Saves go through the encrypted write endpoint with a new file key every time. A save
@@ -152,7 +152,7 @@ export function VaultLockedPanel(props: {
 }
 
 /**
- * The banners of a vault file: an older key generation (offer a rewrap, which writes only a
+ * The banners of an encrypted file: an older key generation (offer a rewrap, which writes only a
  * new header) and a save that conflicted with a newer version on the device.
  */
 export function VaultFileBanners(props: {

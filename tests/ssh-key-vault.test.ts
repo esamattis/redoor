@@ -233,9 +233,9 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
                 const dir = deviceDir(fixture, deviceId);
                 // Only the encrypted key is stored, private like a plaintext one.
                 expect(localKeyFiles(fixture, deviceId)).toEqual([
-                    "id_ed25519.redoorvault",
+                    "id_ed25519.redoorencrypted",
                 ]);
-                expect(modeOf(join(dir, "id_ed25519.redoorvault"))).toBe(
+                expect(modeOf(join(dir, "id_ed25519.redoorencrypted"))).toBe(
                     0o600,
                 );
                 // Keys live in the account's directory, next to its vault.
@@ -243,7 +243,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
                 // The private key never reaches the disk in plaintext.
                 expect(
                     readFileSync(
-                        join(dir, "id_ed25519.redoorvault"),
+                        join(dir, "id_ed25519.redoorencrypted"),
                         "latin1",
                     ),
                 ).not.toContain("PRIVATE KEY");
@@ -378,7 +378,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
                 expect(rotated.rotated).toBe(true);
                 // The plaintext key is gone; only the encrypted one is stored.
                 expect(localKeyFiles(fixture, deviceId)).toEqual([
-                    "id_ed25519.redoorvault",
+                    "id_ed25519.redoorencrypted",
                 ]);
 
                 const lines = await remoteDeviceLines(SSH_TEST_USER, deviceId);

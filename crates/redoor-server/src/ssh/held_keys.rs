@@ -1,6 +1,6 @@
 //! Decrypted managed SSH keys the server holds while their devices are running.
 //!
-//! A `.redoorvault` file key normally lives only for one request. An encrypted SSH key
+//! A `.redoorencrypted` file key normally lives only for one request. An encrypted SSH key
 //! cannot work that way: the watchdog reconnects a device on its own (backoff, stale
 //! heartbeats, overnight) long after the browser's Start request. So the browser hands the
 //! key's file key over on Start, the server decrypts the key and keeps it here, in memory

@@ -152,7 +152,7 @@ ${props.selection.text}
                 variant="ghost"
                 size="sm"
                 aria-label="Search selected text"
-                // The search runs on the agent, which must never see a vault file's plaintext.
+                // The search runs on the agent, which must never see an encrypted file's plaintext.
                 disabled={
                     props.selection === null || isVaultPath(props.bookmark.path)
                 }
@@ -214,7 +214,7 @@ function EditorActionsMenu(props: {
     /** Hides file operations, which would act on the working file rather than the revision. */
     readOnly: boolean;
     canEdit: boolean;
-    /** Separate from canEdit: a locked vault file has no content yet, but deleting it needs no key. */
+    /** Separate from canEdit: a locked encrypted file has no content yet, but deleting it needs no key. */
     canDelete: boolean;
     isReloading: boolean;
     isSaving: boolean;

@@ -1,4 +1,4 @@
-//! The per-user vault that encrypts `.redoorvault` files, and the REST bodies around it.
+//! The per-user vault that encrypts `.redoorencrypted` files, and the REST bodies around it.
 //!
 //! Every binary value (wraps, salts, proofs, keys) is base64url without padding, so the
 //! browser and the server agree on one encoding. Times are RFC 3339 strings, like the
@@ -21,7 +21,7 @@ pub const VAULT_PAYLOAD_ALG: &str = "chacha20poly1305-stream";
 pub const VAULT_KDF_ALG: &str = "argon2id";
 
 /// Suffix that marks a file as encrypted with the vault.
-pub const VAULT_FILE_SUFFIX: &str = ".redoorvault";
+pub const VAULT_FILE_SUFFIX: &str = ".redoorencrypted";
 
 /// One AES-256-GCM wrap of a 32-byte key: a slot's vault key, a chain entry's older vault
 /// key, or a file's key in a file header.
@@ -306,7 +306,7 @@ pub struct VaultSlotUsedResponse {
     pub updated: bool,
 }
 
-/// What kind of object a vault file holds; the server compares it with what it expects.
+/// What kind of object an encrypted file holds; the server compares it with what it expects.
 ///
 /// The browser binds the kind into the file key wrap's associated data, so a file key can
 /// never be presented as an SSH key's and vice versa.
@@ -337,7 +337,7 @@ impl VaultObjectKind {
 /// locked. Exactly these fields, all non-empty; the header MAC covers them.
 pub const SSH_KEY_CONTEXT_FIELDS: [&str; 3] = ["account", "device_id", "public_key"];
 
-/// How the payload of a vault file is encrypted.
+/// How the payload of an encrypted file is encrypted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct VaultPayloadParams {
@@ -349,7 +349,7 @@ pub struct VaultPayloadParams {
     pub salt: String,
 }
 
-/// The plaintext JSON header of a `.redoorvault` file. It has no dates on purpose: it is
+/// The plaintext JSON header of a `.redoorencrypted` file. It has no dates on purpose: it is
 /// readable by anyone holding the file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -485,7 +485,7 @@ pub enum ApiErrorCode {
     VaultFileChanged,
     /// The file key is not 32 bytes of base64url.
     InvalidVaultFileKey,
-    /// The path does not end in `.redoorvault`.
+    /// The path does not end in `.redoorencrypted`.
     NotAVaultPath,
     /// The agent is too old to check write preconditions.
     AgentUpgradeRequired,

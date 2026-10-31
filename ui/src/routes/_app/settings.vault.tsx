@@ -70,7 +70,7 @@ function formatDate(value: string | null): string {
 
 /**
  * The vault's settings: lock state, unlock methods, key generations, backup and the scan
- * that finds vault files on devices.
+ * that finds encrypted files on devices.
  */
 function VaultSettingsPage() {
     const { api, queryClient, vault } = Route.useRouteContext();
@@ -99,8 +99,8 @@ function VaultSettingsPage() {
         });
         setNotice(
             failed === 0
-                ? "Vault key rotated and SSH keys rewrapped. Download a new vault backup, then find vault files to rewrap."
-                : "Vault key rotated, but some SSH keys still use the old key; rewrap them below. Download a new vault backup, then find vault files to rewrap.",
+                ? "Vault key rotated and SSH keys rewrapped. Download a new vault backup, then find encrypted files to rewrap."
+                : "Vault key rotated, but some SSH keys still use the old key; rewrap them below. Download a new vault backup, then find encrypted files to rewrap.",
         );
     };
 
@@ -112,7 +112,7 @@ function VaultSettingsPage() {
                         Vault
                     </h1>
                     <p className="mt-1 text-sm text-slate-400">
-                        Encrypts files ending in <code>.redoorvault</code>.
+                        Encrypts files ending in <code>.redoorencrypted</code>.
                         Devices only store ciphertext, and the vault key never
                         leaves your browser.
                     </p>
@@ -173,7 +173,7 @@ function VaultSettingsPage() {
                             onRestore={() => setDialog({ type: "restore" })}
                         />
                         <DetailCard
-                            title="Vault files"
+                            title="Encrypted files"
                             icon={
                                 <KeyRound
                                     className="h-5 w-5"

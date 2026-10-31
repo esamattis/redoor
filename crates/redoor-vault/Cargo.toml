@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 
-# The `.redoorvault` file format. A crate of its own so only the roles that may hold file
+# The `.redoorencrypted` file format. A crate of its own so only the roles that may hold file
 # keys (the server, and later the CLI) can link it; agents only ever see ciphertext.
 [dependencies]
 redoor-protocol.workspace = true

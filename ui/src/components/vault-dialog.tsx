@@ -79,7 +79,7 @@ function KeepUnlockedOption(props: {
                 tab is closed or reloaded. When ticked, it stays unlocked across
                 reloads and browser restarts until you lock it or log out, and
                 anyone who can use or copy this browser profile can open your
-                vault files until then.
+                encrypted files until then.
             </p>
         </div>
     );
@@ -169,8 +169,8 @@ function CreateVaultForm(props: { onCancel: () => void }) {
     return (
         <form noValidate onSubmit={submit} className="mt-4 grid gap-4">
             <p className="text-sm text-slate-400">
-                The vault encrypts files ending in <code>.redoorvault</code>.
-                Its key never leaves this browser; devices only store
+                The vault encrypts files ending in <code>.redoorencrypted</code>
+                . Its key never leaves this browser; devices only store
                 ciphertext. Without a registered passkey or the passphrase,
                 encrypted files cannot be opened.
             </p>

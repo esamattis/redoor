@@ -29,7 +29,7 @@ export type UploadBatch = {
     onExisting: CopyExistingMode;
     /**
      * Encrypts every file with the vault; the relative paths already carry the
-     * `.redoorvault` suffix, so conflicts are checked against the encrypted names.
+     * `.redoorencrypted` suffix, so conflicts are checked against the encrypted names.
      */
     encrypt?: boolean;
 };

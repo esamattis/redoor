@@ -1,11 +1,11 @@
-//! The `.redoorvault` file format, version 1.
+//! The `.redoorencrypted` file format, version 1.
 //!
 //! ```text
 //! offset  size        field
-//! 0       12          magic "REDOORVAULT\0"
-//! 12      1           format version = 0x01
-//! 13      2           header_len (u16 BE, at most 4096)
-//! 15      header_len  header: UTF-8 JSON (`VaultFileHeader`)
+//! 0       16          magic "REDOORENCRYPTED\0"
+//! 16      1           format version = 0x01
+//! 17      2           header_len (u16 BE, at most 4096)
+//! 19      header_len  header: UTF-8 JSON (`VaultFileHeader`)
 //! …       32          header_mac = HMAC-SHA256(K_hdr, bytes 0 … end of header)
 //! …       …           payload: STREAM chunks of ChaCha20-Poly1305
 //! ```
@@ -35,12 +35,13 @@ use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
-/// Every vault file starts with these bytes.
-pub const MAGIC: [u8; 12] = *b"REDOORVAULT\0";
+/// Every encrypted file starts with these bytes. They spell the `.redoorencrypted` suffix, so
+/// a hex dump names the format the same way the file name does.
+pub const MAGIC: [u8; 16] = *b"REDOORENCRYPTED\0";
 /// The format version this code reads and writes.
 pub const FORMAT_VERSION: u8 = 1;
 /// Magic, version and header length.
-pub const PREFIX_LEN: usize = 15;
+pub const PREFIX_LEN: usize = MAGIC.len() + 3;
 /// Headers above this are refused, which bounds what the server reads before checking.
 pub const MAX_HEADER_LEN: usize = 4096;
 /// HMAC-SHA256 output.
@@ -58,23 +59,23 @@ pub const WRAP_IV_LEN: usize = 12;
 /// A wrapped 32-byte key with its 16-byte GCM tag.
 pub const WRAP_CT_LEN: usize = 48;
 
-/// Why a byte sequence is not a usable vault file. Each variant maps to its own API error
+/// Why a byte sequence is not a usable encrypted file. Each variant maps to its own API error
 /// code, so the user learns what is wrong instead of a generic failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VaultFormatError {
-    #[error("Not a redoor vault file, or the file is corrupted")]
+    #[error("Not a redoor encrypted file, or the file is corrupted")]
     BadMagic,
-    #[error("The vault file was created by a newer redoor (format version {0})")]
+    #[error("The encrypted file was created by a newer redoor (format version {0})")]
     UnsupportedVersion(u8),
-    #[error("The vault file header is corrupted: {0}")]
+    #[error("The encrypted file header is corrupted: {0}")]
     InvalidHeader(String),
-    #[error("The vault file header was tampered with, or the file key is wrong")]
+    #[error("The encrypted file header was tampered with, or the file key is wrong")]
     HeaderMac,
-    #[error("The vault file is truncated")]
+    #[error("The encrypted file is truncated")]
     Truncated,
-    #[error("The vault file is corrupted at byte {offset}")]
+    #[error("The encrypted file is corrupted at byte {offset}")]
     CorruptChunk { offset: u64 },
-    #[error("The vault file key must be 32 bytes of base64url")]
+    #[error("The file key must be 32 bytes of base64url")]
     InvalidKey,
 }
 
@@ -189,7 +190,7 @@ pub fn plaintext_len(payload_len: u64) -> Option<u64> {
     }
 }
 
-/// Whether a path names a vault file, by its suffix.
+/// Whether a path names an encrypted file, by its suffix.
 pub fn is_vault_path(path: &str) -> bool {
     path.ends_with(redoor_protocol::api::vault::VAULT_FILE_SUFFIX)
         && path.len() > redoor_protocol::api::vault::VAULT_FILE_SUFFIX.len()
@@ -257,9 +258,9 @@ mod tests {
     /// The suffix check decides which paths the vault endpoints accept.
     #[test]
     fn vault_paths_need_a_name_before_the_suffix() {
-        assert!(is_vault_path("/home/u/secrets.env.redoorvault"));
+        assert!(is_vault_path("/home/u/secrets.env.redoorencrypted"));
         // A bare suffix is a hidden file named after the suffix, not an encrypted file.
-        assert!(!is_vault_path("/home/u/.redoorvault"));
+        assert!(!is_vault_path("/home/u/.redoorencrypted"));
         assert!(!is_vault_path("/home/u/secrets.env"));
     }
 }

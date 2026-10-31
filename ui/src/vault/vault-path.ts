@@ -1,13 +1,13 @@
 /**
- * Path rules of `.redoorvault` files. Kept free of dependencies, so the editor and the
+ * Path rules of `.redoorencrypted` files. Kept free of dependencies, so the editor and the
  * file browser can check names without loading the vault's crypto.
  */
 
 /** The suffix that marks an encrypted file. */
-export const VAULT_SUFFIX = ".redoorvault";
+export const VAULT_SUFFIX = ".redoorencrypted";
 
 /**
- * Whether a path or name is a vault file: a name before the suffix. The agent never calls
+ * Whether a path or name is an encrypted file: a name before the suffix. The agent never calls
  * vault ciphertext editable, so the file browser asks this to open such files in the
  * editor, which decrypts them.
  */
@@ -23,7 +23,7 @@ export function stripVaultSuffix(name: string): string {
 }
 
 /**
- * Whether the editor opens a file: text the agent verified as editable, or a vault file,
+ * Whether the editor opens a file: text the agent verified as editable, or an encrypted file,
  * whose ciphertext the agent never calls editable but the editor decrypts.
  */
 export function opensInEditor(
