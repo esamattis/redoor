@@ -8,6 +8,7 @@ Here's the thing. Today I work on multiple different devices: Servers, laptops, 
 
 - File browser
 - File editor with Git gutter and Vim-mode
+- Search files by names or content
 - Git history viewer
 - Persistent terminal sessions
 - Streaming resumable file transfers
