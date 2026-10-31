@@ -1,5 +1,10 @@
 import React from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+    useIsMutating,
+    useMutation,
+    useQuery,
+    useQueryClient,
+} from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { Fingerprint, LockKeyhole } from "lucide-react";
 
@@ -37,6 +42,12 @@ import {
 import { AUTO_LOCK_MS } from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
+
+/**
+ * Shared by every create and unlock mutation of the dialog, so the dialog can tell that a
+ * passkey prompt or key derivation is running without lifting each form's state.
+ */
+const vaultDialogMutationKey = ["vault-dialog"] as const;
 
 /** Reads the vault session from the router context with its current lock state. */
 export function useVaultSession() {
@@ -107,6 +118,7 @@ function CreateVaultForm(props: { onCancel: () => void }) {
     const withPassphrase = usePassphrase || !passkeysSupported;
 
     const create = useMutation({
+        mutationKey: vaultDialogMutationKey,
         mutationFn: async () => {
             const { request, vault: unlocked } = await buildNewVault({
                 label: label.trim(),
@@ -306,6 +318,7 @@ function UnlockVaultForm(props: {
     };
 
     const withPassphrase = useMutation({
+        mutationKey: vaultDialogMutationKey,
         mutationFn: async () => {
             const material =
                 materialQuery.data ?? (await materialQuery.refetch()).data;
@@ -319,6 +332,7 @@ function UnlockVaultForm(props: {
     });
 
     const withPasskey = useMutation({
+        mutationKey: vaultDialogMutationKey,
         mutationFn: async () => {
             const material = materialQuery.data;
 
@@ -438,6 +452,11 @@ export function VaultDialog() {
     const { session, state } = useVaultSession();
     const isOpen = state.pendingReason !== null;
 
+    // While a passkey prompt or key derivation runs, Escape, the back gesture or a stray
+    // backdrop tap must not cancel the waiting flows: the unlock would then succeed with
+    // nobody waiting for it, and the flow would already have failed.
+    const isBusy = useIsMutating({ mutationKey: vaultDialogMutationKey }) > 0;
+
     const statusQuery = useQuery({
         ...vaultStatusQueryOptions(api),
         enabled: isOpen,
@@ -456,6 +475,7 @@ export function VaultDialog() {
             title={summary === null ? "Create vault" : "Unlock vault"}
             description={state.pendingReason}
             closeAriaLabel="Cancel"
+            isBusy={isBusy}
             onClose={cancel}
         >
             {statusQuery.isError ? (
