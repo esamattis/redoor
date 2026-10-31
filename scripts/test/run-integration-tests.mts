@@ -22,7 +22,13 @@ async function runIntegrationTests(arguments_: string[]): Promise<void> {
         await $({
             cwd: PROJECT_ROOT,
             stdio: "inherit",
-            env: { ...process.env, REDOOR_TEST_BINARY: stagedBinary },
+            env: {
+                ...process.env,
+                REDOOR_TEST_BINARY: stagedBinary,
+                // Servers upload the debug build to every fresh SSH app directory; the
+                // stripped copy is a quarter of its size, which saves seconds per connect.
+                REDOOR_TEST_DEBUG_BINARY: stagedBinary,
+            },
         })`vitest run --config vitest.config.ts ${filters}`;
     } finally {
         await rm(stagingDirectory, { recursive: true, force: true });

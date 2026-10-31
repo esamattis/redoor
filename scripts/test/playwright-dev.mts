@@ -187,7 +187,12 @@ async function supervise(): Promise<void> {
                 "--log",
                 "log/playwright-redoor.log",
             ],
-            { HOME: HOME_DIRECTORY, REDOOR_PORT: String(port) },
+            {
+                HOME: HOME_DIRECTORY,
+                REDOOR_PORT: String(port),
+                // SSH devices get the stripped staged copy instead of the much larger debug build.
+                REDOOR_TEST_DEBUG_BINARY: STAGED_BINARY,
+            },
         ),
         startChild(
             "agent1_src",
