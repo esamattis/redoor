@@ -80,6 +80,7 @@ test.describe("Bottom drawer after a reload", () => {
             page.getByRole("status", { name: /: Connected$/ }),
         ).toHaveCount(1);
         await newTerminal.click();
+        await newTerminal.click();
 
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
@@ -89,12 +90,16 @@ test.describe("Bottom drawer after a reload", () => {
                 .filter((session) => session.cwd === ctx.testDirPath)
                 .sort((left, right) => left.created_at - right.created_at);
 
-        await expect.poll(async () => (await ownSessions()).length).toBe(2);
+        await expect.poll(async () => (await ownSessions()).length).toBe(3);
 
-        const [kept, destroyed] = await ownSessions();
+        const [kept, waiting, destroyed] = await ownSessions();
 
-        if (kept === undefined || destroyed === undefined) {
-            throw new Error("Both terminal sessions should be listed");
+        if (
+            kept === undefined ||
+            waiting === undefined ||
+            destroyed === undefined
+        ) {
+            throw new Error("All three terminal sessions should be listed");
         }
 
         // The newest terminal is the active one this tab remembers.
@@ -116,6 +121,13 @@ test.describe("Bottom drawer after a reload", () => {
         ).toHaveAttribute("aria-selected", "true");
         await expect(
             page.getByRole("status", { name: `${kept.title}: Connected` }),
+        ).toBeVisible();
+        // A restored tab that is not shown attaches only when opened, so it must not look
+        // like a connection that never finishes.
+        await expect(
+            page.getByRole("status", {
+                name: `${waiting.title}: Not attached`,
+            }),
         ).toBeVisible();
     });
 });

@@ -1,6 +1,7 @@
 import * as React from "react";
 import {
     CircleCheck,
+    CircleDashed,
     CircleX,
     HardDrive,
     MonitorUp,
@@ -41,6 +42,11 @@ function getTerminalStatus(state: TerminalState) {
 
     if (state.type === "reconnecting") {
         return { label: "Reconnecting", color: "text-amber-400" };
+    }
+
+    // A restored tab attaches only once it is shown, so it is waiting, not connecting.
+    if (state.type === "not_started") {
+        return { label: "Not attached", color: "text-slate-500" };
     }
 
     return { label: "Connecting", color: "text-slate-400" };
@@ -215,6 +221,8 @@ function TerminalTabControl(props: {
                                 <CircleX className="h-3.5 w-3.5" />
                             ) : props.tab.state.type === "taken_over" ? (
                                 <MonitorUp className="h-3.5 w-3.5" />
+                            ) : props.tab.state.type === "not_started" ? (
+                                <CircleDashed className="h-3.5 w-3.5" />
                             ) : (
                                 <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
                             )}
