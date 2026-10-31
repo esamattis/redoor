@@ -199,6 +199,8 @@ h1 {
 }
 .code-block.hero-install pre { font-size: 13px; padding: 15px 64px 15px 18px; white-space: pre-wrap; word-break: break-all; }
 .hero-install .copy { top: 50%; transform: translateY(-50%); }
+.hero-note { color: var(--faint); font-size: 14.5px; max-width: 920px; margin: 2px auto 26px; }
+.hero-note code { font-size: 0.85em; }
 .platforms { display: flex; gap: 10px 22px; justify-content: center; flex-wrap: wrap; color: var(--faint); font-size: 14px; }
 .platforms span { display: inline-flex; align-items: center; gap: 7px; }
 .platforms svg { width: 16px; height: 16px; opacity: 0.8; }
@@ -640,6 +642,7 @@ footer p { margin: 6px 0; }
 <pre><code><span class="t-prompt">$ </span>bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"</code></pre>
             <button class="copy" type="button" aria-label="Copy install command" data-copy='bash -c "$(curl -fsSL https://raw.githubusercontent.com/esamattis/redoor/refs/heads/main/install.sh)"'><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
         </div>
+        <p class="hero-note">The script only downloads the single static <code>redoor</code> binary to <code>~/.local/bin</code> (<code>/usr/local/bin</code> as root). Nothing else is installed.</p>
         <div class="platforms">
             <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Linux</span>
             <span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="13" rx="2"/><path d="M1 20h22"/></svg>macOS</span>
