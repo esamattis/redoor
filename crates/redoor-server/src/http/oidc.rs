@@ -90,7 +90,8 @@ struct ExpectedToken<'a> {
     issuer: &'a str,
     client_id: &'a str,
     nonce: &'a str,
-    allowed_groups: &'a [String],
+    /// `None` when the config allows every account.
+    allowed_groups: Option<&'a [String]>,
 }
 
 /// Claims read from the ID token.
@@ -187,6 +188,15 @@ impl OidcClient {
             // could send the client secret somewhere unexpected.
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
+        if config.allowed_groups.is_none() {
+            // Shell access for every account at the provider is a deliberate choice, but one
+            // an operator should see stated at startup rather than discover later.
+            log!(
+                Level::Warning,
+                "server.oidc.allowed_groups is not set: every account that signs in at {} may use this server",
+                config.issuer
+            );
+        }
         Ok(Self {
             config,
             http,
@@ -324,7 +334,7 @@ impl OidcClient {
             issuer: &discovery.issuer,
             client_id: &self.config.client_id,
             nonce: &login.nonce,
-            allowed_groups: &self.config.allowed_groups,
+            allowed_groups: self.config.allowed_groups.as_deref(),
         }
     }
 }
@@ -376,16 +386,14 @@ fn validate_id_token(
     }
     // Checked here as well as at the provider, so a provider-side misconfiguration cannot
     // hand shell access to an account outside the configured groups.
-    if !claims
-        .groups
-        .iter()
-        .any(|group| expected.allowed_groups.contains(group))
+    if let Some(allowed) = expected.allowed_groups
+        && !claims.groups.iter().any(|group| allowed.contains(group))
     {
         return Err(IdTokenError::NotAllowed {
             subject: claims.sub,
             username: claims.preferred_username,
             groups: claims.groups,
-            allowed: expected.allowed_groups.to_vec(),
+            allowed: allowed.to_vec(),
         });
     }
     Ok(SignedInUser {
@@ -667,7 +675,7 @@ mod tests {
                 issuer: "https://id.example.org",
                 client_id: "redoor",
                 nonce: "nonce-1",
-                allowed_groups: &groups,
+                allowed_groups: Some(&groups),
             },
             NOW,
         )
@@ -689,6 +697,25 @@ mod tests {
         many["azp"] = serde_json::json!("redoor");
         // Several audiences are fine when this client is the authorized party.
         assert!(validate(many).is_ok());
+    }
+
+    /// Without `allowed_groups` the groups claim is not consulted at all.
+    #[test]
+    fn accepts_any_groups_when_unrestricted() {
+        let expected = ExpectedToken {
+            issuer: "https://id.example.org",
+            client_id: "redoor",
+            nonce: "nonce-1",
+            allowed_groups: None,
+        };
+        let mut other_groups = claims();
+        other_groups["groups"] = serde_json::json!(["family"]);
+        // Any group is allowed in when the config names none.
+        assert!(validate_id_token(&token(other_groups), &expected, NOW).is_ok());
+        let mut no_groups = claims();
+        no_groups.as_object_mut().unwrap().remove("groups");
+        // A provider that does not release groups must work without a restriction.
+        assert!(validate_id_token(&token(no_groups), &expected, NOW).is_ok());
     }
 
     /// Each claim that decides who signed in is enforced on its own.
@@ -742,7 +769,7 @@ mod tests {
                     issuer: "",
                     client_id: "",
                     nonce: "",
-                    allowed_groups: &[],
+                    allowed_groups: None,
                 },
                 NOW
             ),
@@ -759,7 +786,7 @@ mod tests {
             redirect_url: "https://redoor.example.org/api/v1/auth/oidc/callback"
                 .parse()
                 .unwrap(),
-            allowed_groups: vec!["admins".to_string()],
+            allowed_groups: Some(vec!["admins".to_string()]),
             scopes: vec!["openid".to_string()],
             provider_name: "Example".to_string(),
             session_lifetime: Duration::from_secs(60),

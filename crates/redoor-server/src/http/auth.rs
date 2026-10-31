@@ -571,10 +571,15 @@ fn credentials_fingerprint(password: &str) -> String {
 /// Digest of the OIDC settings that decide who may sign in. The client secret is left out on
 /// purpose: rotating it does not change who is allowed, so it should not sign everyone out.
 fn oidc_fingerprint(config: &OidcConfig) -> String {
-    let mut groups = config.allowed_groups.clone();
+    let mut groups = config.allowed_groups.clone().unwrap_or_default();
     groups.sort();
     let mut hasher = Sha256::new();
-    hasher.update(b"redoor-oidc-session-v1:");
+    // A separate domain for "no restriction", so adding or removing `allowed_groups` signs
+    // out OIDC sessions, and no group list can hash like the unrestricted setting.
+    hasher.update(match config.allowed_groups {
+        Some(_) => b"redoor-oidc-session-v1:".as_slice(),
+        None => b"redoor-oidc-session-v1-any-group:".as_slice(),
+    });
     for part in [config.issuer.as_str(), config.client_id.as_str()]
         .into_iter()
         .chain(groups.iter().map(String::as_str))
@@ -771,7 +776,7 @@ mod tests {
     use super::{
         AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
         LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, SESSION_COOKIE_NAME,
-        SessionCheck, SessionFile, SessionMethod,
+        SessionCheck, SessionFile, SessionMethod, oidc_fingerprint,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
     use redoor_core::config::{AuthMode, OidcConfig};
@@ -790,7 +795,7 @@ mod tests {
             redirect_url: "https://redoor.example.org/api/v1/auth/oidc/callback"
                 .parse()
                 .expect("test URL must parse"),
-            allowed_groups: groups.iter().map(|group| group.to_string()).collect(),
+            allowed_groups: Some(groups.iter().map(|group| group.to_string()).collect()),
             scopes: vec!["openid".to_string()],
             provider_name: "Example".to_string(),
             session_lifetime: Duration::from_secs(365 * 24 * 60 * 60),
@@ -979,6 +984,26 @@ mod tests {
                 .create_session(SessionMethod::Oidc)
                 .await
                 .is_err()
+        );
+    }
+
+    /// Lifting the group restriction changes who may sign in, so it gets a fingerprint no
+    /// group list can produce and signs out sessions made under the restriction.
+    #[test]
+    fn unrestricted_oidc_has_its_own_fingerprint() {
+        let unrestricted = OidcConfig {
+            allowed_groups: None,
+            ..oidc_config(&[])
+        };
+        // An empty group list cannot pass validation, but must still not collide.
+        assert_ne!(
+            oidc_fingerprint(&unrestricted),
+            oidc_fingerprint(&oidc_config(&[]))
+        );
+        // Dropping `allowed_groups` from a restricted config revokes its OIDC sessions.
+        assert_ne!(
+            oidc_fingerprint(&unrestricted),
+            oidc_fingerprint(&oidc_config(&["admins"]))
         );
     }
 

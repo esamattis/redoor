@@ -286,8 +286,10 @@ pub struct OidcConfig {
     /// Absolute callback URL registered at the provider; it must route to this server's
     /// `/api/v1/auth/oidc/callback`. Explicit because a reverse proxy hides the public URL.
     pub redirect_url: url::Url,
-    /// The ID token's `groups` claim must contain at least one of these.
-    pub allowed_groups: Vec<String>,
+    /// The ID token's `groups` claim must contain at least one of these. `None` lets every
+    /// account the provider signs in through, for providers where the client registration
+    /// itself already decides who may use it.
+    pub allowed_groups: Option<Vec<String>>,
     /// Scopes requested at the provider; always includes `openid`. Configurable because the
     /// scope that releases the `groups` claim differs between providers.
     pub scopes: Vec<String>,
@@ -1654,6 +1656,8 @@ allowed_groups = ["admins"]"#;
         // A month-long sliding session is the default.
         assert_eq!(oidc.session_lifetime.as_secs(), 30 * 24 * 60 * 60);
         assert_eq!(oidc.provider_name, "single sign-on");
+        // The minimal settings restrict sign-in to the listed group.
+        assert_eq!(oidc.allowed_groups, Some(vec!["admins".to_string()]));
         // Debug output is used in logs and must never contain the client secret.
         assert!(!format!("{oidc:?}").contains("client-secret"));
     }
@@ -1670,6 +1674,16 @@ allowed_groups = ["admins"]"#;
         assert_eq!(oidc.scopes, ["openid", "profile", "groups"]);
         assert_eq!(oidc.provider_name, "passkey");
         assert_eq!(oidc.session_lifetime.as_secs(), 365 * 24 * 60 * 60);
+    }
+
+    /// Omitting `allowed_groups` allows every account the provider signs in.
+    #[test]
+    fn oidc_allowed_groups_is_optional() {
+        let config = parse_oidc(&VALID_OIDC.replace("allowed_groups = [\"admins\"]", ""))
+            .expect("allowed_groups may be omitted");
+        let oidc = config.server.and_then(|server| server.oidc).expect("oidc");
+        // `None` is what turns the group check off.
+        assert_eq!(oidc.allowed_groups, None);
     }
 
     /// Settings that would break or weaken sign-in fail at startup with the key named.

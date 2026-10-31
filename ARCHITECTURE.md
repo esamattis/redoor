@@ -2396,12 +2396,17 @@ credential only works on its own endpoints:
   - The code is redeemed with the client secret and PKCE verifier. The ID token comes
     straight from the token endpoint over TLS, so its claims (issuer, audience, expiry,
     nonce) are checked but not its signature (OIDC Core 3.1.3.7).
-  - The `groups` claim must contain one of `allowed_groups`, checked by Redoor even if the
-    provider restricts the client too, because the session grants shell access.
+  - When `allowed_groups` is set, the `groups` claim must contain one of them, checked by
+    Redoor even if the provider restricts the client too, because the session grants shell
+    access. Leaving it unset lets every account the provider signs in through, for
+    providers where the client registration already decides who may use it; the server
+    logs a startup warning so this is never accidental. An empty list is refused because
+    it could mean either "nobody" or "anybody".
   - Every allowed identity maps to the single account. OIDC sessions record their method,
     slide forward on use (rewritten at most daily, cookie refreshed by the access layer),
-    and are bound to a digest of issuer, client id and allowed groups, so changing those or
-    removing OIDC revokes them without touching password sessions.
+    and are bound to a digest of issuer, client id and allowed groups (unset hashes in its
+    own domain), so changing those or removing OIDC revokes them without touching password
+    sessions.
 - **Access tokens** are the one credential type for clients other than the browser. They
   are created and managed only by a browser session (see "Access control" below). An MCP
   client is usually an AI assistant acting for the user, so it should get no more access

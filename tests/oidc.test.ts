@@ -248,9 +248,15 @@ const provider = new MockProvider();
 
 let serverPid = 0;
 
-beforeAll(async () => {
-    await provider.start();
-    rmSync(serverHome, { recursive: true, force: true });
+/**
+ * Starts the server with OIDC against the mock provider. `allowedGroups` of null leaves the
+ * key out, which allows every account the provider signs in.
+ */
+async function startServer(allowedGroups: string[] | null): Promise<void> {
+    const allowedGroupsLine =
+        allowedGroups === null
+            ? ""
+            : `allowed_groups = ${JSON.stringify(allowedGroups)}`;
 
     const config = tempFiles.tempFile({
         suffix: ".toml",
@@ -265,7 +271,7 @@ issuer = "${provider.issuer}"
 client_id = "${CLIENT_ID}"
 client_secret = "${CLIENT_SECRET}"
 redirect_url = "${redirectUrl}"
-allowed_groups = ["admins"]
+${allowedGroupsLine}
 provider_name = "Test ID"
 session_lifetime_days = 365
 `,
@@ -274,6 +280,12 @@ session_lifetime_days = 365
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     serverPid = processManager.spawnServer({ config, home: serverHome });
     await waitForPort(VITEST_SERVER_PORT);
+}
+
+beforeAll(async () => {
+    await provider.start();
+    rmSync(serverHome, { recursive: true, force: true });
+    await startServer(["admins"]);
 });
 
 afterAll(async () => {
@@ -453,5 +465,27 @@ describe("OIDC sign-in", () => {
         });
         // Agents still authenticate with the agent token, untouched by browser sign-in.
         await registered;
+    });
+});
+
+describe("OIDC sign-in without allowed_groups", () => {
+    beforeAll(async () => {
+        // Restarted last, so the restricted tests above keep their own server.
+        await processManager.killAndWait(serverPid);
+        await startServer(null);
+    });
+
+    it("signs in a user of any group", async () => {
+        provider.user = {
+            sub: "subject-3",
+            preferred_username: "carol",
+            groups: ["family"],
+        };
+        const { callback } = await signIn("/");
+
+        // Without a restriction a group outside any list still gets a session.
+        expect(callback.status).toBe(303);
+        expect(callback.headers.get("location")).toBe("/");
+        expect(setCookie(callback, "redoor_session")).not.toBeNull();
     });
 });

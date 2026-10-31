@@ -58,8 +58,7 @@ struct RawOidcSection {
     client_id: Option<String>,
     client_secret: Option<String>,
     redirect_url: Option<String>,
-    #[serde(default)]
-    allowed_groups: Vec<String>,
+    allowed_groups: Option<Vec<String>>,
     scopes: Option<Vec<String>>,
     provider_name: Option<String>,
     session_lifetime_days: Option<u64>,
@@ -370,17 +369,23 @@ impl RawOidcSection {
                 "server.oidc.redirect_url must end with {OIDC_CALLBACK_PATH}"
             )));
         }
-        // Without a group restriction every account the provider knows could open shells, so
-        // the operator must name who is allowed instead of relying on provider-side settings.
-        if self
-            .allowed_groups
-            .iter()
-            .all(|group| group.trim().is_empty())
-        {
-            return Err(invalid(
-                "server.oidc.allowed_groups must list at least one group",
-            ));
-        }
+        // Omitting the key is the explicit way to allow every account. An empty list is
+        // refused instead of guessed at, because it could mean "nobody" as well as "anybody".
+        let allowed_groups = match self.allowed_groups {
+            None => None,
+            Some(groups) => {
+                let groups: Vec<String> = groups
+                    .into_iter()
+                    .filter(|group| !group.trim().is_empty())
+                    .collect();
+                if groups.is_empty() {
+                    return Err(invalid(
+                        "server.oidc.allowed_groups must list at least one group; omit it to allow every account",
+                    ));
+                }
+                Some(groups)
+            }
+        };
         let days = self
             .session_lifetime_days
             .unwrap_or(DEFAULT_OIDC_SESSION_LIFETIME_DAYS);
@@ -421,11 +426,7 @@ impl RawOidcSection {
             client_id,
             client_secret,
             redirect_url,
-            allowed_groups: self
-                .allowed_groups
-                .into_iter()
-                .filter(|group| !group.trim().is_empty())
-                .collect(),
+            allowed_groups,
             scopes,
             provider_name,
             session_lifetime: std::time::Duration::from_secs(days * 24 * 60 * 60),
