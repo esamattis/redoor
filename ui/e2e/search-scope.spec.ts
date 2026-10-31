@@ -47,10 +47,12 @@ test.describe("Search scope", () => {
 
         const outsideResult = dialog.getByRole("link", {
             name: `Open path ${outsidePath}`,
+            exact: true,
         });
 
         const siblingResult = dialog.getByRole("link", {
             name: `Open path ${siblingPath}`,
+            exact: true,
         });
 
         // The scope starts at the browsed folder, so the file above it is not found.
@@ -70,12 +72,27 @@ test.describe("Search scope", () => {
             name: "Search directories only",
         });
 
+        const directoriesSearchAnswered = page.waitForResponse(
+            (response) =>
+                new URL(response.url()).pathname.includes("/find/") &&
+                response
+                    .request()
+                    .postData()
+                    ?.includes('"directories_only":true') === true,
+        );
+
         await directoriesOnly.click();
+        // Search can take its full server timeout; old results stay visible until it answers.
+        await directoriesSearchAnswered;
         // Only directories match, so the matching files drop out of the path results.
         await expect(page).toHaveURL(/[?&]dirs=true/);
         await expect(directoriesOnly).toHaveAttribute("aria-pressed", "true");
         await expect(
-            dialog.getByRole("link", { name: `Open path ${folderPath}` }),
+            // Prior file results stay visible until the replacement search finishes.
+            dialog.getByRole("link", {
+                name: `Open path ${folderPath}`,
+                exact: true,
+            }),
         ).toBeVisible();
         await expect(outsideResult).toHaveCount(0);
 
