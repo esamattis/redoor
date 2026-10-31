@@ -24,12 +24,16 @@ export function TabbedBottomDrawer(props: {
     activeTab: BottomDrawerTabId;
     isCollapsed: boolean;
     isFullWindow: boolean;
+    /** Owned by the caller so it can outlive the component, e.g. across reloads. */
+    expandedHeight: number;
     onActiveTabChange: (tab: BottomDrawerTabId) => void;
     onCollapsedChange: (isCollapsed: boolean) => void;
+    onExpandedHeightChange: (height: number) => void;
 }) {
     const resize = useBottomPanelResize({
         isCollapsed: props.isCollapsed,
-        defaultExpandedHeight: 400,
+        expandedHeight: props.expandedHeight,
+        onExpandedHeightChange: props.onExpandedHeightChange,
     });
 
     const isContentVisible = useDrawerSlideContentVisibility({
@@ -43,7 +47,7 @@ export function TabbedBottomDrawer(props: {
 
     const panelHeight = props.isCollapsed
         ? COLLAPSED_DRAWER_HEIGHT
-        : (resize.expandedHeight ?? 400);
+        : props.expandedHeight;
 
     /** Activates a primary pane and reveals the drawer after a direct tab click. */
     const activateTab = (tab: BottomDrawerTabId) => {
@@ -62,7 +66,12 @@ export function TabbedBottomDrawer(props: {
         >
             <section
                 ref={resize.panelRef}
-                style={{ height: props.isFullWindow ? "100%" : panelHeight }}
+                style={
+                    props.isFullWindow
+                        ? { height: "100%" }
+                        : // The cap keeps a height restored from a taller window on screen.
+                          { height: panelHeight, maxHeight: "85dvh" }
+                }
                 aria-label="Application tools"
                 data-overlay-bottom-panel=""
                 className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden bg-surface/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-surface/80 motion-reduce:transition-none ${props.isFullWindow ? "" : "border-t border-slate-800"} ${
@@ -76,6 +85,7 @@ export function TabbedBottomDrawer(props: {
                         role="separator"
                         aria-label="Resize bottom drawer"
                         aria-orientation="horizontal"
+                        aria-valuenow={Math.round(props.expandedHeight)}
                         tabIndex={0}
                         title="Resize bottom drawer"
                         onPointerDown={resize.handleResizeStart}
@@ -272,15 +282,15 @@ function BottomDrawerTabButton(props: {
     );
 }
 
-/** Manages pointer and keyboard resizing without coupling layout mechanics to panel content. */
+/**
+ * Manages pointer and keyboard resizing without coupling layout mechanics to panel content.
+ * The height itself is the caller's, so where it is remembered stays out of the layout.
+ */
 function useBottomPanelResize(props: {
     isCollapsed: boolean;
-    defaultExpandedHeight?: number;
+    expandedHeight: number;
+    onExpandedHeightChange: (height: number) => void;
 }) {
-    const [expandedHeight, setExpandedHeight] = React.useState<number | null>(
-        props.defaultExpandedHeight ?? null,
-    );
-
     const [isResizing, setIsResizing] = React.useState(false);
     const panelRef = React.useRef<HTMLElement | null>(null);
     const headerRef = React.useRef<HTMLDivElement | null>(null);
@@ -343,7 +353,7 @@ function useBottomPanelResize(props: {
             return;
         }
 
-        setExpandedHeight(
+        props.onExpandedHeightChange(
             Math.min(
                 activeResize.maxHeight,
                 Math.max(
@@ -387,9 +397,10 @@ function useBottomPanelResize(props: {
             return;
         }
 
-        const currentHeight = expandedHeight ?? bounds.currentHeight;
+        // A restored height above the cap renders capped, so step from what is on screen.
+        const currentHeight = Math.min(props.expandedHeight, bounds.maxHeight);
         const delta = event.key === "ArrowUp" ? 24 : -24;
-        setExpandedHeight(
+        props.onExpandedHeightChange(
             Math.min(
                 bounds.maxHeight,
                 Math.max(bounds.minHeight, currentHeight + delta),
@@ -399,7 +410,6 @@ function useBottomPanelResize(props: {
     };
 
     return {
-        expandedHeight,
         isResizing,
         panelRef,
         headerRef,

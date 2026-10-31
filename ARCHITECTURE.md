@@ -1435,10 +1435,13 @@ The route tree separates the authenticated application from the public login for
   and each pane reads its own queries. The transfer badge runs an animation-frame clock
   (`useTransferClock`, shared with the per-row progress cell), so it is a leaf component;
   otherwise every frame would rerender the terminals.
-- **The drawer is two atoms and one write.** `bottomDrawerActiveTabAtom` and
-  `bottomDrawerCollapsedAtom` are the whole state. `activateBottomDrawerTabAtom` is a
-  write-only atom that sets both, so revealing a pane is the state change itself; there is no
-  request counter for an effect to drain.
+- **The drawer is three atoms and one write.** `bottomDrawerActiveTabAtom`,
+  `bottomDrawerCollapsedAtom` and `bottomDrawerHeightAtom` are the whole state, kept in
+  session storage like the sidebar widths, so a reload restores the drawer of that browser tab
+  without opening it in other windows. `TabbedBottomDrawer` takes the height as a prop, so the
+  layout does not know where it is remembered. `activateBottomDrawerTabAtom` is a write-only
+  atom that sets the tab and expands the drawer, so revealing a pane is the state change
+  itself; there is no request counter for an effect to drain.
 - **Search state is typed URL state.** `agentSearchSchema` validates the search keys on
   `/agents/$deviceName`, and `useAgentSearchNavigation` changes them with the router's typed
   `search` updater, so the path, hash and the child view's own keys survive.

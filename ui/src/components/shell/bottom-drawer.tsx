@@ -14,6 +14,7 @@ import { TerminalPanel } from "#ui/components/terminal-panel";
 import {
     bottomDrawerActiveTabAtom,
     bottomDrawerCollapsedAtom,
+    bottomDrawerHeightAtom,
 } from "#ui/bottom-drawer-state";
 import { useAgents } from "#ui/use-agents";
 import { useActiveTerminalTarget } from "#ui/use-terminals";
@@ -28,14 +29,17 @@ export function ApplicationBottomDrawer(props: {
 }) {
     const [activeTab, setActiveTab] = useAtom(bottomDrawerActiveTabAtom);
     const [isCollapsed, setIsCollapsed] = useAtom(bottomDrawerCollapsedAtom);
+    const [height, setHeight] = useAtom(bottomDrawerHeightAtom);
 
     return (
         <TabbedBottomDrawer
             activeTab={activeTab}
             isCollapsed={isCollapsed}
             isFullWindow={props.isTerminalFullWindow}
+            expandedHeight={height}
             onActiveTabChange={setActiveTab}
             onCollapsedChange={setIsCollapsed}
+            onExpandedHeightChange={setHeight}
             tabs={[
                 {
                     id: "selected",
