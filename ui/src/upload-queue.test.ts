@@ -87,6 +87,8 @@ function createQueue() {
     const queue = new UploadQueue({
         queryClient,
         resolveAgent: (agentId) => (agentId === agent.id ? agent : undefined),
+        resolveVault: () =>
+            Promise.reject(new Error("No vault in these tests")),
         onSettled,
         unloadTarget,
     });

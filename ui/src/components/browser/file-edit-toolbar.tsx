@@ -152,7 +152,10 @@ ${props.selection.text}
                 variant="ghost"
                 size="sm"
                 aria-label="Search selected text"
-                disabled={props.selection === null}
+                // The search runs on the agent, which must never see a vault file's plaintext.
+                disabled={
+                    props.selection === null || isVaultPath(props.bookmark.path)
+                }
                 onClick={() => {
                     if (props.selection === null) {
                         return;

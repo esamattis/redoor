@@ -230,6 +230,14 @@ export class EditorWorkspace extends ExternalStore<
     start(target: Window) {
         target.addEventListener("pagehide", () => this.flush());
 
+        // A vault file's draft is never stored on the server, so it lives only in this page,
+        // whether or not its editor is shown; leaving would lose it.
+        target.addEventListener("beforeunload", (event) => {
+            if (this.hasDirtyVaultBuffer()) {
+                event.preventDefault();
+            }
+        });
+
         target.document.addEventListener("visibilitychange", () => {
             if (target.document.visibilityState === "hidden") {
                 this.flush();
@@ -253,6 +261,13 @@ export class EditorWorkspace extends ExternalStore<
         return buffer === undefined
             ? ""
             : this.currentState(buffer).doc.toString();
+    }
+
+    /** Whether any vault file has edits that exist only in this page. */
+    private hasDirtyVaultBuffer(): boolean {
+        return [...this.buffers.values()].some(
+            (buffer) => buffer.isDirty && isVaultPath(buffer.key),
+        );
     }
 
     /** Whether a loaded buffer has unsaved edits; undefined when it is not in memory. */

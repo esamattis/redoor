@@ -1,5 +1,4 @@
 import React from "react";
-import type { UnlockedVault } from "#ui/vault/vault-keys";
 import { useMutation } from "@tanstack/react-query";
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { LsEntry } from "#bindings/LsEntry";
@@ -31,7 +30,7 @@ export type ConflictingUpload = {
     directories: string[];
     destinationEntries: LsEntry[];
     /** Carried through the conflict choice, so an encrypted upload stays encrypted. */
-    encryptWith: UnlockedVault | null;
+    encrypt: boolean;
 };
 
 /** The upload to enqueue once the user has chosen how to treat existing entries. */
@@ -39,7 +38,7 @@ export type ResolvedUpload = {
     files: UploadSourceFile[];
     directories: string[];
     onExisting: CopyExistingMode;
-    encryptWith?: UnlockedVault | null;
+    encrypt?: boolean;
 };
 
 /** Splits a relative upload path into the item it creates in the destination and the rest. */

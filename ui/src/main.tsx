@@ -40,6 +40,9 @@ const terminals = new TerminalSessions(queryClient, store);
 const uploads = new UploadQueue({
     queryClient,
     resolveAgent: (agentId) => findCachedAgent(queryClient, api, agentId),
+    // Declared below; only called once an encrypted upload starts.
+    resolveVault: () =>
+        vault.requestUnlock("Uploading encrypted files needs the vault key"),
     onSettled: () => {
         void invalidateAllAgentData(queryClient);
     },

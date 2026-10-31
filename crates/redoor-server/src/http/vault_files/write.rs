@@ -223,8 +223,9 @@ impl Publication<'_> {
             upload.send(&buffer[..read]).await.map_err(write_error)?;
         }
         let bytes_written = upload.finish().await.map_err(write_error)?;
-        // Read right after publishing: another writer in this window makes the next save
-        // conflict, never get lost.
+        // Read right after publishing. A writer that publishes in this window is taken for
+        // our version, so the next save would replace it; closing that gap needs the agent
+        // to report the identity it published.
         let revision = self
             .state
             .agents

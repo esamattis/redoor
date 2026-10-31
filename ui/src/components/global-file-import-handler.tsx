@@ -1,5 +1,4 @@
 import React from "react";
-import type { UnlockedVault } from "#ui/vault/vault-keys";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ClipboardPaste, Upload } from "lucide-react";
 import { type Agent } from "#ui/api-client";
@@ -39,7 +38,7 @@ type ImportState =
 type UploadFilesTo = (
     destination: DirectoryDestination,
     files: UploadSourceFile[],
-    options?: { directories?: string[]; encryptWith?: UnlockedVault | null },
+    options?: { directories?: string[]; encrypt?: boolean },
 ) => Promise<void>;
 
 /**
@@ -298,7 +297,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
     const uploadFilesTo: UploadFilesTo = React.useCallback(
         async (destination, files, options = {}) => {
             const directories = options.directories ?? [];
-            const encryptWith = options.encryptWith ?? null;
+            const encrypt = options.encrypt ?? false;
 
             if (files.length === 0 && directories.length === 0) {
                 return;
@@ -330,7 +329,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                         files,
                         directories,
                         destinationEntries,
-                        encryptWith,
+                        encrypt,
                     });
 
                     return;
@@ -351,7 +350,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                 files,
                 directories,
                 onExisting: "error",
-                encryptWith,
+                encrypt,
             });
         },
         [queryClient, enqueueUpload],
@@ -386,7 +385,7 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
                     agent: conflictingUpload.agent,
                     path: conflictingUpload.destinationPath,
                 },
-                { ...upload, encryptWith: conflictingUpload.encryptWith },
+                { ...upload, encrypt: conflictingUpload.encrypt },
             );
         },
         importState,

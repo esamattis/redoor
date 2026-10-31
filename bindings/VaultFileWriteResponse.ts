@@ -9,7 +9,7 @@ export type VaultFileWriteResponse = { path: string,
  */
 bytes_written: number, 
 /**
- * The new version on the device, read right after publishing. Another writer in that
- * short window would make the next save conflict, never get lost.
+ * The new version on the device, read right after publishing. A writer that publishes
+ * in that short window is taken for this version, so the next save would replace it.
  */
 revision: string | null, };

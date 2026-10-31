@@ -58,14 +58,14 @@ function UploadFilesAction(props: {
     const handleEncryptedSelection = (selectedFiles: File[]) => {
         void vault
             .requestUnlock("Uploading encrypted files needs the vault key")
-            .then((unlocked) =>
+            .then(() =>
                 uploadFilesTo(
                     { agent: props.agent, path: props.directoryPath },
                     selectedFiles.map((file) => ({
                         file,
                         relativePath: `${file.name}${VAULT_SUFFIX}`,
                     })),
-                    { encryptWith: unlocked },
+                    { encrypt: true },
                 ),
             )
             .catch(() => undefined);

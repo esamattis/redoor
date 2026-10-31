@@ -400,8 +400,8 @@ pub struct VaultFileWriteResponse {
     /// Ciphertext bytes written to the device.
     #[ts(type = "number")]
     pub bytes_written: u64,
-    /// The new version on the device, read right after publishing. Another writer in that
-    /// short window would make the next save conflict, never get lost.
+    /// The new version on the device, read right after publishing. A writer that publishes
+    /// in that short window is taken for this version, so the next save would replace it.
     pub revision: Option<String>,
 }
 

@@ -49,7 +49,6 @@ import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
 import {
     useVaultFile,
-    useVaultUnloadWarning,
     VaultFileBanners,
     VaultLockedPanel,
 } from "#ui/components/browser/vault-file-editor";
@@ -631,7 +630,6 @@ export function FileEditView(props: FileEditViewProps) {
     }, [buffer.bufferKey, buffer.editor, canEdit, isDirty, saveMutation]);
 
     useFileSaveShortcut(handleSave);
-    useVaultUnloadWarning(buffer.isVault && isDirty);
 
     const statusMessage = getFileEditorStatus({
         readOnly: buffer.readOnly,

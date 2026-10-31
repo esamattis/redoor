@@ -117,6 +117,11 @@ test.describe.serial("Vault", () => {
         const editor = page.getByRole("textbox", { name: "File editor" });
         await editor.click();
         await editor.fill("API_KEY=very-secret");
+        await page.keyboard.press("ControlOrMeta+a");
+        // Agent-side search would send the decrypted selection to the device.
+        await expect(
+            page.getByRole("button", { name: "Search selected text" }),
+        ).toBeDisabled();
         await page.getByRole("button", { name: "Save file" }).click();
         // The save went through the encrypted write endpoint.
         await expect(page.getByText("Saved", { exact: true })).toBeVisible();

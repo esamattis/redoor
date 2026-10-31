@@ -259,23 +259,3 @@ export function VaultFileBanners(props: {
         </>
     );
 }
-
-/**
- * Warns before the page unloads with unsaved vault edits: their drafts live only in memory,
- * because encrypted content is never stored as an editor buffer on the server.
- */
-export function useVaultUnloadWarning(isDirty: boolean) {
-    React.useEffect(() => {
-        if (!isDirty) {
-            return;
-        }
-
-        const warn = (event: BeforeUnloadEvent) => {
-            event.preventDefault();
-        };
-
-        window.addEventListener("beforeunload", warn);
-
-        return () => window.removeEventListener("beforeunload", warn);
-    }, [isDirty]);
-}
