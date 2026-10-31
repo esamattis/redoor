@@ -3594,6 +3594,7 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "bytes",
+ "cc",
  "clap",
  "fastrand",
  "futures-util",

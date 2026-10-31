@@ -48,6 +48,10 @@ uuid.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 libloading.workspace = true
 
+[build-dependencies]
+# Assembles the TLS alignment object that arm64 Android builds need; see build.rs.
+cc.workspace = true
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 redoor-core = { workspace = true, features = ["test-support"] }
