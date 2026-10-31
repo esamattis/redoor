@@ -1471,6 +1471,10 @@ context (`useTerminals`, `useUploads`).
     fetch from before the create can never remove the new tab. Sessions being deleted are
     kept out of the tabs until the delete settles.
   - Tab order and the active tab are kept in the user state (`terminalTabs`, by session id).
+    Whenever no tab is active, a list result picks the saved one again, or the first tab when
+    the saved shell was destroyed meanwhile. This runs on every result, not only the first,
+    because tabs of devices missing from the inventory are restored later, and a drawer
+    restored open must show a shell rather than an empty pane.
 - **`TerminalSession` owns one tab.** It holds the attach WebSocket, the wterm emulator, the
   ready flag and two generation counters: the emulator generation (bumped by restarting,
   failing or disposing) and the socket generation (bumped by every new socket), so a late

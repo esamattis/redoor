@@ -147,8 +147,6 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
     private pendingCreates = 0;
     /** Sessions this window is deleting, so a list fetched meanwhile does not bring them back. */
     private readonly pendingDeletes = new Set<string>();
-    /** Whether the first list result restored the saved tabs. */
-    private isRestored = false;
     private stopObserving: (() => void) | null = null;
     private readonly sessionList: QueryObserver<
         TerminalSessionList,
@@ -400,8 +398,8 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
 
     /**
      * Makes the tabs follow the server's list: drops tabs whose session is gone, such as one
-     * closed in another window, and adds sessions this window has no tab for. The first
-     * result also restores the saved order and active tab.
+     * closed in another window, and adds sessions this window has no tab for. Restored tabs
+     * follow the saved order, and whenever no tab is active the saved one is picked again.
      */
     private reconcile(): void {
         const list = this.sessionList.getCurrentResult().data;
@@ -424,23 +422,36 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
         const added =
             this.pendingCreates > 0 ? 0 : this.restoreMissing(list.sessions);
 
-        if (!this.isRestored) {
-            this.isRestored = true;
+        const activated = this.restoreActiveTab();
 
-            const saved = this.savedTabs().active;
-
-            const active = this.sessions.find(
-                (session) =>
-                    session.sessionId !== null && session.sessionId === saved,
-            );
-
-            this.activeTabId ??=
-                active?.tab.id ?? this.sessions[0]?.tab.id ?? null;
-        }
-
-        if (gone.length > 0 || added > 0) {
+        if (gone.length > 0 || added > 0 || activated) {
             this.syncVisibility();
         }
+    }
+
+    /**
+     * Picks an active tab when there is none, so a drawer restored open after a reload shows
+     * a shell instead of an empty pane. This runs on every list result, not just the first,
+     * because tabs of devices that are not known yet are restored later. The saved tab is
+     * preferred; when its shell was destroyed meanwhile the first tab stands in. Returns
+     * whether the active tab changed.
+     */
+    private restoreActiveTab(): boolean {
+        if (this.activeTabId !== null || this.sessions.length === 0) {
+            return false;
+        }
+
+        const saved = this.savedTabs().active;
+
+        const active =
+            this.sessions.find(
+                (session) =>
+                    session.sessionId !== null && session.sessionId === saved,
+            ) ?? this.sessions[0];
+
+        this.activeTabId = active?.tab.id ?? null;
+
+        return this.activeTabId !== null;
     }
 
     /** Adds a detached tab for every listed session without one; returns how many. */

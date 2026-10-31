@@ -130,6 +130,8 @@ function createOwner() {
     onTestFinished(() => {
         terminals.dispose();
         queryClient.clear();
+        // The drawer atoms live in session storage, which jsdom keeps between tests.
+        window.sessionStorage.clear();
     });
 
     return { terminals, store, alpha, beta, api, queryClient };
@@ -585,5 +587,91 @@ describe("TerminalSessions restoring tabs", () => {
                 owner.terminals.getSnapshot().activeTabId ?? -1,
             )?.sessionId,
         );
+    });
+});
+
+describe("TerminalSessions picking the restored active tab", () => {
+    test("falls back to the first tab when the saved active shell was destroyed", () => {
+        const owner = createOwner();
+        owner.queryClient.setQueryData(queryKeys.agents(), [
+            agentInfo("alpha", "Alpha"),
+        ]);
+        owner.queryClient.setQueryData(queryKeys.userState(), {
+            ...defaultUserState,
+            terminalTabs: { order: ["s-gone", "s-1", "s-2"], active: "s-gone" },
+        });
+        followList(owner, [
+            sessionInfo({
+                id: "s-1",
+                agentId: "alpha",
+                number: 1,
+                createdAt: 1,
+            }),
+            sessionInfo({
+                id: "s-2",
+                agentId: "alpha",
+                number: 2,
+                createdAt: 2,
+            }),
+        ]);
+
+        const snapshot = owner.terminals.getSnapshot();
+        // A drawer restored open must show a shell, not an empty pane with no active tab.
+        expect(snapshot.activeTabId).toBe(snapshot.tabs[0]?.id);
+    });
+
+    test("activates the saved tab once its device becomes known", () => {
+        const owner = createOwner();
+        owner.queryClient.setQueryData(queryKeys.agents(), []);
+        owner.queryClient.setQueryData(queryKeys.userState(), {
+            ...defaultUserState,
+            terminalTabs: { order: ["s-1", "s-2"], active: "s-2" },
+        });
+
+        const sessions = [
+            sessionInfo({
+                id: "s-1",
+                agentId: "alpha",
+                number: 1,
+                createdAt: 1,
+            }),
+            sessionInfo({
+                id: "s-2",
+                agentId: "alpha",
+                number: 2,
+                createdAt: 2,
+            }),
+        ];
+
+        followList(owner, sessions);
+        // The device list has not loaded, so there is nothing to restore yet.
+        expect(owner.terminals.getSnapshot().tabs).toEqual([]);
+
+        owner.queryClient.setQueryData(queryKeys.agents(), [
+            agentInfo("alpha", "Alpha"),
+        ]);
+        // The next list result restores the tabs. It must differ from the previous one, or the
+        // structurally equal data would not notify the owner.
+        owner.queryClient.setQueryData<TerminalSessionList>(
+            queryKeys.terminalSessions(),
+            {
+                sessions: [
+                    ...sessions,
+                    sessionInfo({
+                        id: "s-3",
+                        agentId: "alpha",
+                        number: 3,
+                        createdAt: 3,
+                    }),
+                ],
+            },
+        );
+
+        const snapshot = owner.terminals.getSnapshot();
+        // Tabs restored after the first list result still get the saved tab as the active
+        // one, instead of leaving every tab hidden.
+        expect(
+            owner.terminals.sessionFor(snapshot.activeTabId ?? -1)?.sessionId,
+        ).toBe("s-2");
     });
 });
