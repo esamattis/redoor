@@ -54,8 +54,12 @@ pub(crate) struct ServerState {
     pub(crate) config_edit_lock: Arc<tokio::sync::Mutex<()>>,
     /// Serializes editor buffer writes so a revision check and its write cannot interleave.
     pub(crate) editor_buffer_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Managed SSH keys and pinned host keys of SSH devices.
+    /// The login account's vault (`vault.json`), which encrypts `.redoorvault` files.
+    pub(crate) vault: crate::vault::VaultStore,
+    /// Managed SSH keys and pinned host keys of SSH devices, per account.
     pub(crate) ssh_keys: crate::ssh::keys::SshKeyStore,
+    /// Decrypted SSH keys of running devices, shared with the launcher's provisioning.
+    pub(crate) held_ssh_keys: crate::ssh::held_keys::HeldSshKeys,
     /// Devices with a key operation or edit in progress, so they cannot race each other.
     pub(crate) ssh_key_operations: super::ssh_keys::SshKeyOperations,
     /// Login backend resolved from the TOML credentials (or their absence).

@@ -7,6 +7,7 @@ publish.workspace = true
 [dependencies]
 redoor-protocol.workspace = true
 redoor-core.workspace = true
+redoor-vault.workspace = true
 anyhow.workspace = true
 argon2.workspace = true
 async-compression.workspace = true
@@ -21,6 +22,8 @@ fastrand.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 ssh-key.workspace = true
+ssh-encoding.workspace = true
+signature.workspace = true
 zeroize.workspace = true
 headers.workspace = true
 jiff.workspace = true

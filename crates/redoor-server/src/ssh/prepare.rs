@@ -385,10 +385,26 @@ impl Preparation<'_> {
     /// Builds the SSH connection parameters from the target settings. A device with a
     /// managed key uses only that key and its pinned host key, for the probe, the binary
     /// upload and the agent session alike.
+    ///
+    /// The keys and pin come from the account that started the device, so reconnects use
+    /// the key that account handed over.
     async fn ssh_host(&self) -> Result<SshHost, ProvisionError> {
-        ManagedKeyDevice::new(self.config.clone(), self.provision.ssh_keys.clone())?
-            .connection_host()
-            .await
+        let account = self
+            .config
+            .id
+            .as_ref()
+            .and_then(|device| self.provision.held_ssh_keys.started_by(device))
+            .or_else(|| self.provision.default_account.clone());
+        let keys = account
+            .map(|account| self.provision.ssh_keys.account(&account))
+            .transpose()?;
+        ManagedKeyDevice::new(
+            self.config.clone(),
+            keys,
+            self.provision.held_ssh_keys.clone(),
+        )?
+        .connection_host()
+        .await
     }
 
     /// Operator-chosen path, or the versioned default under the local namespace.

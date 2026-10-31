@@ -62,6 +62,14 @@ impl SpawnError {
             Self::Spawn(error) => error.to_string(),
         }
     }
+
+    /// Whether another attempt could succeed without the user doing something first.
+    fn is_retryable(&self) -> bool {
+        match self {
+            Self::Provision(error) => error.is_retryable(),
+            Self::Spawn(_) => true,
+        }
+    }
 }
 
 /// Lifecycle control failures, mapped to HTTP statuses by the REST layer.
@@ -584,7 +592,7 @@ async fn run_supervisor(
     watchdog: WatchdogHandle,
     mut commands: mpsc::Receiver<SupervisorCommand>,
 ) {
-    loop {
+    'idle: loop {
         match wait_until_running(&watchdog, &mut commands).await {
             IdleWait::Exit => break,
             IdleWait::Start => {}
@@ -612,6 +620,9 @@ async fn run_supervisor(
                     return;
                 }
                 CommandAction::Stop => break,
+                // Already published as stopped for exactly this attempt; publishing again
+                // could overwrite a Start that arrived meanwhile.
+                CommandAction::Halt => continue 'idle,
                 CommandAction::Restart => {
                     backoff = INITIAL_BACKOFF;
                     continue;
@@ -631,6 +642,7 @@ async fn run_supervisor(
                             backoff = (backoff * 2).min(MAX_BACKOFF);
                         }
                         CommandAction::Stop => break,
+                        CommandAction::Halt => continue 'idle,
                         CommandAction::Restart => {
                             backoff = INITIAL_BACKOFF;
                             continue;
@@ -696,18 +708,37 @@ async fn run_started_cycle(
     }
 }
 
-/// Publishes why an attempt produced no child; the supervisor retries after backoff.
+/// Publishes why an attempt produced no child; the supervisor retries after backoff, unless
+/// retrying cannot help (a locked SSH key), which stops the agent with the issue shown.
 fn report_spawn_failure(
     watchdog: &WatchdogHandle,
     attempt_generation: u64,
     error: SpawnError,
 ) -> CycleResult {
     let issue = error.user_message();
+    let retryable = error.is_retryable();
     redoor_core::log_error!(
         anyhow::Error::new(error),
-        "Watchdog spawn failed: key={}",
-        watchdog.key()
+        "Watchdog spawn failed: key={}, retryable={}",
+        watchdog.key(),
+        retryable
     );
+    if !retryable {
+        // Only this attempt is stopped. A shutdown or retry that changed the generation
+        // meanwhile has its command queued; the ordinary retry path below then handles it.
+        let stopped = watchdog.publish_attempt_update(attempt_generation, |snapshot| {
+            snapshot.desired_running = false;
+            snapshot.status = AgentConnectionStatus::Stopped;
+            snapshot.socket_id = None;
+            snapshot.connection_issue = Some(issue.clone());
+        });
+        if stopped {
+            return CycleResult {
+                action: CommandAction::Halt,
+                was_connected: false,
+            };
+        }
+    }
     publish_issue(watchdog, attempt_generation, issue);
     CycleResult {
         action: CommandAction::Continue,
@@ -928,6 +959,9 @@ enum CommandAction {
     /// An explicit operator retry skips automatic backoff and begins a clean attempt.
     Restart,
     Stop,
+    /// The attempt failed in a way retrying cannot fix and was already published as
+    /// stopped; the supervisor goes idle without publishing again.
+    Halt,
     /// Configuration replacement must end the task, not just return it to idle.
     Exit,
 }

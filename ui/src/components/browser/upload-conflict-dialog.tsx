@@ -29,6 +29,8 @@ export type ConflictingUpload = {
     files: UploadSourceFile[];
     directories: string[];
     destinationEntries: LsEntry[];
+    /** Carried through the conflict choice, so an encrypted upload stays encrypted. */
+    encrypt: boolean;
 };
 
 /** The upload to enqueue once the user has chosen how to treat existing entries. */
@@ -36,6 +38,7 @@ export type ResolvedUpload = {
     files: UploadSourceFile[];
     directories: string[];
     onExisting: CopyExistingMode;
+    encrypt?: boolean;
 };
 
 /** Splits a relative upload path into the item it creates in the destination and the rest. */

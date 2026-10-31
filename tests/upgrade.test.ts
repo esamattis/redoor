@@ -59,6 +59,19 @@ function executableOf(pid: number): string {
     return readlinkSync(`/proc/${pid}/exe`);
 }
 
+/**
+ * Reads what the server executes, as the server itself sees it. The server is not dumpable
+ * (so its user's other processes cannot read vault keys from its memory), which hides its
+ * `/proc/<pid>/exe` from the test; its own view still ends in the replaced marker until it
+ * re-executes.
+ */
+async function serverExecutable(port: number): Promise<string> {
+    const client = new ApiClient(`http://127.0.0.1:${port}`);
+    await client.login(USERNAME, PASSWORD);
+
+    return (await client.getServerInfo()).exe_path;
+}
+
 /** Fields of the JSON PID record the upgrade tests rely on. */
 const pidRecordSchema = z.object({ pid: z.number() });
 
@@ -179,6 +192,8 @@ port = ${port}
         return {
             binary,
             port,
+            pidFile: (role: "server" | "agent") =>
+                join(dataDirectory, `${role}.pid`),
             run,
             startServerAndAgent,
             waitForConnectedAgent,
@@ -198,8 +213,17 @@ port = ${port}
         expect(upgrade.stdout).toContain(`Restarted PID ${agentPid}`);
         // The same PIDs now execute the installed file instead of the replaced image, so
         // the restart was an in-place re-exec that a supervisor would keep tracking.
-        expect(executableOf(serverPid)).toBe(setup.binary);
         expect(executableOf(agentPid)).toBe(setup.binary);
+        // The server's image is hidden from the CLI, so its restart is only signalled and
+        // may still be under way when the CLI exits.
+        await vi.waitFor(
+            async () => {
+                expect(await serverExecutable(setup.port)).toBe(setup.binary);
+            },
+            { timeout: 60_000, interval: 100 },
+        );
+        // The re-exec kept the PID a supervisor tracks.
+        expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
         // The restarted agent must reach the restarted server again.
         await setup.waitForConnectedAgent();
     }, 90_000);
@@ -254,17 +278,19 @@ port = ${port}
         void response.text().catch(() => "");
 
         await vi.waitFor(
-            () => {
+            async () => {
                 // Both processes already ran this path before the upgrade, so only a replaced
                 // file proves the paths below point at the installed release.
                 expect(statSync(setup.binary).ino).not.toBe(originalInode);
                 // The server restarting drops the agent's connection, which kills the exec'd
                 // command, so both restarts must complete even though their caller dies.
-                expect(executableOf(serverPid)).toBe(setup.binary);
+                expect(await serverExecutable(setup.port)).toBe(setup.binary);
                 expect(executableOf(agentPid)).toBe(setup.binary);
             },
             { timeout: 60_000, interval: 100 },
         );
+        // The re-exec kept the server's PID.
+        expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
         // The hosting agent must come back connected to the restarted server.
         await setup.waitForConnectedAgent();
     }, 90_000);
@@ -307,13 +333,15 @@ port = ${port}
         );
 
         await vi.waitFor(
-            () => {
+            async () => {
                 // The helper restarts both in place even though the server answered first.
-                expect(executableOf(serverPid)).toBe(setup.binary);
+                expect(await serverExecutable(setup.port)).toBe(setup.binary);
                 expect(executableOf(agentPid)).toBe(setup.binary);
             },
             { timeout: 60_000, interval: 100 },
         );
+        // The re-exec kept the server's PID.
+        expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
         // The agent reconnects to the restarted server.
         await setup.waitForConnectedAgent();
     }, 90_000);
@@ -329,7 +357,8 @@ port = ${port}
         expect(missing.status).toBe(500);
         expect(error.error).toContain("download failed");
         // Nothing was replaced, so the server still runs its original, intact binary.
-        expect(executableOf(serverPid)).toBe(setup.binary);
+        expect(await serverExecutable(setup.port)).toBe(setup.binary);
+        expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
 
         const invalid = await postUpgrade(setup.port, "--no-restart");
 

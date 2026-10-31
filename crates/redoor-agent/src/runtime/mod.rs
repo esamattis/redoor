@@ -827,6 +827,8 @@ impl AgentRuntime {
                 supports_trash: trash.supports_inventory,
                 // macOS supports the native move without Redoor inventory or restore support.
                 supports_move_to_trash: trash.supports_move,
+                // Vault writes depend on the publication check in `RawFileSink`.
+                supports_upload_preconditions: true,
             },
         };
         log!(

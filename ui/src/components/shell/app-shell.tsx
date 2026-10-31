@@ -12,6 +12,7 @@ import { DocumentTitle } from "#ui/components/shell/document-title";
 import { RouteLoadingIndicator } from "#ui/components/shell/route-loading-indicator";
 import { ThemeManager } from "#ui/components/theme-toggle";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
+import { VaultDialog } from "#ui/components/vault-dialog";
 import { useRefreshListener } from "#ui/refresh-listener";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
@@ -41,6 +42,7 @@ export function AppShell() {
                 <DocumentTitle />
                 <RouteLoadingIndicator />
                 <UserStatePersistToast />
+                <VaultDialog />
                 <ApplicationNavigation />
                 <OverlayChromeLayout
                     isBottomChromeFullWindow={isTerminalFullWindow}

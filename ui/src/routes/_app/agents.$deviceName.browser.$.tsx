@@ -1,4 +1,5 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { opensInEditor } from "#ui/vault/vault-path";
 import {
     createFileRoute,
     redirect,
@@ -819,7 +820,7 @@ function FileBrowserPage(props: {
 
     const fileName = getBaseName(path);
     const downloadUrl = agent.getRawUrl(lsResult.path);
-    const editable = metadata.editable;
+    const editable = opensInEditor(metadata);
     const viewableImage = metadata.viewable_image;
 
     // A file's default representation is its content, named "view" in the tab strip.
@@ -1093,7 +1094,7 @@ function replaceUnsupportedFileView(
     metadata: MetadataResponse | null,
 ) {
     const canShowContent =
-        metadata?.editable === true || metadata?.viewable_image === true;
+        opensInEditor(metadata) || metadata?.viewable_image === true;
 
     if (wantsFileContentView(view) && !canShowContent) {
         throw redirect({

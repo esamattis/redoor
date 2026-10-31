@@ -1,4 +1,5 @@
 import { historyField } from "@codemirror/commands";
+import { isVaultPath } from "#ui/vault/vault-path";
 import {
     EditorSelection,
     EditorState,
@@ -229,6 +230,14 @@ export class EditorWorkspace extends ExternalStore<
     start(target: Window) {
         target.addEventListener("pagehide", () => this.flush());
 
+        // A vault file's draft is never stored on the server, so it lives only in this page,
+        // whether or not its editor is shown; leaving would lose it.
+        target.addEventListener("beforeunload", (event) => {
+            if (this.hasDirtyVaultBuffer()) {
+                event.preventDefault();
+            }
+        });
+
         target.document.addEventListener("visibilitychange", () => {
             if (target.document.visibilityState === "hidden") {
                 this.flush();
@@ -252,6 +261,13 @@ export class EditorWorkspace extends ExternalStore<
         return buffer === undefined
             ? ""
             : this.currentState(buffer).doc.toString();
+    }
+
+    /** Whether any vault file has edits that exist only in this page. */
+    private hasDirtyVaultBuffer(): boolean {
+        return [...this.buffers.values()].some(
+            (buffer) => buffer.isDirty && isVaultPath(buffer.key),
+        );
     }
 
     /** Whether a loaded buffer has unsaved edits; undefined when it is not in memory. */
@@ -886,9 +902,12 @@ export class EditorWorkspace extends ExternalStore<
             : buffer.state;
     }
 
-    /** Debounces a write of an open file's buffer. */
+    /**
+     * Debounces a write of an open file's buffer. Vault files are never written (see
+     * `write`), so they are not scheduled either.
+     */
     private schedule(key: string, delay: number) {
-        if (!this.openKeys.has(key)) {
+        if (!this.openKeys.has(key) || isVaultPath(key)) {
             return;
         }
 
@@ -928,7 +947,13 @@ export class EditorWorkspace extends ExternalStore<
     private async write(key: string, keepalive: boolean) {
         const buffer = this.buffers.get(key);
 
-        if (buffer === undefined || !this.openKeys.has(key)) {
+        // Every write path ends here, so this is the one check that keeps a vault file's
+        // plaintext draft in the browser.
+        if (
+            buffer === undefined ||
+            !this.openKeys.has(key) ||
+            isVaultPath(key)
+        ) {
             return;
         }
 

@@ -4,6 +4,12 @@
 //! reused between steps. The credential that got the enrollment in (the bootstrap
 //! credential) is kept until the caller commits or rolls back, because rollback has to log
 //! in again to remove the new key.
+//!
+//! Rotation, removal and device deletion authenticate with the current key. For an
+//! encrypted key that is the *operation credential* the caller resolves before anything
+//! stops the supervisor: decrypted from a file key sent with the request, or a clone of the
+//! held key. It lives only for the request and is never put into the held keys, so rotating
+//! a stopped device does not make it startable with an access token.
 
 use redoor_core::config::SshBackedAgentConfig;
 use redoor_core::log;
@@ -13,7 +19,9 @@ use tokio::process::Command;
 use zeroize::Zeroizing;
 
 use super::ProvisionError;
-use super::keys::{HostKey, ManagedKey, SshKeyStore, device_marker};
+use super::encrypted_keys::SshKeySeal;
+use super::held_keys::HeldSshKeys;
+use super::keys::{AccountSshKeys, HostKey, ManagedKey, StagedKey, StoredKey, device_marker};
 use super::shell::quote;
 use super::transport::{
     AuthPolicy, HostKeyPolicy, PinnedHostKey, SshConfigDump, SshHost, SshOutput, SshRunOptions,
@@ -75,7 +83,7 @@ pub(crate) struct ProbedHostKey {
 /// exactly as long as rollback may still need it.
 pub(crate) struct PendingKey {
     /// The new key, still at its staged path.
-    key: ManagedKey,
+    key: StagedKey,
     /// The credential that installed it, used again to remove it on rollback.
     bootstrap: AuthPolicy,
     /// Fingerprints of the keys that were kept on the device before the new line was added.
@@ -85,25 +93,34 @@ pub(crate) struct PendingKey {
 impl PendingKey {
     /// The new key, for the commit and the response.
     pub(crate) fn key(&self) -> &ManagedKey {
-        &self.key
+        &self.key.key
+    }
+
+    /// Whether the new key is encrypted with the vault.
+    pub(crate) fn is_encrypted(&self) -> bool {
+        self.key.encrypted
     }
 }
 
-/// One SSH device's key and host key operations.
+/// One SSH device's key and host key operations, for one account.
 pub(crate) struct ManagedKeyDevice {
     /// The device's current config entry.
     config: SshBackedAgentConfig,
     /// The device id, which names the key's directory and is the `HostKeyAlias`.
     device: AgentId,
-    /// Where keys and pins are stored.
-    keys: SshKeyStore,
+    /// Where the account's keys and pins are stored; `None` for relays, which belong to no
+    /// account and so have neither.
+    keys: Option<AccountSshKeys>,
+    /// Decrypted keys of running devices.
+    held: HeldSshKeys,
 }
 
 impl ManagedKeyDevice {
     /// Binds the operations to one config entry; entries without an id cannot have keys.
     pub(crate) fn new(
         config: SshBackedAgentConfig,
-        keys: SshKeyStore,
+        keys: Option<AccountSshKeys>,
+        held: HeldSshKeys,
     ) -> Result<Self, ProvisionError> {
         let device = config.id.clone().ok_or_else(|| {
             ProvisionError::Configuration(format!(
@@ -115,24 +132,88 @@ impl ManagedKeyDevice {
             config,
             device,
             keys,
+            held,
         })
     }
 
-    /// The pinned host key policy, or `None` when nothing is pinned yet.
+    /// The account's key store; key operations always run for an account.
+    fn keys(&self) -> Result<&AccountSshKeys, ManagedKeyError> {
+        self.keys.as_ref().ok_or_else(|| {
+            ManagedKeyError::Local("SSH key operations need a login account".to_string())
+        })
+    }
+
+    /// The account the key operations run for.
+    fn account(&self) -> Option<&str> {
+        self.keys.as_ref().map(AccountSshKeys::account)
+    }
+
+    /// The pinned host key policy, or `None` when nothing is pinned yet (or there is no
+    /// account to hold a pin).
     async fn pinned_policy(&self) -> std::io::Result<Option<PinnedHostKey>> {
-        Ok(self
-            .keys
+        let Some(keys) = &self.keys else {
+            return Ok(None);
+        };
+        Ok(keys
             .pinned_host_key(&self.device)
             .await?
             .map(|key| PinnedHostKey {
-                known_hosts: self.keys.known_hosts_path(&self.device),
+                known_hosts: keys.known_hosts_path(&self.device),
                 alias: self.device.to_string(),
                 fingerprint: key.fingerprint(),
             }))
     }
 
+    /// The device's current key as stored, encrypted or not.
+    pub(crate) async fn stored_key(&self) -> std::io::Result<StoredKey> {
+        self.keys()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .load(&self.device)
+            .await
+    }
+
+    /// Decrypts the device's encrypted key with its file key, after the caller checked the
+    /// header against the vault. Checks the MAC, the account and device binding and that
+    /// the private key matches the header's public key.
+    pub(crate) async fn unlock(
+        &self,
+        file: &super::encrypted_keys::EncryptedKeyFile,
+        file_key: &redoor_vault::FileKey,
+    ) -> Result<ManagedKey, super::encrypted_keys::SshKeyOpenError> {
+        let account = self
+            .account()
+            .ok_or_else(|| {
+                super::encrypted_keys::SshKeyOpenError::Mismatch(
+                    "SSH keys belong to a login account".to_string(),
+                )
+            })?
+            .to_string();
+        let private_key = file.open(file_key, &account, &self.device).await?;
+        Ok(ManagedKey::from_decrypted(
+            self.device.clone(),
+            account,
+            std::sync::Arc::new(private_key),
+        ))
+    }
+
+    /// The key the server holds for this account's device, if any.
+    ///
+    /// It is not compared with the key file: a rotation of a running device holds the new
+    /// key just before renaming it into place, and both keys stay authorized on the device
+    /// until the old line is removed afterwards, so either one logs in during the switch.
+    pub(crate) fn held_key(&self) -> Option<ManagedKey> {
+        let account = self.account()?;
+        let key = self.held.get(account, &self.device)?;
+        Some(ManagedKey::from_decrypted(
+            self.device.clone(),
+            account.to_string(),
+            key,
+        ))
+    }
+
     /// The host every agent start uses for a device with a managed key: pinned host key and
-    /// only the managed key offered.
+    /// only the managed key offered. An encrypted key must be held by the server; reading it
+    /// from disk is not enough.
     pub(super) async fn connection_host(&self) -> Result<SshHost, ProvisionError> {
         if !self.config.managed_ssh_key {
             let mut host = SshHost::for_config(&self.config).password(self.config.password.clone());
@@ -150,11 +231,19 @@ impl ManagedKeyDevice {
                 self.device
             ))
         };
-        let key = self
-            .keys
-            .load(&self.device)
+        let key = match self
+            .stored_key()
             .await
-            .map_err(|error| unusable("managed SSH key", &error))?;
+            .map_err(|error| unusable("managed SSH key", &error))?
+        {
+            StoredKey::Plaintext(key) => key,
+            StoredKey::Encrypted(_) => self.held_key().ok_or_else(|| {
+                ProvisionError::SshKeyLocked(
+                    "The SSH key is locked. Start the device from the browser to unlock it."
+                        .to_string(),
+                )
+            })?,
+        };
         let pinned = self
             .pinned_policy()
             .await
@@ -168,7 +257,7 @@ impl ManagedKeyDevice {
         SshHost::for_config(&self.config)
             .host_key(HostKeyPolicy::Pinned(pinned))
             .auth(AuthPolicy::ManagedKey {
-                identity_file: key.private_key_path.clone(),
+                key: key.private_key().clone(),
             })
     }
 
@@ -180,7 +269,7 @@ impl ManagedKeyDevice {
     /// so the key is always recorded, even when the system already trusts it.
     pub(crate) async fn probe_host_key(&self) -> Result<ProbedHostKey, ManagedKeyError> {
         let temp = self
-            .keys
+            .keys()?
             .probe_known_hosts_path(&self.device)
             .await
             .map_err(ManagedKeyError::local(
@@ -210,7 +299,7 @@ impl ManagedKeyDevice {
         Ok(ProbedHostKey {
             previously_trusted: self.previously_trusted(&key).await,
             pinned: self
-                .keys
+                .keys()?
                 .pinned_host_key(&self.device)
                 .await
                 .map_err(ManagedKeyError::local(READ_PIN_FAILED))?,
@@ -229,7 +318,7 @@ impl ManagedKeyDevice {
                 confirmed.trim()
             )));
         }
-        self.keys
+        self.keys()?
             .pin_host_key(&self.device, &probed.key)
             .await
             .map_err(ManagedKeyError::local(
@@ -259,7 +348,7 @@ impl ManagedKeyDevice {
         {
             if let Some(confirmed) = confirmed
                 && !self
-                    .keys
+                    .keys()?
                     .pinned_host_key(&self.device)
                     .await
                     .map_err(ManagedKeyError::local(READ_PIN_FAILED))?
@@ -297,40 +386,45 @@ impl ManagedKeyDevice {
     /// Used for both the first key and rotation; with a current key, it keeps that key's
     /// line on the device until [`ManagedKeyDevice::finish_rotation`]. The current key file
     /// is not touched, so running agents and new starts keep using it until the commit.
+    ///
+    /// `current` is the operation credential of a rotation (required when the device has a
+    /// managed key); `vault` encrypts the new key with the account's vault.
     pub(crate) async fn install_new_key(
         &self,
         confirmed_host_key: Option<&str>,
         typed_password: Option<Zeroizing<String>>,
+        current: Option<&ManagedKey>,
+        vault: Option<&SshKeySeal>,
     ) -> Result<PendingKey, ManagedKeyError> {
+        if self.config.managed_ssh_key && current.is_none() {
+            // Rotation logs in only with the current key, so without it the way out is
+            // removing the key and setting it up again with another credential.
+            return Err(ManagedKeyError::Input(
+                "The current SSH key of this device is not available, so it cannot be rotated. Remove the key and set it up again."
+                    .to_string(),
+            ));
+        }
+        let current = current.filter(|_| self.config.managed_ssh_key);
         let pinned = self.ensure_pinned(confirmed_host_key).await?;
-        let current = if self.config.managed_ssh_key {
-            Some(self.keys.load(&self.device).await.map_err(|error| {
-                // Rotation logs in only with the current key, so without it the way out is
-                // removing the key and setting it up again with another credential.
-                ManagedKeyError::Input(format!(
-                    "The current SSH key of this device cannot be read from the server's data directory ({error}), so it cannot be rotated. Remove the key and set it up again."
-                ))
-            })?)
-        } else {
-            None
-        };
         let bootstrap = self
-            .bootstrap_credential(&pinned, current.as_ref(), typed_password)
+            .bootstrap_credential(&pinned, current, typed_password)
             .await?;
-        let previous_keep: Vec<String> = current.iter().map(ManagedKey::fingerprint).collect();
+        let previous_keep: Vec<String> = current.iter().map(|key| key.fingerprint()).collect();
 
         let key = self
-            .keys
-            .stage(&self.device)
+            .keys()?
+            .stage(&self.device, vault)
             .await
             .map_err(ManagedKeyError::local(
                 "Failed to create the new SSH key in the server's data directory",
             ))?;
         log!(
             Level::Info,
-            "Staged managed SSH key: device={}, fingerprint={}",
+            "Staged managed SSH key: device={}, account={}, fingerprint={}, encrypted={}",
             self.device,
-            key.fingerprint()
+            self.account().unwrap_or_default(),
+            key.key.fingerprint(),
+            key.encrypted
         );
         let pending = PendingKey {
             key,
@@ -338,12 +432,12 @@ impl ManagedKeyDevice {
             previous_keep,
         };
         let mut keep = pending.previous_keep.clone();
-        keep.push(pending.key.fingerprint());
+        keep.push(pending.key().fingerprint());
         let installed = self
             .run_install_script(
                 &self.bootstrap_host(&pinned, &pending.bootstrap),
                 &keep,
-                Some(&pending.key),
+                Some(pending.key()),
             )
             .await;
         if let Err(error) = installed {
@@ -352,7 +446,7 @@ impl ManagedKeyDevice {
             self.rollback(pending).await;
             return Err(error);
         }
-        if let Err(error) = self.verify(&pending.key, pinned).await {
+        if let Err(error) = self.verify(pending.key(), pinned).await {
             self.rollback(pending).await;
             return Err(error);
         }
@@ -381,11 +475,15 @@ impl ManagedKeyDevice {
                 Level::Warn,
                 "Failed to remove a rolled back SSH key from the device: device={}, fingerprint={}, error={}",
                 self.device,
-                pending.key.fingerprint(),
+                pending.key().fingerprint(),
                 error
             );
         }
-        if let Err(error) = self.keys.delete_staged(&self.device).await {
+        let deleted = match self.keys() {
+            Ok(keys) => keys.delete_staged(&self.device).await,
+            Err(error) => Err(std::io::Error::other(error.to_string())),
+        };
+        if let Err(error) = deleted {
             // Logged instead of failing: nothing refers to the staged key, and the next
             // setup or rotation overwrites it.
             redoor_core::log_failure!(
@@ -401,7 +499,11 @@ impl ManagedKeyDevice {
     /// agent start loads the key again, so the next start uses it without a config write,
     /// and a running ssh session is not affected.
     pub(crate) async fn commit(&self, pending: &PendingKey) -> std::io::Result<ManagedKey> {
-        let key = self.keys.commit_staged(&pending.key).await?;
+        let key = self
+            .keys()
+            .map_err(|error| std::io::Error::other(error.to_string()))?
+            .commit_staged(&pending.key)
+            .await?;
         log!(
             Level::Info,
             "Managed SSH key is now current: device={}, fingerprint={}",
@@ -431,15 +533,26 @@ impl ManagedKeyDevice {
         }
     }
 
-    /// Removes every line this device installed from the device using its current key.
-    /// Returns why the device could not be cleaned up, if it could not; the caller deletes
-    /// the local keys either way.
-    pub(crate) async fn remove_from_device(&self) -> Option<String> {
-        let host = match self.connection_host().await {
-            Ok(host) => host,
-            Err(error) => return Some(error.to_string()),
+    /// Removes every line this account installed for this device from the device, logging
+    /// in with `credential`, the operation credential of the current key. Returns why the
+    /// device could not be cleaned up, if it could not; the caller deletes the local keys
+    /// either way.
+    pub(crate) async fn remove_from_device(
+        &self,
+        credential: Option<&ManagedKey>,
+    ) -> Option<String> {
+        let Some(key) = credential else {
+            return Some(
+                "The SSH key is encrypted and was not unlocked, so its line was left on the device"
+                    .to_string(),
+            );
         };
-        self.run_install_script(&host, &[], None)
+        let pinned = match self.pinned_policy().await {
+            Ok(Some(pinned)) => pinned,
+            Ok(None) => return Some("The device has no pinned host key".to_string()),
+            Err(error) => return Some(read_pin_failed(error).to_string()),
+        };
+        self.run_install_script(&self.managed_key_host(key, pinned), &[], None)
             .await
             .err()
             .map(|error| error.to_string())
@@ -472,7 +585,7 @@ impl ManagedKeyDevice {
             candidates.push((
                 "the current managed SSH key",
                 AuthPolicy::ManagedKey {
-                    identity_file: key.private_key_path.clone(),
+                    key: key.private_key().clone(),
                 },
             ));
         }
@@ -582,23 +695,16 @@ impl ManagedKeyDevice {
         keep: &[String],
         new_key: Option<&ManagedKey>,
     ) -> Result<(), ManagedKeyError> {
-        let new_line = new_key
-            .map(|key| {
-                key.authorized_keys_line()
-                    .map(|line| (line, key.fingerprint()))
-            })
-            .transpose()
-            .map_err(ManagedKeyError::local(
-                "Failed to encode the new SSH public key",
-            ))?;
+        let new_line = new_key.map(|key| (key.authorized_keys_line(), key.fingerprint()));
+        let keys = self.keys()?;
         let script = install_script(
-            &self.device,
+            &device_marker(&self.device, keys.account()),
             keep,
             new_line
                 .as_ref()
                 .map(|(line, fingerprint)| (line.as_str(), fingerprint.as_str())),
         );
-        let _rewrite = self.keys.lock_authorized_keys().await;
+        let _rewrite = keys.lock_authorized_keys().await;
         host.run_script_captured("update authorized_keys", &script, &SshRunOptions::default())
             .await
             .map_err(|error| ManagedKeyError::Remote(error.to_string()))?;
@@ -669,21 +775,29 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 
 /// Builds the script that rewrites `~/.ssh/authorized_keys` on the device.
 ///
-/// It drops every line with this device's marker whose key fingerprint is not in `keep`,
+/// It drops every line with `marker` (this device and account, see [`device_marker`]) whose
+/// key fingerprint is not in `keep`,
 /// appends the new line (dropping an older copy with the same fingerprint first, so running
 /// it again gives the same file) and moves the result over the file atomically, so sshd
 /// never sees a half-written file. Lines of other devices and other tools are copied
-/// unchanged. A symlinked or otherwise non-regular `authorized_keys` is left alone with an
-/// error, because replacing it would break whatever manages it.
+/// unchanged.
+///
+/// A symlinked `authorized_keys` is written through: the new file is built next to the link
+/// target and renamed over the target, so the link survives. Proxmox VE links root's file
+/// into its cluster filesystem (`/etc/pve/priv/authorized_keys`) to share it between nodes,
+/// and replacing the link with a regular file would quietly cut the node off from that.
+/// A link to a missing file, a non-regular target or a target in a directory we cannot
+/// write (such as a read-only store managed by another tool) is left alone with an error,
+/// because creating or replacing it would either fail half way or fight its owner.
 ///
 /// `new` is the new line and its key's fingerprint. Fingerprints contain `+`, `/` and
 /// possibly `=`, so the awk filter compares them only as literal strings (`index` and
 /// `==`, never a regex), and receives them through `ENVIRON`, which unlike `awk -v` does
 /// not interpret backslash escapes. That works the same in GNU awk, BSD awk and busybox.
-fn install_script(device: &AgentId, keep: &[String], new: Option<(&str, &str)>) -> String {
+fn install_script(marker: &str, keep: &[String], new: Option<(&str, &str)>) -> String {
     // Fingerprints and key lines never contain a single quote today, but the script runs
     // on the device, so quoting must not depend on that.
-    let marker = quote(&device_marker(device));
+    let marker = quote(marker);
     // Spaces around every entry let awk find whole fingerprints with `index`.
     let keep = quote(&format!(" {} ", keep.join(" ")));
     let new_line = quote(new.map_or("", |(line, _)| line));
@@ -697,18 +811,35 @@ new_line={new_line}
 skip={skip}
 ssh_dir="$HOME/.ssh"
 authorized_keys="$ssh_dir/authorized_keys"
-if [ -L "$authorized_keys" ] || {{ [ -e "$authorized_keys" ] && [ ! -f "$authorized_keys" ]; }}; then
-  echo "redoor: $authorized_keys is not a regular file (for example a symlink managed by another tool); refusing to replace it" >&2
+# A link is followed so the rename below replaces its target and keeps the link.
+target="$authorized_keys"
+if [ -L "$authorized_keys" ]; then
+  target=$(readlink -f "$authorized_keys" 2>/dev/null || realpath "$authorized_keys" 2>/dev/null) || target=""
+  if [ -z "$target" ] || [ ! -e "$target" ]; then
+    if [ -z "$new_line" ]; then
+      exit 0
+    fi
+    echo "redoor: $authorized_keys is a symlink to a missing file; refusing to create it" >&2
+    exit 3
+  fi
+fi
+if [ -e "$target" ] && [ ! -f "$target" ]; then
+  echo "redoor: $target is not a regular file; refusing to replace it" >&2
   exit 3
 fi
-if [ ! -e "$authorized_keys" ] && [ -z "$new_line" ]; then
+if [ ! -e "$target" ] && [ -z "$new_line" ]; then
   exit 0
 fi
 mkdir -p "$ssh_dir"
 chmod 700 "$ssh_dir"
-temp=$(mktemp "$ssh_dir/.authorized_keys.redoor.XXXXXX")
+target_dir=$(dirname "$target")
+if [ "$target" != "$authorized_keys" ] && [ ! -w "$target_dir" ]; then
+  echo "redoor: $authorized_keys links to $target in a directory that is not writable (for example a file managed by another tool); refusing to replace it" >&2
+  exit 3
+fi
+temp=$(mktemp "$target_dir/.authorized_keys.redoor.XXXXXX")
 trap 'rm -f "$temp"' EXIT
-if [ -f "$authorized_keys" ]; then
+if [ -f "$target" ]; then
   REDOOR_MARKER="$marker" REDOOR_KEEP="$keep" REDOOR_SKIP="$skip" awk '
     BEGIN {{
       marker = ENVIRON["REDOOR_MARKER"]
@@ -723,13 +854,19 @@ if [ -f "$authorized_keys" ]; then
         if (fingerprint == "" || fingerprint == skip || index(keep, " " fingerprint " ") == 0) next
       }}
       print
-    }}' "$authorized_keys" > "$temp"
+    }}' "$target" > "$temp"
 fi
 if [ -n "$new_line" ]; then
   printf '%s\n' "$new_line" >> "$temp"
 fi
-chmod 600 "$temp"
-mv -f "$temp" "$authorized_keys"
+# mktemp already created the file 0600. Filesystems behind a link, such as pmxcfs, may
+# enforce their own fixed modes and reject chmod, so only our own file must accept it.
+if [ "$target" = "$authorized_keys" ]; then
+  chmod 600 "$temp"
+else
+  chmod 600 "$temp" 2>/dev/null || true
+fi
+mv -f "$temp" "$target"
 trap - EXIT
 "#
     )
@@ -756,10 +893,12 @@ mod tests {
         child.wait_with_output().await.unwrap()
     }
 
-    /// The script keeps other lines byte for byte, removes stale lines of this device only,
-    /// and running it twice does not duplicate the new line. The fingerprints contain `+`,
-    /// `/` and `=`, which must be matched literally, and a fingerprint that is a prefix of a
-    /// kept one must not count as kept.
+    /// The script keeps other lines byte for byte, removes stale lines of this device and
+    /// account only, and running it twice does not duplicate the new line. The fingerprints
+    /// contain `+`, `/` and `=`, which must be matched literally, and a fingerprint that is a
+    /// prefix of a kept one must not count as kept. Another account's lines for the same
+    /// device are never touched, so one account's setup, rotation and removal cannot revoke
+    /// another's key.
     #[tokio::test]
     async fn install_script_rewrites_only_this_devices_lines() {
         let home = redoor_core::test_support::TempDir::create();
@@ -772,22 +911,24 @@ mod tests {
         let kept_prefix = "SHA256:ke+pt";
         let new = "SHA256:n+e/w==";
         let unrelated = "ssh-ed25519 AAAAunrelated  user@laptop\t# odd   spacing";
+        let marker = device_marker(&device, "alice");
         let original = format!(
             "{unrelated}
-ssh-ed25519 AAAAstale redoor:{device}:{stale}
-ssh-ed25519 AAAAprefix redoor:{device}:{kept_prefix}
-ssh-ed25519 AAAAother redoor:{other_device}:{stale}
-ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
-ssh-ed25519 AAAAempty redoor:{device}:
+ssh-ed25519 AAAAstale redoor:{device}:alice:{stale}
+ssh-ed25519 AAAAprefix redoor:{device}:alice:{kept_prefix}
+ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
+ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
+ssh-ed25519 AAAAkept redoor:{device}:alice:{kept}\r
+ssh-ed25519 AAAAempty redoor:{device}:alice:
 "
         );
         tokio::fs::write(ssh_dir.join("authorized_keys"), &original)
             .await
             .unwrap();
         let new_line =
-            format!("restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:{new}");
+            format!("restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:alice:{new}");
         let script = install_script(
-            &device,
+            &marker,
             &[kept.to_string(), new.to_string()],
             Some((&new_line, new)),
         );
@@ -802,17 +943,19 @@ ssh-ed25519 AAAAempty redoor:{device}:
             .unwrap();
         let expected = format!(
             "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:{stale}
-ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
+ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
+ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
+ssh-ed25519 AAAAkept redoor:{device}:alice:{kept}\r
 {new_line}
 "
         );
         // Unrelated lines survive unchanged (even a CRLF line ending), the stale, prefix and
-        // empty-fingerprint lines of this device are gone, the other device's line with the
-        // same fingerprint stays, and the new line appears exactly once.
+        // empty-fingerprint lines of this device and account are gone, the other device's
+        // and the other account's lines with the same fingerprint stay, and the new line
+        // appears exactly once.
         assert_eq!(written, expected);
 
-        let rotated = install_script(&device, &[new.to_string()], None);
+        let rotated = install_script(&marker, &[new.to_string()], None);
         let output = run_script(home.path(), &rotated).await;
         // Finishing a rotation keeps only the new key.
         assert!(output.status.success(), "{output:?}");
@@ -824,28 +967,94 @@ ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
             written,
             format!(
                 "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:{stale}
+ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
+ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
 {new_line}
 "
             )
         );
 
-        let removal = install_script(&device, &[], None);
+        let removal = install_script(&marker, &[], None);
         let output = run_script(home.path(), &removal).await;
         // Removal with an empty keep list also succeeds.
         assert!(output.status.success(), "{output:?}");
         let written = tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
             .await
             .unwrap();
-        // Every line of this device is removed, nothing else.
+        // Every line of this device and account is removed, nothing else.
         assert_eq!(
             written,
             format!(
                 "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:{stale}
+ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
+ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
 "
             )
         );
+    }
+
+    /// Unlocking an encrypted key for an operation (rotation, removal, device deletion)
+    /// never holds it: the credential lives only for the request, so rotating or removing
+    /// the key of a stopped device does not make the device startable with a token.
+    #[tokio::test]
+    async fn operation_credential_is_never_held() {
+        use crate::ssh::encrypted_keys::SshKeySeal;
+        use crate::ssh::keys::{SshKeyStore, StoredKey};
+
+        let home = redoor_core::test_support::TempDir::create();
+        let keys = SshKeyStore::for_data_dir(home.path())
+            .account("alice")
+            .unwrap();
+        let device = AgentId::generate();
+        let seal = SshKeySeal {
+            vault_id: "vlt_0123456789abcdef0123456789abcdef".to_string(),
+            vault_label: "test vault".to_string(),
+            key_id: "kid_0123456789abcdef0123456789abcdef".to_string(),
+            file_key: redoor_vault::FileKey::generate(),
+            wrap: redoor_protocol::api::vault::VaultKeyWrap {
+                alg: redoor_protocol::api::vault::VAULT_WRAP_ALG.to_string(),
+                iv: redoor_vault::random_base64url(redoor_vault::WRAP_IV_LEN),
+                ct: redoor_vault::random_base64url(redoor_vault::WRAP_CT_LEN),
+            },
+        };
+        let staged = keys.stage(&device, Some(&seal)).await.unwrap();
+        keys.commit_staged(&staged).await.unwrap();
+        let held = HeldSshKeys::default();
+        let managed = ManagedKeyDevice::new(
+            SshBackedAgentConfig {
+                id: Some(device.clone()),
+                username: None,
+                ssh_port: None,
+                name: None,
+                remote_bin: None,
+                home: None,
+                target: "device.invalid".to_string(),
+                log: None,
+                password: None,
+                managed_ssh_key: true,
+            },
+            Some(keys),
+            held.clone(),
+        )
+        .unwrap();
+        let StoredKey::Encrypted(file) = managed.stored_key().await.unwrap() else {
+            panic!("expected an encrypted key");
+        };
+        // Nothing is held, so the key is locked for reconnects and token starts.
+        assert!(managed.held_key().is_none());
+        let credential = managed.unlock(&file, &seal.file_key).await.unwrap();
+        // The file key opened the device's own key.
+        assert_eq!(credential.fingerprint(), staged.key.fingerprint());
+        // Without a pin the removal stops before any network step and reports why.
+        assert!(
+            managed
+                .remove_from_device(Some(&credential))
+                .await
+                .is_some()
+        );
+        // Neither unlocking nor using the credential put the key into the held keys.
+        assert!(held.is_empty());
+        assert!(managed.held_key().is_none());
     }
 
     /// A value with a single quote cannot break out of the script's quoting.
@@ -853,10 +1062,14 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
     async fn install_script_quotes_values() {
         let home = redoor_core::test_support::TempDir::create();
         let device = AgentId::generate();
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:it's; touch pwned");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:it's; touch pwned");
         let output = run_script(
             home.path(),
-            &install_script(&device, &[], Some((&line, "it's; touch pwned"))),
+            &install_script(
+                &device_marker(&device, "alice"),
+                &[],
+                Some((&line, "it's; touch pwned")),
+            ),
         )
         .await;
         // The quote is data, so the script still runs to the end.
@@ -872,13 +1085,17 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
         assert!(!home.path().join("pwned").exists());
     }
 
-    /// A symlinked authorized_keys belongs to some other setup and must not be replaced.
+    /// A symlinked authorized_keys (as Proxmox VE links root's into its cluster filesystem)
+    /// is updated through the link: the target gets the new line and the link stays a link,
+    /// so whatever shares the target keeps seeing the change.
     #[tokio::test]
-    async fn install_script_refuses_symlinked_authorized_keys() {
+    async fn install_script_writes_through_symlinked_authorized_keys() {
         let home = redoor_core::test_support::TempDir::create();
         let ssh_dir = home.path().join(".ssh");
         tokio::fs::create_dir(&ssh_dir).await.unwrap();
-        let target = home.path().join("managed_keys");
+        let shared_dir = home.path().join("shared");
+        tokio::fs::create_dir(&shared_dir).await.unwrap();
+        let target = shared_dir.join("authorized_keys");
         tokio::fs::write(&target, "ssh-ed25519 AAAAmanaged\n")
             .await
             .unwrap();
@@ -886,17 +1103,17 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
             .await
             .unwrap();
         let device = AgentId::generate();
-        let script = install_script(
-            &device,
-            &[],
-            Some(("restrict ssh-ed25519 AAAAnew redoor:x:y", "y")),
-        );
-        let output = run_script(home.path(), &script).await;
+        let marker = device_marker(&device, "alice");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let output = run_script(
+            home.path(),
+            &install_script(&marker, &["y".to_string()], Some((&line, "y"))),
+        )
+        .await;
 
-        // The script fails with a message that says why.
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
-        // The symlink and its target are untouched.
+        // The script succeeds through the link.
+        assert!(output.status.success(), "{output:?}");
+        // The link is still a link, so the target's owner keeps sharing it ...
         assert!(
             tokio::fs::symlink_metadata(ssh_dir.join("authorized_keys"))
                 .await
@@ -904,10 +1121,113 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
                 .file_type()
                 .is_symlink()
         );
+        // ... and the target got the new line after the lines it already had.
+        assert_eq!(
+            tokio::fs::read_to_string(&target).await.unwrap(),
+            format!("ssh-ed25519 AAAAmanaged\n{line}\n")
+        );
+        // The temp file was renamed into place next to the target, leaving nothing behind.
+        let mut entries = tokio::fs::read_dir(&shared_dir).await.unwrap();
+        let mut names = Vec::new();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            names.push(entry.file_name());
+        }
+        assert_eq!(names, ["authorized_keys"]);
+
+        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
+        // Removing the key also goes through the link ...
+        assert!(output.status.success(), "{output:?}");
+        // ... and leaves only the lines that were there before.
         assert_eq!(
             tokio::fs::read_to_string(&target).await.unwrap(),
             "ssh-ed25519 AAAAmanaged\n"
         );
+    }
+
+    /// Link targets the script cannot safely replace are refused with a message that says
+    /// why, and nothing is created or changed: a link to a directory, a dangling link
+    /// (creating its target could fight whatever set it up) and a target in a directory
+    /// the user cannot write.
+    #[tokio::test]
+    async fn install_script_refuses_unusable_link_targets() {
+        use std::os::unix::fs::PermissionsExt;
+        let device = AgentId::generate();
+        let marker = device_marker(&device, "alice");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let script = install_script(&marker, &["y".to_string()], Some((&line, "y")));
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        tokio::fs::create_dir(home.path().join("dir"))
+            .await
+            .unwrap();
+        tokio::fs::symlink(home.path().join("dir"), ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &script).await;
+        // A directory behind the link is refused ...
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("not a regular file"));
+        // ... and left empty.
+        assert!(
+            tokio::fs::read_dir(home.path().join("dir"))
+                .await
+                .unwrap()
+                .next_entry()
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let missing = home.path().join("missing");
+        tokio::fs::symlink(&missing, ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
+        // Removing from a dangling link has nothing to remove, so it succeeds.
+        assert!(output.status.success(), "{output:?}");
+        let output = run_script(home.path(), &script).await;
+        // Installing through a dangling link is refused ...
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symlink to a missing file"));
+        // ... without creating the target.
+        assert!(!missing.exists());
+
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let store = home.path().join("store");
+        tokio::fs::create_dir(&store).await.unwrap();
+        let target = store.join("authorized_keys");
+        tokio::fs::write(&target, "ssh-ed25519 AAAAmanaged\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o500))
+            .await
+            .unwrap();
+        tokio::fs::symlink(&target, ssh_dir.join("authorized_keys"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &script).await;
+        // Restores write access so the temp dir can be deleted.
+        tokio::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o700))
+            .await
+            .unwrap();
+        // Root can write anywhere, so the read-only case only applies to other users.
+        if !nix::unistd::geteuid().is_root() {
+            // A target in a read-only directory is refused with a message that names it ...
+            assert_eq!(output.status.code(), Some(3), "{output:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("not writable"));
+            // ... and the target is unchanged.
+            assert_eq!(
+                tokio::fs::read_to_string(&target).await.unwrap(),
+                "ssh-ed25519 AAAAmanaged\n"
+            );
+        }
     }
 
     /// A missing authorized_keys is created with private modes.
@@ -917,10 +1237,14 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
         let home = redoor_core::test_support::TempDir::create();
         let device = AgentId::generate();
         let key = "SHA256:new+key/a";
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:{key}");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:{key}");
         let output = run_script(
             home.path(),
-            &install_script(&device, &[key.to_string()], Some((&line, key))),
+            &install_script(
+                &device_marker(&device, "alice"),
+                &[key.to_string()],
+                Some((&line, key)),
+            ),
         )
         .await;
         // The script creates ~/.ssh when it is missing.

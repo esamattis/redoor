@@ -69,6 +69,12 @@ import type { SshKeyEnrollmentResponse } from "#bindings/SshKeyEnrollmentRespons
 import type { SshKeyRemovalResponse } from "#bindings/SshKeyRemovalResponse";
 import type { PinSshHostKeyRequest } from "#bindings/PinSshHostKeyRequest";
 import type { SshHostKeyPinResponse } from "#bindings/SshHostKeyPinResponse";
+import type { SshKeyStatusResponse } from "#bindings/SshKeyStatusResponse";
+import type { RemoveSshKeyRequest } from "#bindings/RemoveSshKeyRequest";
+import type { RewrapSshKeyRequest } from "#bindings/RewrapSshKeyRequest";
+import type { VaultSshKeysResponse } from "#bindings/VaultSshKeysResponse";
+import type { StartAgentRequest } from "#bindings/StartAgentRequest";
+import type { DeleteSshAgentRequest } from "#bindings/DeleteSshAgentRequest";
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateLocalAgentResponse } from "#bindings/CreateLocalAgentResponse";
 import type { ManagedLocalAgentConfigurationResponse } from "#bindings/ManagedLocalAgentConfigurationResponse";
@@ -114,6 +120,23 @@ import type { AccessTokenSecretResponse } from "#bindings/AccessTokenSecretRespo
 import type { CreateAccessTokenRequest } from "#bindings/CreateAccessTokenRequest";
 import type { DeleteAccessTokenResponse } from "#bindings/DeleteAccessTokenResponse";
 import type { UpdateAccessTokenRequest } from "#bindings/UpdateAccessTokenRequest";
+import type { VaultStatusResponse } from "#bindings/VaultStatusResponse";
+import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
+import type { CreateVaultRequest } from "#bindings/CreateVaultRequest";
+import type { UpdateVaultRequest } from "#bindings/UpdateVaultRequest";
+import type { AddVaultSlotRequest } from "#bindings/AddVaultSlotRequest";
+import type { RenameVaultSlotRequest } from "#bindings/RenameVaultSlotRequest";
+import type { VaultProof } from "#bindings/VaultProof";
+import type { VaultSlotUsedResponse } from "#bindings/VaultSlotUsedResponse";
+import type { RotateVaultRequest } from "#bindings/RotateVaultRequest";
+import type { DestroyVaultKeyRequest } from "#bindings/DestroyVaultKeyRequest";
+import type { VaultDocument } from "#bindings/VaultDocument";
+import type { RestoreVaultBackupRequest } from "#bindings/RestoreVaultBackupRequest";
+import type { VaultFileHeaderResponse } from "#bindings/VaultFileHeaderResponse";
+import type { VaultFileWriteResponse } from "#bindings/VaultFileWriteResponse";
+import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
+import type { RewrapVaultFileRequest } from "#bindings/RewrapVaultFileRequest";
+import type { ReencryptVaultFileRequest } from "#bindings/ReencryptVaultFileRequest";
 import {
     apiRequest,
     authenticationHeaders,
@@ -125,6 +148,32 @@ import * as apiPaths from "#ui/api-paths";
 import type { LsResponse } from "#ui/ls-response";
 
 const { appendFilesystemPath, encodeFilesystemPath } = apiPaths;
+
+/** Carries a file key on `fetch` requests, so keys never appear in URLs or logs. */
+export const VAULT_KEY_HEADER = "Redoor-Vault-Key";
+
+/** The revision a vault read returns and a save sends back. */
+export const VAULT_REVISION_HEADER = "Redoor-Vault-Revision";
+
+/** The key material of one encrypted write. */
+export type VaultWriteKeys = {
+    /** The new file key, base64url. */
+    fileKey: string;
+    /** The current generation, which wraps the file key. */
+    keyId: string;
+    wrap: VaultKeyWrap;
+};
+
+/** Headers of an encrypted write. */
+function vaultWriteHeaders(keys: VaultWriteKeys) {
+    return {
+        "Content-Type": "application/octet-stream",
+        [VAULT_KEY_HEADER]: keys.fileKey,
+        "Redoor-Vault-Key-Id": keys.keyId,
+        "Redoor-Vault-Wrap-Iv": keys.wrap.iv,
+        "Redoor-Vault-Wrap-Ct": keys.wrap.ct,
+    };
+}
 
 export class Agent {
     private baseUrl: string;
@@ -245,6 +294,11 @@ export class Agent {
         return this.info.supports_trash;
     }
 
+    /** Indicates whether this connection checks write preconditions, which vault writes need. */
+    get supportsUploadPreconditions(): boolean {
+        return this.info.supports_upload_preconditions;
+    }
+
     /** Indicates whether this connection can move entries to its platform trash. */
     get supportsMoveToTrash(): boolean {
         return this.info.supports_move_to_trash || this.info.supports_trash;
@@ -313,11 +367,21 @@ export class Agent {
         return this.info.supports_native_open;
     }
 
-    /** Requests desired-running without waiting for process preparation or registration. */
-    async start(): Promise<StartAgentResponse> {
+    /**
+     * Requests desired-running without waiting for process preparation or registration. A
+     * device whose SSH key is encrypted with the vault needs the key's file key in `request`
+     * unless the server still holds the key from an earlier start.
+     */
+    async start(request?: StartAgentRequest): Promise<StartAgentResponse> {
         return apiRequest(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/start`,
-            { method: "POST" },
+            request === undefined
+                ? { method: "POST" }
+                : {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext,
         );
     }
@@ -766,6 +830,115 @@ export class Agent {
             { method: "POST" },
             this.requestContext,
         );
+    }
+
+    /** Reads a vault file's plaintext header and revision; works while the vault is locked. */
+    async vaultHeader(path: string): Promise<VaultFileHeaderResponse> {
+        return apiRequest<VaultFileHeaderResponse>(
+            this.filesystemUrl("vault/header", path),
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Reads a vault file's decrypted content. The file key travels in a header, never in the
+     * URL. Returns the streamed response and the revision a later save must name.
+     */
+    async vaultRead(
+        path: string,
+        fileKey: string,
+    ): Promise<{ response: Response; revision: string }> {
+        const response = await fetch(
+            this.filesystemUrl("vault/read", path),
+            withAuthentication(
+                {
+                    method: "POST",
+                    headers: { [VAULT_KEY_HEADER]: fileKey },
+                    cache: "no-store",
+                },
+                this.requestContext,
+            ),
+        );
+
+        await requireSuccessfulResponse(response, this.requestContext);
+
+        return {
+            response,
+            revision: response.headers.get(VAULT_REVISION_HEADER) ?? "",
+        };
+    }
+
+    /** Saves plaintext encrypted over the version the editor read. */
+    async vaultSave(
+        path: string,
+        save: { content: Blob; keys: VaultWriteKeys; expectedRevision: string },
+    ): Promise<VaultFileWriteResponse> {
+        return apiRequest<VaultFileWriteResponse>(
+            this.filesystemUrl("vault/edit", path),
+            {
+                method: "PUT",
+                headers: {
+                    ...vaultWriteHeaders(save.keys),
+                    [VAULT_REVISION_HEADER]: save.expectedRevision,
+                },
+                body: save.content,
+            },
+            this.requestContext,
+        );
+    }
+
+    /** Uploads content encrypted; also creates new vault files. */
+    async vaultUpload(
+        path: string,
+        upload: {
+            content: Blob;
+            keys: VaultWriteKeys;
+            on_existing?: CopyExistingMode;
+            uploadRequestId?: string;
+        },
+    ): Promise<VaultFileWriteResponse> {
+        const url = new URL(this.filesystemUrl("vault/raw", path));
+
+        if (upload.on_existing != null) {
+            url.searchParams.set("on_existing", upload.on_existing);
+        }
+
+        const headers = new Headers(vaultWriteHeaders(upload.keys));
+
+        if (upload.uploadRequestId) {
+            headers.set("X-Redoor-Upload-Request", upload.uploadRequestId);
+        }
+
+        return apiRequest<VaultFileWriteResponse>(
+            url.toString(),
+            { method: "PUT", headers, body: upload.content },
+            this.requestContext,
+        );
+    }
+
+    /** Moves a vault file to the current key generation without touching its content. */
+    async vaultRewrap(
+        path: string,
+        request: RewrapVaultFileRequest,
+    ): Promise<VaultFileWriteResponse> {
+        return this.postJson(this.filesystemUrl("vault/rewrap", path), request);
+    }
+
+    /** Encrypts a vault file again with a new file key. */
+    async vaultReencrypt(
+        path: string,
+        request: ReencryptVaultFileRequest,
+    ): Promise<VaultFileWriteResponse> {
+        return this.postJson(
+            this.filesystemUrl("vault/reencrypt", path),
+            request,
+        );
+    }
+
+    /** The form action of a decrypted download, which takes the path in its body. */
+    getVaultDownloadUrl(): string {
+        return `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/vault/download`;
     }
 
     getRawUrl(path: string, options?: { download?: boolean }): string {
@@ -1320,13 +1493,55 @@ export class ApiClient {
         );
     }
 
-    /** Removes the managed SSH key from the device (when reachable) and from the server. */
-    async removeSshKey(agentId: string): Promise<SshKeyRemovalResponse> {
+    /**
+     * Removes the managed SSH key from the device (when reachable) and from the server. An
+     * encrypted key needs its file key in `request` to log in, unless the server holds it.
+     */
+    async removeSshKey(
+        agentId: string,
+        request?: RemoveSshKeyRequest,
+    ): Promise<SshKeyRemovalResponse> {
         return apiRequest<SshKeyRemovalResponse>(
             `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key`,
-            { method: "DELETE" },
+            request === undefined
+                ? { method: "DELETE" }
+                : {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext(),
         );
+    }
+
+    /** Reads how an SSH device's managed key is stored: encrypted, held and its header. */
+    async getSshKeyStatus(agentId: string): Promise<SshKeyStatusResponse> {
+        return apiRequest<SshKeyStatusResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Moves an encrypted SSH key to the current vault generation. */
+    async rewrapSshKey(
+        agentId: string,
+        request: RewrapSshKeyRequest,
+    ): Promise<SshKeyStatusResponse> {
+        return apiRequest<SshKeyStatusResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key/rewrap`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Lists the account's SSH keys encrypted with the vault, for rotation. */
+    async listVaultSshKeys(): Promise<VaultSshKeysResponse> {
+        return this.vaultRequest("/ssh-keys", "GET");
     }
 
     /** Replaces one stopped SSH-backed managed-agent configuration. */
@@ -1387,16 +1602,26 @@ export class ApiClient {
         );
     }
 
-    /** Deletes through the collection that owns the managed-agent kind. */
+    /**
+     * Deletes through the collection that owns the managed-agent kind. An SSH device with an
+     * encrypted key may send the key's file key, so its line is removed from the device.
+     */
     async deleteManagedAgent(
         agentId: string,
         kind: "ssh" | "local",
+        request?: DeleteSshAgentRequest,
     ): Promise<DeleteManagedAgentResponse> {
         const collection = kind === "local" ? "local-agents" : "agents";
 
         return apiRequest<DeleteManagedAgentResponse>(
             `${this.baseUrl}/api/v1/${collection}/${encodeURIComponent(agentId)}`,
-            { method: "DELETE" },
+            request === undefined
+                ? { method: "DELETE" }
+                : {
+                      method: "DELETE",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(request),
+                  },
             this.requestContext(),
         );
     }
@@ -1587,6 +1812,124 @@ export class ApiClient {
             undefined,
             this.requestContext(),
         );
+    }
+
+    /** Sends a JSON vault request. */
+    private vaultRequest<T, B extends object = object>(
+        route: string,
+        method: string,
+        body?: B,
+    ): Promise<T> {
+        return apiRequest<T>(
+            `${this.baseUrl}/api/v1/vault${route}`,
+            body === undefined
+                ? { method }
+                : {
+                      method,
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify(body),
+                  },
+            this.requestContext(),
+        );
+    }
+
+    /** Reads whether a vault exists, without any wrapped keys. */
+    async getVault(): Promise<VaultStatusResponse> {
+        return this.vaultRequest("", "GET");
+    }
+
+    /** Reads the wrapped keys an unlock needs. */
+    async getVaultUnlockMaterial(): Promise<VaultUnlockMaterialResponse> {
+        return this.vaultRequest("/unlock-material", "GET");
+    }
+
+    /** Creates the vault from keys the browser generated. */
+    async createVault(
+        request: CreateVaultRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest("", "POST", request);
+    }
+
+    /** Renames the vault. */
+    async updateVault(
+        request: UpdateVaultRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest("", "PATCH", request);
+    }
+
+    /** Adds a slot wrapping the current key. */
+    async addVaultSlot(
+        request: AddVaultSlotRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest("/slots", "POST", request);
+    }
+
+    /** Renames a slot. */
+    async renameVaultSlot(
+        slotId: string,
+        request: RenameVaultSlotRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest(
+            `/slots/${encodeURIComponent(slotId)}`,
+            "PATCH",
+            request,
+        );
+    }
+
+    /** Removes a slot. */
+    async removeVaultSlot(
+        slotId: string,
+        request: VaultProof,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest(
+            `/slots/${encodeURIComponent(slotId)}`,
+            "DELETE",
+            request,
+        );
+    }
+
+    /** Records that a slot unlocked the vault. */
+    async markVaultSlotUsed(slotId: string): Promise<VaultSlotUsedResponse> {
+        return this.vaultRequest(
+            `/slots/${encodeURIComponent(slotId)}/used`,
+            "POST",
+        );
+    }
+
+    /** Replaces the vault key, chain and slots in one step. */
+    async rotateVault(
+        request: RotateVaultRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest("/rotate", "POST", request);
+    }
+
+    /** Destroys an older key generation. */
+    async destroyVaultKey(
+        keyId: string,
+        request: DestroyVaultKeyRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest(
+            `/keys/${encodeURIComponent(keyId)}/destroy`,
+            "POST",
+            request,
+        );
+    }
+
+    /** Reads the backup document. */
+    async exportVaultBackup(): Promise<VaultDocument> {
+        return this.vaultRequest("/backup", "GET");
+    }
+
+    /** The URL that downloads the backup as a file. */
+    getVaultBackupUrl(): string {
+        return `${this.baseUrl}/api/v1/vault/backup`;
+    }
+
+    /** Replaces the vault with a backup. */
+    async restoreVaultBackup(
+        request: RestoreVaultBackupRequest,
+    ): Promise<VaultStatusResponse> {
+        return this.vaultRequest("/backup", "PUT", request);
     }
 
     /** Loads the opaque JSON document stored for the authenticated account. */

@@ -33,6 +33,7 @@ import { useAgents } from "#ui/use-agents";
 import { sortAgentsByName } from "#ui/utils/agents";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { getErrorMessage } from "#ui/utils/error";
+import { startAgent } from "#ui/vault/ssh-key-vault";
 
 export const Route = createFileRoute("/_app/agents/")({
     component: AgentManagement,
@@ -112,7 +113,7 @@ function useAgentLifecycleRequests() {
 function AgentManagement() {
     const queryClient = useQueryClient();
     const setStartStates = useSetAtom(agentStartStatesAtom);
-    const { api } = Route.useRouteContext();
+    const { api, vault } = Route.useRouteContext();
     const agents = useAgents();
     const { data: serverInfo } = useSuspenseQuery(serverInfoQueryOptions(api));
 
@@ -141,12 +142,10 @@ function AgentManagement() {
         mutationKey: agentLifecycleMutationKey,
         // Unobserved requests are dropped at once so a failure never outlives the page.
         gcTime: 0,
-        mutationFn: (request: {
-            agent: Agent;
-            action: "start" | "shutdown";
-        }) =>
+        mutationFn: (request: { agent: Agent; action: "start" | "shutdown" }) =>
+            // A device whose SSH key is encrypted with the vault asks for the vault first.
             request.action === "start"
-                ? request.agent.start()
+                ? startAgent({ agent: request.agent, api, vault })
                 : request.agent.shutdown(),
         onSuccess: async (_data, request) => {
             if (request.action === "shutdown") {

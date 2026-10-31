@@ -51,6 +51,7 @@ const agentInfo: AgentInfoResponse = {
     supports_native_open: false,
     supports_move_to_trash: false,
     supports_trash: false,
+    supports_upload_preconditions: false,
     uid: null,
     is_root: false,
     duplicate_id: null,
@@ -86,6 +87,8 @@ function createQueue() {
     const queue = new UploadQueue({
         queryClient,
         resolveAgent: (agentId) => (agentId === agent.id ? agent : undefined),
+        resolveVault: () =>
+            Promise.reject(new Error("No vault in these tests")),
         onSettled,
         unloadTarget,
     });

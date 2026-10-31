@@ -37,11 +37,34 @@ const LOG_LEVEL_ENV: &str = "REDOOR_SERVER_LOG_LEVEL";
 /// Role-specific environment variable for the process output format.
 const LOG_FORMAT_ENV: &str = "REDOOR_SERVER_LOG_FORMAT";
 
+/// Keeps processes of the same OS user from reading this process's memory.
+///
+/// The server holds vault file keys while a request decrypts, and local managed agents run
+/// as the server's user, so without this an agent (or anything else running as that user)
+/// could read keys from `/proc/<pid>/mem` or attach a debugger. Non-dumpable processes are
+/// only accessible to root. Linux and Termux only: macOS's equivalent (`PT_DENY_ATTACH`)
+/// also blocks crash reporting and is not used.
+fn deny_same_user_memory_access() {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        // SAFETY: PR_SET_DUMPABLE takes plain integer arguments and touches no memory.
+        let result = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+        if result != 0 {
+            redoor_core::log_failure!(
+                redoor_protocol::wire::log::Level::Warning,
+                "Failed to make the server non-dumpable: {}",
+                std::io::Error::last_os_error()
+            );
+        }
+    }
+}
+
 /// Starts the long-lived server using the established flat startup arguments.
 ///
 /// Only returns on startup failure; a successful run ends in a re-exec of this binary so
 /// a restart re-reads `config.toml` from scratch.
 pub async fn run_server(args: CoordinatorArgs, runtime: RuntimeContext) -> Result<ExitCode> {
+    deny_same_user_memory_access();
     let location = ConfigLocation::find_or_bootstrap(args.config.clone(), &runtime.paths).await?;
     // The server owns managed ids, so hand-written entries get theirs before anything uses them.
     let assigned = redoor_core::config::assign_missing_device_ids(
@@ -319,6 +342,7 @@ impl ServerRuntime {
         let watchdogs = WatchdogRegistry::new();
         let binaries = crate::binaries::BinaryCache::new(runtime.paths.clone());
         let ssh_keys = crate::ssh::keys::SshKeyStore::for_data_dir(&data_dir);
+        let held_ssh_keys = crate::ssh::held_keys::HeldSshKeys::default();
         let launcher = ManagedLauncher::new(
             config.port,
             config.agent_token,
@@ -326,6 +350,8 @@ impl ServerRuntime {
                 app_name: runtime.paths.app_name().to_string(),
                 binaries: binaries.clone(),
                 ssh_keys: ssh_keys.clone(),
+                held_ssh_keys: held_ssh_keys.clone(),
+                default_account: Some(auth.username().to_string()),
                 log_max_size: config.log_max_size,
                 // Empty until the first SSH provision, so servers that never provision a
                 // device never hash the debug build.
@@ -343,7 +369,10 @@ impl ServerRuntime {
             router.clone(),
             runtime.paths.data_dir()?,
         );
+        let vault =
+            crate::vault::VaultStore::new(runtime.paths.clone(), auth.username().to_string());
         let state = ServerState {
+            vault,
             runtime,
             binaries,
             launcher: launcher.clone(),
@@ -362,6 +391,7 @@ impl ServerRuntime {
             config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),
             editor_buffer_lock: Arc::default(),
             ssh_keys,
+            held_ssh_keys,
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
             auth_mode,
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),

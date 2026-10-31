@@ -538,6 +538,7 @@ mod tests {
                 on_existing: redoor_protocol::api::transfers::CopyExistingMode::Override,
                 ownership: Default::default(),
                 executable: false,
+                precondition: None,
             }
             .into(),
             path: "/tmp/one-too-many".to_string(),

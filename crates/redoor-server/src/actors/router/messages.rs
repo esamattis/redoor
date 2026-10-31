@@ -152,6 +152,7 @@ impl From<AgentListEntry> for AgentInfoResponse {
             supports_native_open: agent.capabilities.supports_native_open,
             supports_move_to_trash: agent.capabilities.supports_move_to_trash,
             supports_trash: agent.capabilities.supports_trash,
+            supports_upload_preconditions: agent.capabilities.supports_upload_preconditions,
         }
     }
 }
@@ -575,6 +576,7 @@ impl RegisterAgentRequest {
                 supports_native_open: true,
                 supports_trash: true,
                 supports_move_to_trash: true,
+                supports_upload_preconditions: false,
             },
             watchdog: None,
             watchdog_attempt_generation: None,

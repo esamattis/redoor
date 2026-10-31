@@ -100,6 +100,9 @@ export const queryKeys = {
     /** Host key an SSH device presents right now, probed over the network. */
     sshHostKey: (agentId: string) =>
         [...queryKeys.agent(agentId), "ssh-host-key"] as const,
+    /** How an SSH device's managed key is stored: encrypted, held by the server or not. */
+    sshKeyStatus: (agentId: string) =>
+        [...queryKeys.agent(agentId), "ssh-key-status"] as const,
     agentLoggingLevel: (agentId: string) =>
         [...queryKeys.agent(agentId), "logging-level"] as const,
     accounts: (agentId: string) =>
@@ -169,6 +172,10 @@ export const queryKeys = {
     editorBuffer: (key: string) =>
         [...queryKeys.all, "editor-buffer", key] as const,
     accessTokens: () => [...queryKeys.all, "access-tokens"] as const,
+    /** The vault status, which every vault change invalidates. */
+    vault: () => [...queryKeys.all, "vault"] as const,
+    /** The account's vault-encrypted SSH keys; under the vault, so its changes refresh them. */
+    vaultSshKeys: () => [...queryKeys.vault(), "ssh-keys"] as const,
     serverLoggingLevel: () =>
         [...queryKeys.all, "server-logging-level"] as const,
 };
@@ -400,6 +407,50 @@ export function sshHostKeyQueryOptions(api: ApiClient, agentId: string) {
         staleTime: 0,
         gcTime: 0,
         retry: false,
+    });
+}
+
+/** How an SSH device's managed key is stored, for the configuration page. */
+export function sshKeyStatusQueryOptions(api: ApiClient, agentId: string) {
+    return queryOptions({
+        queryKey: queryKeys.sshKeyStatus(agentId),
+        queryFn: () => api.getSshKeyStatus(agentId),
+    });
+}
+
+/**
+ * Refreshes everything a managed SSH key change touches: the inventory, the device's
+ * configuration and key status, and the vault's list of encrypted keys.
+ */
+export async function invalidateSshKeyQueries(
+    queryClient: QueryClient,
+    agentId: string,
+): Promise<void> {
+    await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.agents() }),
+        queryClient.invalidateQueries({
+            queryKey: queryKeys.agentConfiguration(agentId),
+        }),
+        queryClient.invalidateQueries({
+            queryKey: queryKeys.sshKeyStatus(agentId),
+        }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.vaultSshKeys() }),
+    ]);
+}
+
+/** The account's vault-encrypted SSH keys, listed in the vault settings for rewraps. */
+export function vaultSshKeysQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.vaultSshKeys(),
+        queryFn: () => api.listVaultSshKeys(),
+    });
+}
+
+/** The vault without wrapped keys, shared by the vault dialog and the settings page. */
+export function vaultStatusQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.vault(),
+        queryFn: () => api.getVault(),
     });
 }
 

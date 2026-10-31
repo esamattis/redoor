@@ -42,4 +42,8 @@ pub struct AgentCapabilities {
     pub supports_trash: bool,
     /// Can move filesystem entries to its platform trash.
     pub supports_move_to_trash: bool,
+    /// Checks `RawUpload::precondition` before publishing. Older agents ignore the field,
+    /// so the server refuses vault writes to agents that do not announce this.
+    #[serde(default)]
+    pub supports_upload_preconditions: bool,
 }

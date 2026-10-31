@@ -8,7 +8,7 @@ use redoor_protocol::{
     api::{
         agents::{
             AgentDetailsResponse, AgentInfoResponse, AgentListResponse, ShutdownAgentResponse,
-            StartAgentResponse,
+            StartAgentRequest, StartAgentResponse,
         },
         server::RestartResponse,
     },
@@ -157,16 +157,35 @@ pub(super) async fn current_agent_snapshot(
 }
 
 /// Route: `POST /api/v1/agents/{agent}/start` accepts desired-running without waiting for connection.
+///
+/// A device with a vault-encrypted SSH key needs its file key in the optional body, unless
+/// the server already holds the key; otherwise the start fails at once with
+/// `ssh_key_locked`, before the watchdog is touched.
 pub(crate) async fn start_agent_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
+    request: Option<Json<StartAgentRequest>>,
 ) -> Result<Json<StartAgentResponse>, ApiError> {
+    let request = request.map(|Json(request)| request).unwrap_or_default();
     // Configuration edits hold this lock through shutdown and runtime replacement, so a
     // delayed tab start cannot land behind shutdown and revive the old supervisor.
     let _edit_guard = state.config_edit_lock.lock().await;
     let mut snapshot = managed_agent_snapshot(&state, &agent_id).await?;
     let watchdog = managed_watchdog(&state, &snapshot)?;
-    watchdog.start().await?;
+    let was_running = watchdog.snapshot().desired_running;
+    super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
+        .await?;
+    // Reconnects use the keys and pin of the account that started the device.
+    state
+        .held_ssh_keys
+        .record_start(&agent_id, state.auth.username());
+    if let Err(error) = watchdog.start().await {
+        // A device that did not start must not keep a key unlocked for token starts.
+        if !was_running {
+            state.held_ssh_keys.release_device(&agent_id);
+        }
+        return Err(error.into());
+    }
     let lifecycle = watchdog.snapshot();
     apply_managed_snapshot(&state, agent_id.clone(), lifecycle.clone()).await?;
     snapshot.status = lifecycle.status;
@@ -188,6 +207,9 @@ pub(crate) async fn shutdown_agent_handler(
     let _edit_guard = state.config_edit_lock.lock().await;
     let snapshot = managed_agent_snapshot(&state, &agent_id).await?;
     let watchdog = managed_watchdog(&state, &snapshot)?;
+    // A stopped device must be unlocked again by the next browser Start, so its held SSH
+    // key goes first; later reconnect attempts of the stopping cycle find it locked.
+    state.held_ssh_keys.release_device(&agent_id);
     tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown())
         .await
         .map_err(|_| {

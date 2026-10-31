@@ -43,7 +43,10 @@
 //!
 //! A device with `managed_ssh_key = true` instead logs in only with its redoor-managed key
 //! ([`keys`], [`managed_keys`]) and only trusts its pinned host key. Those
-//! connections read no ssh config file; their routing comes from `ssh -G`.
+//! connections read no ssh config file; their routing comes from `ssh -G`. The key may be
+//! encrypted with the account's vault ([`encrypted_keys`]); it is then usable only while
+//! the server holds it decrypted ([`held_keys`]). Either way `ssh` never reads the private
+//! key: it gets signatures from an in-process ssh-agent ([`ssh_agent`]).
 //!
 //! Both standalone and TOML-managed launches select a random dynamic remote
 //! port for each SSH spawn attempt. `ExitOnForwardFailure=yes` makes SSH exit
@@ -51,12 +54,15 @@
 //! standalone relays detect that specific bind failure and retry locally.
 
 pub mod askpass;
+pub(crate) mod encrypted_keys;
+pub(crate) mod held_keys;
 pub(crate) mod keys;
 pub(crate) mod managed_keys;
 mod prepare;
 mod provision;
 pub mod relay;
 mod shell;
+mod ssh_agent;
 mod transport;
 
 use redoor_core::config::SshBackedAgentConfig;
@@ -81,6 +87,18 @@ pub(crate) enum ProvisionError {
     /// The entry cannot be launched as configured (for example it has no device id yet).
     #[error("{0}")]
     Configuration(String),
+    /// The device's managed key is encrypted with the vault and the server does not hold
+    /// it decrypted. Retrying cannot help: only a browser Start can hand the key over.
+    #[error("{0}")]
+    SshKeyLocked(String),
+}
+
+impl ProvisionError {
+    /// Whether the watchdog should retry after this failure. A locked key stays locked
+    /// until the user starts the device from the browser, so retrying only spins.
+    pub(crate) fn is_retryable(&self) -> bool {
+        !matches!(self, Self::SshKeyLocked(_))
+    }
 }
 
 /// Local facts every SSH preparation needs besides the target's own settings.
@@ -90,8 +108,13 @@ pub(crate) struct ProvisionContext {
     pub(crate) app_name: String,
     /// Release cache used when the target lacks a matching binary.
     pub(crate) binaries: crate::binaries::BinaryCache,
-    /// Managed keys and pinned host keys of devices with `managed_ssh_key = true`.
+    /// Managed keys and pinned host keys of SSH devices, per account.
     pub(crate) ssh_keys: keys::SshKeyStore,
+    /// Decrypted keys of running devices and the account that started each device.
+    pub(crate) held_ssh_keys: held_keys::HeldSshKeys,
+    /// The account whose keys and pins a device uses when no Start recorded one: the
+    /// server's single login account, or `None` for relays, which have no account.
+    pub(crate) default_account: Option<String>,
     /// Size limit of the agent log files this process forwards SSH and child output into;
     /// `None` uses the default limit.
     pub(crate) log_max_size: Option<u64>,

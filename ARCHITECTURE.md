@@ -20,6 +20,7 @@ compiler enforces that agent and server code never depend on each other.
 flowchart BT
     protocol["redoor-protocol<br/><i>wire + REST types</i>"]
     core["redoor-core<br/><i>shared runtime infrastructure</i>"]
+    vault["redoor-vault<br/><i>.redoorvault file format</i>"]
     agent["redoor-agent<br/><i>agent runtime + commands</i>"]
     server["redoor-server<br/><i>HTTP, router, watchdog, SSH</i>"]
     cli["redoor-cli<br/><i>remote REST client</i>"]
@@ -30,6 +31,8 @@ flowchart BT
     agent --> protocol
     server --> core
     server --> protocol
+    server --> vault
+    vault --> protocol
     cli --> core
     cli --> protocol
     bin --> agent
@@ -106,6 +109,18 @@ Infrastructure that more than one role needs:
   `redoor upgrade` and the server. `upgrade::install` embeds the repository's `install.sh`
   (`include_str!`) and runs it with bash; it is the only code that downloads releases.
 
+### `redoor-vault`
+
+The `.redoorvault` file format (see "Encrypted vault files"): preamble parsing and building,
+the header MAC, and the STREAM payload as `EncryptingReader` and `DecryptingReader` adapters
+over 64 KiB chunks, plus the size arithmetic in both directions. It is the only
+implementation of the format and the only Rust code that handles file keys.
+
+It is a crate of its own, not a core module, so only the roles that may hold file keys link
+it: the server, and later a CLI command that opens files with a backup `vault.json` and no
+server. `redoor-agent` cannot depend on it, so "agents only ever see ciphertext" is enforced
+by the compiler, and the crypto crates stay out of the infrastructure every role builds.
+
 ### `redoor-agent`
 
 The agent runtime and the implementation of every command.
@@ -166,6 +181,11 @@ The agent runtime and the implementation of every command.
   - `error.rs`: `ApiError`, which owns all HTTP status mapping.
   - `user_state` and `editor_buffers`: per-account files in the account's private data
     directory (the preference document and one file per open file's editor buffer).
+  - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
+    "Encrypted vault files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
+    with the vault.
+  - `ssh_keys`: the SSH key and host key routes, and unlocking an encrypted SSH key for a
+    device Start (see "SSH device keys").
   - `git/`: Git REST handlers split by the same feature areas as the protocol, sharing
     path and revision validation in `git/mod.rs`.
   - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec)
@@ -203,8 +223,12 @@ The agent runtime and the implementation of every command.
   - `provision`: the probe, launch and upload scripts and the `Installer` that picks,
     uploads and verifies the binary. A binary upload is one session: a script creates the
     directory, writes a temp file, marks it executable and renames it into place.
-  - `keys` (`SshKeyStore`) and `managed_keys`: per-device SSH keys and pinned host keys,
-    see "SSH device keys" below.
+  - `keys` (`SshKeyStore`), `encrypted_keys`, `held_keys` and `managed_keys`: per-account,
+    per-device SSH keys (plaintext or encrypted with the vault), the decrypted keys the
+    server holds for running devices, and pinned host keys, see "SSH device keys" below.
+  - `ssh_agent`: the in-process ssh-agent (OpenSSH key agent protocol, not the redoor
+    agent) through which `ssh` gets signatures from a managed key without ever reading it.
+- `vault`: `VaultStore`, the per-account `vault.json` with its proof checks and validation.
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
 
@@ -647,7 +671,7 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
 
   | Action | Endpoint | Effect |
   |---|---|---|
-  | Start | `POST /api/v1/agents/{agent}/start` | Marks the agent desired-running; the supervisor spawns it |
+  | Start | `POST /api/v1/agents/{agent}/start` | Marks the agent desired-running; the supervisor spawns it. A vault-encrypted SSH key's file key may come with it (see "SSH device keys") |
   | Disconnect | `POST /api/v1/agents/{agent}/shutdown` | Cancels provisioning or backoff, kills and reaps the child, evicts its socket |
   | Retry start | `POST /api/v1/agents/{agent}/retry-start` | Abandons the current attempt and starts a fresh one with the backoff reset |
   | Restart | `POST /api/v1/agents/{agent}/restart` | Not a watchdog action: the agent re-executes itself, so it works for any connected agent |
@@ -663,8 +687,9 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
 - **Supervision.** While an agent is desired-running, the watchdog restarts it when spawning or
   provisioning fails, when the child exits and when its heartbeat goes stale. The backoff
   starts at 1 s and doubles up to 30 s, and resets after 30 s of stable connection. The
-  watchdog never gives up. The latest error is shown as the agent's `connection_issue` while
-  it stays `Starting`.
+  watchdog never gives up, except when an SSH key is encrypted and not held by the server:
+  retrying cannot unlock it, so the agent goes back to `Stopped` with the issue shown. The
+  latest error is shown as the agent's `connection_issue` while it stays `Starting`.
 - **SSH provisioning runs on every attempt**, so the UI always shows current results. The
   agent is started by a launch script that first reports the OS, architecture and version
   of the binary at the default install path, and `exec`s it only when the version matches
@@ -755,6 +780,10 @@ half-written file.
   accepting at once, so restarted agents reconnect to the new server and not to the old one,
   which would reject a newer protocol with `426` and make the agent exit. On Linux the
   upgrade then waits until `/proc/<pid>/exe` names the new file and the handler is back.
+- **The server is not dumpable** (see "Encrypted vault files"), which hides its `exe` link
+  and environment even from its own user. Process discovery falls back to an absolute
+  `argv[0]` for processes of the same user, and the wait treats a hidden `exe` like macOS:
+  the signal delivery is the last thing it can check.
 - **Upgrading from inside a restarted process uses a detached helper.** When an agent's web
   terminal or exec runs the upgrade, restarting the server drops that agent's connection, and
   the agent kills its terminals and execs. So the upgrade re-runs itself with the hidden
@@ -1021,6 +1050,13 @@ sequenceDiagram
   `UploadDriver`. They differ only in their `UploadSink`.
 - Raw file and tar directory uploads both default to `on_existing=error`. Replacing or merging
   into an existing entry must be requested explicitly, so no client overwrites by accident.
+- A raw upload can carry a **precondition**: `must_not_exist`, or `matches` with the
+  `MoveSourceIdentity` (device, inode, size, mtime) the server read. The agent checks it
+  before staging and again right before the rename, and a mismatch discards the staging and
+  fails with `already_exists` or `source_changed` (409). Encrypted vault writes depend on it
+  (see "Encrypted vault files"). Older agents would silently ignore the field, so agents
+  announce `supports_upload_preconditions` in `hello` and the server refuses vault writes to
+  agents without it.
 
 ## Copy and move between agents
 
@@ -1967,25 +2003,256 @@ device, or to another device.
   every selected item whose name repeats an earlier one, so two versions never land on one
   destination path.
 
+## Encrypted vault files
+
+Files ending in `.redoorvault` are stored encrypted on devices. The user opens, edits,
+uploads and downloads them through redoor, and the server encrypts and decrypts them as a
+stream. A per-user **vault** holds the key, unlocked in the browser by any of its slots:
+passkeys (WebAuthn PRF) and an optional passphrase.
+
+```mermaid
+flowchart LR
+    subgraph Browser
+        VK["vault key VK<br/><i>non-extractable</i>"]
+    end
+    subgraph Server
+        store["vault.json<br/><i>wrapped keys + verifier</i>"]
+        crypt["vault_files<br/><i>STREAM encrypt/decrypt</i>"]
+    end
+    subgraph Device
+        file[".redoorvault<br/><i>ciphertext only</i>"]
+    end
+    VK -- "file key FK of one file, per request" --> crypt
+    store -- "wrapped keys" --> VK
+    crypt <-- "ciphertext (raw download / upload)" --> file
+```
+
+**Trust boundary.** Agents and their devices only ever see ciphertext and never a key. The
+vault key never leaves the browser. The server only gets the file key of the one file a
+request handles, and only for the duration of that request; `vault.json` holds only wrapped
+keys. This protects against devices (other OS users, stolen disks, backups), a stolen copy of
+the server data directory (the passphrase slot is only as strong as the passphrase) and
+access tokens or MCP clients. It does not protect against a compromised server, which serves
+the UI's JavaScript and can already run commands on every agent.
+
+The one exception to "one request" are managed SSH keys encrypted with the vault (see "SSH
+device keys"): the watchdog reconnects devices on its own, long after the browser's Start
+request, so the server holds such a key decrypted in memory from a browser Start until the
+device is stopped or the server process exits.
+
+**Object kinds.** A header's `kind` says what the payload is: `file` for user files on
+devices, `ssh-key` for managed SSH private keys stored on the server. The browser binds the
+kind into the file key wrap's associated data, so a user file's key can never be presented
+as an SSH key's and vice versa. `file` headers have no context; `ssh-key` headers carry
+exactly `account`, `device_id` and `public_key`, covered by the header MAC.
+
+### Keys
+
+```
+passphrase ──Argon2id──► KEK_pw ─┐
+passkey A ──PRF──HKDF──► KEK_a ──┼─ AES-256-GCM wrap ─► vault key VK (browser only)
+                                                          │ HKDF subkeys
+                                                          ├─► file wrap key ─► wraps FK (per file version)
+                                                          ├─► chain key ─► wraps the next older VK
+                                                          ├─► auth proof
+                                                          └─► key id (public fingerprint)
+FK ──HKDF──► header MAC key, payload key (ChaCha20-Poly1305 STREAM)
+```
+
+- The browser keeps VK as a non-extractable HKDF `CryptoKey` and derives every other key
+  from it (`ui/src/vault/vault-crypto.ts`), so one key never serves two algorithms. Every
+  wrap binds its context (vault, slot, generation, file kind) in the GCM associated data.
+- **FK** is random and new for every encryption. The header stores it wrapped with the
+  current generation; the browser unwraps it and sends it with the request in the
+  `Redoor-Vault-Key` header (or a JSON or form field), never in a URL.
+- **Proof of possession.** `vault.json` stores `auth_verifier = SHA-256(HKDF(VK, "auth"))`.
+  Every change of the vault (slots, label, rotation, destroying a generation, restoring a
+  backup) sends the proof, which the server hashes and compares in constant time, so a
+  stolen session cookie cannot add a passkey or swap the vault. Restoring a backup over an
+  installed vault needs proofs for both.
+- **Generations.** A rotation creates a new VK for all new writes and wraps the previous VK
+  under it, so `keys` in `vault.json` is a chain from the current generation through every
+  older one. Slots wrap only the current generation. Destroying a generation relinks the
+  next older one under the next newer one and keeps only its fingerprint and dates in
+  `retired_keys`, so files on it get a precise error. Every write must use the current
+  generation (`stale_vault_key` otherwise), which catches tabs that missed a rotation.
+
+### Storage
+
+`crate::vault::VaultStore` owns `<data_dir>/users/<username>/vault.json` (0600 in the 0700
+account directory, written atomically). The file is small and changes rarely, so the store
+re-reads it under one lock on every request instead of caching it. The document is also the
+backup format: it holds only wrapped keys, so "Download vault backup" is safe anywhere.
+The server validates the shape of everything the browser submits (id formats, wrap and
+salt lengths, Argon2id parameters of at least 64 MiB and 3 passes, at least one slot, an
+unbroken chain) but never sees a key, so it cannot check that a wrap really wraps the right
+one. Every slot wraps the same key, so no slot type is required: creation, slot removal,
+rotation and restore only refuse to leave the vault without any slot (`vault_last_slot`),
+because nothing could unlock it again.
+
+### File format
+
+`redoor-vault` is the one implementation: a 15-byte prefix (magic, version, header
+length), a JSON header (`VaultFileHeader`: vault id and label, key id, kind, context, FK
+wrap, payload parameters), an HMAC-SHA256 over those bytes, then STREAM chunks of 64 KiB
+plaintext each followed by a Poly1305 tag. The nonce is a chunk counter plus a final-chunk
+flag, which detects truncation, reordering and appended data. The header has no dates, and
+the sizes are computable in both directions, so `Content-Length` and progress keep working.
+
+### Requests
+
+`http/vault` serves the vault itself and `http/vault_files` the files, both thin over the
+store and the existing `OutputStream` and `AgentUpload` services.
+
+- **Reads** (`header`, `read`, the form-`POST` `download`): `MoveMetadata` gives the file's
+  identity, a `RawDownload` pinned to that identity streams it, and `VaultPreamble::read`
+  checks magic, version and header before the response starts, then the vault id and
+  generation, then the MAC with FK. Each failure is a JSON error with its own
+  `ApiErrorCode`. After that, `DecryptingReader` releases only authenticated chunks; a chunk
+  that fails later aborts the body. The revision a read reports is a hash of the identity.
+- **Writes** (`edit`, `raw`, `rewrap`, `reencrypt`) go through the raw upload flow (staging
+  and an atomic rename), never the in-place edit flow, with a precondition the agent checks
+  right before the rename: `matches` the identity of the version the browser read, or
+  `must_not_exist` for new files. A failed write leaves the previous file intact, and a
+  stale one is `vault_file_changed` (409). A rewrap checks the old MAC with FK (proving the
+  key belongs to the file), writes a new header and copies the payload bytes unchanged; a
+  re-encryption chains `DecryptingReader` into `EncryptingReader`.
+- **Decrypted downloads** are a form `POST` navigation, so the browser saves the response as
+  a stream; the route checks `Origin` and `Sec-Fetch-Site` itself because form posts are
+  not protected by CORS. One-time links never decrypt.
+- Plaintext never touches a temporary file on the server; it passes one 64 KiB chunk at a
+  time. Keys live in zeroizing types with redacted `Debug`, and travel in headers and bodies,
+  which nothing logs; an integration test checks the logs for them.
+- **The server makes itself non-dumpable** (`PR_SET_DUMPABLE 0`) at startup on Linux and
+  Termux, so processes of its own OS user (local managed agents run as that user) cannot
+  read keys from `/proc/<pid>/mem` or attach a debugger. macOS has no equivalent that keeps
+  crash reporting, so there a same-user process remains a risk while a request decrypts.
+
+### Browser vault
+
+`ui/src/vault/` holds the browser side; nothing in it is React except the components that use
+it.
+
+- `vault-crypto` (WebCrypto, HKDF, Argon2id through `hash-wasm`) and `vault-keys` (creating,
+  unlocking, the chain walk, rotation and destroy requests) are pure functions, so the
+  integration tests run the same key handling as the UI.
+- **`VaultSession`** (router context `vault`) is the page's lock state. It holds the
+  non-extractable keys of every reachable generation, shares them with the other tabs over a
+  `BroadcastChannel`, locks after 15 idle minutes, and with "Keep unlocked on this device"
+  keeps them in IndexedDB instead (no idle lock). On load, kept keys of another generation
+  than the server's current one are deleted, because the vault was rotated elsewhere; a
+  rotation in this tab locks every other tab and deletes kept keys. "Lock now" deletes the
+  kept copy before it locks, so a reload cannot undo it. Logging out locks the same way
+  before it ends the session, so the next user of a shared browser finds the vault locked.
+- Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
+  unlocked and otherwise opens the one `VaultDialog` in the app shell (create with a passkey,
+  a passphrase or both; unlock with one prompt for every passkey of this hostname or the
+  passphrase). The editor, uploads, downloads, file creation and the settings page share it.
+- **Passwordless vaults.** The passphrase is optional and is the user's recovery path; there
+  is no separate recovery code. Wherever a vault ends up without one (creation, removing
+  the passphrase, a rotation that drops it) the UI warns that passkeys only work on their
+  hostname and that losing them loses every file, which a `vault.json` backup cannot fix.
+  New passphrases can be generated (`vault-passphrase`: 25 symbols from a 32-symbol
+  alphabet without look-alikes, drawn with rejection sampling, 125 bits) and copied.
+- **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
+  `evalByCredential` for every registered credential unlocks; registration refuses
+  authenticators without PRF.
+- **Fresh unlock.** Flows that wrap the vault key again (adding a passkey or passphrase,
+  rotation, slot removal, restoring a backup) need the raw key, which the session never
+  holds, so they unwrap a slot again: one prompt for every passkey of this hostname or the
+  passphrase (`FreshUnlockFields`, `openFreshSlots`). Only the passkeys' non-extractable
+  KEKs wait in React state; the raw key exists only while the flow runs. A restore opens
+  the backup's own slots. Rotation keeps only slots opened in the dialog: every kept
+  passkey is confirmed with its own prompt (the first confirmation is also the fresh
+  unlock, so a single-passkey vault rotates with one prompt), a kept passphrase is typed,
+  and anything unconfirmed is removed after a consent that names it.
+- **Editor.** A `.redoorvault` path opens in the editor even though the agent cannot call
+  ciphertext editable. Its content query (`vault-files`) reads the header, unwraps the file
+  key and reads the plaintext; it is keyed by the unlocked generation and has `gcTime: 0`,
+  so locking drops the plaintext from the cache. Saves send a new file key and the revision
+  the editor read; a conflict offers overwrite or discard. The editor workspace never writes
+  a vault file's buffer to the server (the server also refuses such keys), a `beforeunload`
+  warning protects unsaved drafts, and highlighting uses the inner extension. Files on an
+  older generation show a banner that rewraps them.
+- **Uploads and downloads.** "Upload encrypted files" queues files under `name.redoorvault`
+  with the unlocked vault; the queue encrypts each with a new file key through the vault
+  upload route, and the usual conflict check sees the encrypted names. "Download decrypted"
+  posts a hidden form into a hidden frame, so the browser streams the plaintext to disk.
+- **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
+  (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice
+  where it is optional) and scan the connected devices' default directories for vault files
+  with the file search, grouping them by generation and offering rewrap and re-encryption.
+
 ## SSH device keys
 
 An SSH device can log in with an ed25519 key that redoor creates for that device only,
 instead of the server user's own keys or a password stored in plaintext in `config.toml`.
 Such a key works for exactly one device, can be revoked on its own, cannot be replayed to
-an impostor host and is restricted in `authorized_keys`.
+an impostor host and is restricted in `authorized_keys`. When the account has a vault, the
+key is encrypted with it, so a copy of the server data directory does not give access to
+devices.
 
-- **Storage.** `<data_dir>/ssh/<device-id>/` holds `known_hosts` (the pinned host key),
-  `id_ed25519` (the current private key) and, only while a setup or rotation runs,
-  `id_ed25519.next` (the staged key). There is no `.pub` file: the public key is derived
-  from the private key on every load, so switching keys is one atomic
-  `rename(id_ed25519.next, id_ed25519)` and a reader always sees a complete old or new key.
-  The directory is 0700 and every file 0600; files are written with their final mode and
-  renamed into place. Everything is keyed by the permanent device id, so a rename or a
-  reused name cannot hand a key to another device. The `[[agents]]` entry only records
-  `managed_ssh_key = true` (omitted when false); it never holds key material, and it never
-  has both `managed_ssh_key` and `password`. Keys are generated in-process (`ssh-key`
-  crate). In this phase the private key is not encrypted at rest (see
-  `plans/ssh-key-vault.md`).
+- **Storage.** Keys and pins belong to the account that set them up, next to its
+  `vault.json`, because each user owns their own authentication and security material:
+
+  ```
+  <data_dir>/users/<account>/ssh/<device-id>/
+      known_hosts                    pinned host key
+      id_ed25519                     plaintext key (account without a vault)
+      id_ed25519.redoorvault         key encrypted with the account's vault
+      id_ed25519.next[.redoorvault]  staged key, only while a setup or rotation runs
+  ```
+
+  Directories are 0700 and files 0600, written with their final mode and renamed into
+  place. There is no `.pub` file: the public key is derived from a plaintext key and read
+  from an encrypted key's header, so switching keys is one atomic rename of the staged file
+  and a reader always sees a complete old or new key. A commit renames the staged file and
+  then deletes the other form. Keys only change from plaintext to encrypted (an account with
+  a vault cannot set up plaintext keys), so a reader that finds both after a crash between
+  the two steps uses the encrypted one; the next commit or removal deletes the leftover.
+  Everything is keyed by the permanent device id, so a rename or a reused name cannot hand
+  a key to another device. The `[[agents]]` entry only records `managed_ssh_key = true`
+  (omitted when false); it never holds key material, and it never has both
+  `managed_ssh_key` and `password`. Keys are generated in-process (`ssh-key` crate), so the
+  browser never sees them. The account name is a login name (`parse_server_username`), so
+  it cannot escape the data directory or contain `:` and whitespace.
+- **Encrypted keys** are `.redoorvault` files of kind `ssh-key`: the payload is the OpenSSH
+  private key text, the header context binds it to the account and device and carries the
+  OpenSSH public key. The public key keeps the fingerprint, the status and the
+  `authorized_keys` cleanup working while the key is locked. For a new key the browser only
+  sends a new file key and its wrap under the current generation (`vault` in the setup
+  request); the context is bound by the MAC, not the wrap. Opening a key checks the vault id
+  and generation, the kind, the MAC, the account and device, and that the private key's
+  public half is the header's public key; any mismatch is an error and nothing is used.
+- **Held keys.** `HeldSshKeys` maps `(account, device id)` to a decrypted key (zeroized on
+  drop, redacted `Debug`) and records which account started each device, so reconnects use
+  that account's key and pin.
+  - `POST …/start` takes an optional `{ "ssh_key_file_key": … }`. A device with an
+    encrypted key that is not held needs it: the server decrypts the key and holds it
+    before the watchdog starts. Without it the start fails at once with `ssh_key_locked`
+    (409). A held key makes the body unnecessary, so access tokens can start a device that
+    a browser started earlier and that is still desired-running.
+  - Dropped on Stop, device edit or deletion, key removal and supervisor replacement, and
+    with the process (including self-restarts; nothing is handed to the re-exec'd server).
+    The browser's "Lock now" does not drop held keys, because that must not break the
+    reconnects of running devices. Restarting a running agent keeps its key.
+  - A spawn that finds an encrypted key not held (a race with Stop) is a configuration
+    failure that stops the agent with "The SSH key is locked" instead of retrying.
+  - Plaintext keys are not held; every spawn reads them from disk.
+- **In-process ssh-agent.** ssh only accepts a key from a file or from an ssh-agent, so
+  `ssh/ssh_agent.rs` implements the OpenSSH key agent protocol in the server (named
+  "ssh-agent" everywhere, never "agent", which is the redoor process on devices). Every
+  `ssh` process with `AuthPolicy::ManagedKey` gets its own socket in a fresh 0700
+  directory under `$XDG_RUNTIME_DIR` or the temp dir, plus `id.pub`, and runs with
+  `IdentityAgent=<socket>`, `IdentitiesOnly=yes`, `IdentityFile=<dir>/id.pub`. The private
+  key, plaintext or decrypted, never touches the disk on the way and is never handed to
+  `ssh`. Only `REQUEST_IDENTITIES` (the one key) and `SIGN_REQUEST` (only for that key) are
+  answered; everything else, including `session-bind@openssh.com`, gets `FAILURE`, and
+  messages are capped at 256 KiB. A connection must come from the server's uid and, where
+  the platform reports it, from the spawned `ssh` process. The socket stops accepting and
+  its directory is removed after the first signature or the first served connection, when
+  a short-lived `ssh` exits, or at the latest after two minutes. A `ProxyJump` keeps
+  running its own inner ssh with the user's config and ssh-agent.
 - **Policies, each option emitted once.** OpenSSH keeps the first value of an option, so
   defaults are produced by the policies instead of being written unconditionally:
   - `HostKeyPolicy::TrustOnFirstUse` (`accept-new`, as before) for devices without a pin,
@@ -1997,8 +2264,8 @@ an impostor host and is restricted in `authorized_keys`.
     reaches the same machine. An existing but malformed pin fails closed instead of
     restoring trust-on-first-use.
   - `AuthPolicy::Default` (the server user's keys, `BatchMode`), `Password` (askpass),
-    `NoAuth` (probe) and `ManagedKey` (only the managed key, no agent, no password or
-    keyboard-interactive fallback).
+    `NoAuth` (probe) and `ManagedKey` (only the managed key through the in-process
+    ssh-agent, no password or keyboard-interactive fallback).
 - **Only the managed key is offered.** `IdentityFile`, forwards and environment settings
   accumulate across config files and cannot be reset, so managed-key connections run with
   `-F none`. Their routing comes from `ssh -G`: a safelist of routing and transport
@@ -2012,56 +2279,95 @@ an impostor host and is restricted in `authorized_keys`.
   1. The host key is probed without sending any credential
      (`GET /api/v1/agents/{agent}/ssh-host-key`), confirmed by the user and pinned.
   2. First enrollment tries the stored password, the server user's keys, then a typed
-     password. Rotation uses only the current managed key and fails if it is revoked or
-     missing; it never falls back to the server user's identities. A typed password lives
-     only in memory (zeroized) for the request and goes to ssh through
-     askpass; it is never stored or logged.
-  3. A key is generated, written to `id_ed25519.next` (replacing a stale one from an
-     interrupted run) and installed by a script over stdin that atomically rewrites
-     `~/.ssh/authorized_keys`, keeping every other line, dropping this device's lines whose
-     key fingerprint is not in the keep list, and refusing a non-regular file. The line is
-     `restrict,port-forwarding <key> redoor:<device-id>:<SHA256 fingerprint>`. The awk
-     filter gets the marker and keep list through `ENVIRON` (no escape processing) and
+     password. Rotation uses only the current managed key (the operation credential, see
+     below) and fails if it is revoked or missing; it never falls back to the server user's
+     identities. A typed password lives only in memory (zeroized) for the request and goes
+     to ssh through askpass; it is never stored or logged.
+  3. A key is generated and written to the staged file, encrypted when the request carries
+     `vault` (required with a vault, `vault_required` otherwise; refused without one). It is
+     installed by a script over stdin that atomically rewrites `~/.ssh/authorized_keys`,
+     keeping every other line, dropping this device's and account's lines whose key
+     fingerprint is not in the keep list. A symlinked file is written through (temp file
+     next to the link target, renamed over it) so the link survives, because Proxmox VE
+     links root's file into its cluster filesystem to share it between nodes; a dangling
+     link, a non-regular target or a target in an unwritable directory is refused. The line is
+     `restrict,port-forwarding <key> redoor:<device-id>:<account>:<SHA256 fingerprint>`, so
+     one account's setup, rotation and removal never touch another account's lines. The
+     awk filter gets the marker and keep list through `ENVIRON` (no escape processing) and
      compares fingerprints only literally (`index`, `==`), because they contain `+`, `/`
      and `=`; it behaves the same in GNU, BSD and busybox awk.
   4. The key is verified with only that key, against the pin, with a dummy `-R 0:…`
      forward like the agent's, so hosts that refuse forwarding fail here. On failure the
      line is removed again with the bootstrap credential and the staged file deleted.
-  5. Commit of a first key: under the config edit lock, `.next` is renamed to `id_ed25519`
-     (and the directory synced), then `managed_ssh_key = true` is written and `password`
-     removed, and the agent comes back `Stopped` like after any edit. The rename comes
-     first so a crash never leaves a config that claims a missing key, only an unused key
-     file that the next setup overwrites. If the config write fails, the key file is
+  5. Commit of a first key: under the config edit lock, the staged file is renamed into
+     place (and the directory synced), then `managed_ssh_key = true` is written and
+     `password` removed, and the agent comes back `Stopped` like after any edit. The rename
+     comes first so a crash never leaves a config that claims a missing key, only an unused
+     key file that the next setup overwrites. If the config write fails, the key file is
      deleted and the remote line rolled back. A runtime registration failure after
      persistence is reported without rolling back the now-referenced key.
   6. Commit of a rotation (keep list during install: current and new key): only the
      rename, with no config write, so a connected agent is not stopped; its ssh session
-     already authenticated, and every agent start loads the key file again. Then the old
-     line is removed using the new key.
-- **Removal** (`DELETE …/ssh-key`) first clears the config, then removes every
-  `redoor:<device-id>:` line using the old key and deletes it locally, reporting whether
-  the device was reached. Failed persistence leaves the remote key intact. Device deletion
-  likewise validates route ownership and persists deletion before revoking the remote key.
-  The pin stays after key removal and still protects subsequent password or default-key
-  logins. Deleting the device or changing its target deletes the whole device directory;
-  changing the username deletes the keys but keeps the pin.
+     already authenticated, and every agent start loads the key file again. Under the same
+     lock Stop uses, an encrypted new key is held when the device is still desired-running
+     (so it keeps reconnecting, also after a rotation from plaintext, which held nothing),
+     and the old held key is dropped otherwise. Then the old line is removed using the new
+     key. The UI offers "Rotate to a vault-encrypted key" for a plaintext key once the
+     account has a vault.
+- **Operation credential.** Rotation, removal and device deletion log in with the current
+  key. For an encrypted key the request may carry `current_file_key`, which is decrypted
+  with the same checks as Start, or else the held key is cloned. It is resolved before
+  anything stops the supervisor and lives only for the request; it is never put into the
+  held keys, so rotating a stopped device does not make it token-startable. The UI unlocks
+  the vault and sends the file key for these actions.
+- **Removal** (`DELETE …/ssh-key`, optional `current_file_key`) first clears the config,
+  then removes every `redoor:<device-id>:<account>:` line using the operation credential
+  and deletes the key locally, reporting whether the device was reached. Without a
+  credential (encrypted key, no file key, not held) the removal is local only and reports
+  `removed_from_device: false`, as an unreachable device does. Failed persistence leaves
+  the remote key intact. Device deletion (`DELETE /api/v1/agents/{agent}`, the same
+  optional body) likewise validates route ownership and persists deletion before revoking
+  the remote key. The pin stays after key removal and still protects subsequent password
+  or default-key logins. Deleting the device or changing its target deletes every
+  account's device directory; changing the username deletes every account's keys but
+  keeps the pins.
+- **Status** (`GET …/ssh-key`) reports whether the device uses a managed key, its
+  fingerprint, whether it is encrypted and held, and an encrypted key's header and key
+  status, from which the browser unwraps the file key.
+- **Vault rotation.** The device scan of the vault settings cannot find keys on the
+  server, so `GET /api/v1/vault/ssh-keys` lists the account's encrypted keys with their
+  generation, and `POST …/ssh-key/rewrap` replaces only the header after checking the old
+  MAC with the file key (payload unchanged, atomic rename, a held key unaffected). After a
+  rotation the settings page rewraps every listed key. Destroying a generation is refused
+  with `vault_key_in_use` (409) while an SSH key header still uses it. Restoring another
+  vault's backup makes encrypted keys unreadable; their status reports it and the key is
+  set up again.
 - **Host key changes** fail the connection (`StrictHostKeyChecking=yes`). The
   `connection_issue` names the pinned and presented fingerprints, and only an explicit
   re-pin (`POST …/ssh-host-key/pin` with the confirmed fingerprint) replaces the pin.
-- **Concurrency.** Key operations and device edits of one device are serialized by a
-  per-device busy set; a second request gets 409. The config edit lock is held only for the
-  final commit (rename and config write, or the rotation's rename), because the flow
-  includes network round trips. Mutating HTTP handlers run
-  their operation in an owned Tokio task, so disconnecting a client does not release the
-  busy guard or interrupt commit, rollback, or cleanup. Remote file rewrites are serialized
-  across devices on this server; separate servers rewriting the same account can still race.
+- **Concurrency.** Key operations, rewraps and device edits of one device are serialized
+  by a per-device busy set; a second request gets 409. The config edit lock is held only
+  for the final commit (rename and config write, or the rotation's rename and held key),
+  because the flow includes network round trips. Mutating HTTP handlers run their
+  operation in an owned Tokio task, so disconnecting a client does not release the busy
+  guard or interrupt commit, rollback, or cleanup. Remote file rewrites are serialized
+  across devices on this server; separate servers rewriting the same account can still
+  race.
+- **Multiple accounts.** Every sign-in maps to the single configured account today, but
+  keys, pins, held keys and markers are already per account. Left for the multi-account
+  work: the device-level `managed_ssh_key` flag and `password` becoming per account, what
+  Start does for an account without a key for a device another account set up, and
+  removing other accounts' remote lines when a device is deleted.
 - **UI.** A dedicated key is the default for new SSH devices. The add form then creates the
   device without a password and opens `SshKeySetupDialog` (host key confirmation, a
-  password used once, enrollment), so the typed password only ever travels with the
-  enroll request. Turning the option off brings back the server-keys or stored-password
-  choice. The device's configuration page has an SSH key section for set up, rotate,
-  remove and re-pin. An edit that changes the username or target warns that the key is
-  dropped and can remove the key from the device first, while it still logs in.
+  password used once, enrollment, unlocking the vault first when the account has one), so
+  the typed password only ever travels with the enroll request. Turning the option off
+  brings back the server-keys or stored-password choice. The device's configuration page
+  has an SSH key section for set up, rotate, remove and re-pin that shows whether the key is
+  encrypted with the vault or plaintext. Starting a device whose key is locked (the server
+  answers `ssh_key_locked`) opens the vault prompt and starts again with the key's file key.
+  An edit that changes the username or target warns that the key is dropped and can remove
+  the key from the device first, while it still logs in.
 
 ## Authentication and trust
 
@@ -2106,10 +2412,17 @@ credential only works on its own endpoints:
   `hello` is self-reported. Agents are therefore only partly trusted.
 - **SSH device credentials** live in two places, both readable by the server's OS user
   and root: an optional plaintext `password` in `config.toml`, or a managed key under
-  `<data_dir>/ssh/<device-id>/` (0600, unencrypted for now). Anyone who can read the data
-  dir or a copy of it can log in to the device with that key; the exposure is limited to
-  that device and revocable by removing the key. The SSH key routes are session-only,
-  because they handle passwords and change what the server can log in to.
+  `<data_dir>/users/<account>/ssh/<device-id>/`. A key of an account with a vault is
+  encrypted with it, so a copy of the data dir alone does not log in; the server holds it
+  decrypted only while the device runs after a browser Start, which carries the same
+  residual risk as vault files (a compromised server, root, and on macOS a same-user
+  process). A plaintext key (account without a vault, or not yet rotated) lets anyone who
+  can read the data dir or a copy of it log in to that device; the exposure is limited to
+  that device and revocable by removing the key. The SSH key routes (setup, rotation,
+  removal, status, rewrap and the vault's SSH key list) are session-only, because they
+  handle passwords and file keys and change what the server can log in to. Access tokens
+  cannot unlock the vault: they can start a device with an encrypted key only while its
+  key is held.
 - **What agents are trusted with.** An agent acts as its own OS user. A local managed agent
   runs as the server's user, an SSH agent as the SSH login, and a standalone agent as
   whoever started it. The server trusts the content an agent returns (listings, file data,
@@ -2169,8 +2482,13 @@ to the scope.
 - **Default deny.** A route missing from the table is session-only, so a new route is not
   reachable with a token until someone classifies it.
 - **Session-only routes.** Server and agent configuration, creating SSH or local agents,
-  restart, log levels, terminals, log streams, the UI websocket, user state, editor buffers
-  and token management are never grantable. A token could otherwise widen its own access, for
+  restart, log levels, terminals, log streams, the UI websocket, user state, editor buffers,
+  the vault and every encrypted-file route (`/api/v1/vault/...`,
+  `/api/v1/agents/{agent}/vault/...`), the SSH key and host key routes
+  (`/api/v1/agents/{agent}/ssh-key...`, `/api/v1/agents/{agent}/ssh-host-key...`) and token
+  management are never grantable. Tokens and
+  MCP clients can copy, move and read `.redoorvault` ciphertext through the ordinary file
+  routes, but never decrypt it or change the vault. A token could otherwise widen its own access, for
   example by adding a local agent or minting a broader token. The exception is
   `/api/v1/tokens/current`, where a token reads or deletes itself.
 - **Limit of the model.** Permissions describe what a token may do through redoor, not

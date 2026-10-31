@@ -343,6 +343,7 @@ mod tests {
                 on_existing: CopyExistingMode::Override,
                 ownership: CreationOwnershipOptions::default(),
                 executable: false,
+                precondition: None,
             }),
             Command::EditFile(request::EditFile { path: path() }),
             Command::TarUpload(request::TarUpload {

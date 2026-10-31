@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useVaultSession } from "#ui/components/vault-dialog";
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, Link, useRouter } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
@@ -7,6 +8,8 @@ import {
     Ellipsis,
     Home,
     KeyRound,
+    LockKeyhole,
+    LockOpen,
     LoaderCircle,
     LogOut,
     FileText,
@@ -55,7 +58,13 @@ const rootRouteApi = getRouteApi("__root__");
  * disagree about where the menu leads or what each icon is called.
  */
 type NavigationItem = {
-    to: "/" | "/agents" | "/logs" | "/transfers" | "/settings/tokens";
+    to:
+        | "/"
+        | "/agents"
+        | "/logs"
+        | "/transfers"
+        | "/settings/tokens"
+        | "/settings/vault";
     /** Short visible name, shown as the tooltip because the icon has no text beside it. */
     label: string;
     /** Accessible name; the existing names stay so tests and screen readers keep working. */
@@ -102,6 +111,13 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         icon: KeyRound,
         // Stays highlighted on a token's edit page.
         exact: false,
+    },
+    {
+        to: "/settings/vault",
+        label: "Vault",
+        ariaLabel: "Manage vault",
+        icon: LockKeyhole,
+        exact: true,
     },
 ];
 
@@ -233,7 +249,7 @@ function NavigationBar(props: { onRestart: () => void }) {
     const logout = useLogout();
 
     return (
-        <div className="grid grid-cols-6 gap-0.5 border-t border-slate-800 p-2">
+        <div className="grid grid-cols-7 gap-0.5 border-t border-slate-800 p-2">
             {navigationItems.map((item) => (
                 <NavigationLink
                     key={item.to}
@@ -287,6 +303,31 @@ function NavigationBar(props: { onRestart: () => void }) {
     );
 }
 
+/**
+ * The vault destination's look while the vault is unlocked in this browser: an open lock in
+ * the warning color, so an unlocked vault on a shared or unattended screen is noticed.
+ */
+function useVaultIndicator(item: NavigationItem) {
+    const { state } = useVaultSession();
+
+    const unlocked =
+        item.to === "/settings/vault" && state.status === "unlocked";
+
+    return unlocked
+        ? {
+              icon: LockOpen,
+              label: `${item.ariaLabel} (unlocked)`,
+              tooltip: `${item.label}: unlocked`,
+              className: "text-amber-300",
+          }
+        : {
+              icon: item.icon,
+              label: item.ariaLabel,
+              tooltip: item.label,
+              className: null,
+          };
+}
+
 /** Renders one destination as an icon whose tooltip names it, marking the current page. */
 function NavigationLink(props: {
     item: NavigationItem;
@@ -294,13 +335,14 @@ function NavigationLink(props: {
     tooltipClassName?: string;
 }) {
     const closeMenu = useCloseSideMenu();
-    const Icon = props.item.icon;
+    const shown = useVaultIndicator(props.item);
+    const Icon = shown.icon;
 
     return (
         <IconLinkButton
             to={props.item.to}
-            label={props.item.ariaLabel}
-            tooltip={props.item.label}
+            label={shown.label}
+            tooltip={shown.tooltip}
             tooltipClassName={props.tooltipClassName}
             activeOptions={{ exact: props.item.exact }}
             variant="ghost"
@@ -308,6 +350,7 @@ function NavigationLink(props: {
             className={cn(
                 "aria-[current=page]:bg-tint-strong aria-[current=page]:text-slate-100",
                 props.className,
+                shown.className,
             )}
         >
             <Icon className="h-4 w-4" aria-hidden="true" />
@@ -359,14 +402,20 @@ function ServerRestartDialog(props: { isOpen: boolean; onClose: () => void }) {
 
 /**
  * Ends the session and reloads into the login page, so no cached server state or open
- * socket outlives the user's credentials.
+ * socket outlives the user's credentials. The vault is locked first, in every tab and
+ * including a key kept on this device, because logging out is how a user leaves a shared
+ * browser and the next person to sign in must not find the vault already open.
  */
 function useLogout() {
-    const { api } = rootRouteApi.useRouteContext();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const router = useRouter();
 
     return useMutation({
-        mutationFn: () => api.logout(),
+        mutationFn: async () => {
+            await vault.lock();
+
+            return api.logout();
+        },
         onSuccess: () => {
             window.location.replace(
                 router.buildLocation({ to: "/login" }).href,

@@ -1,12 +1,15 @@
 import React from "react";
+import { isVaultPath, VAULT_SUFFIX } from "#ui/vault/vault-path";
+import { newWriteKeys } from "#ui/vault/vault-keys";
 import { useMutation } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { getRouteApi, useNavigate } from "@tanstack/react-router";
 import {
     ClipboardPaste,
     Eye,
     EyeOff,
     FilePlus,
     FolderPlus,
+    LockKeyhole,
     Plus,
     RefreshCw,
     Upload,
@@ -31,6 +34,8 @@ import { getBaseName } from "#ui/utils/path";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { useRefreshBrowserPath } from "#ui/components/browser/refresh";
 
+const rootRouteApi = getRouteApi("__root__");
+
 /**
  * Sends file and directory selections through the same conflict check and bounded global
  * queue as dropped files, which also report their errors.
@@ -41,8 +46,30 @@ function UploadFilesAction(props: {
     disabled: boolean;
 }) {
     const uploadFilesTo = useFileUpload();
+    const { vault } = rootRouteApi.useRouteContext();
     const fileInputRef = React.useRef<FileInputHandle>(null);
     const directoryInputRef = React.useRef<FileInputHandle>(null);
+    const encryptedInputRef = React.useRef<FileInputHandle>(null);
+
+    /**
+     * Encrypts each picked file into `name.redoorvault`. The vault is unlocked after the pick
+     * and before the conflict check, so the check sees the encrypted names.
+     */
+    const handleEncryptedSelection = (selectedFiles: File[]) => {
+        void vault
+            .requestUnlock("Uploading encrypted files needs the vault key")
+            .then(() =>
+                uploadFilesTo(
+                    { agent: props.agent, path: props.directoryPath },
+                    selectedFiles.map((file) => ({
+                        file,
+                        relativePath: `${file.name}${VAULT_SUFFIX}`,
+                    })),
+                    { encrypt: true },
+                ),
+            )
+            .catch(() => undefined);
+    };
 
     /** Queues the picked files, keeping directory structure when the browser reports it. */
     const handleFileSelection = (selectedFiles: File[]) => {
@@ -67,6 +94,11 @@ function UploadFilesAction(props: {
                 label="Choose directory to upload"
                 directory
                 onSelect={handleFileSelection}
+            />
+            <FileInput
+                ref={encryptedInputRef}
+                label="Choose files to encrypt and upload"
+                onSelect={handleEncryptedSelection}
             />
             <ActionMenu
                 label="Upload"
@@ -93,6 +125,15 @@ function UploadFilesAction(props: {
                         >
                             <FolderPlus className="h-4 w-4 text-slate-400" />
                             Upload directory
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            onClick={() => {
+                                close();
+                                encryptedInputRef.current?.open();
+                            }}
+                        >
+                            <LockKeyhole className="h-4 w-4 text-slate-400" />
+                            Upload encrypted files
                         </ActionMenuButton>
                         <p className="border-t border-slate-800 px-3 pt-3 text-xs leading-relaxed text-slate-400">
                             You can also upload files by dragging and dropping
@@ -163,15 +204,32 @@ function CreateFileDialog(props: {
     onClose: () => void;
 }) {
     const navigate = useNavigate();
+    const { vault } = rootRouteApi.useRouteContext();
 
     const createFileMutation = useMutation({
-        mutationFn: (name: string) =>
-            props.agent.upload(
-                joinBrowserPath(props.directoryPath, name),
+        mutationFn: async (name: string) => {
+            const path = joinBrowserPath(props.directoryPath, name);
+
+            // A `.redoorvault` file is encrypted from the start, so it never exists as an
+            // empty plaintext file on the device.
+            if (isVaultPath(name)) {
+                const unlocked = await vault.requestUnlock(
+                    "Creating an encrypted file needs the vault key",
+                );
+
+                return props.agent.vaultUpload(path, {
+                    content: new Blob([]),
+                    keys: await newWriteKeys(unlocked),
+                });
+            }
+
+            return props.agent.upload(
+                path,
                 new globalThis.File([""], name, {
                     type: "text/plain",
                 }),
-            ),
+            );
+        },
         onSuccess: async (_, name) => {
             await navigate(
                 browserRoute(
@@ -191,7 +249,7 @@ function CreateFileDialog(props: {
             kind="File"
             fieldLabel="File name"
             placeholder="notes.txt"
-            fieldDescription="The name of the new empty text file."
+            fieldDescription="The name of the new empty text file. Names ending in .redoorvault are encrypted with your vault."
             initialName=""
             preview={{
                 label: "File path",

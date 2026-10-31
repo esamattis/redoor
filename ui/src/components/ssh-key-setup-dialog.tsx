@@ -5,17 +5,30 @@ import {
     CheckCircle2,
     KeyRound,
     LoaderCircle,
+    LockKeyhole,
     ShieldCheck,
 } from "lucide-react";
 
+import type { EnrollSshKeyRequest } from "#bindings/EnrollSshKeyRequest";
 import type { SshHostKeyResponse } from "#bindings/SshHostKeyResponse";
+import type { ApiClient } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { Password } from "#ui/components/password";
-import { queryKeys, sshHostKeyQueryOptions } from "#ui/queries";
+import {
+    invalidateSshKeyQueries,
+    sshHostKeyQueryOptions,
+    vaultStatusQueryOptions,
+} from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
+import {
+    currentSshKeyFileKey,
+    newSshKeySealIfVault,
+} from "#ui/vault/ssh-key-vault";
+import { vaultErrorMessage } from "#ui/vault/vault-errors";
+import type { VaultSession } from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -68,8 +81,9 @@ export function SshKeySetupDialog(
 
 /** Owns the probe and the enrollment request for one opening of the dialog. */
 function SshKeySetupDialogContent(props: SshKeySetupProps) {
-    const { api } = rootRouteApi.useRouteContext();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
+    const vaultStatus = useQuery(vaultStatusQueryOptions(api));
     const [password, setPassword] = React.useState(props.initialPassword ?? "");
     const needsHostKeyConfirmation = !props.hasPinnedHostKey;
 
@@ -79,25 +93,24 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
     });
 
     const enrollMutation = useMutation({
-        mutationFn: () =>
-            api.enrollSshKey(props.agentId, {
-                host_key_fingerprint: needsHostKeyConfirmation
-                    ? (hostKeyQuery.data?.fingerprint ?? null)
-                    : null,
-                // Rotation logs in with the current key, so a typed password is never sent.
-                password:
-                    props.mode === "setup" && password !== "" ? password : null,
-            }),
-        onSuccess: async () => {
-            // A first setup rewrites the device's configuration and stops its agent. Rotation
-            // only switches the key file, but the configuration still reports the key state.
-            await Promise.all([
-                queryClient.invalidateQueries({ queryKey: queryKeys.agents() }),
-                queryClient.invalidateQueries({
-                    queryKey: queryKeys.agentConfiguration(props.agentId),
+        mutationFn: async () =>
+            api.enrollSshKey(
+                props.agentId,
+                await enrollRequest({
+                    api,
+                    vault,
+                    agentId: props.agentId,
+                    deviceName: props.deviceName,
+                    mode: props.mode,
+                    hostKeyFingerprint: needsHostKeyConfirmation
+                        ? (hostKeyQuery.data?.fingerprint ?? null)
+                        : null,
+                    password,
                 }),
-            ]);
-        },
+            ),
+        // A first setup rewrites the device's configuration and stops its agent. Rotation
+        // only switches the key file, but the configuration still reports the key state.
+        onSuccess: () => invalidateSshKeyQueries(queryClient, props.agentId),
     });
 
     const isRotate = props.mode === "rotate";
@@ -149,8 +162,14 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
         (!needsHostKeyConfirmation || hostKey !== undefined);
 
     const errorMessage = enrollMutation.isError
-        ? getErrorMessage(enrollMutation.error, "Failed to set up the SSH key")
+        ? vaultErrorMessage(
+              enrollMutation.error,
+              "Failed to set up the SSH key",
+          )
         : null;
+
+    const hasVault =
+        vaultStatus.data === undefined ? null : vaultStatus.data.vault !== null;
 
     return (
         <Dialog
@@ -191,6 +210,7 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                         onRetry={() => void hostKeyQuery.refetch()}
                     />
                 ) : null}
+                <SshKeyStorageNote hasVault={hasVault} />
                 {props.mode === "setup" ? (
                     <Password
                         label="SSH password (used once, not saved)"
@@ -265,6 +285,81 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                 </DialogActions>
             </form>
         </Dialog>
+    );
+}
+
+/**
+ * Builds the enrollment request, unlocking the vault when the key needs it: an account with
+ * a vault encrypts every new key with it, and a rotation of an encrypted key logs in with
+ * the current key, which needs its file key.
+ */
+async function enrollRequest(options: {
+    api: ApiClient;
+    vault: VaultSession;
+    agentId: string;
+    deviceName: string;
+    mode: SshKeySetupMode;
+    hostKeyFingerprint: string | null;
+    password: string;
+}): Promise<EnrollSshKeyRequest> {
+    const reason = `${options.mode === "rotate" ? "Rotate" : "Set up"} the SSH key of ${options.deviceName}`;
+
+    const request: EnrollSshKeyRequest = {
+        host_key_fingerprint: options.hostKeyFingerprint,
+        // Rotation logs in with the current key, so a typed password is never sent.
+        password:
+            options.mode === "setup" && options.password !== ""
+                ? options.password
+                : null,
+    };
+
+    const seal = await newSshKeySealIfVault({
+        api: options.api,
+        vault: options.vault,
+        reason,
+    });
+
+    if (seal !== null) {
+        request.vault = seal;
+    }
+
+    if (options.mode === "rotate") {
+        const currentFileKey = await currentSshKeyFileKey({
+            api: options.api,
+            vault: options.vault,
+            agentId: options.agentId,
+            reason,
+        });
+
+        if (currentFileKey !== null) {
+            request.current_file_key = currentFileKey;
+        }
+    }
+
+    return request;
+}
+
+/**
+ * Tells the user how the new key is stored on this server: encrypted with the vault, which
+ * then asks to be unlocked, or in plaintext until they create a vault.
+ */
+function SshKeyStorageNote(props: { hasVault: boolean | null }) {
+    if (props.hasVault === null) {
+        return null;
+    }
+
+    return (
+        <p className="flex items-start gap-2 text-sm text-slate-400">
+            <LockKeyhole
+                className="mt-0.5 h-4 w-4 shrink-0 text-slate-500"
+                aria-hidden="true"
+            />
+            <span>
+                {props.hasVault
+                    ? "The key is encrypted with your vault, so you unlock the vault to install it and whenever you start the device."
+                    : "The key is stored unencrypted on this server. Create a vault in Settings to keep SSH keys encrypted; existing keys can then be rotated to encrypted ones."}
+            </span>
+        </p>
     );
 }
 

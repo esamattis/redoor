@@ -87,6 +87,7 @@ pub(crate) async fn raw_agent_put_handler(
         on_existing: params.on_existing,
         ownership,
         executable: false,
+        precondition: None,
     });
     let upload = AgentUpload::start(
         &state.router_ref,

@@ -1,8 +1,46 @@
 import { z } from "zod";
 import type { ErrorResponse } from "#bindings/ErrorResponse";
+import type { ApiErrorCode } from "#bindings/ApiErrorCode";
+
+/** Every error code the server sends; the check below keeps it complete. */
+const API_ERROR_CODES = [
+    "vault_not_found",
+    "vault_exists",
+    "vault_proof_invalid",
+    "vault_last_slot",
+    "vault_invalid",
+    "not_a_vault_file",
+    "vault_format_unsupported",
+    "vault_header_corrupted",
+    "foreign_vault",
+    "retired_vault_key",
+    "unknown_vault_key",
+    "vault_header_tampered",
+    "vault_payload_corrupted",
+    "stale_vault_key",
+    "vault_file_changed",
+    "invalid_vault_file_key",
+    "not_a_vault_path",
+    "agent_upgrade_required",
+    "ssh_key_locked",
+    "vault_required",
+    "vault_key_in_use",
+] as const satisfies readonly ApiErrorCode[];
+
+/** Fails to compile when the server gains a code this list does not name. */
+const allCodesListed: Exclude<
+    ApiErrorCode,
+    (typeof API_ERROR_CODES)[number]
+> extends never
+    ? true
+    : false = true;
+
+void allCodesListed;
 
 const errorResponseSchema: z.ZodType<ErrorResponse> = z.object({
     error: z.string(),
+    // Unknown codes from a newer server are dropped rather than failing the parse.
+    code: z.enum(API_ERROR_CODES).optional().catch(undefined),
 });
 
 /** Supplies browser or Node-managed authentication without coupling transport to the router. */
@@ -18,12 +56,19 @@ export class ApiError extends Error {
     status: number;
     /** Raw response body when the server did not return a structured ErrorResponse. */
     body: string | null;
+    /** The machine-readable reason, for failures the UI words itself (such as vault errors). */
+    code: ApiErrorCode | null;
 
-    constructor(status: number, message: string, body: string | null = null) {
+    constructor(
+        status: number,
+        message: string,
+        details: { body?: string | null; code?: ApiErrorCode | null } = {},
+    ) {
         super(message);
         this.name = "ApiError";
         this.status = status;
-        this.body = body;
+        this.body = details.body ?? null;
+        this.code = details.code ?? null;
     }
 }
 
@@ -80,7 +125,10 @@ export async function requireSuccessfulResponse(
             const error = errorResponseSchema.parse(JSON.parse(text));
 
             if (error.error.length > 0) {
-                throw new ApiError(response.status, error.error, text);
+                throw new ApiError(response.status, error.error, {
+                    body: text,
+                    code: error.code ?? null,
+                });
             }
         } catch (error) {
             if (error instanceof ApiError) {
@@ -97,7 +145,7 @@ export async function requireSuccessfulResponse(
             response.status,
             summary ||
                 `Request failed: ${response.status} ${response.statusText}`,
-            text,
+            { body: text },
         );
     }
 

@@ -865,6 +865,7 @@ async fn write_file(
         on_existing: conflict_mode(string(args, "on_existing", id)?, id)?,
         ownership: CreationOwnershipOptions::default(),
         executable: false,
+        precondition: None,
     });
     let written = write_inline(state, agent_id, path, command, &bytes)
         .await

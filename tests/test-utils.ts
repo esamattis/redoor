@@ -92,6 +92,8 @@ export async function createToxiproxyAgent(options: {
             supports_native_open: options.agent.supportsNativeOpen,
             supports_move_to_trash: options.agent.supportsMoveToTrash,
             supports_trash: options.agent.supportsTrash,
+            supports_upload_preconditions:
+                options.agent.supportsUploadPreconditions,
             uid: options.agent.uid,
             is_root: options.agent.isRoot,
             // The proxy only reroutes traffic; clone warnings are irrelevant to it.

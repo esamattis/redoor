@@ -1,4 +1,5 @@
 import { MutationObserver, type QueryClient } from "@tanstack/react-query";
+import { newWriteKeys, type UnlockedVault } from "#ui/vault/vault-keys";
 
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { Agent } from "#ui/api-client";
@@ -26,6 +27,11 @@ export type UploadBatch = {
     directories?: string[];
     /** The conflict policy the user chose for this batch, so uploads never replace silently. */
     onExisting: CopyExistingMode;
+    /**
+     * Encrypts every file with the vault; the relative paths already carry the
+     * `.redoorvault` suffix, so conflicts are checked against the encrypted names.
+     */
+    encrypt?: boolean;
 };
 
 /** A queued file with its progress, kept after completion so the queue view can settle. */
@@ -34,6 +40,7 @@ export type UploadQueueItem = UploadSourceFile & {
     agentId: string;
     destinationPath: string;
     onExisting: CopyExistingMode;
+    encrypt: boolean;
     status: "waiting" | "uploading" | "done";
     error: string | null;
 };
@@ -65,6 +72,8 @@ export type UploadQueueOptions = {
     resolveAgent: (agentId: string) => Agent | undefined;
     /** Called once when the last pending upload finishes, to refresh listings it changed. */
     onSettled: () => void;
+    /** The unlocked vault for encrypted uploads, asking the user to unlock when locked. */
+    resolveVault: () => Promise<UnlockedVault>;
     /** Where the unload warning is attached; omitted where there is no window, as in tests. */
     unloadTarget?: EventTarget;
 };
@@ -78,6 +87,7 @@ type UploadOperation =
           path: string;
           file: File;
           onExisting: CopyExistingMode;
+          encrypt: boolean;
       };
 
 /** Rejects paths that could address files outside the selected destination. */
@@ -141,6 +151,21 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                     return;
                 }
 
+                if (operation.encrypt) {
+                    // The keys are asked for per file instead of kept in the queue, so
+                    // locking the vault also takes them from uploads that already ran.
+                    const vault = await options.resolveVault();
+
+                    // A fresh file key for every file, wrapped with the current generation.
+                    await operation.agent.vaultUpload(operation.path, {
+                        content: operation.file,
+                        keys: await newWriteKeys(vault),
+                        on_existing: operation.onExisting,
+                    });
+
+                    return;
+                }
+
                 await operation.agent.upload(operation.path, operation.file, {
                     on_existing: operation.onExisting,
                 });
@@ -177,6 +202,7 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                 agentId: batch.agentId,
                 destinationPath: batch.destinationPath,
                 onExisting: batch.onExisting,
+                encrypt: batch.encrypt ?? false,
                 status: "waiting" as const,
                 error: null,
             }));
@@ -352,6 +378,7 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                       ),
                       file: item.file,
                       onExisting: item.onExisting,
+                      encrypt: item.encrypt,
                   }),
               )
             : Promise.reject(new Error("Upload agent is unavailable."));

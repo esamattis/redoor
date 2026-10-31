@@ -163,6 +163,7 @@ impl CopyContentKind {
                 on_existing,
                 ownership: redoor_protocol::api::files::CreationOwnershipOptions::default(),
                 executable: false,
+                precondition: None,
             }),
             Self::TarDirectory => Command::TarUpload(request::TarUpload { path, on_existing }),
         }

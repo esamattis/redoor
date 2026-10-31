@@ -64,11 +64,33 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("GET" | "PUT", "/api/v1/agents/{agent}/logging-level")
         | ("POST", "/api/v1/agents/{agent}/echo") => Access::SessionOnly,
 
-        // SSH keys and host keys carry login passwords and change what the server can log
-        // in to.
+        // SSH keys and host keys carry login passwords and file keys and change what the
+        // server can log in to.
         ("GET", "/api/v1/agents/{agent}/ssh-host-key")
         | ("POST", "/api/v1/agents/{agent}/ssh-host-key/pin")
-        | ("POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key") => Access::SessionOnly,
+        | ("GET" | "POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key")
+        | ("POST", "/api/v1/agents/{agent}/ssh-key/rewrap")
+        | ("GET", "/api/v1/vault/ssh-keys") => Access::SessionOnly,
+
+        // The vault and encrypted files: a token or MCP client may copy ciphertext through the
+        // ordinary file routes, but never decrypt or change the vault.
+        ("GET" | "POST" | "PATCH", "/api/v1/vault")
+        | ("GET", "/api/v1/vault/unlock-material")
+        | ("POST", "/api/v1/vault/slots" | "/api/v1/vault/rotate")
+        | ("PATCH" | "DELETE", "/api/v1/vault/slots/{id}")
+        | ("POST", "/api/v1/vault/slots/{id}/used" | "/api/v1/vault/keys/{key_id}/destroy")
+        | ("GET" | "PUT", "/api/v1/vault/backup")
+        | ("GET", "/api/v1/agents/{agent}/vault/header")
+        | (
+            "POST",
+            "/api/v1/agents/{agent}/vault/read"
+            | "/api/v1/agents/{agent}/vault/download"
+            | "/api/v1/agents/{agent}/vault/rewrap"
+            | "/api/v1/agents/{agent}/vault/reencrypt",
+        )
+        | ("PUT", "/api/v1/agents/{agent}/vault/edit" | "/api/v1/agents/{agent}/vault/raw") => {
+            Access::SessionOnly
+        }
 
         // Token management: never grantable, so a token cannot mint a broader one.
         ("GET" | "POST", "/api/v1/tokens")
@@ -304,6 +326,17 @@ mod tests {
                 "/api/v1/agents/{agent}/ssh-host-key",
                 Access::SessionOnly,
             ),
+            (
+                Method::GET,
+                "/api/v1/agents/{agent}/ssh-key",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/ssh-key/rewrap",
+                Access::SessionOnly,
+            ),
+            (Method::GET, "/api/v1/vault/ssh-keys", Access::SessionOnly),
             (Method::GET, "/api/v1/tokens", Access::SessionOnly),
             (Method::GET, "/api/v1/tokens/current", Access::AnyPrincipal),
             (

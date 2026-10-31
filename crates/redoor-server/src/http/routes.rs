@@ -3,7 +3,7 @@
 
 use axum::{
     Router, middleware,
-    routing::{get, post, put},
+    routing::{get, patch, post, put},
 };
 use tower_http::cors::{Any, CorsLayer};
 
@@ -135,6 +135,62 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
                 )),
         )
         .route(
+            "/api/v1/vault",
+            get(super::vault::get_vault_handler)
+                .post(super::vault::create_vault_handler)
+                .patch(super::vault::update_vault_handler),
+        )
+        .route(
+            "/api/v1/vault/unlock-material",
+            get(super::vault::unlock_material_handler),
+        )
+        .route("/api/v1/vault/slots", post(super::vault::add_slot_handler))
+        .route(
+            "/api/v1/vault/slots/{id}",
+            patch(super::vault::rename_slot_handler).delete(super::vault::remove_slot_handler),
+        )
+        .route(
+            "/api/v1/vault/slots/{id}/used",
+            post(super::vault::slot_used_handler),
+        )
+        .route("/api/v1/vault/rotate", post(super::vault::rotate_handler))
+        .route(
+            "/api/v1/vault/keys/{key_id}/destroy",
+            post(super::vault::destroy_key_handler),
+        )
+        .route(
+            "/api/v1/vault/backup",
+            get(super::vault::export_backup_handler).put(super::vault::restore_backup_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/header/{*path}",
+            get(super::vault_files::header_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/read/{*path}",
+            post(super::vault_files::read_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/edit/{*path}",
+            put(super::vault_files::edit_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/raw/{*path}",
+            put(super::vault_files::upload_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/download",
+            post(super::vault_files::download_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/rewrap/{*path}",
+            post(super::vault_files::rewrap_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/vault/reencrypt/{*path}",
+            post(super::vault_files::reencrypt_handler),
+        )
+        .route(
             "/api/v1/transfers/progress",
             get(list_transfer_progress_handler),
         )
@@ -162,7 +218,17 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route(
             "/api/v1/agents/{agent}/ssh-key",
-            post(super::ssh_keys::enroll_handler).delete(super::ssh_keys::remove_handler),
+            get(super::ssh_keys::status_handler)
+                .post(super::ssh_keys::enroll_handler)
+                .delete(super::ssh_keys::remove_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/ssh-key/rewrap",
+            post(super::vault_ssh_keys::rewrap_handler),
+        )
+        .route(
+            "/api/v1/vault/ssh-keys",
+            get(super::vault_ssh_keys::list_handler),
         )
         .route("/api/v1/local-agents", post(create_local_agent_handler))
         .route(

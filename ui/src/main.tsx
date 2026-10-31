@@ -15,6 +15,7 @@ import { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import { findCachedAgent, invalidateAllAgentData } from "#ui/queries";
 import { UploadQueue } from "#ui/upload-queue";
 import { EditorWorkspace } from "#ui/editor/editor-workspace";
+import { VaultSession } from "#ui/vault/vault-session";
 import { setOpenFileLine, updateUserState } from "#ui/user-state";
 
 // The API lives on the same origin as the page: the redoor binary
@@ -39,6 +40,9 @@ const terminals = new TerminalSessions(queryClient, store);
 const uploads = new UploadQueue({
     queryClient,
     resolveAgent: (agentId) => findCachedAgent(queryClient, api, agentId),
+    // Declared below; only called once an encrypted upload starts.
+    resolveVault: () =>
+        vault.requestUnlock("Uploading encrypted files needs the vault key"),
     onSettled: () => {
         void invalidateAllAgentData(queryClient);
     },
@@ -60,6 +64,16 @@ const editor = new EditorWorkspace(api, queryClient, (caret) => {
 
 editor.start(window);
 
+// The vault's lock state belongs to the page, not a route: an unlock in one place must serve
+// the editor, uploads and downloads alike, and kept or shared keys are restored once here.
+const vault = new VaultSession();
+
+void vault.start(async () => {
+    const status = await api.getVault();
+
+    return status.vault?.current_key_id ?? null;
+});
+
 // One registry owns every window-level shortcut, so the order in which commands claim a key
 // is decided by explicit priority instead of by whichever component registered first.
 const shortcuts = new ShortcutRegistry(window);
@@ -73,6 +87,7 @@ const router = createRouter({
         terminals,
         uploads,
         editor,
+        vault,
     },
     defaultPreload: "intent",
     scrollRestoration: true,

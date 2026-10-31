@@ -9,4 +9,5 @@ mod one_time_token_registry;
 mod protocol_mismatches;
 pub mod ssh;
 pub mod startup;
+pub(crate) mod vault;
 mod watchdog;

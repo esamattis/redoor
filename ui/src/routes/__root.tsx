@@ -7,6 +7,7 @@ import type { ApiClient } from "#ui/api-client";
 import type { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import type { UploadQueue } from "#ui/upload-queue";
 import type { EditorWorkspace } from "#ui/editor/editor-workspace";
+import type { VaultSession } from "#ui/vault/vault-session";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -17,6 +18,8 @@ interface AppRouterContext {
     uploads: UploadQueue;
     /** Owns the single editor view and open files' buffers, so they outlive the editor route. */
     editor: EditorWorkspace;
+    /** Holds the unlocked vault keys of this tab, shared with the other tabs. */
+    vault: VaultSession;
 }
 
 /**

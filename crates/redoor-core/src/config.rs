@@ -452,7 +452,9 @@ pub fn require_relay<'a>(config: &'a RedoorConfig, id: &str) -> Result<&'a Relay
         .with_context(|| format!("relay '{id}' is not configured"))
 }
 
-/// Restricts login names to one portable path component so account files cannot escape the data dir.
+/// Restricts login names to one portable path component so account files cannot escape the data
+/// dir. The allowlist also keeps `:` and whitespace out, because the name is part of the
+/// `redoor:<device-id>:<account>:` marker of managed SSH keys in `authorized_keys`.
 pub fn parse_server_username(value: &str) -> Result<String, String> {
     if value.is_empty() || value == "." || value == ".." {
         return Err("server.username must not be empty, '.' or '..'".to_string());
@@ -569,6 +571,7 @@ mod tests {
             "alice\\bob",
             "al\0ice",
             "user name",
+            "user:name",
             "user@host",
             "ålice",
         ] {

@@ -17,6 +17,7 @@ import { Route as AppLogsRouteImport } from './routes/_app/logs'
 import { Route as AppAgentsIndexRouteImport } from './routes/_app/agents.index'
 import { Route as AppAgentsDeviceNameRouteImport } from './routes/_app/agents.$deviceName'
 import { Route as AppAgentsNewRouteImport } from './routes/_app/agents.new'
+import { Route as AppSettingsVaultRouteImport } from './routes/_app/settings.vault'
 import { Route as AppTransfersIndexRouteImport } from './routes/_app/transfers.index'
 import { Route as AppAgentsDeviceNameIndexRouteImport } from './routes/_app/agents.$deviceName.index'
 import { Route as AppAgentsDeviceNameEditRouteImport } from './routes/_app/agents.$deviceName.edit'
@@ -63,6 +64,11 @@ const AppAgentsDeviceNameRoute = AppAgentsDeviceNameRouteImport.update({
 const AppAgentsNewRoute = AppAgentsNewRouteImport.update({
   id: '/agents/new',
   path: '/agents/new',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsVaultRoute = AppSettingsVaultRouteImport.update({
+  id: '/settings/vault',
+  path: '/settings/vault',
   getParentRoute: () => AppRoute,
 } as any)
 const AppTransfersIndexRoute = AppTransfersIndexRouteImport.update({
@@ -117,6 +123,7 @@ export interface FileRoutesByFullPath {
   '/logs': typeof AppLogsRoute
   '/agents/$deviceName': typeof AppAgentsDeviceNameRouteWithChildren
   '/agents/new': typeof AppAgentsNewRoute
+  '/settings/vault': typeof AppSettingsVaultRoute
   '/agents/': typeof AppAgentsIndexRoute
   '/transfers/': typeof AppTransfersIndexRoute
   '/agents/$deviceName/edit': typeof AppAgentsDeviceNameEditRoute
@@ -133,6 +140,7 @@ export interface FileRoutesByTo {
   '/logs': typeof AppLogsRoute
   '/': typeof AppIndexRoute
   '/agents/new': typeof AppAgentsNewRoute
+  '/settings/vault': typeof AppSettingsVaultRoute
   '/agents': typeof AppAgentsIndexRoute
   '/transfers': typeof AppTransfersIndexRoute
   '/agents/$deviceName/edit': typeof AppAgentsDeviceNameEditRoute
@@ -152,6 +160,7 @@ export interface FileRoutesById {
   '/_app/': typeof AppIndexRoute
   '/_app/agents/$deviceName': typeof AppAgentsDeviceNameRouteWithChildren
   '/_app/agents/new': typeof AppAgentsNewRoute
+  '/_app/settings/vault': typeof AppSettingsVaultRoute
   '/_app/agents/': typeof AppAgentsIndexRoute
   '/_app/transfers/': typeof AppTransfersIndexRoute
   '/_app/agents/$deviceName/edit': typeof AppAgentsDeviceNameEditRoute
@@ -171,6 +180,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/agents/$deviceName'
     | '/agents/new'
+    | '/settings/vault'
     | '/agents/'
     | '/transfers/'
     | '/agents/$deviceName/edit'
@@ -187,6 +197,7 @@ export interface FileRouteTypes {
     | '/logs'
     | '/'
     | '/agents/new'
+    | '/settings/vault'
     | '/agents'
     | '/transfers'
     | '/agents/$deviceName/edit'
@@ -205,6 +216,7 @@ export interface FileRouteTypes {
     | '/_app/'
     | '/_app/agents/$deviceName'
     | '/_app/agents/new'
+    | '/_app/settings/vault'
     | '/_app/agents/'
     | '/_app/transfers/'
     | '/_app/agents/$deviceName/edit'
@@ -277,6 +289,13 @@ declare module '@tanstack/react-router' {
       path: '/agents/new'
       fullPath: '/agents/new'
       preLoaderRoute: typeof AppAgentsNewRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/vault': {
+      id: '/_app/settings/vault'
+      path: '/settings/vault'
+      fullPath: '/settings/vault'
+      preLoaderRoute: typeof AppSettingsVaultRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/transfers/': {
@@ -363,6 +382,7 @@ interface AppRouteChildren {
   AppIndexRoute: typeof AppIndexRoute
   AppAgentsDeviceNameRoute: typeof AppAgentsDeviceNameRouteWithChildren
   AppAgentsNewRoute: typeof AppAgentsNewRoute
+  AppSettingsVaultRoute: typeof AppSettingsVaultRoute
   AppAgentsIndexRoute: typeof AppAgentsIndexRoute
   AppTransfersIndexRoute: typeof AppTransfersIndexRoute
   AppSettingsTokensIndexRoute: typeof AppSettingsTokensIndexRoute
@@ -375,6 +395,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppIndexRoute: AppIndexRoute,
   AppAgentsDeviceNameRoute: AppAgentsDeviceNameRouteWithChildren,
   AppAgentsNewRoute: AppAgentsNewRoute,
+  AppSettingsVaultRoute: AppSettingsVaultRoute,
   AppAgentsIndexRoute: AppAgentsIndexRoute,
   AppTransfersIndexRoute: AppTransfersIndexRoute,
   AppSettingsTokensIndexRoute: AppSettingsTokensIndexRoute,

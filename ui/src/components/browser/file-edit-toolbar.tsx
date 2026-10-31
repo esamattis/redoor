@@ -1,4 +1,9 @@
 import React from "react";
+import {
+    DecryptedDownloadMenuButton,
+    useDecryptedDownload,
+} from "#ui/components/vault/decrypted-download-button";
+import { isVaultPath } from "#ui/vault/vault-path";
 import { useMutation } from "@tanstack/react-query";
 import {
     ClipboardCopy,
@@ -147,7 +152,10 @@ ${props.selection.text}
                 variant="ghost"
                 size="sm"
                 aria-label="Search selected text"
-                disabled={props.selection === null}
+                // The search runs on the agent, which must never see a vault file's plaintext.
+                disabled={
+                    props.selection === null || isVaultPath(props.bookmark.path)
+                }
                 onClick={() => {
                     if (props.selection === null) {
                         return;
@@ -206,6 +214,8 @@ function EditorActionsMenu(props: {
     /** Hides file operations, which would act on the working file rather than the revision. */
     readOnly: boolean;
     canEdit: boolean;
+    /** Separate from canEdit: a locked vault file has no content yet, but deleting it needs no key. */
+    canDelete: boolean;
     isReloading: boolean;
     isSaving: boolean;
     downloadUrl: string | null;
@@ -213,116 +223,132 @@ function EditorActionsMenu(props: {
     onDelete: () => void;
 }) {
     const [userState, setUserState] = useUserState();
+    const decrypted = useDecryptedDownload(props.agent, props.path);
+    const isVaultFile = !props.readOnly && isVaultPath(props.path);
 
     return (
-        <ActionMenu
-            label="Editor actions"
-            title="Editor actions"
-            closeAriaLabel="Close editor actions"
-            hideTitle={false}
-            icon={<MoreHorizontal className="h-4 w-4" />}
-            variant="icon"
-        >
-            {(close) => (
-                <>
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                disabled={!props.canEdit || props.isSaving}
+        <>
+            <ActionMenu
+                label="Editor actions"
+                title="Editor actions"
+                closeAriaLabel="Close editor actions"
+                hideTitle={false}
+                icon={<MoreHorizontal className="h-4 w-4" />}
+                variant="icon"
+            >
+                {(close) => (
+                    <>
+                        {props.readOnly ? null : (
+                            <>
+                                <ActionMenuButton
+                                    disabled={!props.canEdit || props.isSaving}
+                                    onClick={() => {
+                                        close();
+                                        props.onReload();
+                                    }}
+                                >
+                                    {props.isReloading ? (
+                                        <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
+                                    ) : (
+                                        <RefreshCw className="h-4 w-4 text-slate-400" />
+                                    )}
+                                    {props.isReloading
+                                        ? "Reloading..."
+                                        : "Reload"}
+                                </ActionMenuButton>
+                            </>
+                        )}
+                        {props.downloadUrl === null ? null : (
+                            <ActionMenuButton asChild>
+                                <a
+                                    href={props.downloadUrl}
+                                    download={props.fileName}
+                                    onClick={close}
+                                >
+                                    <Download className="h-4 w-4 text-slate-400" />
+                                    Download
+                                </a>
+                            </ActionMenuButton>
+                        )}
+                        {isVaultFile ? (
+                            <DecryptedDownloadMenuButton
                                 onClick={() => {
                                     close();
-                                    props.onReload();
+                                    decrypted.start();
                                 }}
-                            >
-                                {props.isReloading ? (
-                                    <LoaderCircle className="h-4 w-4 animate-spin text-slate-400" />
-                                ) : (
-                                    <RefreshCw className="h-4 w-4 text-slate-400" />
-                                )}
-                                {props.isReloading ? "Reloading..." : "Reload"}
-                            </ActionMenuButton>
-                        </>
-                    )}
-                    {props.downloadUrl === null ? null : (
-                        <ActionMenuButton asChild>
-                            <a
-                                href={props.downloadUrl}
-                                download={props.fileName}
-                                onClick={close}
-                            >
-                                <Download className="h-4 w-4 text-slate-400" />
-                                Download
-                            </a>
-                        </ActionMenuButton>
-                    )}
-                    {props.readOnly ? null : (
-                        <>
-                            <ActionMenuButton
-                                tone="danger"
-                                disabled={
-                                    !props.canEdit ||
-                                    props.isSaving ||
-                                    getImmediateParentPath(props.path) === null
-                                }
-                                onClick={() => {
-                                    close();
-                                    props.onDelete();
-                                }}
-                            >
-                                <Trash2 className="h-4 w-4" />
-                                Delete file
-                            </ActionMenuButton>
-                            <div className="my-1 border-t border-slate-800" />
-                            <SelectPathMenuButton
-                                agent={props.agent}
-                                path={props.path}
-                                fileName={props.fileName}
-                                entryType="file"
-                                close={close}
                             />
-                            <BookmarkMenuButton
-                                bookmark={{
-                                    agentId: props.agent.id,
-                                    path: props.path,
-                                    name: props.fileName,
-                                    entryType: "file",
-                                }}
-                                close={close}
-                            />
-                            <div className="my-1 border-t border-slate-800" />
-                        </>
-                    )}
-                    <Checkbox
-                        checked={userState.wrapEditorLines}
-                        label="Wrap lines"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                wrapEditorLines: checked,
-                            }));
-                        }}
-                    >
-                        Wrap lines
-                    </Checkbox>
-                    <Checkbox
-                        checked={userState.vimMode}
-                        label="Vim mode"
-                        title={false}
-                        className="w-full px-3 py-2"
-                        onCheckedChange={(checked) => {
-                            setUserState((current) => ({
-                                ...current,
-                                vimMode: checked,
-                            }));
-                        }}
-                    >
-                        Vim mode
-                    </Checkbox>
-                </>
-            )}
-        </ActionMenu>
+                        ) : null}
+                        {props.readOnly ? null : (
+                            <>
+                                <ActionMenuButton
+                                    tone="danger"
+                                    disabled={
+                                        !props.canDelete ||
+                                        props.isSaving ||
+                                        getImmediateParentPath(props.path) ===
+                                            null
+                                    }
+                                    onClick={() => {
+                                        close();
+                                        props.onDelete();
+                                    }}
+                                >
+                                    <Trash2 className="h-4 w-4" />
+                                    Delete file
+                                </ActionMenuButton>
+                                <div className="my-1 border-t border-slate-800" />
+                                <SelectPathMenuButton
+                                    agent={props.agent}
+                                    path={props.path}
+                                    fileName={props.fileName}
+                                    entryType="file"
+                                    close={close}
+                                />
+                                <BookmarkMenuButton
+                                    bookmark={{
+                                        agentId: props.agent.id,
+                                        path: props.path,
+                                        name: props.fileName,
+                                        entryType: "file",
+                                    }}
+                                    close={close}
+                                />
+                                <div className="my-1 border-t border-slate-800" />
+                            </>
+                        )}
+                        <Checkbox
+                            checked={userState.wrapEditorLines}
+                            label="Wrap lines"
+                            title={false}
+                            className="w-full px-3 py-2"
+                            onCheckedChange={(checked) => {
+                                setUserState((current) => ({
+                                    ...current,
+                                    wrapEditorLines: checked,
+                                }));
+                            }}
+                        >
+                            Wrap lines
+                        </Checkbox>
+                        <Checkbox
+                            checked={userState.vimMode}
+                            label="Vim mode"
+                            title={false}
+                            className="w-full px-3 py-2"
+                            onCheckedChange={(checked) => {
+                                setUserState((current) => ({
+                                    ...current,
+                                    vimMode: checked,
+                                }));
+                            }}
+                        >
+                            Vim mode
+                        </Checkbox>
+                    </>
+                )}
+            </ActionMenu>
+            {decrypted.toast}
+        </>
     );
 }
 
@@ -333,6 +359,7 @@ function FileEditorSecondaryActions(props: {
     fileName: string;
     readOnly: boolean;
     canEdit: boolean;
+    canDelete: boolean;
     isReloading: boolean;
     isSaving: boolean;
     downloadUrl: string | null;
@@ -354,6 +381,7 @@ function FileEditorSecondaryActions(props: {
                 fileName={props.fileName}
                 readOnly={props.readOnly}
                 canEdit={props.canEdit}
+                canDelete={props.canDelete}
                 isReloading={props.isReloading}
                 isSaving={props.isSaving}
                 downloadUrl={props.downloadUrl}
@@ -400,6 +428,8 @@ export function FileEditHeader(props: {
     hasError: boolean;
     isSaved: boolean;
     canEdit: boolean;
+    /** Deleting only needs the path, so it can be allowed while the content is unavailable. */
+    canDelete: boolean;
     isDirty: boolean;
     isSaving: boolean;
     agent: Agent;
@@ -484,6 +514,7 @@ export function FileEditHeader(props: {
                         fileName={props.fileName}
                         readOnly={props.readOnly}
                         canEdit={props.canEdit}
+                        canDelete={props.canDelete}
                         isReloading={props.isReloading}
                         isSaving={props.isSaving}
                         downloadUrl={props.downloadUrl}

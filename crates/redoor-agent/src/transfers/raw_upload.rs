@@ -7,6 +7,7 @@ use crate::runtime::cancel::CancelReasonCell;
 use redoor_core::destination::{check_existing_destination, place_temp_at_destination};
 use redoor_core::log;
 use redoor_core::staging::{StagingKind, StagingPath};
+use redoor_protocol::wire::command::{MoveSourceIdentity, UploadPrecondition};
 use redoor_protocol::wire::partials::CancelReason;
 use redoor_protocol::{
     api::{files::CreationOwnershipOptions, transfers::CopyExistingMode},
@@ -56,6 +57,45 @@ async fn create_staging_file(
     .await
 }
 
+/// Refuses an upload whose destination no longer has the state the server read.
+///
+/// Runs once before staging, so a stale save fails before its body is streamed, and again
+/// right before the rename, which keeps the window for a concurrent writer as small as the
+/// filesystem allows.
+async fn check_precondition(
+    path: &Path,
+    precondition: Option<&UploadPrecondition>,
+) -> Result<(), AgentCommandError> {
+    let Some(precondition) = precondition else {
+        return Ok(());
+    };
+    let current = match tokio::fs::symlink_metadata(path).await {
+        Ok(metadata) => Some(MoveSourceIdentity::from_metadata(&metadata)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(AgentCommandError::new(
+                CommandErrorKind::from_io_error(&error),
+                format!("Failed to inspect upload destination: {error}"),
+            ));
+        }
+    };
+    match (precondition, current) {
+        (UploadPrecondition::MustNotExist, None) => Ok(()),
+        (UploadPrecondition::MustNotExist, Some(_)) => Err(AgentCommandError::new(
+            CommandErrorKind::AlreadyExists,
+            format!("Destination already exists: {}", path.display()),
+        )),
+        (UploadPrecondition::Matches { identity }, Some(current)) if *identity == current => Ok(()),
+        (UploadPrecondition::Matches { .. }, _) => Err(AgentCommandError::new(
+            CommandErrorKind::SourceChanged,
+            format!(
+                "File changed on the device since it was read: {}",
+                path.display()
+            ),
+        )),
+    }
+}
+
 /// Replaces or creates one file through a hidden sibling staging file.
 pub(crate) struct RawFileSink {
     /// Durable staging of a resumable copy; `None` for browser uploads.
@@ -70,10 +110,13 @@ pub(crate) struct RawFileSink {
     file: File,
     existing_permissions: Option<std::fs::Permissions>,
     ownership: ResolvedOwnership,
+    /// Checked again right before the rename; see [`check_precondition`].
+    precondition: Option<UploadPrecondition>,
 }
 
 impl RawFileSink {
     /// Validates the destination and reserves staging before the server starts streaming.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn prepare(
         request_id: RequestId,
         path: String,
@@ -81,9 +124,20 @@ impl RawFileSink {
         ownership: CreationOwnershipOptions,
         partial: Option<Box<redoor_protocol::wire::partials::PartialTransfer>>,
         executable: bool,
+        precondition: Option<UploadPrecondition>,
         services: &crate::commands::ctx::AgentServices,
     ) -> Result<Self, AgentCommandError> {
         let destination = Path::new(&path);
+        check_precondition(destination, precondition.as_ref()).await?;
+        // The precondition decides replacement: a new file must be published without
+        // replacing anything, and a matching file is replaced whatever the caller asked.
+        // A file merge is one rename over the old file, so readers never see it missing;
+        // an override would move the old file aside first.
+        let on_existing = match precondition {
+            Some(UploadPrecondition::MustNotExist) => CopyExistingMode::Error,
+            Some(UploadPrecondition::Matches { .. }) => CopyExistingMode::Merge,
+            None => on_existing,
+        };
         check_existing_destination(destination, on_existing, false)
             .await
             .map_err(|error| AgentCommandError::new(error.kind(), error.to_string()))?;
@@ -164,6 +218,7 @@ impl RawFileSink {
             file,
             existing_permissions: existing_metadata.map(|(permissions, _, _)| permissions),
             ownership,
+            precondition,
         })
     }
 
@@ -255,6 +310,12 @@ impl UploadSink for RawFileSink {
                 )
                 .await);
         }
+        if let Err(error) =
+            check_precondition(Path::new(&self.path), self.precondition.as_ref()).await
+        {
+            let message = error.to_string();
+            return Err(self.fail(error.kind(), message).await);
+        }
         if let Err(error) = place_temp_at_destination(
             self.staging.path(),
             Path::new(&self.path),
@@ -337,6 +398,7 @@ mod tests {
             CreationOwnershipOptions::default(),
             None,
             false,
+            None,
             &ctx.services,
         )
         .await;
@@ -463,6 +525,65 @@ mod tests {
         assert_eq!(mode, 0o666);
         drop(file);
         staging.discard().await;
+    }
+
+    /// Vault saves rely on these answers to refuse overwriting a newer or unexpected file.
+    #[tokio::test]
+    async fn precondition_detects_existing_and_replaced_destinations() {
+        let temp = TempDir::create();
+        let destination = temp.path().join("secret.redoorvault");
+        // No precondition and a missing file both leave creation allowed.
+        assert!(check_precondition(&destination, None).await.is_ok());
+        assert!(
+            check_precondition(&destination, Some(&UploadPrecondition::MustNotExist))
+                .await
+                .is_ok()
+        );
+
+        tokio::fs::write(&destination, b"first").await.unwrap();
+        let identity = MoveSourceIdentity::from_metadata(
+            &tokio::fs::symlink_metadata(&destination).await.unwrap(),
+        );
+        let matches = UploadPrecondition::Matches {
+            identity: identity.clone(),
+        };
+        // Creating over an existing file must be refused as an existing destination.
+        assert_eq!(
+            check_precondition(&destination, Some(&UploadPrecondition::MustNotExist))
+                .await
+                .unwrap_err()
+                .kind(),
+            CommandErrorKind::AlreadyExists
+        );
+        // The file the server read is still in place, so replacing it is allowed.
+        assert!(
+            check_precondition(&destination, Some(&matches))
+                .await
+                .is_ok()
+        );
+
+        // Another writer replaces the file the way every vault save does: through a rename.
+        let other = temp.path().join("other");
+        tokio::fs::write(&other, b"second").await.unwrap();
+        tokio::fs::rename(&other, &destination).await.unwrap();
+        // A different inode means a newer version, which a stale save must not replace.
+        assert_eq!(
+            check_precondition(&destination, Some(&matches))
+                .await
+                .unwrap_err()
+                .kind(),
+            CommandErrorKind::SourceChanged
+        );
+
+        tokio::fs::remove_file(&destination).await.unwrap();
+        // A removed file is also a change, not a reason to recreate it.
+        assert_eq!(
+            check_precondition(&destination, Some(&matches))
+                .await
+                .unwrap_err()
+                .kind(),
+            CommandErrorKind::SourceChanged
+        );
     }
 
     #[tokio::test]
