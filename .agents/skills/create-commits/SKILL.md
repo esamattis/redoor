@@ -35,6 +35,6 @@ The body must not merely restate the literal file or code changes. Prefer ration
 
 ## Flag Breaking Changes
 
-Prefix the title with `BREAKING: ` when the commit breaks something users or operators rely on, so the release changelog can find it. Examples are a config key that is removed or changes meaning, a default that changes behavior, a REST, CLI or wire protocol change that older clients or agents cannot handle, and on-disk data that is no longer read without manual steps. The body must also say what users must do to upgrade.
+Prefix the title with `BREAKING: ` when the commit breaks something users or operators rely on, so the release changelog can find it. Examples are a config key that is removed or changes meaning, a default that changes behavior, a CLI or wire protocol change that older clients or agents cannot handle, and on-disk data that is no longer read without manual steps. The body must also say what users must do to upgrade. REST API changes are never breaking: the REST API is private to the UI, which ships in the same binary.
 
 For example: `BREAKING: Make PAM login opt-in`.

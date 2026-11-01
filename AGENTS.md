@@ -12,6 +12,7 @@
 - REST API and Websocket server
 - redoor agents connects to the server via Websockets
 - The server exposes REST API which can be used to execute commands in the agents using the websocket connection
+- The REST API is private to the UI, which is embedded in the server binary and always ships with it. REST API changes are therefore never breaking changes and need no compatibility handling
 - Support for memory restrained environments: All file uploads and downloads must be streamed without reading to whole file into the memory, this includes the tar streaming and any other streaming that could use lot of memory with big files
 - Control commands should stay response even during long streaming downloads or uploads.
 
