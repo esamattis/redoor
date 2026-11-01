@@ -156,7 +156,11 @@ jobs:
       - name: Prepare release body
         run: |
           docker_tag="ghcr.io/${GITHUB_REPOSITORY,,}:${GITHUB_REF_NAME#v}"
+          # GitHub drops the dots from a heading's anchor: "## v2.0.0" -> #v200.
+          changelog_url="https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md#${GITHUB_REF_NAME//./}"
           cat > release-body.md <<EOF
+          [Changelog](${changelog_url})
+
           Docker tag: \`${docker_tag}\`
           EOF
 
@@ -165,7 +169,6 @@ jobs:
         with:
           body_path: release-body.md
           files: artifacts/*.tar.gz
-          generate_release_notes: true
 
   container:
     name: Build container image
