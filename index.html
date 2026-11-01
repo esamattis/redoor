@@ -484,8 +484,8 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
     padding: 18px 64px 18px 20px;
     font-size: 14.5px;
     line-height: 1.7;
-    overflow-x: auto;
-    white-space: pre;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 }
 .copy {
     position: absolute;
@@ -508,6 +508,9 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 .copy.done .ok { display: block; }
 .copy.done .cp { display: none; }
 .note { color: var(--muted); font-size: 15.5px; text-align: center; margin: 18px 0 0; }
+.step { color: var(--text); font-size: 15.5px; font-weight: 600; margin: 30px 0 4px; }
+.step:first-child { margin-top: 0; }
+.step-note { color: var(--muted); font-size: 15px; margin: 0 0 12px; }
 
 
 /* ---------- Footer ---------- */
@@ -928,9 +931,25 @@ footer p { margin: 6px 0; }
             </div>
 
             <div class="panel" role="tabpanel" id="p-docker" aria-labelledby="t-docker" hidden>
+                <p class="step">Try the server</p>
+                <p class="step-note">One container with a single local device.</p>
                 <div class="code-block">
 <pre><code><span class="t-prompt">$ </span>docker run --rm --init --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest</code></pre>
                     <button class="copy" type="button" aria-label="Copy docker command" data-copy="docker run --rm --init --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest"><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
+                </div>
+                <p class="step">Demo with two devices</p>
+                <p class="step-note">Start the server on a shared network, then run a second container in another terminal. It dials in as its own device.</p>
+                <div class="code-block">
+<pre><code><span class="t-prompt">$ </span>docker network create redoor-demo</code></pre>
+                    <button class="copy" type="button" aria-label="Copy network command" data-copy="docker network create redoor-demo"><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
+                </div>
+                <div class="code-block">
+<pre><code><span class="t-prompt">$ </span>docker run --rm --init --network redoor-demo --name redoor --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest</code></pre>
+                    <button class="copy" type="button" aria-label="Copy server command" data-copy="docker run --rm --init --network redoor-demo --name redoor --publish 127.0.0.1:7666:7666 ghcr.io/esamattis/redoor:latest"><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
+                </div>
+                <div class="code-block">
+<pre><code><span class="t-prompt">$ </span>docker run --rm --init --network redoor-demo ghcr.io/esamattis/redoor:latest agent http://redoor:7666 --token redoor-demo-agent-token --name second-device</code></pre>
+                    <button class="copy" type="button" aria-label="Copy agent command" data-copy="docker run --rm --init --network redoor-demo ghcr.io/esamattis/redoor:latest agent http://redoor:7666 --token redoor-demo-agent-token --name second-device"><svg class="cp"><use href="#i-copy"/></svg><svg class="ok"><use href="#i-check"/></svg></button>
                 </div>
                 <p class="note">Open <code>http://127.0.0.1:7666</code> and log in with <code>redoor</code> / <code>redoor</code>. These demo credentials are for local testing only, see <a href="https://github.com/esamattis/redoor/blob/main/docs/docker.md">Docker Compose deployment</a> for a persistent setup.</p>
             </div>
