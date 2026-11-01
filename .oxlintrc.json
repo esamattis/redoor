@@ -2,6 +2,7 @@
     "$schema": "./node_modules/oxlint/configuration_schema.json",
     "ignorePatterns": [
         ".agents/skills/install-anti-slop/**",
+        ".claude/skills/install-anti-slop/**",
         "tools/oxlint/anti-slop/**"
     ],
     "plugins": ["typescript", "unicorn", "oxc"],
