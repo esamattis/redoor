@@ -31,28 +31,21 @@
 - UI unit tests live next to the source in `ui/src` as `*.test.ts(x)`. Run with `pn test:unit` (also part of `pn test`)
 - Run Rust unit tests with `cargo nextest run --locked` (also part of `pn test`). Install the pinned runner with `mise install`.
 - Add comments to test assertions why they are there
+- Add integration tests for all REST API features
+- When a test fails and then passes on a rerun, log it to `flaky-tests.md`
 - Run `pn test` only after real code changes, including changes to executable scripts, tests, or configuration that affects application or build behavior. Use a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite.
 - Do not run tests or builds for changes limited to documentation, plans, or code comments.
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
 - Purely visual changes (layout, spacing, wrapping, responsive breakpoints, colors) must not have tests. Do not assert element positions, sizes or styles in Playwright or unit tests
 - Do all work and commits directly on the `main` branch; do not create feature branches
+- Commit messages explain why the change was made, not what it does
+- Never bump versions or tag by hand; releases go through `scripts/release.mts`
 - On test failures see the ./log dir for related logs
 - When a single test needs cleanup, always use onTestFinished() instead of try-finally
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
 - Always write multiline strings with real newlines inside the quotes, never escaped `\n` sequences.
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
-
-# Skills
-
-Load the matching skill before starting these tasks. Each one holds rules that apply only to that task.
-
-Add skills to `.agents/skills/`, which Codex and OpenCode read. `.claude/skills` is a symlink to it for Claude Code.
-
-- `add-rest-endpoint`: adding or changing a REST API endpoint. Every REST API feature needs integration tests
-- `write-tests`: writing or changing integration tests or Playwright specs
-- `fix-flaky-test`: a test fails and then passes on a rerun (log it to `flaky-tests.md`), or a flake needs fixing
-- `create-commits`: making any git commit. Commit messages explain why, not what
-- `make-release`: releasing a new version. Never bump versions or tag by hand
+- Add skills to `.agents/skills/`, which Codex and OpenCode read. `.claude/skills` is a symlink to it for Claude Code
 
 # UI
 

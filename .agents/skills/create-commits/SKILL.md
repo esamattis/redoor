@@ -1,6 +1,6 @@
 ---
 name: create-commits
-description: Use when the user asks to create, make, prepare, or organize Git commits for changes made during the current conversation.
+description: Use whenever creating Git commits, whether the user asks for them or a workflow ends in a commit.
 ---
 
 # Create Commits
