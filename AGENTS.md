@@ -23,18 +23,14 @@
     - The comments should aim to answer the "why" question
 - When creating a function always consider first if it should be a method on a struct instead
 - Do not add one-line passthrough wrappers that only call another function or re-export a type. Call the real module directly.
-- When adding a rest api always create a dedicated struct for it's reponse with `#[ts(export)]` derive macro which genertes the related typescript interface.
-- Put behaviorally distinct REST endpoints in dedicated modules instead of adding them to an unrelated resource module. Group handlers only when they operate on the same domain and share a clear responsibility.
 - After every architectural change (new or changed crates, actors, flows, wire protocol, lifecycles, trust boundaries, or the reasons behind them) update `ARCHITECTURE.md` in the same change so it never describes a design that no longer exists
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
 - The generated ts bindings are put in the `bindings` directory
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
-- Integration test files run concurrently in several workers (see `integration-test-lanes.ts`). Use `VITEST_SERVER_PORT` (never `testPorts.vitest`) and per-file names for agents, logs and data dirs. Files that use the shared SSH test host go into `SERIAL_INTEGRATION_TEST_FILES`
 - UI unit tests live next to the source in `ui/src` as `*.test.ts(x)`. Run with `pn test:unit` (also part of `pn test`)
 - Run Rust unit tests with `cargo nextest run --locked` (also part of `pn test`). Install the pinned runner with `mise install`.
 - Add comments to test assertions why they are there
-- Add integration tests for all rest api features
 - Run `pn test` only after real code changes, including changes to executable scripts, tests, or configuration that affects application or build behavior. Use a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite.
 - Do not run tests or builds for changes limited to documentation, plans, or code comments.
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
@@ -48,25 +44,16 @@
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
 - Always write multiline strings with real newlines inside the quotes, never escaped `\n` sequences.
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
-- When you see a transient flaky test that succeeds on second run log them to `./flaky-tests.md`
-- A flake can be a real product bug (a late connect redirect and cancelled commit pagination both were), so do not dismiss one because the current change does not touch that code
-- When fixing a flake, first make it reproduce deterministically (hold a response, CPU throttling, a parallel upload loop, `--repeat-each`), then verify the fix with repeated runs
 
-# Writing non-flaky tests
+# Skills
 
-Tests run under heavy parallel load (`pn test` runs the Playwright and integration suites side by side), so any assumption about relative timing will eventually fail.
+Load the matching skill before starting these tasks. Each one holds rules that apply only to that task.
 
-- Never assume one operation is slower or faster than another. To observe an in-flight state, hold it open explicitly (held Playwright route, FIFO, toxiproxy, paused clock) and release it from the test
-- Never test expiry or retention with short real-time lifetimes; inject aged timestamps instead
-- After a UI mutation, wait for the persisted state (the write's response, or read it back from the API) before `page.goto`/`reload`. Optimistic UI updates do not prove the server saved anything, and navigation aborts in-flight writes
-- After navigation, wait for content unique to the new route (or for content unique to the old one to disappear) before interacting. The URL changes before the route loader finishes, and the keyed remount detaches the old controls
-- Specs that count requests or assert that data stays stale must call `ignoreServerEvents`: other parallel specs broadcast `routes_changed`, which refetches all mounted data at random times
-- Wait for every independent side effect you assert on, not just the first one to appear. Before asserting absence or cleanup, first observe the thing existing or an explicit acknowledgement
-- Use exact locators when stale results could also match
-- Prefer keyboard or persistent controls over hover-only toolbars. Use `ui/e2e/background-tabs.ts` for middle-click/new-tab checks. A retry inside `toPass` must reset state (selection, focus, open menus) so each attempt starts clean
-- Tests own their environment: a fixture shell instead of the user's shell, dedicated credentials for rate-limited APIs, per-file dirs and names, and no reuse of HTTP connections across a server restart
-- Hook and test timeouts must be longer than the wait budgets inside them, and teardown must tolerate partially completed setup
-- Before test cleanup, drain intercepted routes with `page.unrouteAll({ behavior: "wait" })`
+Add skills to `.agents/skills/`, which Codex and OpenCode read. `.claude/skills` is a symlink to it for Claude Code.
+
+- `add-rest-endpoint`: adding or changing a REST API endpoint. Every REST API feature needs integration tests
+- `write-tests`: writing or changing integration tests or Playwright specs
+- `fix-flaky-test`: a test fails and then passes on a rerun (log it to `flaky-tests.md`), or a flake needs fixing
 
 # UI
 
@@ -90,8 +77,6 @@ Combine and conditionally apply class names with `cn` from `ui/src/utils/cn.ts`.
 
 Always use the rest apis using `ui/src/api-client.ts`
 
-If you need to add new apis to the client always use the generated typescript bindings
-
 Never destructure props. Always to this with components:
 
 ```tsx
@@ -104,11 +89,7 @@ function DetailCard(props: {
 
 After modifying the routes run `cd ui && pnpm run build` to regenerate the route types.
 
-Do dot use class names in the playwright tests. Add accessibility aria attributes if there are no text to select with.
-
 When adding a completely new UI feature, always add a Playwright test that covers its primary user workflow. Purely visual tweaks to existing UI are not new features and get no tests.
-
-Playwright specs that mutate state shared by all specs (server or agent restarts, the device list, user settings/preferences such as theme, the hidden-file filter, bookmarks or pins, ...) go in `ui/e2e/serial/` with a top comment saying why; they run one at a time after the parallel specs. Everything else in `ui/e2e/` runs in parallel and must use its own fixtures and directories.
 
 Never use ! to fix nullish issues in typescript. Always handle nullish values properly.
 
