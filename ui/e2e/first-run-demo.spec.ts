@@ -10,16 +10,10 @@ const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");
 
 const SERVER_PATH = path.join(PROJECT_ROOT, "target/debug/redoor");
 
-/** Linux first-run browser hint from `desktop::first_run_login_message`. */
-const LINUX_LOGIN_MESSAGE = "Log in with PAM (your Linux account credentials)";
-
-/** macOS first-run browser hint from `desktop::first_run_login_message`. */
-const MACOS_LOGIN_MESSAGE = "Log in with username redoor and password changeme";
+/** First-run browser hint from `desktop::first_run_login_message`. */
+const FIRST_RUN_MESSAGE = "Log in with username redoor and password changeme";
 
 const tcpAddressSchema = z.object({ port: z.number().int().positive() });
-
-const FIRST_RUN_MESSAGE =
-    process.platform === "darwin" ? MACOS_LOGIN_MESSAGE : LINUX_LOGIN_MESSAGE;
 
 /** Reserves an ephemeral loopback port so this suite never collides with playwright-dev. */
 async function getAvailablePort(): Promise<number> {
@@ -118,36 +112,6 @@ async function stopServer(child: ChildProcess | undefined): Promise<void> {
     });
 }
 
-/**
- * Automated Linux login cannot supply the operator's PAM password, so after the
- * starter file is verified the suite adds disposable TOML credentials for the
- * remainder of the browser flow. macOS already ships demo credentials.
- */
-async function ensureBrowserLoginCredentials(configPath: string): Promise<{
-    username: string;
-    password: string;
-}> {
-    if (process.platform === "darwin") {
-        return { username: "redoor", password: "changeme" };
-    }
-
-    let content = await fs.readFile(configPath, "utf8");
-    // Prove the bootstrap still ships the PAM starter, with PAM enabled explicitly now that
-    // it is no longer implicit, before the test pin.
-    expect(content).toContain("[server.pam]\nenabled = true");
-    expect(content).toContain("# [[server.users]]");
-    content = content.replace(
-        "[server]\n",
-        `[server]
-username = "demo-user"
-password = "demo-password"
-`,
-    );
-    await fs.writeFile(configPath, content);
-
-    return { username: "demo-user", password: "demo-password" };
-}
-
 test.describe("First-run demo", () => {
     // Fresh app namespace must not inherit the shared playwright-dev cookie jar.
     test.use({ storageState: { cookies: [], origins: [] } });
@@ -165,7 +129,7 @@ test.describe("First-run demo", () => {
         const configPath = path.join(home, ".config", appName, "config.toml");
         const logPath = path.join(home, "server.log");
 
-        let child: ChildProcess | undefined = spawnBootstrapServer({
+        const child = spawnBootstrapServer({
             home,
             appName,
             port,
@@ -183,20 +147,11 @@ test.describe("First-run demo", () => {
             );
             expect(generated).toContain("# port = 7666");
             expect(generated).not.toContain("[agent]");
-
-            const credentials = await ensureBrowserLoginCredentials(configPath);
-
-            if (process.platform !== "darwin") {
-                // Restart so the injected TOML credentials take effect for the browser flow.
-                await stopServer(child);
-                child = spawnBootstrapServer({
-                    home,
-                    appName,
-                    port,
-                    logPath,
-                });
-                await waitForPort(port);
-            }
+            // Every platform ships the same demo login, so a fresh install can be signed in to.
+            expect(generated).toContain(`[server]
+username = "redoor"
+password = "changeme"
+`);
 
             const baseUrl = `http://127.0.0.1:${port}`;
             const loginUrl = `${baseUrl}/login#message=${encodeURIComponent(FIRST_RUN_MESSAGE)}`;
@@ -211,8 +166,8 @@ test.describe("First-run demo", () => {
                 page.getByRole("heading", { name: "Sign in to Redoor" }),
             ).toBeVisible();
 
-            await page.getByLabel("Username").fill(credentials.username);
-            await page.getByLabel("Password").fill(credentials.password);
+            await page.getByLabel("Username").fill("redoor");
+            await page.getByLabel("Password").fill("changeme");
             await page.getByRole("button", { name: "Sign in" }).click();
             await expect(
                 page.getByRole("heading", { name: "Server", exact: true }),

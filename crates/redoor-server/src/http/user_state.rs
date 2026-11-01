@@ -2,8 +2,8 @@
 //!
 //! Everyone who signs in shares one account (vault, SSH keys, devices), but preferences and
 //! the open files list are personal, so each login name gets its own document. The name is
-//! the one the session signed in with, so the same person signing in with a TOML password
-//! or PAM under the same name keeps one state.
+//! the one the session signed in with, so the same person keeps one state across their
+//! browsers.
 
 use std::path::{Path, PathBuf};
 
@@ -104,7 +104,7 @@ async fn write_user_state(directory: &Path, state: &serde_json::Value) -> anyhow
 /// `<data_dir>/users/<name>`, the directory of one user's personal files (UI state and
 /// editor buffers).
 ///
-/// Login names from the config and PAM follow the portable allowlist and are used as they
+/// Login names from the config follow the portable allowlist and are used as they
 /// are. OIDC names are whatever the provider sends (an email address, a subject), so any
 /// other name becomes `~` and its SHA-256: `~` is outside the allowlist, so such a name can
 /// never take another user's directory, and no name can leave `users/`.
@@ -232,7 +232,7 @@ mod tests {
     fn user_directories_stay_inside_users() {
         let paths = redoor_core::paths::AppPaths::for_home("redoor-test", Path::new("/home/t"));
         let users = Path::new("/home/t/.local/share/redoor-test/users");
-        // A config or PAM login name is used as is, so the directory is recognisable.
+        // A config login name is used as is, so the directory is recognisable.
         assert_eq!(
             user_directory(&paths, "alice").unwrap(),
             users.join("alice")

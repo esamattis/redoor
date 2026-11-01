@@ -50,8 +50,6 @@ pub enum AuthMethod {
     /// A `[[server.users]]` name and password; the only method whose password the UI can
     /// change.
     Password,
-    /// The server process user's system password through PAM.
-    Pam,
     /// OpenID Connect sign-in.
     Oidc,
     /// An access token.

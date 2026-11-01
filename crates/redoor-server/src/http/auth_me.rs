@@ -20,7 +20,6 @@ pub(crate) async fn auth_me_handler(
             name: user.name,
             method: match user.method {
                 SessionMethod::Password => AuthMethod::Password,
-                SessionMethod::Pam => AuthMethod::Pam,
                 SessionMethod::Oidc => AuthMethod::Oidc,
             },
             token_id: None,

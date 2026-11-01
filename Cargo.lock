@@ -2727,16 +2727,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "df233d9b287cded4bbebba3463c6df7a8bdb516c0341ed984e870ef5594c2e6f"
 
 [[package]]
-name = "libloading"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
-dependencies = [
- "cfg-if",
- "windows-link",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3608,7 +3598,6 @@ dependencies = [
  "jiff",
  "libc",
  "libghostty-vt",
- "libloading",
  "nix",
  "rcgen",
  "redoor-core",

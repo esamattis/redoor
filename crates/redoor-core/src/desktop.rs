@@ -166,18 +166,8 @@ pub async fn open_with_desktop(_target: &str) -> Result<(), OpenError> {
 
 /// First-run browser hint shown above the login form via the URL fragment.
 pub fn first_run_login_message() -> &'static str {
-    #[cfg(target_os = "linux")]
-    {
-        "Log in with PAM (your Linux account credentials)"
-    }
-    #[cfg(target_os = "macos")]
-    {
-        "Log in with username redoor and password changeme"
-    }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        "Sign in with the credentials from your config.toml"
-    }
+    // Every platform's starter config has the same demo login.
+    "Log in with username redoor and password changeme"
 }
 
 /// Builds the first-run login URL opened after starter config creation.
@@ -279,9 +269,7 @@ mod tests {
             url.starts_with("http://127.0.0.1:3000/login#message="),
             "all-interfaces bind must open loopback: {url}"
         );
-        assert!(
-            url.contains("PAM") || url.contains("Linux"),
-            "Linux first-run URL should mention PAM login: {url}"
-        );
+        // The hint names the starter config's demo login.
+        assert!(url.contains("changeme"), "{url}");
     }
 }

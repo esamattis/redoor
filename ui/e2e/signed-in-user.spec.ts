@@ -30,22 +30,22 @@ test.describe("Signed-in user", () => {
         ).toBeVisible();
     });
 
-    test("does not offer a password change to a PAM session", async ({
+    test("does not offer a password change to a single sign-on session", async ({
         page,
     }) => {
-        // Test servers have no PAM login, so the answer is held to a PAM session's.
+        // The shared session signed in with a password, so the answer is held to an OIDC one.
         await page.route("**/api/v1/auth/me", (route) =>
             route.fulfill({
-                json: { name: "operator", method: "pam", token_id: null },
+                json: { name: "operator", method: "oidc", token_id: null },
             }),
         );
         await page.goto(`${WEB_BASE_URL}/`);
 
         // The method is named so the user knows which password they signed in with.
         await expect(
-            page.getByLabel("Signed in as operator with System account (PAM)"),
+            page.getByLabel("Signed in as operator with Single sign-on"),
         ).toBeVisible();
-        // A system password belongs to the operating system, so no form is offered.
+        // The password belongs to the identity provider, so no form is offered.
         await expect(
             page.getByRole("button", { name: "Change password" }),
         ).toHaveCount(0);

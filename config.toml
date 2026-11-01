@@ -17,10 +17,6 @@ agent_token = "dev-agent-token" # required; shared registration secret
 name = "admin"
 password = "secret"
 
-# Linux only: sign in with the system password of the user running the server.
-# [server.pam]
-# enabled = true
-
 # Standalone agent (redoor agent / systemd --mode agent). Not used for [[agents]].
 # [agent]
 # server = "http://127.0.0.1:7666"

@@ -18,8 +18,6 @@ name = "admin"
 password = "replace-with-a-long-private-password"
 ```
 
-PAM login (`[server.pam]`) checks the password of the user the server runs as, which inside the container is not a person's account, so use `[[server.users]]` or `[server.oidc]` here. See [docs/config.md](config.md#browser-authentication).
-
 The server must bind to `0.0.0.0` inside the container. Keep the configuration file readable by the container and restrict access to its parent directory because it contains credentials.
 
 The example mounts `config.toml` read-only. If you add `[[agents]]` entries by hand, each needs an `id`: the server cannot write one back into a read-only file, so startup fails and prints a ready-to-paste `id = "dev_..."` line for every entry without one. Devices added through the UI need a writable config file.

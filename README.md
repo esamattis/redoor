@@ -17,7 +17,7 @@ Here's the thing. Today I work on multiple different devices: Servers, laptops, 
 - SSH key management secured by Passkey PRF based vaults
 - Stateless MCP support to allow your agents to access your devices
 - Remote CLI
-- Login via static credentials, PAM, or OIDC (Pocket ID, Keycloak etc.)
+- Login via static credentials or OIDC (Pocket ID, Keycloak etc.)
 - Easy deployment via a single static binary
 - One click updates via the Web UI
 - Automatic Systemd and Launchd config handling
@@ -97,14 +97,10 @@ agent_token = "secret"
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind an HTTPS reverse proxy
 
-# Web UI login: list people with passwords, enable PAM (Linux), or both.
+# Web UI login: one entry per person.
 [[server.users]]
 name = "admin"
 password = "long-private-password"
-
-# Sign in with the system password of the user running the server.
-# [server.pam]
-# enabled = true
 
 # Serve HTTPS with a self-signed certificate created on the first start
 # (or set cert = "..." and key = "..." to use your own).

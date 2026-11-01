@@ -223,7 +223,7 @@ ${insecureTls}`;
                             {user ? (
                                 <SignedInUser user={user} className="mt-1" />
                             ) : null}
-                            {/* PAM and OIDC passwords belong to the system and the provider. */}
+                            {/* OIDC passwords belong to the identity provider. */}
                             {user?.method === "password" ? (
                                 <div className="mt-2">
                                     <ChangePasswordButton />

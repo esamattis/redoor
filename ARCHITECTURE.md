@@ -194,7 +194,7 @@ The agent runtime and the implementation of every command.
 
 ### `redoor-server`
 
-- `http/`: Axum routes, auth (sessions, PAM, OIDC), access tokens (`http/tokens`), access control
+- `http/`: Axum routes, auth (sessions, OIDC), access tokens (`http/tokens`), access control
   (`http/access`), the UI assets and MCP.
   - `agent_client`: `AgentClient::call` for any protocol request that is also an
     `AgentCall`, which adds its deadline; all deadlines are defined in one place.
@@ -202,8 +202,7 @@ The agent runtime and the implementation of every command.
   - `user_state` and `editor_buffers`: per-user files in `<data_dir>/users/<name>/` (the
     preference document and one file per open file's editor buffer), keyed by the
     session's login name.
-  - `auth`: login verification (`[[server.users]]` passwords, PAM for the process user),
-    sessions per login method and the password change; `auth_me` answers
+  - `auth`: login verification (`[[server.users]]` passwords), sessions per login method and the password change; `auth_me` answers
     `GET /api/v1/auth/me`.
   - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
     "Encrypted files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
@@ -2645,32 +2644,25 @@ own endpoints:
 | Plain download links | One-time token | One file on one agent, once |
 
 - **Login methods.** At least one must be configured or startup fails: `[[server.users]]`
-  (`[server] username`/`password` is shorthand for one entry), `[server.pam] enabled = true`
-  (Linux only) and `[server.oidc]`. PAM used to be the implicit fallback of a `[server]`
-  without credentials; that was removed, and such a config now fails with a message naming
-  `[server.pam]`. `AuthState` holds a map of password users (name to Argon2 verifier and
-  session fingerprint) and the optional PAM login.
+  (`[server] username`/`password` is shorthand for one entry) and `[server.oidc]`.
+  `AuthState` holds a map of password users (name to Argon2 verifier and session
+  fingerprint).
+- **No PAM.** System password login through PAM was removed. It needs `dlopen` of the
+  host's glibc `libpam.so.0` and its modules, which neither a static binary nor a musl
+  process can do, and the published Linux binaries are static musl builds, so it only ever
+  worked in local glibc builds. A leftover `[server.pam]` fails config parsing as an
+  unknown key; stored `pam` session files no longer deserialize and are dropped.
 - **Login** (`POST /api/v1/login`) for name `n` and password `p`:
   1. If `n` is a password user, `p` is verified with Argon2 (on the blocking pool).
      Success creates a `password` session. Passwords are plaintext, hashed in memory at
      startup, or Argon2 PHC strings (recognised by the `$argon2` prefix and checked when the
      config is parsed, so a broken hash fails startup instead of every login).
-  2. Otherwise, or after a failed check, if PAM is enabled and `n` is the server process's
-     OS user, `p` is checked with PAM under the `login` service (`http/pam.rs`, one check at
-     a time, `Busy` when one runs). The process user can check its own password without
-     privileges (`unix_chkpwd`), so the server needs no access to `/etc/shadow`. Success
-     creates a `pam` session.
-  3. A name that is neither is verified against a dummy hash with the default Argon2
+  2. A name that is no password user is verified against a dummy hash with the default Argon2
      parameters and rejected, so the response time does not reveal which names exist. A
      hand-written hash with other cost parameters still takes a different time; accepted,
-     since the change form writes default parameters. PAM is never asked about another
-     name, because many PAM stacks answer a correct password faster than a wrong one.
+     since the change form writes default parameters.
 
-  Argon2 comes first because it has no side effects, while a failed PAM check costs PAM's
-  delay and counts towards `pam_faillock`. On systems whose `login` stack uses
-  `pam_faillock` (Fedora, RHEL, Arch; not Debian, Ubuntu or Proxmox) repeated failed redoor
-  logins can lock the process user out of console logins, `sudo` and password SSH for the
-  lock time. The login rate limiter counts every failure, whichever method failed. The
+  The login rate limiter counts every failure, whichever method failed. The
   login handler logs the attempted name (debug-quoted) for failures and the signed-in user
   on success.
 - **Sessions** are files in the server data dir. Each records the login name and the method,
@@ -2680,11 +2672,9 @@ own endpoints:
   | Method | Bound to | Revoked when | Lifetime |
   |---|---|---|---|
   | `password` | that user's password fingerprint (plaintext and hash in separate digest domains) | the user's password changes or the user is removed | 7 days |
-  | `pam` | a digest of the PAM domain and the process user | PAM is disabled | 7 days |
   | `oidc` | a digest of issuer, client id and allowed groups | those change or OIDC is removed | sliding |
 
-  Session files from before this layout carry `method: password` for PAM logins too, so
-  they fail the check and sign in again. The name of an OIDC session is the ID token's
+  The name of an OIDC session is the ID token's
   `preferred_username`, else `email`, else `sub`; it is only for display, logs and the
   per-user state directory, never for authorization. `Principal::Session` carries the name
   and method, and `GET /api/v1/auth/me` (any principal) returns them, or a token's name and
@@ -2704,7 +2694,7 @@ own endpoints:
   racing the change binds its session to the fingerprint of the password it actually
   checked, so it cannot slip through with the old password.
 - **OIDC sign-in** (optional, `[server.oidc]`, `http/oidc.rs`) is another way to get a
-  browser session for the same account; password and PAM logins stay available next to it. `GET /api/v1/auth/oidc/login`
+  browser session for the same account; password logins stay available next to it. `GET /api/v1/auth/oidc/login`
   starts an authorization code flow with PKCE and redirects to the provider;
   `GET /api/v1/auth/oidc/callback` finishes it. Both routes are public, so the callback is
   its own gate:
@@ -2736,7 +2726,7 @@ own endpoints:
   `tokio::spawn`, `spawn_blocking` or threads, so request code hands work to other tasks
   through `logging::spawn_in_user_scope` and `spawn_blocking_in_user_scope`, which re-enter
   the scope in the new task (SSH key operations, cancels on drop, MCP background work, the
-  Argon2 and PAM checks, terminal sessions). The router serves everyone, so each
+  Argon2 checks, terminal sessions). The router serves everyone, so each
   `RouterEnvelope` carries the sending task's user and the router handles the message in
   that scope; a flow remembers the user that created it and the agent's answers to it are
   handled as that user, which covers copies, moves, uploads, downloads and exec. Device

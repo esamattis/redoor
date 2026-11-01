@@ -14,52 +14,30 @@ fn generate_secret() -> Result<String> {
 
 /// Renders the minimal starter config written only by `redoor server` on first run.
 ///
-/// Matches the README shape: top-level token, commented listener options, PAM or
-/// demo credentials, and one managed local agent so a fresh install is demoable.
+/// Matches the README shape: top-level token, commented listener options, demo
+/// credentials, and one managed local agent so a fresh install is demoable.
 fn default_config_content(agent_token: &str) -> String {
     let agent_token = toml_edit::Value::from(agent_token).to_string();
     // Written up front so the first start does not have to rewrite the fresh file.
     let local_agent_id = redoor_protocol::ids::AgentId::generate();
-    // `[server.pam]` is a sub-table, so it has to follow every plain `[server]` key.
-    #[cfg(target_os = "linux")]
-    let (credentials, pam) = (
-        "# Web UI login: see [server.pam] and [[server.users]] below.\n",
-        concat!(
-            "\n",
-            "# Sign in with the system password of the user running the server.\n",
-            "[server.pam]\n",
-            "enabled = true\n",
-            "\n",
-            "# Password logins, one entry per person:\n",
-            "# [[server.users]]\n",
-            "# name = \"admin\"\n",
-            "# password = \"long-private-password\"\n",
-        ),
-    );
-    #[cfg(not(target_os = "linux"))]
-    let (credentials, pam) = (
-        concat!("username = \"redoor\"\n", "password = \"changeme\"\n",),
-        "",
-    );
-    #[cfg(target_os = "linux")]
-    let header = "# A random agent_token was generated on first start.\n# Browser login uses PAM with your Linux account credentials.";
-    #[cfg(not(target_os = "linux"))]
-    let header = "# A random agent_token was generated on first start.\n# Browser login uses username redoor and password changeme.";
     format!(
         r#"# Redoor configuration
-{header}
+# A random agent_token was generated on first start.
+# Browser login uses username redoor and password changeme.
 # agent_token is the shared secret between the server and agents.
 
 agent_token = {agent_token}
 
 [server]
-{credentials}
+username = "redoor"
+password = "changeme"
+
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind an HTTPS reverse proxy
 # mcp_allowed_origins = ["https://client.example"] # browser MCP clients only
 # log_format = "line" # use "json" for newline-delimited JSON output
-{pam}
+
 # Serve HTTPS with a self-signed certificate created on the first start
 # (or set cert = "..." and key = "..." to use your own).
 # [server.tls]
@@ -76,8 +54,8 @@ name = "local"
 
 /// Bootstrap secrets printed once when a starter config is created.
 pub struct CreatedDefaultConfig {
-    /// Present only when the starter config embeds a dedicated login password.
-    pub password: Option<String>,
+    /// The demo login password written to the new config.
+    pub password: String,
     /// Generated shared registration secret written to the new config.
     pub agent_token: String,
 }
@@ -92,17 +70,6 @@ pub async fn create_default_config_if_missing(path: &Path) -> Result<Option<Crea
     }
 
     let agent_token = generate_secret()?;
-    // Non-Linux embeds fixed demo credentials because PAM is unavailable there.
-    let password: Option<String> = {
-        #[cfg(target_os = "linux")]
-        {
-            None
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            Some("changeme".to_string())
-        }
-    };
     let parent = path
         .parent()
         .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
@@ -131,7 +98,8 @@ pub async fn create_default_config_if_missing(path: &Path) -> Result<Option<Crea
         .await
         .with_context(|| format!("Failed to sync default config '{}'", path.display()))?;
     Ok(Some(CreatedDefaultConfig {
-        password,
+        // Fixed and printed once so the first sign-in needs nothing but this output.
+        password: "changeme".to_string(),
         agent_token,
     }))
 }

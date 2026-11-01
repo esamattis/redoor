@@ -144,25 +144,16 @@ fn print_bootstrap_secrets(
     path: &std::path::Path,
     created: &redoor_core::config::CreatedDefaultConfig,
 ) {
-    match &created.password {
-        Some(password) => eprintln!(
-            "Created default config '{}'.
+    eprintln!(
+        "Created default config '{}'.
   username: redoor
-  password: {password}
+  password: {}
   agent_token: {}
 Store these secrets securely; they will not be shown again.",
-            path.display(),
-            created.agent_token
-        ),
-        None => eprintln!(
-            "Created default config '{}'.
-  browser login: process owner's system username/password (PAM)
-  agent_token: {}
-Store the agent_token securely; it will not be shown again.",
-            path.display(),
-            created.agent_token
-        ),
-    }
+        path.display(),
+        created.password,
+        created.agent_token
+    );
 }
 
 /// Environment values the server reads itself (clap already merges `REDOOR_PORT` etc.).
@@ -205,8 +196,6 @@ struct ServerConfig {
     log_format: LogFormat,
     /// Name and password logins.
     users: Vec<ConfiguredUser>,
-    /// Whether the process user may sign in with its system password.
-    pam: bool,
     /// Whether session cookies require HTTPS; always true with built-in TLS.
     cookie_secure: bool,
     /// Built-in HTTPS certificate source; `None` serves plain HTTP.
@@ -263,7 +252,6 @@ impl ServerConfig {
             log_level,
             log_format,
             users: server.users,
-            pam: server.pam,
             // Browsers only reach a TLS listener over HTTPS, so the cookie never needs plain HTTP.
             cookie_secure: server.cookie_secure || server.tls.is_some(),
             tls: server.tls,
@@ -328,10 +316,8 @@ impl ServerRuntime {
             port: config.port,
             tls: tls_acceptor.is_some(),
         };
-        let pam = Self::pam_login(config.pam).await?;
         let auth = AuthState::new(
             config.users,
-            pam,
             config.oidc.as_ref(),
             config.agent_token.clone(),
             config.cookie_secure,
@@ -475,25 +461,6 @@ impl ServerRuntime {
             certificate.fingerprint().await?
         );
         Ok(acceptor)
-    }
-
-    /// Loads PAM when `[server.pam] enabled = true`. Config validation already refused PAM
-    /// on other platforms.
-    async fn pam_login(enabled: bool) -> Result<Option<crate::http::auth::PamLogin>> {
-        if !enabled {
-            return Ok(None);
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let pam = crate::http::auth::PamLogin::load_system()
-                .await
-                .context("Failed to initialize PAM login")?;
-            Ok(Some(pam))
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            anyhow::bail!("PAM login is only supported on Linux")
-        }
     }
 
     /// First-run demo: opens the login page when a desktop is available so `redoor server`

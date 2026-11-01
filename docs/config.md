@@ -95,7 +95,6 @@ Redoor has exactly one account with full access: anyone who can sign in can alre
 At least one login method must be configured, or the server refuses to start:
 
 - **`[[server.users]]`** — a name and password per person.
-- **`[server.pam]`** — the system password of the user running the server (Linux only).
 - **`[server.oidc]`** — an OpenID Connect provider (see below).
 
 ```toml
@@ -106,9 +105,6 @@ password = "$argon2id$v=19$m=19456,t=2,p=1$..."   # plaintext or an Argon2 PHC s
 [[server.users]]
 name = "bob"
 password = "long-private-password"
-
-[server.pam]
-enabled = true
 ```
 
 Names may contain only ASCII letters, numbers, `.`, `_` and `-`, and must be unique. Every entry needs a non-empty `password`.
@@ -117,30 +113,17 @@ Names may contain only ASCII letters, numbers, `.`, `_` and `-`, and must be uni
 
 `password` may be an Argon2 PHC string instead of plaintext, so the file does not hold a recoverable password. A value starting with `$argon2` is read as a hash and must parse as one, otherwise the server refuses to start. A name that is not a login is checked against a dummy hash with the default Argon2 parameters, so the response time does not tell which names exist; a hand-written hash with other cost parameters takes a different time and so still reveals its name. Hashes written by the password change form always use the default parameters.
 
-**Breaking change:** older versions used PAM whenever `[server]` had neither `username` nor `password`. That implicit fallback is gone; such a config now fails at startup and asks for `[server.pam] enabled = true`.
-
-#### `[server.pam]`
-
-| Key       | Type | Default | Description                                                                                       |
-| --------- | ---- | ------- | ------------------------------------------------------------------------------------------------- |
-| `enabled` | bool | `false` | Lets the server process's own OS user sign in with its system password. Refused on non-Linux.    |
-
-PAM only ever checks the user the server runs as, under the `login` service. That user can check its own password without privileges, so the server needs no access to `/etc/shadow`. Signing in as any other system user is not possible.
-
-The same name may be both a `[[server.users]]` entry and the PAM user: the config password is checked first, then PAM.
-
-On systems whose `login` PAM stack uses `pam_faillock` (Fedora, RHEL and Arch by default; not Debian, Ubuntu or Proxmox), failed redoor logins count towards the OS account's lock. Repeated failures on the login page can then lock the server's user out of console logins, `sudo` and password SSH for the lock time. Redoor's own login rate limit counts failures of every method.
+**Breaking change:** PAM login (`[server.pam]`) was removed, because the published Linux binaries are statically linked and could never load PAM. A config that still has a `[server.pam]` section fails at startup as an unknown key; remove it and use a `[[server.users]]` entry or `[server.oidc]`.
 
 #### Changing a password
 
-For a `[[server.users]]` (or shorthand) login, the server home page and the application menu have a **Change password** button. It asks for the current password and a new one of at least 8 characters, writes the new password into that user's entry as an Argon2id hash (keeping the rest of the file and its comments), and takes effect at once without a restart. That user's other browsers are signed out; other users, access tokens, PAM and OIDC sessions keep working. PAM and OIDC sessions get no button: those passwords belong to the system and the provider.
+For a `[[server.users]]` (or shorthand) login, the server home page and the application menu have a **Change password** button. It asks for the current password and a new one of at least 8 characters, writes the new password into that user's entry as an Argon2id hash (keeping the rest of the file and its comments), and takes effect at once without a restart. That user's other browsers are signed out; other users, access tokens and OIDC sessions keep working. OIDC sessions get no button: that password belongs to the provider.
 
 #### When sessions end
 
 | Method   | Session ends when                                                         |
 | -------- | ------------------------------------------------------------------------- |
 | Password | that user's password changes or the user is removed from the config       |
-| PAM      | `[server.pam]` is turned off                                               |
 | OIDC     | the issuer, client id or allowed groups change, or `[server.oidc]` is removed |
 
 Changing a password by hand, including replacing a plaintext password with a hash of the same password, signs out that user's sessions on the next start.
@@ -161,7 +144,7 @@ password = "long-private-password"
 
 ### `[server.oidc]` (optional OpenID Connect sign-in)
 
-Adds "Sign in with …" to the login page using any OpenID Connect provider (Pocket ID, Authentik, Keycloak, …). It is off unless this table exists. When configured, the login page leads with the provider button; password and PAM logins stay available next to it, so a provider outage cannot lock you out when one of them is configured. A successful sign-in creates a browser session for the server's single account, named after the ID token's `preferred_username` (else `email`, else `sub`) in logs and the UI. Agent connections, access tokens and MCP are not affected.
+Adds "Sign in with …" to the login page using any OpenID Connect provider (Pocket ID, Authentik, Keycloak, …). It is off unless this table exists. When configured, the login page leads with the provider button; password logins stay available next to it, so a provider outage cannot lock you out when one is configured. A successful sign-in creates a browser session for the server's single account, named after the ID token's `preferred_username` (else `email`, else `sub`) in logs and the UI. Agent connections, access tokens and MCP are not affected.
 
 | Key                     | Type             | Default                          | Description                                                                                                                         |
 | ----------------------- | ---------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -342,10 +325,6 @@ cookie_secure = false
 [[server.users]]
 name = "admin"
 password = "long-private-password"
-
-# Linux only: sign in with the server user's system password.
-# [server.pam]
-# enabled = true
 
 [agent]
 server = "http://127.0.0.1:7666"

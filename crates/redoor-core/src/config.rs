@@ -314,9 +314,6 @@ pub struct ServerSection {
     /// Name and password logins from `[[server.users]]` or the `username`/`password`
     /// shorthand; names are unique.
     pub users: Vec<ConfiguredUser>,
-    /// `[server.pam] enabled`: whether the server process's own OS user may sign in with its
-    /// system password. Only ever true on Linux.
-    pub pam: bool,
     /// When true, session cookies are marked `Secure` for HTTPS deployments behind a proxy.
     /// Built-in TLS ([`ServerSection::tls`]) marks them `Secure` regardless.
     pub cookie_secure: bool,
@@ -1122,47 +1119,22 @@ target = "host"
             "minimal starter config is server-only; standalone [agent] is not required for demo"
         );
 
-        #[cfg(target_os = "linux")]
-        {
-            // Linux starter configs enable PAM explicitly, since it is no longer implicit.
-            assert!(
-                server.pam && server.users.is_empty(),
-                "Linux default config should sign in with PAM only"
-            );
-            assert!(
-                bootstrap.password.is_none(),
-                "Linux bootstrap should not print a generated password"
-            );
-            assert!(
-                content.contains("[server.pam]\nenabled = true"),
-                "Linux starter config should enable PAM explicitly"
-            );
-            assert!(
-                content.contains("# [[server.users]]"),
-                "Linux starter config should show how to add password logins"
-            );
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let [user] = server.users.as_slice() else {
-                panic!("the demo config has exactly one password login");
-            };
-            assert_eq!(
-                user.name, "redoor",
-                "macOS demo login should use the fixed redoor username"
-            );
-            assert_eq!(
-                user.password,
-                ConfiguredPassword::Plaintext("changeme".to_string()),
-                "macOS demo login should use the fixed changeme password"
-            );
-            assert!(!server.pam, "PAM is Linux only");
-            assert_eq!(
-                bootstrap.password.as_deref(),
-                Some("changeme"),
-                "bootstrap should report the fixed demo password once"
-            );
-        }
+        let [user] = server.users.as_slice() else {
+            panic!("the demo config has exactly one password login");
+        };
+        assert_eq!(
+            user.name, "redoor",
+            "demo login should use the fixed redoor username"
+        );
+        assert_eq!(
+            user.password,
+            ConfiguredPassword::Plaintext("changeme".to_string()),
+            "demo login should use the fixed changeme password"
+        );
+        assert_eq!(
+            bootstrap.password, "changeme",
+            "bootstrap should report the fixed demo password once"
+        );
 
         assert!(
             server.log.is_none(),
@@ -1249,37 +1221,12 @@ log = "log/agent.log"
         .map(|config| config.server.expect("server section"))
     }
 
-    /// A `[server]` without any login method used to mean PAM; it now fails and says how to
-    /// get PAM back, because that is the likely cause after an upgrade.
+    /// A `[server]` without any login method cannot be signed in to, so it is refused.
     #[test]
-    fn missing_login_method_names_the_pam_setting() {
+    fn missing_login_method_is_refused() {
         let error = parse_server("port = 3000").expect_err("no login method is configured");
-        // The message points at the explicit setting that replaced the implicit fallback.
-        assert!(
-            error.to_string().contains("[server.pam] enabled = true"),
-            "{error}"
-        );
-        // `enabled = false` is the same as no PAM.
-        assert!(parse_server("[server.pam]\nenabled = false").is_err());
-    }
-
-    /// Explicit PAM is a login method of its own on Linux and refused elsewhere.
-    #[test]
-    fn pam_is_explicit_and_linux_only() {
-        let parsed = parse_server("[server.pam]\nenabled = true");
-        #[cfg(target_os = "linux")]
-        {
-            let server = parsed.expect("PAM alone is a valid login method on Linux");
-            // PAM is on and no password logins exist.
-            assert!(server.pam);
-            assert!(server.users.is_empty());
-        }
-        #[cfg(not(target_os = "linux"))]
-        {
-            let error = parsed.expect_err("PAM is not available on this platform");
-            // The message names the key so the operator knows what to remove.
-            assert!(error.to_string().contains("server.pam.enabled"), "{error}");
-        }
+        // The message lists the login methods that remain.
+        assert!(error.to_string().contains("[[server.users]]"), "{error}");
     }
 
     /// OIDC alone is enough to start; it is a login method like the others.
@@ -1287,9 +1234,8 @@ log = "log/agent.log"
     fn oidc_alone_is_a_login_method() {
         let server = parse_server(&format!("[server.oidc]\n{VALID_OIDC}"))
             .expect("an OIDC-only server is valid");
-        // No password logins and no PAM, only OIDC.
+        // No password logins, only OIDC.
         assert!(server.users.is_empty());
-        assert!(!server.pam);
         assert!(server.oidc.is_some());
     }
 

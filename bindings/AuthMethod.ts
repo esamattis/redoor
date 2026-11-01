@@ -3,4 +3,4 @@
 /**
  * How the caller of a request authenticated.
  */
-export type AuthMethod = "password" | "pam" | "oidc" | "token";
+export type AuthMethod = "password" | "oidc" | "token";

@@ -14,8 +14,6 @@ export function authMethodLabel(method: AuthMethod): string {
     switch (method) {
         case "password":
             return "Password";
-        case "pam":
-            return "System account (PAM)";
         case "oidc":
             return "Single sign-on";
         case "token":

@@ -45,7 +45,6 @@ struct RawServerSection {
     username: Option<String>,
     password: Option<String>,
     users: Option<Vec<RawServerUser>>,
-    pam: Option<RawPamSection>,
     #[serde(default)]
     cookie_secure: bool,
     #[serde(default)]
@@ -71,14 +70,6 @@ struct RawTlsSection {
 struct RawServerUser {
     name: Option<String>,
     password: Option<String>,
-}
-
-/// `[server.pam]` as written.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawPamSection {
-    #[serde(default)]
-    enabled: bool,
 }
 
 /// `[server.oidc]` as written; required keys are checked in `validate` for clearer messages.
@@ -328,19 +319,11 @@ impl RawServerSection {
         let log_level = parse_named(self.log_level, "server.log_level")?;
         let log_format = parse_named(self.log_format, "server.log_format")?;
         let users = Self::validate_users(self.username, self.password, self.users)?;
-        let pam = self.pam.is_some_and(|pam| pam.enabled);
-        if pam && !cfg!(target_os = "linux") {
-            return Err(invalid(
-                "server.pam.enabled is only supported on Linux; use [[server.users]] or [server.oidc] on this platform",
-            ));
-        }
         let oidc = self.oidc.map(RawOidcSection::validate).transpose()?;
         let tls = self.tls.map(RawTlsSection::validate).transpose()?;
-        if users.is_empty() && !pam && oidc.is_none() {
-            // Older versions fell back to PAM when [server] had no credentials; say how to get
-            // that back, since it is the likely cause after an upgrade.
+        if users.is_empty() && oidc.is_none() {
             return Err(invalid(
-                "no login method is configured; add [[server.users]] entries (or server.username and server.password), set [server.pam] enabled = true to sign in with the server user's system password (no longer enabled implicitly when credentials are omitted), or configure [server.oidc]",
+                "no login method is configured; add [[server.users]] entries (or server.username and server.password) or configure [server.oidc]",
             ));
         }
         if let Some(origin) = self
@@ -360,7 +343,6 @@ impl RawServerSection {
             log_level,
             log_format,
             users,
-            pam,
             cookie_secure: self.cookie_secure,
             tls,
             mcp_allowed_origins: self.mcp_allowed_origins,

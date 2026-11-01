@@ -67,60 +67,6 @@ struct PasswordUser {
     fingerprint: String,
 }
 
-/// Checks the password of the server process's own OS user.
-///
-/// A trait so login order tests can stand in for PAM, which cannot be driven from tests.
-pub(crate) trait PamBackend: Send + Sync {
-    /// Whether `password` is the process user's password and the account may log in.
-    ///
-    /// Blocking: call only from the blocking pool so the async runtime stays responsive.
-    fn verify_current_user_password(&self, password: &str) -> anyhow::Result<bool>;
-}
-
-/// The PAM login for the process user, present only when `[server.pam] enabled = true`.
-#[derive(Clone)]
-pub(crate) struct PamLogin {
-    /// Verifies the password.
-    backend: Arc<dyn PamBackend>,
-    /// The process user's name, the only name PAM is ever asked about.
-    user: String,
-    /// Binds PAM sessions to PAM being enabled for this user.
-    fingerprint: String,
-}
-
-impl PamLogin {
-    /// A PAM login for `user` through `backend`.
-    pub(crate) fn new(backend: Arc<dyn PamBackend>, user: String) -> Self {
-        Self {
-            fingerprint: credentials_fingerprint(PAM_FINGERPRINT_DOMAIN, &user),
-            backend,
-            user,
-        }
-    }
-
-    /// Loads libpam and resolves the process user, failing startup when either is missing,
-    /// so a broken PAM setup is reported before anyone tries to sign in.
-    #[cfg(target_os = "linux")]
-    pub(crate) async fn load_system() -> anyhow::Result<Self> {
-        // Dynamic library loading and passwd lookups can block on filesystem or NSS work,
-        // so they run away from Tokio's async worker threads.
-        let (user, pam_api) = tokio::task::spawn_blocking(|| {
-            let pam_api = super::pam::PamApi::load()?;
-            let uid = nix::unistd::Uid::current();
-            let user = nix::unistd::User::from_uid(uid)
-                .map_err(|error| anyhow::anyhow!("failed to look up process user: {error}"))?
-                .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))?
-                .name;
-            Ok::<_, anyhow::Error>((user, pam_api))
-        })
-        .await
-        .map_err(|error| {
-            anyhow::anyhow!("failed to join PAM authentication startup task: {error}")
-        })??;
-        Ok(Self::new(Arc::new(pam_api), user))
-    }
-}
-
 /// Holds the login verifiers and the durable directory used to validate opaque cookies.
 #[derive(Clone)]
 pub(crate) struct AuthState {
@@ -128,8 +74,6 @@ pub(crate) struct AuthState {
     /// entry while the server runs; only ever held for a lookup or a swap, never across an
     /// await or an Argon2 run.
     users: Arc<std::sync::RwLock<HashMap<String, PasswordUser>>>,
-    /// The process user's PAM login, when enabled.
-    pam: Option<PamLogin>,
     /// Argon2 hash of a random password with the default parameters, verified for names
     /// that are no login at all so the response time does not reveal which names exist.
     dummy_hash: Arc<str>,
@@ -150,8 +94,6 @@ pub(crate) struct AuthState {
     /// Orders session renewals against logouts, so a renewal racing a logout cannot write
     /// the just-deleted session file back.
     session_file_lock: Arc<tokio::sync::Mutex<()>>,
-    /// Serializes PAM because blocking checks can otherwise exhaust Tokio's blocking pool.
-    pam_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// How sessions created by OIDC sign-in are bound and how long they live.
@@ -174,9 +116,6 @@ pub(crate) enum SessionMethod {
     /// before OIDC support valid.
     #[default]
     Password,
-    /// The process user's system password through PAM; fixed lifetime, revoked when PAM is
-    /// turned off.
-    Pam,
     /// OpenID Connect sign-in; sliding lifetime, revoked when the OIDC settings change.
     Oidc,
 }
@@ -186,7 +125,6 @@ impl SessionMethod {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Password => "password",
-            Self::Pam => "pam",
             Self::Oidc => "oidc",
         }
     }
@@ -229,14 +167,13 @@ struct SessionGrant {
     fingerprint: String,
 }
 
-/// Distinguishes rejected credentials from temporary PAM saturation for correct HTTP responses.
+/// The outcome of a login check, carrying the session grant on success so the handler
+/// cannot create a session for a rejected attempt.
 enum LoginVerification {
     /// Authentication succeeded, so the handler may create a session.
     Authenticated(SessionGrant),
     /// Authentication failed, so the rate limiter must record the rejected attempt.
     Rejected,
-    /// PAM is already running, so callers should retry without counting a credential failure.
-    Busy,
 }
 
 /// Tracks recent failed logins so online guessing cannot run unbounded.
@@ -332,7 +269,6 @@ impl AuthState {
     /// actionable, and drops sessions of logins that no longer exist.
     pub(crate) async fn new(
         users: Vec<ConfiguredUser>,
-        pam: Option<PamLogin>,
         oidc: Option<&OidcConfig>,
         agent_token: String,
         cookie_secure: bool,
@@ -361,7 +297,6 @@ impl AuthState {
 
         let auth = Self {
             users: Arc::new(std::sync::RwLock::new(users)),
-            pam,
             dummy_hash: Arc::from(dummy_hash),
             password_change_lock: Arc::default(),
             sessions_directory,
@@ -373,7 +308,6 @@ impl AuthState {
                 lifetime: config.session_lifetime,
             }),
             session_file_lock: Arc::new(tokio::sync::Mutex::new(())),
-            pam_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         };
 
         // Drop sessions of changed passwords and removed logins so the change takes effect
@@ -463,9 +397,6 @@ impl AuthState {
                 .read_users()
                 .get(&session.username)
                 .is_some_and(|user| session.credentials_fingerprint == user.fingerprint),
-            SessionMethod::Pam => self.pam.as_ref().is_some_and(|pam| {
-                session.username == pam.user && session.credentials_fingerprint == pam.fingerprint
-            }),
             // Removing the OIDC config revokes every session it created. The name is only
             // for display, so it is not checked.
             SessionMethod::Oidc => self
@@ -580,7 +511,7 @@ impl AuthState {
     }
 
     /// Removes sessions that no longer match the running config (a changed password, a
-    /// removed user, PAM or OIDC turned off).
+    /// removed user, OIDC turned off).
     async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
         let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -605,14 +536,10 @@ impl AuthState {
         Ok(())
     }
 
-    /// Verifies a login name and password.
+    /// Verifies a `[[server.users]]` login name and password.
     ///
-    /// A `[[server.users]]` password is checked first, because Argon2 has no side effects,
-    /// while a failed PAM check costs PAM's failure delay and counts towards `pam_faillock`.
-    /// PAM is asked only for the process user's own name: many PAM stacks answer a correct
-    /// password faster than a wrong one, so checking the real account for another name would
-    /// let anyone probe the system password. A name that is no login at all is verified
-    /// against a dummy hash, so the response time does not reveal which names exist.
+    /// A name that is no login at all is verified against a dummy hash, so the response time
+    /// does not reveal which names exist.
     async fn verify_login(&self, name: &str, password: &str) -> LoginVerification {
         let password_user = self.password_user(name);
         if let Some(user) = &password_user
@@ -626,48 +553,10 @@ impl AuthState {
                 fingerprint: user.fingerprint.clone(),
             });
         }
-        if let Some(pam) = self.pam.as_ref().filter(|pam| pam.user == name) {
-            return self.verify_pam(pam, password).await;
-        }
         if password_user.is_none() {
             verify_password_hash_off_thread(password, &self.dummy_hash).await;
         }
         LoginVerification::Rejected
-    }
-
-    /// Checks the process user's password with PAM, one check at a time.
-    async fn verify_pam(&self, pam: &PamLogin, password: &str) -> LoginVerification {
-        let Ok(permit) = self.pam_semaphore.clone().try_acquire_owned() else {
-            return LoginVerification::Busy;
-        };
-        let password = zeroize::Zeroizing::new(password.to_string());
-        let backend = pam.backend.clone();
-        let valid = match redoor_core::logging::spawn_blocking_in_user_scope(move || {
-            let _permit = permit;
-            backend.verify_current_user_password(&password)
-        })
-        .await
-        {
-            Ok(Ok(valid)) => valid,
-            Ok(Err(error)) => {
-                log_error!(error, "PAM authentication failed");
-                false
-            }
-            Err(error) => {
-                log_error!(anyhow::Error::new(error), "PAM authentication task failed");
-                false
-            }
-        };
-        if !valid {
-            return LoginVerification::Rejected;
-        }
-        LoginVerification::Authenticated(SessionGrant {
-            user: SessionUser {
-                name: pam.user.clone(),
-                method: SessionMethod::Pam,
-            },
-            fingerprint: pam.fingerprint.clone(),
-        })
     }
 }
 
@@ -696,7 +585,7 @@ fn password_user(password: ConfiguredPassword) -> anyhow::Result<PasswordUser> {
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PasswordChangeError {
     /// The session did not sign in with a `[[server.users]]` password, whose owner is
-    /// redoor; PAM and OIDC passwords belong to the system and the provider.
+    /// redoor; OIDC passwords belong to the provider.
     #[error(
         "Only password logins from the config file can change their password here; change a system or identity provider password where it is managed"
     )]
@@ -861,11 +750,6 @@ const PLAINTEXT_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1:";
 /// Fingerprint domain of Argon2 hashes from the config, kept apart so a plaintext password
 /// can never fingerprint like a hash string.
 const HASH_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1-argon2:";
-/// Fingerprint domain of PAM sessions, hashed with the process user's name, so turning PAM
-/// off (or running the server as another user) revokes them and they can never match a
-/// password user's fingerprint.
-const PAM_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1-pam:";
-
 /// Builds a stable fingerprint so rotating the config password invalidates existing cookies.
 fn credentials_fingerprint(domain: &[u8], secret: &str) -> String {
     let mut hasher = Sha256::new();
@@ -1011,16 +895,6 @@ pub(crate) async fn login_handler(
             )
                 .into_response();
         }
-        LoginVerification::Busy => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    code: None,
-                    error: "Authentication is busy. Try again later.".to_string(),
-                }),
-            )
-                .into_response();
-        }
     };
 
     let session = match state.auth.issue_session(grant, SESSION_LIFETIME).await {
@@ -1086,43 +960,17 @@ pub(crate) async fn logout_handler(
 mod tests {
     use super::{
         AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
-        LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification, PamBackend,
-        PamLogin, PasswordChangeError, SESSION_COOKIE_NAME, SESSION_LIFETIME, SessionCheck,
-        SessionFile, SessionGrant, SessionMethod, SessionUser, oidc_fingerprint,
+        LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification,
+        PasswordChangeError, SESSION_COOKIE_NAME, SESSION_LIFETIME, SessionCheck, SessionFile,
+        SessionGrant, SessionMethod, SessionUser, oidc_fingerprint,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
     use redoor_core::config::{ConfiguredPassword, ConfiguredUser, OidcConfig};
     use redoor_core::test_support::TempDir;
     use std::{
         net::{IpAddr, Ipv4Addr},
-        sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
-
-    /// Stands in for PAM: accepts one password and records every password it was asked
-    /// about, so tests can see whether PAM was consulted at all.
-    struct FakePam {
-        password: String,
-        calls: Mutex<Vec<String>>,
-    }
-
-    impl PamBackend for FakePam {
-        /// Records the call and compares with the one accepted password.
-        fn verify_current_user_password(&self, password: &str) -> anyhow::Result<bool> {
-            self.calls.lock().unwrap().push(password.to_string());
-            Ok(password == self.password)
-        }
-    }
-
-    /// A fake PAM for process user `root-user` with password `pam-password`.
-    fn fake_pam() -> (Arc<FakePam>, PamLogin) {
-        let backend = Arc::new(FakePam {
-            password: "pam-password".to_string(),
-            calls: Mutex::default(),
-        });
-        let login = PamLogin::new(backend.clone(), "root-user".to_string());
-        (backend, login)
-    }
 
     /// A plaintext `[[server.users]]` entry.
     fn user(name: &str, password: &str) -> ConfiguredUser {
@@ -1136,12 +984,10 @@ mod tests {
     async fn auth_with(
         directory: &TempDir,
         users: Vec<ConfiguredUser>,
-        pam: Option<PamLogin>,
         oidc: Option<&OidcConfig>,
     ) -> AuthState {
         AuthState::new(
             users,
-            pam,
             oidc,
             "agent-token".to_string(),
             false,
@@ -1197,7 +1043,7 @@ mod tests {
 
     /// Auth state for a password user `admin`, optionally with OIDC, stored in `directory`.
     async fn auth_state(directory: &TempDir, oidc: Option<&OidcConfig>) -> AuthState {
-        auth_with(directory, vec![user("admin", "password")], None, oidc).await
+        auth_with(directory, vec![user("admin", "password")], oidc).await
     }
 
     /// Request headers carrying the cookie from a `Set-Cookie` value.
@@ -1446,7 +1292,6 @@ password = {stored}
                 password,
             }],
             None,
-            None,
         )
         .await;
         (config_path, auth)
@@ -1578,8 +1423,8 @@ password = {stored}
         }
     }
 
-    /// Only password sessions may change a password; PAM and OIDC passwords are managed
-    /// elsewhere.
+    /// Only password sessions may change a password; OIDC passwords are managed by the
+    /// provider.
     #[tokio::test]
     async fn password_change_needs_a_password_session() {
         let directory = TempDir::create();
@@ -1588,21 +1433,19 @@ password = {stored}
             ConfiguredPassword::Plaintext("old-password".into()),
         )
         .await;
-        for method in [SessionMethod::Pam, SessionMethod::Oidc] {
-            let user = SessionUser {
-                name: "admin".to_string(),
-                method,
-            };
-            let error = auth
-                .change_password(&config_path, &user, "old-password", "new-password")
-                .await
-                .err();
-            // Even with the right name and current password, the method decides.
-            assert!(
-                matches!(error, Some(PasswordChangeError::NotPasswordSession)),
-                "{method:?}"
-            );
-        }
+        let user = SessionUser {
+            name: "admin".to_string(),
+            method: SessionMethod::Oidc,
+        };
+        let error = auth
+            .change_password(&config_path, &user, "old-password", "new-password")
+            .await
+            .err();
+        // Even with the right name and current password, the method decides.
+        assert!(matches!(
+            error,
+            Some(PasswordChangeError::NotPasswordSession)
+        ));
     }
 
     /// Several `[[server.users]]` sign in with their own passwords, and a wrong name or a
@@ -1613,7 +1456,6 @@ password = {stored}
         let auth = auth_with(
             &directory,
             vec![user("alice", "alice-password"), user("bob", "bob-password")],
-            None,
             None,
         )
         .await;
@@ -1637,108 +1479,32 @@ password = {stored}
         ));
     }
 
-    /// TOML passwords are checked first and PAM only for the process user: a TOML success
-    /// never runs PAM, a failed TOML check of the process user falls through to PAM, and
-    /// other names never reach PAM.
+    /// Sessions are revoked per user: removing one user signs out only that user.
     #[tokio::test]
-    async fn login_order_checks_toml_first_and_pam_only_for_the_process_user() {
+    async fn sessions_are_revoked_per_user() {
         let directory = TempDir::create();
-        let (pam, pam_login) = fake_pam();
-        let auth = auth_with(
-            &directory,
-            vec![
-                user("root-user", "toml-password"),
-                user("alice", "alice-password"),
-            ],
-            Some(pam_login),
-            None,
-        )
-        .await;
-
-        // The TOML password of the process user signs in without asking PAM.
-        assert!(matches!(
-            auth.verify_login("root-user", "toml-password").await,
-            LoginVerification::Authenticated(SessionGrant { user, .. })
-                if user.method == SessionMethod::Password
-        ));
-        assert!(pam.calls.lock().unwrap().is_empty());
-
-        // A failed TOML check of the process user falls through to PAM.
-        assert!(matches!(
-            auth.verify_login("root-user", "pam-password").await,
-            LoginVerification::Authenticated(SessionGrant { user, .. })
-                if user.name == "root-user" && user.method == SessionMethod::Pam
-        ));
-        assert_eq!(*pam.calls.lock().unwrap(), ["pam-password"]);
-
-        // Another TOML user's wrong password and unknown names never reach PAM, even with
-        // the system password, so PAM's timing cannot be probed through them.
-        assert!(matches!(
-            auth.verify_login("alice", "pam-password").await,
-            LoginVerification::Rejected
-        ));
-        assert!(matches!(
-            auth.verify_login("mallory", "pam-password").await,
-            LoginVerification::Rejected
-        ));
-        assert_eq!(pam.calls.lock().unwrap().len(), 1);
-
-        // A wrong password for the process user is rejected by both.
-        assert!(matches!(
-            auth.verify_login("root-user", "guess").await,
-            LoginVerification::Rejected
-        ));
-        assert_eq!(pam.calls.lock().unwrap().len(), 2);
-    }
-
-    /// Sessions are revoked per user and per method: removing one user signs out only that
-    /// user, and turning PAM off signs out only PAM sessions.
-    #[tokio::test]
-    async fn sessions_are_revoked_per_user_and_method() {
-        let directory = TempDir::create();
-        let (_, pam_login) = fake_pam();
         let auth = auth_with(
             &directory,
             vec![user("alice", "alice-password"), user("bob", "bob-password")],
-            Some(pam_login.clone()),
             None,
         )
         .await;
         let alice = login(&auth, "alice", "alice-password").await;
         let bob = login(&auth, "bob", "bob-password").await;
-        let pam = login(&auth, "root-user", "pam-password").await;
         // Each session knows who signed in and how.
         assert_eq!(
-            session_user(&auth, &pam).await,
+            session_user(&auth, &bob).await,
             Some(SessionUser {
-                name: "root-user".to_string(),
-                method: SessionMethod::Pam
+                name: "bob".to_string(),
+                method: SessionMethod::Password
             })
         );
 
-        let without_bob = auth_with(
-            &directory,
-            vec![user("alice", "alice-password")],
-            Some(pam_login),
-            None,
-        )
-        .await;
+        let without_bob = auth_with(&directory, vec![user("alice", "alice-password")], None).await;
         // Removing bob from the config revokes bob's session at the restart ...
         assert!(session_user(&without_bob, &bob).await.is_none());
         // ... and nobody else's.
         assert!(session_user(&without_bob, &alice).await.is_some());
-        assert!(session_user(&without_bob, &pam).await.is_some());
-
-        let without_pam = auth_with(
-            &directory,
-            vec![user("alice", "alice-password")],
-            None,
-            None,
-        )
-        .await;
-        // Turning PAM off revokes PAM sessions only.
-        assert!(session_user(&without_pam, &pam).await.is_none());
-        assert!(session_user(&without_pam, &alice).await.is_some());
     }
 
     /// Changing one user's password signs out that user's other sessions and keeps every
@@ -1764,7 +1530,6 @@ password = "bob-password"
             &directory,
             vec![user("alice", "alice-password"), user("bob", "bob-password")],
             None,
-            None,
         )
         .await;
         let alice_elsewhere = login(&auth, "alice", "alice-password").await;
@@ -1787,15 +1552,14 @@ password = "bob-password"
         assert!(!content.contains("alice-password"), "{content}");
     }
 
-    /// Session files written by the previous version for a PAM login said `password`, so
-    /// they no longer match anything and sign in again.
+    /// Session files of the removed PAM login name a method that no longer exists, so they
+    /// are not valid sessions even for a password user of the same name.
     #[tokio::test]
-    async fn legacy_pam_session_files_sign_in_again() {
+    async fn removed_pam_session_files_sign_in_again() {
         let directory = TempDir::create();
-        let (_, pam_login) = fake_pam();
-        let auth = auth_with(&directory, vec![], Some(pam_login), None).await;
-        let pam = login(&auth, "root-user", "pam-password").await;
-        let value = pam[header::COOKIE].to_str().expect("ASCII");
+        let auth = auth_with(&directory, vec![user("admin", "password")], None).await;
+        let headers = login(&auth, "admin", "password").await;
+        let value = headers[header::COOKIE].to_str().expect("ASCII");
         let session_id = value
             .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
             .expect("session cookie");
@@ -1803,18 +1567,14 @@ password = "bob-password"
             .path()
             .join("sessions")
             .join(format!("session_{session_id}.json"));
-        let mut stored: SessionFile =
+        let mut stored: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
-        stored.method = SessionMethod::Password;
-        stored.credentials_fingerprint = super::credentials_fingerprint(
-            super::PLAINTEXT_FINGERPRINT_DOMAIN,
-            "pam-system-auth-v1",
-        );
+        stored["method"] = "pam".into();
         tokio::fs::write(&path, serde_json::to_vec(&stored).unwrap())
             .await
             .unwrap();
-        // The old shape names no password user, so it is not a valid session any more.
-        assert!(session_user(&auth, &pam).await.is_none());
+        // A PAM session must not keep working after PAM login is gone.
+        assert!(session_user(&auth, &headers).await.is_none());
     }
 
     /// Ensures failed-login state expires at the boundary without sleeps or resetting active bans.
