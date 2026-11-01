@@ -120,7 +120,7 @@ async function stopServer(child: ChildProcess | undefined): Promise<void> {
 
 /**
  * Automated Linux login cannot supply the operator's PAM password, so after the
- * starter file is verified the suite pins disposable TOML credentials for the
+ * starter file is verified the suite adds disposable TOML credentials for the
  * remainder of the browser flow. macOS already ships demo credentials.
  */
 async function ensureBrowserLoginCredentials(configPath: string): Promise<{
@@ -132,10 +132,10 @@ async function ensureBrowserLoginCredentials(configPath: string): Promise<{
     }
 
     let content = await fs.readFile(configPath, "utf8");
-    // Prove the bootstrap still ships the PAM-oriented starter before the test pin.
-    expect(content).toContain("# username =");
-    expect(content).toContain("# password =");
-    expect(content).toContain("PAM");
+    // Prove the bootstrap still ships the PAM starter, with PAM enabled explicitly now that
+    // it is no longer implicit, before the test pin.
+    expect(content).toContain("[server.pam]\nenabled = true");
+    expect(content).toContain("# [[server.users]]");
     content = content.replace(
         "[server]\n",
         `[server]

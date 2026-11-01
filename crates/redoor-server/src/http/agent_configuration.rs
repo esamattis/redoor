@@ -36,7 +36,8 @@ pub(crate) async fn get_ssh_agent_configuration_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<ManagedSshAgentConfigurationResponse>, ApiError> {
     let config = find_ssh_agent(&state, &agent_id).await?;
-    let has_pinned_host_key = super::ssh_keys::account_keys(&state)?
+    let has_pinned_host_key = state
+        .ssh_keys
         .pinned_host_key(&agent_id)
         .await
         .map_err(internal_error)?
@@ -202,19 +203,19 @@ async fn update_ssh_agent(
         replace_runtime_agent(state, agent_id, agent_config).await
     })
     .await?;
-    // Deleted only after the config stopped pointing at them, for every account: none of
-    // their keys is installed for the new target or login.
+    // Deleted only after the config stopped pointing at them: the key is not installed for
+    // the new target or login.
     if target_changed {
         state
             .ssh_keys
-            .delete_device_for_all_accounts(agent_id)
+            .delete_device(agent_id)
             .await
             .map_err(internal_error)?;
     } else if username_changed {
         // Also clears a key file a crashed setup may have left without the config using it.
         state
             .ssh_keys
-            .delete_keys_for_all_accounts(agent_id)
+            .delete_keys(agent_id)
             .await
             .map_err(internal_error)?;
     }
@@ -360,11 +361,10 @@ async fn delete_managed_agent(
         );
     }
     // A deleted device's keys and pins must never be picked up by a later device; ids are
-    // never reused, so this only keeps the data dir tidy. Every account's are deleted;
-    // other accounts' remote lines are left for the multi-account work.
+    // never reused, so this only keeps the data dir tidy.
     state
         .ssh_keys
-        .delete_device_for_all_accounts(agent_id)
+        .delete_device(agent_id)
         .await
         .map_err(internal_error)?;
     runtime_result
@@ -426,7 +426,7 @@ pub(super) async fn replace_runtime_agent(
 /// removed supervisor no longer runs the device, so its held SSH key is dropped too.
 async fn unregister_runtime_agent(state: &ServerState, agent_id: &AgentId) -> Result<(), ApiError> {
     state.watchdog_registry.remove_stopped(agent_id.as_str())?;
-    state.held_ssh_keys.release_device(agent_id);
+    state.held_ssh_keys.release(agent_id);
     state
         .router_ref
         .request(|reply| {
@@ -449,7 +449,7 @@ pub(super) async fn stop_for_configuration_change(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<(), ApiError> {
-    state.held_ssh_keys.release_device(agent_id);
+    state.held_ssh_keys.release(agent_id);
     let Some(handle) = state.watchdog_registry.lookup(agent_id.as_str()) else {
         // A retry after persist+remove must not 404 just because the supervisor is already gone.
         return Ok(());

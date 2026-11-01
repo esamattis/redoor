@@ -18,6 +18,7 @@
 # Guidelines
 
 - Always use async apis from tokio instead of sync apis instead
+- Request code that hands work to another task spawns it with `redoor_core::logging::spawn_in_user_scope` / `spawn_blocking_in_user_scope` instead of `tokio::spawn` / `spawn_blocking`, so its log lines still name the signed-in user
 - Recursive directory deletion must always use `safe_rm_all`, never `remove_dir_all`
 - Always comments to functions, structs, enums and methods
     - The comments should aim to answer the "why" question
@@ -33,6 +34,7 @@
 - Add comments to test assertions why they are there
 - Add integration tests for all REST API features
 - When a test fails and then passes on a rerun, log it to `flaky-tests.md`
+- Mark temporary migration code with a `TEMPORARY MIGRATION:` comment that says what it migrates and when it can go. Before every release, and whenever you work near such code, ask the user whether it should be removed now; never remove it unasked
 - Run `pn test` only after real code changes, including changes to executable scripts, tests, or configuration that affects application or build behavior. Use a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite.
 - Do not run tests or builds for changes limited to documentation, plans, or code comments.
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
@@ -91,4 +93,4 @@ Use `Tooltip` to clarify the purpose of most buttons and other form controls, es
 
 Do not use use plain <button> or <input> elements. Always use reusable component or create one.
 
-Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AgentLifecycle, AgentRestartButton, AgentStatusDot, BrowserViewCard, Button, ChangePasswordButton, ChangePasswordDialog, Checkbox, ClearableInput, ConfirmationDialog, ContextMenu, CopyableCodeRow, CopyableGitRef, CopyablePath, DecryptedDownloadMenuButton, DetailCard, Dialog, DialogActions, FileInput, FoldingSection, FreshUnlockFields, FullWindowToggle, HighlightedLines, HighlightedTokens, IconButton, IconLinkButton, InputControl, LinkButton, LogViewer, NewPassphraseFields, OpenInBackgroundButton, OptionalTooltip, OverlayChromeLayout, Password, PasswordlessWarning, PathBreadcrumbs, ProvisioningStatusList, RadioCardGroup, RadioCardOption, ResponsiveAnchoredDialog, RestartDialog, SearchButton, SegmentedControl, Select, SidebarModeToggle, SideMenu, SortableItem, SortableList, SshKeySetupDialog, Tab, TabbedBottomDrawer, TabList, TextField, ThemeToggle, Toast, ToggleButton, Tooltip, VaultDialog, ViewCardHeader
+Reusable components (update this list when adding new ones): ActionMenu, ActionMenuButton, AgentLifecycle, AgentRestartButton, AgentStatusDot, BrowserViewCard, Button, ChangePasswordButton, ChangePasswordDialog, ChangePasswordFlow, Checkbox, ClearableInput, ConfirmationDialog, ContextMenu, CopyableCodeRow, CopyableGitRef, CopyablePath, DecryptedDownloadMenuButton, DetailCard, Dialog, DialogActions, FileInput, FoldingSection, FreshUnlockFields, FullWindowToggle, HighlightedLines, HighlightedTokens, IconButton, IconLinkButton, InputControl, LinkButton, LogViewer, NewPassphraseFields, OpenInBackgroundButton, OptionalTooltip, OverlayChromeLayout, Password, PasswordlessWarning, PathBreadcrumbs, ProvisioningStatusList, RadioCardGroup, RadioCardOption, ResponsiveAnchoredDialog, RestartDialog, SearchButton, SegmentedControl, Select, SidebarModeToggle, SideMenu, SignedInUser, SortableItem, SortableList, SshKeySetupDialog, Tab, TabbedBottomDrawer, TabList, TextField, ThemeToggle, Toast, ToggleButton, Tooltip, VaultDialog, ViewCardHeader

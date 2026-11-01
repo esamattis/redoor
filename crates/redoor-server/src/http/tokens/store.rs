@@ -122,10 +122,12 @@ impl StoredToken {
         }
     }
 
-    /// The authorization view handed to request handlers, without lifecycle details.
+    /// The authorization view handed to request handlers, without lifecycle details. The
+    /// name comes along so log lines can say which token made a request.
     fn grant(&self) -> TokenGrant {
         TokenGrant {
             id: self.id,
+            name: self.name.clone(),
             permissions: self.permissions.clone(),
             devices: self.devices.clone(),
         }

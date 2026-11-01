@@ -286,6 +286,12 @@ function LogRecordRow(props: {
                 {props.entry.record.timestamp}
             </time>
             <Severity level={props.entry.record.level} />
+            {/* Several people share one account, so a request's lines say who made it. */}
+            {props.entry.record.user === undefined ? null : (
+                <span className="text-sky-300 @xl:shrink-0">
+                    {props.entry.record.user}
+                </span>
+            )}
             <span
                 className={
                     props.wrapLines

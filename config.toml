@@ -10,8 +10,16 @@ agent_token = "dev-agent-token" # required; shared registration secret
 # log = "log/server.log" # optional; also settable via --log
 # log_max_size = "10MB"  # default; also limits the [[agents]] log files
 # log_level = "info"    # trace, debug, info, warning, or error
-username = "admin"       # optional pair with password; omit both on Linux for PAM
+
+# One entry per person; plaintext or an Argon2 PHC string. `username`/`password` under
+# [server] is shorthand for a single entry.
+[[server.users]]
+name = "admin"
 password = "secret"
+
+# Linux only: sign in with the system password of the user running the server.
+# [server.pam]
+# enabled = true
 
 # Standalone agent (redoor agent / systemd --mode agent). Not used for [[agents]].
 # [agent]

@@ -41,6 +41,38 @@ pub struct OidcLoginMethod {
     pub provider_name: String,
 }
 
+/// How the caller of a request authenticated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AuthMethod {
+    /// A `[[server.users]]` name and password; the only method whose password the UI can
+    /// change.
+    Password,
+    /// The server process user's system password through PAM.
+    Pam,
+    /// OpenID Connect sign-in.
+    Oidc,
+    /// An access token.
+    Token,
+}
+
+/// `GET /api/v1/auth/me`: who is signed in and how, shown in the application menu.
+///
+/// Everyone who can sign in shares one account with full access, so this only says who is
+/// working, not what they may do.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CurrentUserResponse {
+    /// The login name, the OIDC user's readable name, or the access token's name.
+    pub name: String,
+    /// How the caller authenticated.
+    pub method: AuthMethod,
+    /// The access token's id; present only for tokens.
+    pub token_id: Option<String>,
+}
+
 /// Asks to replace the TOML-configured login password.
 ///
 /// The current password is required even though the caller already has a session, so a

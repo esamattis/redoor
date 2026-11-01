@@ -374,15 +374,28 @@ impl Flow {
 pub(crate) struct FlowTable {
     by_request: HashMap<AgentRequest, FlowId>,
     flows: HashMap<FlowId, Flow>,
+    /// The signed-in user whose request created each flow, so the agent's later answers
+    /// are logged as that user's; flows started without one are absent.
+    users: HashMap<FlowId, std::sync::Arc<str>>,
 }
 
 impl FlowTable {
-    /// Adds a flow and indexes every request id of its current phase.
+    /// Adds a flow and indexes every request id of its current phase. The current task's
+    /// user, the sender of the message that started the flow, becomes the flow's user.
     pub(crate) fn insert(&mut self, id: FlowId, flow: Flow) {
         for request_id in flow.request_ids() {
             self.by_request.insert(request_id, id);
         }
         self.flows.insert(id, flow);
+        match redoor_core::logging::current_user() {
+            Some(user) => self.users.insert(id, user),
+            None => self.users.remove(&id),
+        };
+    }
+
+    /// The user whose request created a flow, for logging the flow's later steps.
+    pub(crate) fn user(&self, id: FlowId) -> Option<std::sync::Arc<str>> {
+        self.users.get(&id).cloned()
     }
 
     /// Finds the flow a request sent to `agent_id` belongs to.
@@ -405,6 +418,7 @@ impl FlowTable {
     /// Removes a flow and its request ids.
     pub(crate) fn remove(&mut self, id: FlowId) -> Option<Flow> {
         let flow = self.flows.remove(&id)?;
+        self.users.remove(&id);
         self.unindex(id, &flow);
         Some(flow)
     }
@@ -439,6 +453,7 @@ impl FlowTable {
         let extracted: Vec<_> = self.flows.extract_if(|_, flow| predicate(flow)).collect();
         for (id, flow) in &extracted {
             self.unindex(*id, flow);
+            self.users.remove(id);
         }
         extracted
     }

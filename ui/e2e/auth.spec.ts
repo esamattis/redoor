@@ -83,8 +83,9 @@ test.describe("Authentication", () => {
         await expect(
             page.getByText("config.toml", { exact: true }),
         ).toBeVisible();
+        // The home page says who signed in and with which method.
         await expect(
-            page.getByText("TOML (username/password in config file)"),
+            page.getByLabel("Signed in as test-user with Password").first(),
         ).toBeVisible();
         // Build identity is baked via build.rs for support/debugability.
         await expect(

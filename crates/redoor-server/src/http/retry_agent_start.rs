@@ -30,12 +30,6 @@ pub(crate) async fn retry_agent_start_handler(
     let watchdog = managed_watchdog(&state, &snapshot)?;
     super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
         .await?;
-    if request.ssh_key_file_key.is_some() {
-        // Reconnects use the keys and pin of the account that unlocked the device.
-        state
-            .held_ssh_keys
-            .record_start(&agent_id, state.auth.username());
-    }
 
     let mut retry_snapshot = watchdog.snapshot();
     retry_snapshot.status = redoor_protocol::api::agents::AgentConnectionStatus::Starting;

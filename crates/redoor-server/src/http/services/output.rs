@@ -269,7 +269,7 @@ impl Drop for OutputCancelGuard {
         let router = self.router.clone();
         let agent_id = self.agent_id.clone();
         let request_id = self.request_id;
-        tokio::spawn(async move {
+        redoor_core::logging::spawn_in_user_scope(async move {
             let _ = router
                 .send_async(RouterMsg::CancelTransfer {
                     agent_id,

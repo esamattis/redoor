@@ -40,7 +40,7 @@ pub(crate) async fn require_transfer_write(
     principal: &Principal,
     transfer_id: redoor_protocol::ids::TransferId,
 ) -> Result<(), ApiError> {
-    if matches!(principal, Principal::Session) {
+    if matches!(principal, Principal::Session(_)) {
         return Ok(());
     }
     let progress = state

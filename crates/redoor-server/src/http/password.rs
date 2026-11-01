@@ -1,4 +1,5 @@
-//! `PUT /api/v1/auth/password`: changes the TOML-configured login password from the UI.
+//! `PUT /api/v1/auth/password`: changes the signed-in user's TOML-configured login password
+//! from the UI.
 //!
 //! A module of its own because it is the only route that rewrites the server credentials,
 //! and its rules (current password, rate limiting, re-issued cookie) differ from login.
@@ -6,7 +7,7 @@
 use std::time::Instant;
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{ConnectInfo, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
@@ -14,17 +15,24 @@ use axum::{
 use redoor_core::log_error;
 use redoor_protocol::api::auth::{ChangePasswordRequest, ChangePasswordResponse};
 
+use super::access::Principal;
 use super::auth::PasswordChangeError;
 use super::error::ApiError;
 use super::state::ServerState;
 
-/// Verifies the current password, writes the new one as an Argon2id hash into the config
-/// file and answers with a fresh session cookie for this browser.
+/// Verifies the signed-in user's current password, writes the new one as an Argon2id hash
+/// into that user's config entry and answers with a fresh session cookie for this browser.
 pub(crate) async fn change_password_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Response, ApiError> {
+    // The route is session-only, so a token never gets here; it is refused anyway rather
+    // than trusted to the access table alone.
+    let Principal::Session(user) = principal else {
+        return Err(ApiError::forbidden("Requires a browser session"));
+    };
     let client_ip = addr.ip();
     // Shares the login throttle, so a stolen session cannot guess the password faster
     // through this form than through the login page.
@@ -44,6 +52,7 @@ pub(crate) async fn change_password_handler(
         .auth
         .change_password(
             &state.config_path,
+            &user,
             &request.current_password,
             &request.new_password,
         )
@@ -57,7 +66,7 @@ pub(crate) async fn change_password_handler(
                 // 403, not 401: the UI treats 401 as an expired session and leaves the page.
                 ApiError::forbidden(error.to_string())
             }
-            PasswordChangeError::NotConfigured => ApiError::conflict(error.to_string()),
+            PasswordChangeError::NotPasswordSession => ApiError::conflict(error.to_string()),
             PasswordChangeError::CredentialsChanged(_) => ApiError::conflict(error.to_string()),
             PasswordChangeError::InvalidNewPassword(_) => ApiError::bad_request(error.to_string()),
             PasswordChangeError::Internal(error) => {
@@ -66,7 +75,7 @@ pub(crate) async fn change_password_handler(
             }
         })?;
     let mut response = Json(ChangePasswordResponse {
-        username: session.username,
+        username: session.user.name,
     })
     .into_response();
     response

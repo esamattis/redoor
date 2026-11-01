@@ -1,20 +1,8 @@
-//! Server identity, restart, upgrade, and authentication-mode bodies.
+//! Server identity, restart and upgrade bodies.
 
 use crate::identity::ServerBuildMode;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
-
-/// How browser login credentials are sourced for this server process.
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
-#[ts(export)]
-#[ts(rename_all = "snake_case")]
-#[serde(rename_all = "snake_case")]
-pub enum ServerAuthMode {
-    /// Username and password come from the server TOML config.
-    Toml,
-    /// Username/password are verified against the process owner's Linux PAM account.
-    Pam,
-}
 
 /// Server identity and authenticated agent bootstrap settings shown on the UI home page.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -28,8 +16,6 @@ pub struct ServerInfoResponse {
     pub config_path: String,
     /// Absolute path of the running server binary.
     pub exe_path: String,
-    /// Whether login uses TOML credentials or system PAM.
-    pub auth_mode: ServerAuthMode,
     /// Primary non-loopback IP selected from the server's local routing table.
     pub external_ip: Option<String>,
     /// Hostname of the server machine, so browser tabs of different servers can be told apart.

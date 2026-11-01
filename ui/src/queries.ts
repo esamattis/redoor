@@ -165,6 +165,7 @@ export const queryKeys = {
     /** Resumable partials, rediscovered from the connected destination agents. */
     partials: () => [...queryKeys.all, "partials"] as const,
     serverInfo: () => [...queryKeys.all, "server-info"] as const,
+    currentUser: () => [...queryKeys.all, "current-user"] as const,
     protocolMismatches: () =>
         [...queryKeys.all, "protocol-mismatches"] as const,
     userState: () => [...queryKeys.all, "user-state"] as const,
@@ -528,6 +529,15 @@ export function serverInfoQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.serverInfo(),
         queryFn: () => api.getServerInfo(),
+        staleTime: Number.POSITIVE_INFINITY,
+    });
+}
+
+/** Who is signed in; it cannot change without signing in again, so it never goes stale. */
+export function currentUserQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.currentUser(),
+        queryFn: () => api.getCurrentUser(),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

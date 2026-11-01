@@ -20,13 +20,13 @@ use crate::http::state::{CoordinatorArgs, ServerState};
 use crate::http::watchdog::ManagedLauncher;
 use crate::one_time_token_registry::OneTimeTokenRegistry;
 use crate::watchdog::WatchdogRegistry;
-use redoor_core::config::{AgentConfig, AuthMode, RedoorConfig};
+use redoor_core::config::{AgentConfig, ConfiguredUser, RedoorConfig};
 use redoor_core::log;
 use redoor_core::logging::LogFormat;
 use redoor_core::paths::AppPaths;
 use redoor_core::process::ProcessSlot;
 use redoor_core::runtime::RuntimeContext;
-use redoor_protocol::{api::server::ServerAuthMode, wire::log::Level};
+use redoor_protocol::wire::log::Level;
 
 /// Listener port used when neither CLI, env nor `[server].port` choose one.
 const DEFAULT_PORT: u16 = 7666;
@@ -200,8 +200,10 @@ struct ServerConfig {
     log_level: Level,
     /// Process output format.
     log_format: LogFormat,
-    /// Browser login backend.
-    auth: AuthMode,
+    /// Name and password logins.
+    users: Vec<ConfiguredUser>,
+    /// Whether the process user may sign in with its system password.
+    pam: bool,
     /// Whether session cookies require HTTPS.
     cookie_secure: bool,
     /// Optional OpenID Connect sign-in.
@@ -255,7 +257,8 @@ impl ServerConfig {
             log_max_size: server.log_max_size,
             log_level,
             log_format,
-            auth: server.auth,
+            users: server.users,
+            pam: server.pam,
             cookie_secure: server.cookie_secure,
             oidc: server.oidc,
             mcp_allowed_origins: server.mcp_allowed_origins,
@@ -306,9 +309,15 @@ impl ServerRuntime {
 
         let address = config.listen_address();
         let data_dir = runtime.paths.data_dir()?;
-        let auth_mode = ServerAuthMode::from(&config.auth);
+        // TEMPORARY MIGRATION: before any store opens, so they all find their files at the
+        // data directory root.
+        crate::account_migration::move_account_directory(&data_dir)
+            .await
+            .context("Failed to move the account files to the data directory")?;
+        let pam = Self::pam_login(config.pam).await?;
         let auth = AuthState::new(
-            config.auth,
+            config.users,
+            pam,
             config.oidc.as_ref(),
             config.agent_token.clone(),
             config.cookie_secure,
@@ -349,9 +358,8 @@ impl ServerRuntime {
             crate::ssh::ProvisionContext {
                 app_name: runtime.paths.app_name().to_string(),
                 binaries: binaries.clone(),
-                ssh_keys: ssh_keys.clone(),
+                ssh_keys: Some(ssh_keys.clone()),
                 held_ssh_keys: held_ssh_keys.clone(),
-                default_account: Some(auth.username().to_string()),
                 log_max_size: config.log_max_size,
                 // Empty until the first SSH provision, so servers that never provision a
                 // device never hash the debug build.
@@ -369,8 +377,7 @@ impl ServerRuntime {
             router.clone(),
             runtime.paths.data_dir()?,
         );
-        let vault =
-            crate::vault::VaultStore::new(runtime.paths.clone(), auth.username().to_string());
+        let vault = crate::vault::VaultStore::new(runtime.paths.clone());
         let state = ServerState {
             vault,
             runtime,
@@ -394,7 +401,6 @@ impl ServerRuntime {
             ssh_keys,
             held_ssh_keys,
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
-            auth_mode,
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
             upgrade_lock: Arc::default(),
         };
@@ -428,6 +434,25 @@ impl ServerRuntime {
             bind: config.bind,
             port: config.port,
         })
+    }
+
+    /// Loads PAM when `[server.pam] enabled = true`. Config validation already refused PAM
+    /// on other platforms.
+    async fn pam_login(enabled: bool) -> Result<Option<crate::http::auth::PamLogin>> {
+        if !enabled {
+            return Ok(None);
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let pam = crate::http::auth::PamLogin::load_system()
+                .await
+                .context("Failed to initialize PAM login")?;
+            Ok(Some(pam))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            anyhow::bail!("PAM login is only supported on Linux")
+        }
     }
 
     /// First-run demo: opens the login page when a desktop is available so `redoor server`
@@ -574,8 +599,8 @@ log_format = "json"
         // Values without an env override still come from the file.
         assert_eq!(config.listen_address(), "0.0.0.0:4000");
         assert_eq!(config.log, "/file/server.log");
-        // Explicit TOML credentials select password login.
-        assert!(matches!(config.auth, AuthMode::Configured { .. }));
+        // Explicit TOML credentials are one password login.
+        assert_eq!(config.users.len(), 1);
     }
 
     /// Built-in defaults apply only when no tier sets a value.

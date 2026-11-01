@@ -52,13 +52,10 @@ export type KeyFixture = {
     apiClient: ApiClient;
     configPath: string;
     home: string;
-    /**
-     * `<HOME>/.local/share/<app>/users/<account>/ssh`, where the server keeps the login
-     * account's keys and pinned host keys.
-     */
+    /** `<HOME>/.local/share/<app>/ssh`, where the server keeps keys and pinned host keys. */
     sshDataDir: string;
-    /** `<HOME>/.local/share/<app>/users/<account>`, holding the account's vault. */
-    accountDir: string;
+    /** `<HOME>/.local/share/<app>`, the data directory holding the shared vault. */
+    dataDir: string;
     /** The server's own log file. */
     serverLog: string;
     processManager: ProcessManager;
@@ -141,14 +138,13 @@ port = ${VITEST_SERVER_PORT}
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
     const dataDir = join(home, ".local", "share", appName);
-    const accountDir = join(dataDir, "users", TEST_USERNAME);
 
     return {
         apiClient,
         configPath,
         home,
-        sshDataDir: join(accountDir, "ssh"),
-        accountDir,
+        sshDataDir: join(dataDir, "ssh"),
+        dataDir,
         serverLog: join(dataDir, "server.log"),
         processManager,
         serverPid,
@@ -218,8 +214,16 @@ export async function remoteAuthorizedKeys(user: string): Promise<string> {
     return sshAs(user, `cat "$HOME/.ssh/authorized_keys" 2>/dev/null || true`);
 }
 
-/** The `authorized_keys` marker of a key the test account installed for `deviceId`. */
+/** The `authorized_keys` marker of a key the server installed for `deviceId`. */
 export function keyMarker(deviceId: string, fingerprint: string): string {
+    return `redoor:${deviceId}:${fingerprint}`;
+}
+
+/**
+ * TEMPORARY MIGRATION: the marker versions with account names wrote,
+ * `redoor:<device-id>:<account>:<fingerprint>`.
+ */
+export function legacyKeyMarker(deviceId: string, fingerprint: string): string {
     return `redoor:${deviceId}:${TEST_USERNAME}:${fingerprint}`;
 }
 

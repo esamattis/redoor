@@ -27,7 +27,6 @@ pub(crate) async fn server_info_handler(
             agent_token: state.auth.agent_token().to_string(),
             config_path: state.config_path.display().to_string(),
             exe_path,
-            auth_mode: state.auth_mode.clone(),
             external_ip,
             hostname,
             os: std::env::consts::OS.to_string(),

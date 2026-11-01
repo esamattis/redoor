@@ -105,6 +105,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("POST", "/api/v1/tokens/{token_id}/rotate") => Access::SessionOnly,
         // A token may read and delete itself, which is what CLI status and logout use.
         ("GET" | "DELETE", "/api/v1/tokens/current") => Access::AnyPrincipal,
+        // Who is calling only describes the caller itself.
+        ("GET", "/api/v1/auth/me") => Access::AnyPrincipal,
 
         // Inventory and transfer listings are filtered by scope in their handlers.
         ("GET", "/api/v1/agents" | "/api/v1/transfers/progress" | "/api/v1/partials") => {
@@ -233,6 +235,7 @@ mod tests {
             (Method::GET, "/api/v1/auth/oidc/callback", Access::Public),
             (Method::GET, "/api/v1/auth/methods", Access::Public),
             (Method::PUT, "/api/v1/auth/password", Access::SessionOnly),
+            (Method::GET, "/api/v1/auth/me", Access::AnyPrincipal),
             (Method::GET, "/api/v1/agents", Access::AnyPrincipal),
             (Method::POST, "/api/v1/agents", Access::SessionOnly),
             (Method::GET, "/api/v1/agents/{agent}", Access::Device(&[])),

@@ -20,14 +20,27 @@ fn default_config_content(agent_token: &str) -> String {
     let agent_token = toml_edit::Value::from(agent_token).to_string();
     // Written up front so the first start does not have to rewrite the fresh file.
     let local_agent_id = redoor_protocol::ids::AgentId::generate();
+    // `[server.pam]` is a sub-table, so it has to follow every plain `[server]` key.
     #[cfg(target_os = "linux")]
-    let credentials = concat!(
-        "# Web UI login. On Linux, omit both to use PAM (system user).\n",
-        "# username = \"admin\"\n",
-        "# password = \"long-private-password\"\n",
+    let (credentials, pam) = (
+        "# Web UI login: see [server.pam] and [[server.users]] below.\n",
+        concat!(
+            "\n",
+            "# Sign in with the system password of the user running the server.\n",
+            "[server.pam]\n",
+            "enabled = true\n",
+            "\n",
+            "# Password logins, one entry per person:\n",
+            "# [[server.users]]\n",
+            "# name = \"admin\"\n",
+            "# password = \"long-private-password\"\n",
+        ),
     );
     #[cfg(not(target_os = "linux"))]
-    let credentials = concat!("username = \"redoor\"\n", "password = \"changeme\"\n",);
+    let (credentials, pam) = (
+        concat!("username = \"redoor\"\n", "password = \"changeme\"\n",),
+        "",
+    );
     #[cfg(target_os = "linux")]
     let header = "# A random agent_token was generated on first start.\n# Browser login uses PAM with your Linux account credentials.";
     #[cfg(not(target_os = "linux"))]
@@ -46,7 +59,7 @@ agent_token = {agent_token}
 # cookie_secure = false # set true behind HTTPS
 # mcp_allowed_origins = ["https://client.example"] # browser MCP clients only
 # log_format = "line" # use "json" for newline-delimited JSON output
-
+{pam}
 [[agents]]
 # local agent that runs on the same computer as the server
 id = "{local_agent_id}"

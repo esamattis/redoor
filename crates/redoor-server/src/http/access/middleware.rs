@@ -61,8 +61,11 @@ pub(crate) async fn access_control(
     if let Err(error) = authorize(&principal, access, device.as_ref()) {
         return error.into_response();
     }
+    // Every log line written while serving the request names who made it.
+    let user = Some(std::sync::Arc::from(principal.log_label()));
     parts.extensions.insert(principal);
-    let mut response = next.run(Request::from_parts(parts, body)).await;
+    let mut response =
+        redoor_core::logging::user_scope(user, next.run(Request::from_parts(parts, body))).await;
     // A sliding session moved its expiry forward; the browser cookie must follow or it would
     // still expire at the original time. A handler that set the session cookie itself (a
     // password change issuing a new session) wins, because browsers keep the last one.
@@ -89,8 +92,8 @@ async fn authenticate(
     }
     match state.auth.check_session(headers).await {
         SessionCheck::Invalid => Err(unauthorized("Authentication required")),
-        SessionCheck::Valid => Ok((Principal::Session, None)),
-        SessionCheck::Renewed(cookie) => Ok((Principal::Session, Some(cookie))),
+        SessionCheck::Valid(user) => Ok((Principal::Session(user), None)),
+        SessionCheck::Renewed(user, cookie) => Ok((Principal::Session(user), Some(cookie))),
     }
 }
 

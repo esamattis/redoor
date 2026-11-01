@@ -1,10 +1,10 @@
 //! Managed SSH private keys stored as vault objects (`kind: "ssh-key"`).
 //!
 //! The file is an ordinary `.redoorencrypted` file: the payload is the OpenSSH private key text,
-//! and the header context binds it to one account and one device and carries the OpenSSH
-//! public key. The header MAC (keyed by the file key) covers the context, so a key file
-//! copied to another device's or account's directory, or a header whose public key was
-//! swapped, is refused when it is opened.
+//! and the header context binds it to one device and carries the OpenSSH public key. The
+//! header MAC (keyed by the file key) covers the context, so a key file copied to another
+//! device's directory, or a header whose public key was swapped, is refused when it is
+//! opened.
 //!
 //! The public key in the header keeps the fingerprint, the status page and the
 //! `authorized_keys` cleanup working while the key is locked, and keeps the layout at one
@@ -33,7 +33,9 @@ use super::keys::SshPrivateKey;
 /// damaged or foreign file cannot make the server buffer much.
 pub(crate) const MAX_SSH_KEY_FILE_LEN: u64 = 64 * 1024;
 
-/// Header context field naming the account the key belongs to.
+/// TEMPORARY MIGRATION: header context field naming the account, written by versions that
+/// had account names. Still accepted (covered by the MAC, compared to nothing) and dropped
+/// by a rewrap; remove once every installation has rotated its device keys.
 const CONTEXT_ACCOUNT: &str = "account";
 /// Header context field naming the device the key belongs to.
 const CONTEXT_DEVICE_ID: &str = "device_id";
@@ -64,8 +66,8 @@ pub(crate) enum SshKeyOpenError {
     /// The bytes are not a valid encrypted file, or the file key does not open it.
     #[error(transparent)]
     Format(#[from] VaultFormatError),
-    /// The file is valid but belongs to another account, device or key, or is not an SSH
-    /// key at all. Nothing in it is used.
+    /// The file is valid but belongs to another device or key, or is not an SSH key at all.
+    /// Nothing in it is used.
     #[error("{0}")]
     Mismatch(String),
 }
@@ -139,22 +141,22 @@ impl EncryptedKeyFile {
     }
 
     /// Decrypts the private key after checking that the file key authenticates the header,
-    /// that the header binds the key to `account` and `device`, and that the private key's
-    /// public half is the header's public key. Any mismatch is an error, so nothing from a
-    /// misplaced or tampered file is ever used.
+    /// that the header binds the key to `device`, and that the private key's public half is
+    /// the header's public key. Any mismatch is an error, so nothing from a misplaced or
+    /// tampered file is ever used.
+    ///
+    /// TEMPORARY MIGRATION: a legacy header's `account` field is covered by the MAC but
+    /// compared to nothing, because there are no accounts any more.
     pub(crate) async fn open(
         &self,
         file_key: &FileKey,
-        account: &str,
         device: &AgentId,
     ) -> Result<SshPrivateKey, SshKeyOpenError> {
         self.preamble.verify(file_key)?;
         let context = &self.header().context;
-        if context.get(CONTEXT_ACCOUNT).map(String::as_str) != Some(account)
-            || context.get(CONTEXT_DEVICE_ID).map(String::as_str) != Some(device.as_str())
-        {
+        if context.get(CONTEXT_DEVICE_ID).map(String::as_str) != Some(device.as_str()) {
             return Err(SshKeyOpenError::Mismatch(format!(
-                "The SSH key file belongs to another account or device, not to device '{device}' of account '{account}'"
+                "The SSH key file belongs to another device, not to device '{device}'"
             )));
         }
         let payload = &self.bytes[self.preamble.len()..];
@@ -180,6 +182,9 @@ impl EncryptedKeyFile {
     /// The same file under a new wrap of the same file key: the header gets the new
     /// generation and wrap, and the payload bytes are copied unchanged. The old MAC is
     /// checked with the file key first, which proves the key belongs to this file.
+    ///
+    /// TEMPORARY MIGRATION: the rebuilt header leaves out a legacy `account` field, so a
+    /// rewrap also moves a key to the current header shape.
     pub(crate) fn rewrapped(
         &self,
         file_key: &FileKey,
@@ -188,11 +193,14 @@ impl EncryptedKeyFile {
         vault_label: String,
     ) -> Result<Vec<u8>, VaultFormatError> {
         self.preamble.verify(file_key)?;
+        let mut context = self.header().context.clone();
+        context.remove(CONTEXT_ACCOUNT);
         let preamble = VaultPreamble::build(
             VaultFileHeader {
                 vault_label,
                 key_id,
                 wrap,
+                context,
                 ..self.header().clone()
             },
             file_key,
@@ -204,15 +212,13 @@ impl EncryptedKeyFile {
     }
 }
 
-/// Encrypts `private_key` into the bytes of a new key file bound to `account` and `device`.
+/// Encrypts `private_key` into the bytes of a new key file bound to `device`.
 pub(crate) async fn seal(
     private_key: &SshPrivateKey,
-    account: &str,
     device: &AgentId,
     seal: &SshKeySeal,
 ) -> std::io::Result<Vec<u8>> {
     let context = BTreeMap::from([
-        (CONTEXT_ACCOUNT.to_string(), account.to_string()),
         (CONTEXT_DEVICE_ID.to_string(), device.to_string()),
         (
             CONTEXT_PUBLIC_KEY.to_string(),
@@ -265,38 +271,35 @@ mod tests {
         }
     }
 
-    /// A key file opens only for its own account and device, and only with its file key.
+    /// A key file opens only for its own device, and only with its file key.
     #[tokio::test]
-    async fn key_file_opens_only_for_its_account_and_device() {
+    async fn key_file_opens_only_for_its_device() {
         let device = AgentId::generate();
         let key = SshPrivateKey::generate().unwrap();
         let seal = test_seal();
-        let file =
-            EncryptedKeyFile::parse(super::seal(&key, "alice", &device, &seal).await.unwrap())
-                .await
-                .unwrap();
+        let file = EncryptedKeyFile::parse(super::seal(&key, &device, &seal).await.unwrap())
+            .await
+            .unwrap();
         // The header names the key's public half, readable without the file key.
         assert_eq!(file.public_key().key_data(), key.public_key().key_data());
-        let opened = file.open(&seal.file_key, "alice", &device).await.unwrap();
-        // The right account, device and file key give back the same private key.
+        // New keys are bound to the device and public key only.
+        assert_eq!(
+            file.header().context.keys().collect::<Vec<_>>(),
+            [CONTEXT_DEVICE_ID, CONTEXT_PUBLIC_KEY]
+        );
+        let opened = file.open(&seal.file_key, &device).await.unwrap();
+        // The right device and file key give back the same private key.
         assert_eq!(opened.public_key().key_data(), key.public_key().key_data());
-        // Another account cannot use the key.
-        assert!(matches!(
-            file.open(&seal.file_key, "bob", &device).await.unwrap_err(),
-            SshKeyOpenError::Mismatch(_)
-        ));
         // Another device cannot use the key.
         assert!(matches!(
-            file.open(&seal.file_key, "alice", &AgentId::generate())
+            file.open(&seal.file_key, &AgentId::generate())
                 .await
                 .unwrap_err(),
             SshKeyOpenError::Mismatch(_)
         ));
         // Another file key fails the header MAC.
         assert!(matches!(
-            file.open(&FileKey::generate(), "alice", &device)
-                .await
-                .unwrap_err(),
+            file.open(&FileKey::generate(), &device).await.unwrap_err(),
             SshKeyOpenError::Format(VaultFormatError::HeaderMac)
         ));
     }
@@ -310,10 +313,9 @@ mod tests {
         let key = SshPrivateKey::generate().unwrap();
         let other = SshPrivateKey::generate().unwrap();
         let seal = test_seal();
-        let file =
-            EncryptedKeyFile::parse(super::seal(&key, "alice", &device, &seal).await.unwrap())
-                .await
-                .unwrap();
+        let file = EncryptedKeyFile::parse(super::seal(&key, &device, &seal).await.unwrap())
+            .await
+            .unwrap();
         // Rebuild the header with another public key and a valid MAC over it.
         let mut header = file.header().clone();
         header
@@ -325,10 +327,7 @@ mod tests {
         let forged = EncryptedKeyFile::parse(forged).await.unwrap();
         // The payload no longer matches the header's public key.
         assert!(matches!(
-            forged
-                .open(&seal.file_key, "alice", &device)
-                .await
-                .unwrap_err(),
+            forged.open(&seal.file_key, &device).await.unwrap_err(),
             SshKeyOpenError::Mismatch(_)
         ));
     }
@@ -339,10 +338,9 @@ mod tests {
         let device = AgentId::generate();
         let key = SshPrivateKey::generate().unwrap();
         let seal = test_seal();
-        let file =
-            EncryptedKeyFile::parse(super::seal(&key, "alice", &device, &seal).await.unwrap())
-                .await
-                .unwrap();
+        let file = EncryptedKeyFile::parse(super::seal(&key, &device, &seal).await.unwrap())
+            .await
+            .unwrap();
         let new_wrap = test_seal().wrap;
         let new_key_id = "kid_ffffffffffffffffffffffffffffffff".to_string();
         // Another file key cannot rewrap, because the old MAC proves which key the file has.
@@ -371,11 +369,65 @@ mod tests {
         assert_eq!(rewrapped.header().key_id, new_key_id);
         assert_eq!(rewrapped.header().wrap, new_wrap);
         // The same file key still opens the same private key.
-        let opened = rewrapped
-            .open(&seal.file_key, "alice", &device)
+        let opened = rewrapped.open(&seal.file_key, &device).await.unwrap();
+        assert_eq!(opened.public_key().key_data(), key.public_key().key_data());
+    }
+
+    /// The same key file with the header shape written before account names were dropped:
+    /// an `account` field next to the device and public key, under a valid MAC.
+    async fn legacy_file(
+        key: &SshPrivateKey,
+        device: &AgentId,
+        seal: &SshKeySeal,
+    ) -> EncryptedKeyFile {
+        let file = EncryptedKeyFile::parse(super::seal(key, device, seal).await.unwrap())
             .await
             .unwrap();
+        let mut header = file.header().clone();
+        header
+            .context
+            .insert(CONTEXT_ACCOUNT.to_string(), "esamatti".to_string());
+        let preamble = VaultPreamble::build(header, &seal.file_key).unwrap();
+        let mut bytes = preamble.to_bytes();
+        bytes.extend_from_slice(&file.bytes[file.preamble.len()..]);
+        EncryptedKeyFile::parse(bytes).await.unwrap()
+    }
+
+    /// TEMPORARY MIGRATION: a key with a legacy three-field header still opens for its device,
+    /// whatever account it names, and a rewrap writes the two-field header.
+    #[tokio::test]
+    async fn legacy_header_opens_and_rewrap_drops_the_account() {
+        let device = AgentId::generate();
+        let key = SshPrivateKey::generate().unwrap();
+        let seal = test_seal();
+        let file = legacy_file(&key, &device, &seal).await;
+        // The legacy header really carries the account.
+        assert!(file.header().context.contains_key(CONTEXT_ACCOUNT));
+        let opened = file.open(&seal.file_key, &device).await.unwrap();
+        // The account is covered by the MAC but compared to nothing, so the key opens.
         assert_eq!(opened.public_key().key_data(), key.public_key().key_data());
+        // The device binding still applies to legacy keys.
+        assert!(matches!(
+            file.open(&seal.file_key, &AgentId::generate())
+                .await
+                .unwrap_err(),
+            SshKeyOpenError::Mismatch(_)
+        ));
+        let rewrapped = EncryptedKeyFile::parse(
+            file.rewrapped(
+                &seal.file_key,
+                "kid_ffffffffffffffffffffffffffffffff".to_string(),
+                test_seal().wrap,
+                "test vault".to_string(),
+            )
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        // The rebuilt header has the current two-field shape.
+        assert!(!rewrapped.header().context.contains_key(CONTEXT_ACCOUNT));
+        // And it still opens with the same file key.
+        assert!(rewrapped.open(&seal.file_key, &device).await.is_ok());
     }
 
     /// A user file cannot pass for an SSH key.

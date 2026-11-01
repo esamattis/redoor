@@ -108,13 +108,11 @@ pub(crate) struct ProvisionContext {
     pub(crate) app_name: String,
     /// Release cache used when the target lacks a matching binary.
     pub(crate) binaries: crate::binaries::BinaryCache,
-    /// Managed keys and pinned host keys of SSH devices, per account.
-    pub(crate) ssh_keys: keys::SshKeyStore,
-    /// Decrypted keys of running devices and the account that started each device.
+    /// Managed keys and pinned host keys of SSH devices; `None` for relays, which have
+    /// neither.
+    pub(crate) ssh_keys: Option<keys::SshKeyStore>,
+    /// Decrypted keys of running devices.
     pub(crate) held_ssh_keys: held_keys::HeldSshKeys,
-    /// The account whose keys and pins a device uses when no Start recorded one: the
-    /// server's single login account, or `None` for relays, which have no account.
-    pub(crate) default_account: Option<String>,
     /// Size limit of the agent log files this process forwards SSH and child output into;
     /// `None` uses the default limit.
     pub(crate) log_max_size: Option<u64>,

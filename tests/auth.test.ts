@@ -126,8 +126,12 @@ describe("HTTP authentication", () => {
         expect(serverInfo.config_path.endsWith(".toml")).toBe(true);
         // Home UI needs an absolute binary path so operators can verify upgrades.
         expect(serverInfo.exe_path.startsWith("/")).toBe(true);
-        // Test servers always pin username/password in TOML rather than PAM.
-        expect(serverInfo.auth_mode).toBe("toml");
+        // Test servers sign in with the username/password shorthand from the TOML file.
+        await expect(api.getCurrentUser()).resolves.toEqual({
+            name: TEST_USERNAME,
+            method: "password",
+            token_id: null,
+        });
         // When routing discovers an external address, it must not return an empty value.
         expect(
             serverInfo.external_ip === null ||

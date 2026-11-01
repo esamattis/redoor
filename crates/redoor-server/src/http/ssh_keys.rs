@@ -2,7 +2,7 @@
 //!
 //! Session-only, like the other agent configuration routes, because they carry login
 //! passwords and file keys and change what the server can log in to. Keys belong to the
-//! account of the session (today always the single login account).
+//! server's single account, so everyone who can sign in shares them.
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -139,9 +139,8 @@ async fn enroll(
         .map(Zeroizing::new);
     log!(
         Level::Info,
-        "Setting up managed SSH key: device={}, account={}, rotation={}, encrypted={}, typed_password={}",
+        "Setting up managed SSH key: device={}, rotation={}, encrypted={}, typed_password={}",
         agent_id,
-        state.auth.username(),
         rotated,
         seal.is_some(),
         password.is_some()
@@ -240,7 +239,8 @@ async fn remove_key(
         );
     }
     // The config stops using the key before its files go away.
-    account_keys(state)?
+    state
+        .ssh_keys
         .delete_keys(agent_id)
         .await
         .map_err(|error| {
@@ -315,28 +315,17 @@ async fn managed_key_device(
     managed_key_device_for(state, find_ssh_agent(state, agent_id).await?)
 }
 
-/// The key operations of a config entry for the session's account.
+/// The key operations of a config entry.
 pub(super) fn managed_key_device_for(
     state: &ServerState,
     config: SshBackedAgentConfig,
 ) -> Result<ManagedKeyDevice, ApiError> {
     ManagedKeyDevice::new(
         config,
-        Some(account_keys(state)?),
+        Some(state.ssh_keys.clone()),
         state.held_ssh_keys.clone(),
     )
     .map_err(|error| ApiError::bad_request(error.to_string()))
-}
-
-/// The keys and pins of the login account. Every session maps to the single configured
-/// account today; with several accounts this becomes the session's own.
-pub(super) fn account_keys(
-    state: &ServerState,
-) -> Result<crate::ssh::keys::AccountSshKeys, ApiError> {
-    state
-        .ssh_keys
-        .account(state.auth.username())
-        .map_err(|error| ApiError::internal(error.to_string()))
 }
 
 /// The error for an encrypted key that is neither held nor unlocked by the request.
@@ -528,7 +517,7 @@ pub(super) async fn unlock_for_start(
     let key = unlock_with_file_key(state, &device, &file, file_key).await?;
     state
         .held_ssh_keys
-        .hold(state.auth.username(), agent_id, key.private_key().clone());
+        .hold(agent_id, key.private_key().clone());
     log!(
         Level::Info,
         "Holding the decrypted SSH key while the device runs: device={}, fingerprint={}",
@@ -601,11 +590,7 @@ async fn commit_key(
 /// the config write error is what the user needs to see, and the next setup overwrites a
 /// leftover anyway.
 async fn discard_uncommitted_key(state: &ServerState, agent_id: &AgentId) {
-    let deleted = match account_keys(state) {
-        Ok(keys) => keys.delete_keys(agent_id).await,
-        Err(error) => Err(std::io::Error::other(error.to_string())),
-    };
-    if let Err(error) = deleted {
+    if let Err(error) = state.ssh_keys.delete_keys(agent_id).await {
         redoor_core::log_failure!(
             Level::Warn,
             "Failed to delete an SSH key whose config write failed: device={}, error={}",
@@ -648,21 +633,20 @@ async fn commit_rotation(
         .watchdog_registry
         .lookup(agent_id.as_str())
         .is_some_and(|watchdog| watchdog.snapshot().desired_running);
-    let account = state.auth.username();
-    let previous = state.held_ssh_keys.get(account, agent_id);
+    let previous = state.held_ssh_keys.get(agent_id);
     let hold_new = pending.is_encrypted() && running;
     if hold_new {
         state
             .held_ssh_keys
-            .hold(account, agent_id, pending.key().private_key().clone());
+            .hold(agent_id, pending.key().private_key().clone());
     }
     let key = match device.commit(pending).await {
         Ok(key) => key,
         Err(error) => {
             // A failed rotation leaves the held key as it was.
             match previous {
-                Some(previous) => state.held_ssh_keys.hold(account, agent_id, previous),
-                None => state.held_ssh_keys.release(account, agent_id),
+                Some(previous) => state.held_ssh_keys.hold(agent_id, previous),
+                None => state.held_ssh_keys.release(agent_id),
             }
             return Err(ApiError::internal(format!(
                 "Failed to switch to the new SSH key: {error}"
@@ -670,7 +654,7 @@ async fn commit_rotation(
         }
     };
     if !hold_new {
-        state.held_ssh_keys.release(account, agent_id);
+        state.held_ssh_keys.release(agent_id);
     }
     Ok(key)
 }
@@ -680,7 +664,7 @@ async fn commit_rotation(
 pub(super) async fn complete_operation<T: Send + 'static>(
     operation: impl std::future::Future<Output = Result<T, ApiError>> + Send + 'static,
 ) -> Result<T, ApiError> {
-    tokio::spawn(operation)
+    redoor_core::logging::spawn_in_user_scope(operation)
         .await
         .map_err(|error| ApiError::internal(format!("SSH key operation task failed: {error}")))?
 }

@@ -249,6 +249,10 @@ pub struct WatchdogHandle {
     commands: mpsc::Sender<SupervisorCommand>,
     snapshot: Arc<Mutex<WatchdogSnapshot>>,
     callback: SnapshotCallback,
+    /// The signed-in user whose Start or Retry asked for the next cycle. The supervisor
+    /// takes it for that cycle's spawn, so its provisioning logs name the user, while
+    /// later automatic reconnects find nothing and log without one.
+    requester: Arc<Mutex<Option<Arc<str>>>>,
 }
 
 impl std::fmt::Debug for WatchdogHandle {
@@ -308,6 +312,7 @@ impl WatchdogHandle {
     /// SSH key to be unlocked resumes with it, and every other state ignores it.
     pub async fn start(&self) -> Result<(), WatchdogError> {
         let permit = self.reserve().await?;
+        self.record_requester();
         let should_publish = {
             let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
             if snapshot.desired_running {
@@ -348,10 +353,25 @@ impl WatchdogHandle {
             })
     }
 
+    /// Remembers the calling task's user for the next cycle; see `requester`.
+    fn record_requester(&self) {
+        *self.requester.lock().expect("watchdog requester poisoned") =
+            redoor_core::logging::current_user();
+    }
+
+    /// Takes the user who asked for the cycle that is starting now, if any.
+    fn take_requester(&self) -> Option<Arc<str>> {
+        self.requester
+            .lock()
+            .expect("watchdog requester poisoned")
+            .take()
+    }
+
     /// Fences registrations from the old attempt until its work is canceled and a fresh cycle starts.
     pub async fn retry_startup(&self) -> Result<(), WatchdogError> {
         let (reply, response) = oneshot::channel();
         let permit = self.reserve().await?;
+        self.record_requester();
         {
             let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
             // Registration commits share this lock, so work from the canceled attempt
@@ -541,6 +561,7 @@ impl WatchdogRegistry {
             commands,
             snapshot: Arc::new(Mutex::new(WatchdogSnapshot::stopped())),
             callback,
+            requester: Arc::default(),
         };
         map.insert(key, handle.clone());
         Ok((handle, receiver))
@@ -699,7 +720,11 @@ async fn run_started_cycle(
             return report_spawn_failure(watchdog, attempt_generation, SpawnError::Spawn(error));
         }
     };
-    let spawn_future = spawn.spawn(watchdog.provisioning_status_sink(attempt_generation));
+    // A cycle a user asked for logs its provisioning as that user.
+    let spawn_future = redoor_core::logging::user_scope(
+        watchdog.take_requester(),
+        spawn.spawn(watchdog.provisioning_status_sink(attempt_generation)),
+    );
     tokio::pin!(spawn_future);
     let child = loop {
         tokio::select! {
@@ -1328,6 +1353,38 @@ mod tests {
         handle.shutdown().await.expect("shutdown acknowledged");
         // Acknowledgement guarantees the supervisor has settled intentionally stopped.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+    }
+
+    /// A Start made for a signed-in user runs that cycle's spawn as the user, so its
+    /// provisioning logs name them, and the user is used up so automatic reconnects log
+    /// without one.
+    #[tokio::test]
+    async fn started_cycle_spawns_as_the_requesting_user() {
+        let (seen_tx, mut seen) = mpsc::unbounded_channel();
+        let spawn = SpawnFn::new(move |_status| {
+            let seen_tx = seen_tx.clone();
+            async move {
+                let _ = seen_tx.send(redoor_core::logging::current_user());
+                std::future::pending::<SpawnResult>().await
+            }
+        });
+        let registry = WatchdogRegistry::new();
+        let _guard = SupervisorGuard(
+            spawn_supervisor("attributed".into(), spawn, &registry, callback()).expect("register"),
+        );
+        let handle = registry.lookup("attributed").expect("managed handle");
+
+        redoor_core::logging::user_scope(Some(Arc::from("alice (password)")), handle.start())
+            .await
+            .expect("start accepted");
+        // The spawn of the requested cycle runs as the user who pressed Start.
+        assert_eq!(
+            seen.recv().await.expect("spawned").as_deref(),
+            Some("alice (password)")
+        );
+        // The cycle took the user, so a later automatic cycle has none to log with.
+        assert!(handle.take_requester().is_none());
+        handle.shutdown().await.expect("shutdown acknowledged");
     }
 
     #[tokio::test]

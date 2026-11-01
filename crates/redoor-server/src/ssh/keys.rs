@@ -1,17 +1,15 @@
 //! On-disk layout of redoor-managed SSH keys and pinned host keys.
 //!
 //! ```text
-//! <data_dir>/users/<account>/ssh/<device-id>/
-//!     known_hosts                         0600, pinned host key (per account)
-//!     id_ed25519                          0600, plaintext key (account without a vault)
-//!     id_ed25519.redoorencrypted          0600, key encrypted with the account's vault
+//! <data_dir>/ssh/<device-id>/
+//!     known_hosts                         0600, pinned host key
+//!     id_ed25519                          0600, plaintext key (no vault)
+//!     id_ed25519.redoorencrypted          0600, key encrypted with the vault
 //!     id_ed25519.next                     0600, staged plaintext key during setup or rotation
 //!     id_ed25519.next.redoorencrypted     0600, staged encrypted key during setup or rotation
 //! ```
 //!
-//! Keys and pins belong to the account that set them up, next to its `vault.json`, because
-//! each user owns their own authentication and security material. Within an account
-//! everything is keyed by the permanent device id, so renames and reused names can never
+//! Everything is keyed by the permanent device id, so renames and reused names can never
 //! orphan a key or hand it to another device. The pinned host key belongs to the device,
 //! not to a key, so it survives rotation.
 //!
@@ -22,7 +20,7 @@
 //! public key is derived from a plaintext key and read from an encrypted key's header.
 //!
 //! At most one of the two current forms should exist. Keys only ever change from plaintext
-//! to encrypted (an account with a vault cannot set up plaintext keys), so a reader that
+//! to encrypted (once a vault exists, plaintext keys cannot be set up), so a reader that
 //! finds both after a crash between the commit's rename and its cleanup uses the encrypted
 //! one, and the next commit or removal deletes the leftover.
 
@@ -38,7 +36,7 @@ use super::encrypted_keys::{EncryptedKeyFile, MAX_SSH_KEY_FILE_LEN, SshKeySeal, 
 
 /// File name of the device's current plaintext private key.
 const PLAINTEXT_KEY_FILE: &str = "id_ed25519";
-/// File name of the device's current private key encrypted with the account's vault.
+/// File name of the device's current private key encrypted with the vault.
 const ENCRYPTED_KEY_FILE: &str = "id_ed25519.redoorencrypted";
 /// File name of a plaintext key that is installed and verified but not yet current.
 const STAGED_PLAINTEXT_KEY_FILE: &str = "id_ed25519.next";
@@ -46,130 +44,35 @@ const STAGED_PLAINTEXT_KEY_FILE: &str = "id_ed25519.next";
 const STAGED_ENCRYPTED_KEY_FILE: &str = "id_ed25519.next.redoorencrypted";
 /// File name of the pinned host key inside a device directory.
 const KNOWN_HOSTS_FILE: &str = "known_hosts";
-/// Directory of every account's files inside the data directory.
-const USERS_DIR: &str = "users";
-/// Directory of an account's SSH keys and pins inside its account directory.
-const ACCOUNT_SSH_DIR: &str = "ssh";
+/// Directory of the SSH keys and pins inside the data directory.
+const SSH_DIR: &str = "ssh";
 
-/// Owns `<data_dir>/users/*/ssh` and the file modes of everything under it.
+/// Owns `<data_dir>/ssh` and the file modes of everything under it.
 #[derive(Clone, Debug)]
 pub(crate) struct SshKeyStore {
-    /// `<data_dir>/users`.
-    users_root: PathBuf,
-    /// Serializes `authorized_keys` rewrites across all devices and accounts of this
-    /// server. Several devices can share one remote account, and the per-device busy set
-    /// does not stop two of them from reading and replacing the same file at once and
-    /// losing a line.
+    /// `<data_dir>/ssh`.
+    root: PathBuf,
+    /// Serializes `authorized_keys` rewrites across all devices of this server. Several
+    /// devices can share one remote account, and the per-device busy set does not stop two
+    /// of them from reading and replacing the same file at once and losing a line.
     authorized_keys_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SshKeyStore {
-    /// Stores keys under `<data_dir>/users/<account>/ssh`.
+    /// Stores keys under `<data_dir>/ssh`.
     pub(crate) fn for_data_dir(data_dir: &Path) -> Self {
         Self {
-            users_root: data_dir.join(USERS_DIR),
+            root: data_dir.join(SSH_DIR),
             authorized_keys_lock: Arc::default(),
         }
-    }
-
-    /// The keys and pins of one account.
-    ///
-    /// The name is validated like a login name, because it becomes a path component and is
-    /// part of the `authorized_keys` marker; the allowed characters exclude `/`, `:` and
-    /// whitespace, so it can neither escape the data directory nor break the marker.
-    pub(crate) fn account(&self, account: &str) -> std::io::Result<AccountSshKeys> {
-        let account = redoor_core::config::parse_server_username(account).map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("The account name cannot hold SSH keys: {error}"),
-            )
-        })?;
-        Ok(AccountSshKeys {
-            root: self.users_root.join(&account).join(ACCOUNT_SSH_DIR),
-            account,
-            store: self.clone(),
-        })
-    }
-
-    /// Every account that has an account directory, for changes that concern all accounts'
-    /// keys of a device. Entries that are not valid account names are skipped.
-    async fn accounts(&self) -> std::io::Result<Vec<AccountSshKeys>> {
-        let mut entries = match tokio::fs::read_dir(&self.users_root).await {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(error),
-        };
-        let mut accounts = Vec::new();
-        while let Some(entry) = entries.next_entry().await? {
-            if !entry.file_type().await?.is_dir() {
-                continue;
-            }
-            if let Some(account) = entry
-                .file_name()
-                .to_str()
-                .and_then(|name| self.account(name).ok())
-            {
-                accounts.push(account);
-            }
-        }
-        Ok(accounts)
-    }
-
-    /// Deletes everything every account stored for a device, for a deleted device or a
-    /// target that may now be another machine. Each account set up its own key and pin, so
-    /// none of them may survive.
-    pub(crate) async fn delete_device_for_all_accounts(
-        &self,
-        device: &AgentId,
-    ) -> std::io::Result<()> {
-        for account in self.accounts().await? {
-            account.delete_device(device).await?;
-        }
-        Ok(())
-    }
-
-    /// Deletes every account's keys of a device but keeps their pins, for a new SSH username
-    /// on the same machine: no account's key is installed for the new login.
-    pub(crate) async fn delete_keys_for_all_accounts(
-        &self,
-        device: &AgentId,
-    ) -> std::io::Result<()> {
-        for account in self.accounts().await? {
-            account.delete_keys(device).await?;
-        }
-        Ok(())
     }
 
     /// Held while one `authorized_keys` rewrite runs on a device.
     pub(crate) async fn lock_authorized_keys(&self) -> tokio::sync::MutexGuard<'_, ()> {
         self.authorized_keys_lock.lock().await
     }
-}
 
-/// The SSH keys and pins of one account: `<data_dir>/users/<account>/ssh`.
-#[derive(Clone, Debug)]
-pub(crate) struct AccountSshKeys {
-    /// The validated account name, used in the `authorized_keys` marker and in the
-    /// encrypted key's header context.
-    account: String,
-    /// `<data_dir>/users/<account>/ssh`.
-    root: PathBuf,
-    /// The server-wide store, for the shared `authorized_keys` lock.
-    store: SshKeyStore,
-}
-
-impl AccountSshKeys {
-    /// The account these keys belong to.
-    pub(crate) fn account(&self) -> &str {
-        &self.account
-    }
-
-    /// Held while one `authorized_keys` rewrite runs on a device.
-    pub(crate) async fn lock_authorized_keys(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.store.lock_authorized_keys().await
-    }
-
-    /// Directory holding everything this account stored for one device.
+    /// Directory holding everything stored for one device.
     fn device_dir(&self, device: &AgentId) -> PathBuf {
         self.root.join(device.as_str())
     }
@@ -208,21 +111,20 @@ impl AccountSshKeys {
         // The comment only helps someone inspecting a plaintext file; the fingerprint does
         // not depend on it.
         let fingerprint = private_key.fingerprint();
-        private_key.set_comment(marker(device, &self.account, &fingerprint));
+        private_key.set_comment(marker(device, &fingerprint));
 
         self.ensure_device_dir(device).await?;
         self.delete_staged(device).await?;
         let encrypted = vault.is_some();
         let path = self.device_file(device, staged_file_name(encrypted));
         let content = match vault {
-            Some(vault) => Zeroizing::new(seal(&private_key, &self.account, device, vault).await?),
+            Some(vault) => Zeroizing::new(seal(&private_key, device, vault).await?),
             None => Zeroizing::new(private_key.to_openssh()?.as_bytes().to_vec()),
         };
         write_atomically(&path, &content, 0o600).await?;
         Ok(StagedKey {
             key: ManagedKey {
                 device: device.clone(),
-                account: self.account.clone(),
                 private_key: Arc::new(private_key),
             },
             encrypted,
@@ -253,7 +155,6 @@ impl AccountSshKeys {
         })?;
         Ok(StoredKey::Plaintext(ManagedKey {
             device: device.clone(),
-            account: self.account.clone(),
             private_key: Arc::new(SshPrivateKey::new(private_key)),
         }))
     }
@@ -318,7 +219,7 @@ impl AccountSshKeys {
         Ok(())
     }
 
-    /// The account's encrypted keys with the device each belongs to, for vault rotation:
+    /// Every encrypted key with the device it belongs to, for vault rotation:
     /// the browser rewraps them and destroying a generation checks them. Unreadable files
     /// are skipped with a log line, because one damaged key must not hide the others.
     pub(crate) async fn encrypted_keys(&self) -> std::io::Result<Vec<(AgentId, EncryptedKeyFile)>> {
@@ -342,8 +243,7 @@ impl AccountSshKeys {
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => redoor_core::log_failure!(
                     redoor_protocol::wire::log::Level::Warn,
-                    "Skipping an unreadable SSH key while listing encrypted keys: account={}, device={}, error={}",
-                    self.account,
+                    "Skipping an unreadable SSH key while listing encrypted keys: device={}, error={}",
                     device,
                     error
                 ),
@@ -352,8 +252,8 @@ impl AccountSshKeys {
         Ok(keys)
     }
 
-    /// Deletes everything this account stored for a device, including the pinned host key,
-    /// for a target that may now be another machine.
+    /// Deletes everything stored for a device, including the pinned host key, for a deleted
+    /// device or a target that may now be another machine.
     pub(crate) async fn delete_device(&self, device: &AgentId) -> std::io::Result<()> {
         remove_dir_if_present(&self.device_dir(device)).await
     }
@@ -432,18 +332,18 @@ async fn read_bounded(path: &Path) -> std::io::Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
-/// The `authorized_keys` comment that ties a line to one key of one device of one account.
-/// The key's `SHA256:` fingerprint names it, so the marker is readable and unique without a
-/// stored key id; matching only [`device_marker`] finds every line the account ever
-/// installed for the device, and never another account's.
-pub(crate) fn marker(device: &AgentId, account: &str, fingerprint: &str) -> String {
-    format!("{}{fingerprint}", device_marker(device, account))
+/// The `authorized_keys` comment that ties a line to one key of one device:
+/// `redoor:<device-id>:<fingerprint>`. The key's `SHA256:` fingerprint names it, so the
+/// marker is readable and unique without a stored key id; matching only [`device_marker`]
+/// finds every line redoor ever installed for the device.
+pub(crate) fn marker(device: &AgentId, fingerprint: &str) -> String {
+    format!("{}{fingerprint}", device_marker(device))
 }
 
-/// The marker prefix shared by every `authorized_keys` line one account installed for one
-/// device.
-pub(crate) fn device_marker(device: &AgentId, account: &str) -> String {
-    format!("redoor:{device}:{account}:")
+/// The marker prefix shared by every `authorized_keys` line installed for one device. The
+/// trailing colon keeps one device id from matching another that starts with it.
+pub(crate) fn device_marker(device: &AgentId) -> String {
+    format!("redoor:{device}:")
 }
 
 /// A decrypted or plaintext SSH private key in memory.
@@ -527,7 +427,7 @@ fn public_key_openssh(public_key: &PublicKey) -> String {
 pub(crate) enum StoredKey {
     /// A plaintext key, readable on every agent start.
     Plaintext(ManagedKey),
-    /// A key encrypted with the account's vault; usable only once decrypted with its file
+    /// A key encrypted with the vault; usable only once decrypted with its file
     /// key, which the browser hands over on Start. Boxed because the parsed header is much
     /// larger than a plaintext key's handle.
     Encrypted(Box<EncryptedKeyFile>),
@@ -556,27 +456,20 @@ pub(crate) struct StagedKey {
     pub(crate) encrypted: bool,
 }
 
-/// A usable managed key: its private half in memory and what it belongs to.
+/// A usable managed key: its private half in memory and the device it belongs to.
 #[derive(Clone, Debug)]
 pub(crate) struct ManagedKey {
-    /// Device the key belongs to.
+    /// Device the key belongs to, part of the `authorized_keys` marker.
     device: AgentId,
-    /// Account that set the key up, part of the `authorized_keys` marker.
-    account: String,
     /// The private key, shared with the in-process ssh-agent of each ssh process.
     private_key: Arc<SshPrivateKey>,
 }
 
 impl ManagedKey {
     /// A key decrypted from an encrypted key file.
-    pub(crate) fn from_decrypted(
-        device: AgentId,
-        account: String,
-        private_key: Arc<SshPrivateKey>,
-    ) -> Self {
+    pub(crate) fn from_decrypted(device: AgentId, private_key: Arc<SshPrivateKey>) -> Self {
         Self {
             device,
-            account,
             private_key,
         }
     }
@@ -594,7 +487,7 @@ impl ManagedKey {
         format!(
             "restrict,port-forwarding {} {}",
             self.private_key.public_key_openssh(),
-            marker(&self.device, &self.account, &self.fingerprint())
+            marker(&self.device, &self.fingerprint())
         )
     }
 
@@ -757,15 +650,13 @@ mod tests {
         names
     }
 
-    /// The keys of account `alice` in a fresh data directory.
-    fn alice(home: &redoor_core::test_support::TempDir) -> AccountSshKeys {
+    /// The key store of a fresh data directory.
+    fn store(home: &redoor_core::test_support::TempDir) -> SshKeyStore {
         SshKeyStore::for_data_dir(home.path())
-            .account("alice")
-            .unwrap()
     }
 
     /// The fingerprint of the current plaintext key, failing for an encrypted one.
-    async fn loaded_fingerprint(keys: &AccountSshKeys, device: &AgentId) -> String {
+    async fn loaded_fingerprint(keys: &SshKeyStore, device: &AgentId) -> String {
         match keys.load(device).await.unwrap() {
             StoredKey::Plaintext(key) => key.fingerprint(),
             StoredKey::Encrypted(_) => panic!("expected a plaintext key"),
@@ -787,22 +678,19 @@ mod tests {
         }
     }
 
-    /// Keys live in the account's directory, get their final modes, so no other user can
+    /// Keys live in the device's directory, get their final modes, so no other user can
     /// read the private key even while it is being written, and only the private key is
     /// stored.
     #[tokio::test]
     async fn committed_key_is_the_only_private_file() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         let staged = keys.stage(&device, None).await.unwrap();
         let dir = keys.device_dir(&device);
 
-        // Keys belong to the account, next to its vault.json.
-        assert_eq!(
-            dir,
-            home.path().join("users/alice/ssh").join(device.as_str())
-        );
+        // Keys live in the data directory's `ssh` directory, named by the device id.
+        assert_eq!(dir, home.path().join("ssh").join(device.as_str()));
         // A staged key waits next to the current one under its own name.
         assert_eq!(file_names(&dir).await, vec![STAGED_PLAINTEXT_KEY_FILE]);
         // The staged key is as private as the current one, because it is a working key.
@@ -822,7 +710,7 @@ mod tests {
     #[tokio::test]
     async fn loaded_key_matches_committed_key() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         let key = keys
             .commit_staged(&keys.stage(&device, None).await.unwrap())
@@ -840,9 +728,9 @@ mod tests {
             line.starts_with("restrict,port-forwarding ssh-ed25519 "),
             "{line}"
         );
-        // The marker names the device, the account and the key's fingerprint.
+        // The marker names the device and the key's fingerprint.
         assert!(
-            line.ends_with(&format!(" redoor:{device}:alice:{}", key.fingerprint())),
+            line.ends_with(&format!(" redoor:{device}:{}", key.fingerprint())),
             "{line}"
         );
         // The fingerprint is the `ssh-keygen -l` format the user sees in the UI.
@@ -855,7 +743,7 @@ mod tests {
     #[tokio::test]
     async fn encrypted_key_replaces_a_plaintext_key() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         keys.commit_staged(&keys.stage(&device, None).await.unwrap())
             .await
@@ -885,8 +773,8 @@ mod tests {
             StoredKey::Encrypted(file.clone()).fingerprint(),
             staged.key.fingerprint()
         );
-        // The file key opens the key for this account and device.
-        let opened = file.open(&seal.file_key, "alice", &device).await.unwrap();
+        // The file key opens the key for this device.
+        let opened = file.open(&seal.file_key, &device).await.unwrap();
         assert_eq!(opened.fingerprint(), staged.key.fingerprint());
         // The encrypted key is listed for vault rotation.
         let listed = keys.encrypted_keys().await.unwrap();
@@ -899,7 +787,7 @@ mod tests {
     #[tokio::test]
     async fn encrypted_key_wins_over_a_plaintext_leftover() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         let staged = keys.stage(&device, Some(&test_seal())).await.unwrap();
         keys.commit_staged(&staged).await.unwrap();
@@ -921,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn rotation_replaces_the_current_key_and_stale_staged_keys() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         let old = keys
             .commit_staged(&keys.stage(&device, None).await.unwrap())
@@ -958,7 +846,7 @@ mod tests {
     #[tokio::test]
     async fn pin_survives_key_deletion() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         let host_key = HostKey::from_known_hosts(
             "# comment\n@revoked * ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n|1|hashed= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl\n",
@@ -999,39 +887,21 @@ mod tests {
         assert!(keys.pinned_host_key(&device).await.unwrap().is_none());
     }
 
-    /// Deleting a device removes what every account stored for it, and nothing of other
-    /// devices; accounts are separate, so one account's key is never another's.
+    /// Deleting a device removes everything stored for it, and nothing of other devices.
     #[tokio::test]
-    async fn device_deletion_covers_every_account() {
+    async fn device_deletion_keeps_other_devices() {
         let home = redoor_core::test_support::TempDir::create();
-        let store = SshKeyStore::for_data_dir(home.path());
-        let alice = store.account("alice").unwrap();
-        let bob = store.account("bob").unwrap();
+        let keys = store(&home);
         let device = AgentId::generate();
         let other = AgentId::generate();
-        alice.stage(&device, None).await.unwrap();
-        bob.stage(&device, None).await.unwrap();
-        bob.stage(&other, None).await.unwrap();
-        // Each account has its own directory for the same device.
-        assert_ne!(alice.device_dir(&device), bob.device_dir(&device));
+        keys.stage(&device, None).await.unwrap();
+        keys.stage(&other, None).await.unwrap();
 
-        store.delete_device_for_all_accounts(&device).await.unwrap();
-        // Both accounts' directories of the device are gone.
-        assert!(!alice.device_dir(&device).exists());
-        assert!(!bob.device_dir(&device).exists());
+        keys.delete_device(&device).await.unwrap();
+        // The device's directory is gone.
+        assert!(!keys.device_dir(&device).exists());
         // The other device keeps its files.
-        assert!(bob.device_dir(&other).exists());
-    }
-
-    /// Account names that could escape the data directory or break the marker are refused.
-    #[test]
-    fn account_names_are_validated() {
-        let home = redoor_core::test_support::TempDir::create();
-        let store = SshKeyStore::for_data_dir(home.path());
-        for invalid in ["", "..", "a/b", "a:b", "a b"] {
-            // Each would be a path or marker hazard.
-            assert!(store.account(invalid).is_err(), "{invalid:?}");
-        }
+        assert!(keys.device_dir(&other).exists());
     }
 
     /// Losing the contents of a pin must not make password or default-key logins trust a
@@ -1039,7 +909,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_pin_is_an_error_instead_of_missing_trust() {
         let home = redoor_core::test_support::TempDir::create();
-        let keys = alice(&home);
+        let keys = store(&home);
         let device = AgentId::generate();
         keys.ensure_device_dir(&device).await.unwrap();
         tokio::fs::write(keys.known_hosts_path(&device), "not a host key")

@@ -100,7 +100,9 @@ Infrastructure that more than one role needs:
   `toml_edit`.
 - `RuntimeContext`: app name, `AppPaths` and websocket timeouts. It is built once in `main`
   and passed down instead of being read from process globals.
-- Logging, behind a replaceable logger.
+- Logging, behind a replaceable logger. A `tokio::task_local!` holds the signed-in user a
+  task works for, and every record written inside it carries a `user` field (see "Logging
+  the signed-in user" under "Authentication and trust").
 - `rotating_log`: every log file a process owns goes through `RotatingLogFile`, which keeps
   it under its `log_max_size` (10 MB by default) so long-running processes on small
   devices cannot fill the disk. The size is checked when the file is opened and after
@@ -194,8 +196,12 @@ The agent runtime and the implementation of every command.
   - `agent_client`: `AgentClient::call` for any protocol request that is also an
     `AgentCall`, which adds its deadline; all deadlines are defined in one place.
   - `error.rs`: `ApiError`, which owns all HTTP status mapping.
-  - `user_state` and `editor_buffers`: per-account files in the account's private data
-    directory (the preference document and one file per open file's editor buffer).
+  - `user_state` and `editor_buffers`: per-user files in `<data_dir>/users/<name>/` (the
+    preference document and one file per open file's editor buffer), keyed by the
+    session's login name.
+  - `auth`: login verification (`[[server.users]]` passwords, PAM for the process user),
+    sessions per login method and the password change; `auth_me` answers
+    `GET /api/v1/auth/me`.
   - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
     "Encrypted files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
     with the vault.
@@ -247,12 +253,15 @@ The agent runtime and the implementation of every command.
   - `provision`: the probe, launch and upload scripts and the `Installer` that picks,
     uploads and verifies the binary. A binary upload is one session: a script creates the
     directory, writes a temp file, marks it executable and renames it into place.
-  - `keys` (`SshKeyStore`), `encrypted_keys`, `held_keys` and `managed_keys`: per-account,
-    per-device SSH keys (plaintext or encrypted with the vault), the decrypted keys the
+  - `keys` (`SshKeyStore`), `encrypted_keys`, `held_keys` and `managed_keys`: per-device
+    SSH keys (plaintext or encrypted with the vault), the decrypted keys the
     server holds for running devices, and pinned host keys, see "SSH device keys" below.
   - `ssh_agent`: the in-process ssh-agent (OpenSSH key agent protocol, not the redoor
     agent) through which `ssh` gets signatures from a managed key without ever reading it.
-- `vault`: `VaultStore`, the per-account `vault.json` with its proof checks and validation.
+- `vault`: `VaultStore`, the shared `vault.json` with its proof checks and validation.
+- `account_migration`: TEMPORARY MIGRATION that moves `vault.json` and `ssh/` of the former
+  named account from `users/<name>/` to the data directory root at startup (see
+  "Authentication and trust").
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
 
@@ -1622,15 +1631,18 @@ opens straight into it.
 - **Buffers are stored on the server per user.** The goal is to edit a file on one computer,
   walk to another and continue exactly where you left off. `GET`, `PUT` and `DELETE
   /api/v1/user/editor-buffers/{key}` (`http/editor_buffers.rs`, session only) keep one file per
-  buffer in the account's private `editor-buffers/` directory, named by the SHA-256 of the key
+  buffer in the signed-in user's private `users/<name>/editor-buffers/` directory, named by
+  the SHA-256 of the key
   (`<agentId>:<path>`, sent base64url-encoded), so no key can escape the directory, and written
   atomically. The payload is opaque to the server: CodeMirror's state JSON with history, the
   hash of the device text it is based on, a scroll anchor, the `?line=` history entry and the
   open files line request already applied, and a dirty flag. Buffers live outside the user state document because that is
   replaced whole on every preference change, so buffers there would be rewritten on each
   keystroke.
-- **Last writer wins, with versions.** Buffers belong to one user, who works from one computer
-  at a time, so there are no revision checks. Every `PUT` gets a new server-assigned version
+- **Last writer wins, with versions.** Buffers belong to the user whose open files list
+  holds them, because replacing a user's state deletes the buffers that list no longer
+  names; shared buffers would let one person's closed file delete another's draft. A user
+  works from one computer at a time, so there are no revision checks. Every `PUT` gets a new server-assigned version
   (milliseconds, always above the previous one), which `PUT` and `GET` return.
 - **Writes.** The workspace writes an open buffer about a second after the last document or
   selection change, one request at a time per key (a change during a write is written after
@@ -2203,7 +2215,9 @@ device is stopped or the server process exits.
 devices, `ssh-key` for managed SSH private keys stored on the server. The browser binds the
 kind into the file key wrap's associated data, so a user file's key can never be presented
 as an SSH key's and vice versa. `file` headers have no context; `ssh-key` headers carry
-exactly `account`, `device_id` and `public_key`, covered by the header MAC.
+exactly `device_id` and `public_key`, covered by the header MAC. TEMPORARY MIGRATION: the
+older three-field shape with `account` is still accepted when reading; its `account` is
+covered by the MAC but compared to nothing, and a rewrap drops it.
 
 ### Keys
 
@@ -2238,8 +2252,8 @@ FK ──HKDF──► header MAC key, payload key (ChaCha20-Poly1305 STREAM)
 
 ### Storage
 
-`crate::vault::VaultStore` owns `<data_dir>/users/<username>/vault.json` (0600 in the 0700
-account directory, written atomically). The file is small and changes rarely, so the store
+`crate::vault::VaultStore` owns `<data_dir>/vault.json` (0600, written atomically), shared
+by everyone who signs in. The file is small and changes rarely, so the store
 re-reads it under one lock on every request instead of caching it. The document is also the
 backup format: it holds only wrapped keys, so "Download vault backup" is safe anywhere.
 The server validates the shape of everything the browser submits (id formats, wrap and
@@ -2347,18 +2361,18 @@ it.
 An SSH device can log in with an ed25519 key that redoor creates for that device only,
 instead of the server user's own keys or a password stored in plaintext in `config.toml`.
 Such a key works for exactly one device, can be revoked on its own, cannot be replayed to
-an impostor host and is restricted in `authorized_keys`. When the account has a vault, the
+an impostor host and is restricted in `authorized_keys`. When a vault exists, the
 key is encrypted with it, so a copy of the server data directory does not give access to
 devices.
 
-- **Storage.** Keys and pins belong to the account that set them up, next to its
-  `vault.json`, because each user owns their own authentication and security material:
+- **Storage.** Keys and pins belong to the device and are shared like the vault, because
+  everyone who signs in is the same account:
 
   ```
-  <data_dir>/users/<account>/ssh/<device-id>/
+  <data_dir>/ssh/<device-id>/
       known_hosts                          pinned host key
-      id_ed25519                           plaintext key (account without a vault)
-      id_ed25519.redoorencrypted           key encrypted with the account's vault
+      id_ed25519                           plaintext key (no vault)
+      id_ed25519.redoorencrypted           key encrypted with the vault
       id_ed25519.next[.redoorencrypted]    staged key, only while a setup or rotation runs
   ```
 
@@ -2366,26 +2380,24 @@ devices.
   place. There is no `.pub` file: the public key is derived from a plaintext key and read
   from an encrypted key's header, so switching keys is one atomic rename of the staged file
   and a reader always sees a complete old or new key. A commit renames the staged file and
-  then deletes the other form. Keys only change from plaintext to encrypted (an account with
-  a vault cannot set up plaintext keys), so a reader that finds both after a crash between
+  then deletes the other form. Keys only change from plaintext to encrypted (with a vault,
+  plaintext keys cannot be set up), so a reader that finds both after a crash between
   the two steps uses the encrypted one; the next commit or removal deletes the leftover.
   Everything is keyed by the permanent device id, so a rename or a reused name cannot hand
   a key to another device. The `[[agents]]` entry only records `managed_ssh_key = true`
   (omitted when false); it never holds key material, and it never has both
   `managed_ssh_key` and `password`. Keys are generated in-process (`ssh-key` crate), so the
-  browser never sees them. The account name is a login name (`parse_server_username`), so
-  it cannot escape the data directory or contain `:` and whitespace.
+  browser never sees them.
 - **Encrypted keys** are `.redoorencrypted` files of kind `ssh-key`: the payload is the OpenSSH
-  private key text, the header context binds it to the account and device and carries the
+  private key text, the header context binds it to the device and carries the
   OpenSSH public key. The public key keeps the fingerprint, the status and the
   `authorized_keys` cleanup working while the key is locked. For a new key the browser only
   sends a new file key and its wrap under the current generation (`vault` in the setup
   request); the context is bound by the MAC, not the wrap. Opening a key checks the vault id
-  and generation, the kind, the MAC, the account and device, and that the private key's
+  and generation, the kind, the MAC, the device, and that the private key's
   public half is the header's public key; any mismatch is an error and nothing is used.
-- **Held keys.** `HeldSshKeys` maps `(account, device id)` to a decrypted key (zeroized on
-  drop, redacted `Debug`) and records which account started each device, so reconnects use
-  that account's key and pin.
+- **Held keys.** `HeldSshKeys` maps a device id to its decrypted key (zeroized on drop,
+  redacted `Debug`).
   - `POST …/start` takes an optional `{ "ssh_key_file_key": … }`. A device with an
     encrypted key that is not held needs it: the server decrypts the key and holds it
     before the watchdog starts. Without it the start fails at once with `ssh_key_locked`
@@ -2449,16 +2461,21 @@ devices.
   3. A key is generated and written to the staged file, encrypted when the request carries
      `vault` (required with a vault, `vault_required` otherwise; refused without one). It is
      installed by a script over stdin that atomically rewrites `~/.ssh/authorized_keys`,
-     keeping every other line, dropping this device's and account's lines whose key
-     fingerprint is not in the keep list. A symlinked file is written through (temp file
+     keeping every other line, dropping this device's lines whose key fingerprint is not in
+     the keep list. A symlinked file is written through (temp file
      next to the link target, renamed over it) so the link survives, because Proxmox VE
      links root's file into its cluster filesystem to share it between nodes; a dangling
      link, a non-regular target or a target in an unwritable directory is refused. The line is
-     `restrict,port-forwarding <key> redoor:<device-id>:<account>:<SHA256 fingerprint>`, so
-     one account's setup, rotation and removal never touch another account's lines. The
-     awk filter gets the marker and keep list through `ENVIRON` (no escape processing) and
-     compares fingerprints only literally (`index`, `==`), because they contain `+`, `/`
-     and `=`; it behaves the same in GNU, BSD and busybox awk.
+     `restrict,port-forwarding <key> redoor:<device-id>:<SHA256 fingerprint>`. A line is the
+     device's when its comment contains `redoor:<device-id>:` (the trailing colon keeps
+     `dev_abc` from matching `dev_abcd`), and a given key's when the rest of the marker is
+     the fingerprint or ends with `:<fingerprint>`. The awk filter gets the marker and keep
+     list through `ENVIRON` (no escape processing) and compares only literally (`index`,
+     `substr`, `==`), because fingerprints contain `+`, `/` and `=`; it behaves the same in
+     GNU, BSD and busybox awk. TEMPORARY MIGRATION: the suffix match is what recognises
+     legacy `redoor:<device-id>:<account>:<fingerprint>` lines, so a rotation keeps the
+     current key's legacy line during the install (a failed verification rolls back with
+     the old key, which needs it) and removes it afterwards, and removal drops it.
   4. The key is verified with only that key, against the pin, with a dummy `-R 0:…`
      forward like the agent's, so hosts that refuse forwarding fail here. On failure the
      line is removed again with the bootstrap credential and the staged file deleted.
@@ -2475,8 +2492,9 @@ devices.
      lock Stop uses, an encrypted new key is held when the device is still desired-running
      (so it keeps reconnecting, also after a rotation from plaintext, which held nothing),
      and the old held key is dropped otherwise. Then the old line is removed using the new
-     key. The UI offers "Rotate to a vault-encrypted key" for a plaintext key once the
-     account has a vault.
+     key. The UI offers "Rotate to a vault-encrypted key" for a plaintext key once a vault
+     exists. A rotation is what fully upgrades a key from before account names were
+     dropped: two-field header and new-format line.
 - **Operation credential.** Rotation, removal and device deletion log in with the current
   key. For an encrypted key the request may carry `current_file_key`, which is decrypted
   with the same checks as Start, or else the held key is cloned. It is resolved before
@@ -2484,21 +2502,20 @@ devices.
   held keys, so rotating a stopped device does not make it token-startable. The UI unlocks
   the vault and sends the file key for these actions.
 - **Removal** (`DELETE …/ssh-key`, optional `current_file_key`) first clears the config,
-  then removes every `redoor:<device-id>:<account>:` line using the operation credential
+  then removes every `redoor:<device-id>:` line using the operation credential
   and deletes the key locally, reporting whether the device was reached. Without a
   credential (encrypted key, no file key, not held) the removal is local only and reports
   `removed_from_device: false`, as an unreachable device does. Failed persistence leaves
   the remote key intact. Device deletion (`DELETE /api/v1/agents/{agent}`, the same
   optional body) likewise validates route ownership and persists deletion before revoking
   the remote key. The pin stays after key removal and still protects subsequent password
-  or default-key logins. Deleting the device or changing its target deletes every
-  account's device directory; changing the username deletes every account's keys but
-  keeps the pins.
+  or default-key logins. Deleting the device or changing its target deletes its device
+  directory; changing the username deletes its keys but keeps the pin.
 - **Status** (`GET …/ssh-key`) reports whether the device uses a managed key, its
   fingerprint, whether it is encrypted and held, and an encrypted key's header and key
   status, from which the browser unwraps the file key.
 - **Vault rotation.** The device scan of the vault settings cannot find keys on the
-  server, so `GET /api/v1/vault/ssh-keys` lists the account's encrypted keys with their
+  server, so `GET /api/v1/vault/ssh-keys` lists the encrypted keys with their
   generation, and `POST …/ssh-key/rewrap` replaces only the header after checking the old
   MAC with the file key (payload unchanged, atomic rename, a held key unaffected). After a
   rotation the settings page rewraps every listed key. Destroying a generation is refused
@@ -2516,14 +2533,9 @@ devices.
   guard or interrupt commit, rollback, or cleanup. Remote file rewrites are serialized
   across devices on this server; separate servers rewriting the same account can still
   race.
-- **Multiple accounts.** Every sign-in maps to the single configured account today, but
-  keys, pins, held keys and markers are already per account. Left for the multi-account
-  work: the device-level `managed_ssh_key` flag and `password` becoming per account, what
-  Start does for an account without a key for a device another account set up, and
-  removing other accounts' remote lines when a device is deleted.
 - **UI.** A dedicated key is the default for new SSH devices. The add form then creates the
   device without a password and opens `SshKeySetupDialog` (host key confirmation, a
-  password used once, enrollment, unlocking the vault first when the account has one), so
+  password used once, enrollment, unlocking the vault first when one exists), so
   the typed password only ever travels with the enroll request. Turning the option off
   brings back the server-keys or stored-password choice. The device's configuration page
   has an SSH key section for set up, rotate, remove and re-pin that shows whether the key is
@@ -2534,8 +2546,15 @@ devices.
 
 ## Authentication and trust
 
-Redoor has a single user account. Each kind of client has its own credential, and each
-credential only works on its own endpoints:
+Redoor has exactly one account with full access, by design: anyone who can sign in can
+already run commands as the server's OS user through the local agent, so per-user roles or
+isolation would only pretend to protect anything. Several people and several login methods
+lead into the one account, and they share the vault, SSH keys, devices, terminal sessions
+and access tokens. Two things are per person: the UI state and editor buffers, kept in
+`<data_dir>/users/<name>/` under the session's login name (names outside the login name
+allowlist, such as OIDC email addresses, get `~<sha256>`), and the name in log lines and
+the UI. Each kind of client has its own credential, and each credential only works on its
+own endpoints:
 
 | Client | Credential | Grants |
 |---|---|---|
@@ -2544,31 +2563,67 @@ credential only works on its own endpoints:
 | Agents | The shared `agent_token` bearer | `/api/v1/agent/ws` only |
 | Plain download links | One-time token | One file on one agent, once |
 
-- **Login** checks the configured username and password. `[server].password` is either
-  plaintext, hashed with Argon2id in memory at startup, or an Argon2 PHC string (recognised
-  by its `$argon2` prefix and checked when the config is parsed, so a broken hash fails
-  startup instead of every login), which keeps a recoverable secret out of the file. If none
-  is configured, it checks the password of the server process's OS user through PAM. Logins
-  are rate limited.
-  - Sessions are files in the server data dir and expire after 7 days.
-  - Password sessions are bound to a fingerprint of the configured password (plaintext and
-    hash in separate digest domains), so changing it invalidates existing sessions.
-  - **Password change** (`PUT /api/v1/auth/password`, session only, TOML credentials only,
-    `http/password.rs`): the UI's form sends the current and the new password. The current
-    one is checked again, with failures counted by the login rate limiter, so a stolen
-    session cannot take over the account or guess faster than the login page. The new
-    password is hashed with Argon2id and written into `config.toml` through the same locked,
-    format-preserving rewrite as device edits, refusing if `[server]` no longer has the
-    running username (a hand edit since startup). Only after the write do the in-memory
-    verifier and fingerprint change, together under one lock, so a failed write changes
-    nothing and the fingerprint matches what the next startup derives from the file. Other
-    password sessions are then removed and the response sets a new cookie for the browser
-    that made the change. A login racing the change binds its session to the fingerprint of
-    the password it actually checked, so it cannot slip through with the old password. The
-    username cannot be changed this way: it also names the account's data directory, the
-    SSH key headers and `authorized_keys` markers (see "SSH device keys").
-- **OIDC sign-in** (optional, `[server.oidc]`, `http/oidc.rs`) is a second way to get the same
-  browser session; the password login stays as a fallback. `GET /api/v1/auth/oidc/login`
+- **Login methods.** At least one must be configured or startup fails: `[[server.users]]`
+  (`[server] username`/`password` is shorthand for one entry), `[server.pam] enabled = true`
+  (Linux only) and `[server.oidc]`. PAM used to be the implicit fallback of a `[server]`
+  without credentials; that was removed, and such a config now fails with a message naming
+  `[server.pam]`. `AuthState` holds a map of password users (name to Argon2 verifier and
+  session fingerprint) and the optional PAM login.
+- **Login** (`POST /api/v1/login`) for name `n` and password `p`:
+  1. If `n` is a password user, `p` is verified with Argon2 (on the blocking pool).
+     Success creates a `password` session. Passwords are plaintext, hashed in memory at
+     startup, or Argon2 PHC strings (recognised by the `$argon2` prefix and checked when the
+     config is parsed, so a broken hash fails startup instead of every login).
+  2. Otherwise, or after a failed check, if PAM is enabled and `n` is the server process's
+     OS user, `p` is checked with PAM under the `login` service (`http/pam.rs`, one check at
+     a time, `Busy` when one runs). The process user can check its own password without
+     privileges (`unix_chkpwd`), so the server needs no access to `/etc/shadow`. Success
+     creates a `pam` session.
+  3. A name that is neither is verified against a dummy hash with the default Argon2
+     parameters and rejected, so the response time does not reveal which names exist. A
+     hand-written hash with other cost parameters still takes a different time; accepted,
+     since the change form writes default parameters. PAM is never asked about another
+     name, because many PAM stacks answer a correct password faster than a wrong one.
+
+  Argon2 comes first because it has no side effects, while a failed PAM check costs PAM's
+  delay and counts towards `pam_faillock`. On systems whose `login` stack uses
+  `pam_faillock` (Fedora, RHEL, Arch; not Debian, Ubuntu or Proxmox) repeated failed redoor
+  logins can lock the process user out of console logins, `sudo` and password SSH for the
+  lock time. The login rate limiter counts every failure, whichever method failed. The
+  login handler logs the attempted name (debug-quoted) for failures and the signed-in user
+  on success.
+- **Sessions** are files in the server data dir. Each records the login name and the method,
+  and is bound to the credential that created it, so each is revoked on its own; the check
+  resolves name and method against the running config on every request and at startup:
+
+  | Method | Bound to | Revoked when | Lifetime |
+  |---|---|---|---|
+  | `password` | that user's password fingerprint (plaintext and hash in separate digest domains) | the user's password changes or the user is removed | 7 days |
+  | `pam` | a digest of the PAM domain and the process user | PAM is disabled | 7 days |
+  | `oidc` | a digest of issuer, client id and allowed groups | those change or OIDC is removed | sliding |
+
+  Session files from before this layout carry `method: password` for PAM logins too, so
+  they fail the check and sign in again. The name of an OIDC session is the ID token's
+  `preferred_username`, else `email`, else `sub`; it is only for display, logs and the
+  per-user state directory, never for authorization. `Principal::Session` carries the name
+  and method, and `GET /api/v1/auth/me` (any principal) returns them, or a token's name and
+  id; the application menu and the home page show it and offer the password change only
+  for `password` sessions.
+- **Password change** (`PUT /api/v1/auth/password`, session only, `http/password.rs`) is
+  allowed only for `password` sessions. The current password of the session's own user is
+  checked again, with failures counted by the login rate limiter, so a stolen session
+  cannot take over the account or guess faster than the login page. The new password is
+  hashed with Argon2id and written into that user's `[[server.users]]` entry, or into
+  `[server].password` for the shorthand, through the same locked, format-preserving
+  rewrite as device edits, refusing if the entry is gone (a hand edit since startup). Only
+  after the write do that user's verifier and fingerprint change, together under one lock,
+  so a failed write changes nothing and the fingerprint matches what the next startup
+  derives from the file. That user's other sessions are then removed, other users keep
+  theirs, and the response sets a new cookie for the browser that made the change. A login
+  racing the change binds its session to the fingerprint of the password it actually
+  checked, so it cannot slip through with the old password.
+- **OIDC sign-in** (optional, `[server.oidc]`, `http/oidc.rs`) is another way to get a
+  browser session for the same account; password and PAM logins stay available next to it. `GET /api/v1/auth/oidc/login`
   starts an authorization code flow with PKCE and redirects to the provider;
   `GET /api/v1/auth/oidc/callback` finishes it. Both routes are public, so the callback is
   its own gate:
@@ -2583,26 +2638,50 @@ credential only works on its own endpoints:
     providers where the client registration already decides who may use it; the server
     logs a startup warning so this is never accidental. An empty list is refused because
     it could mean either "nobody" or "anybody".
-  - Every allowed identity maps to the single account. OIDC sessions record their method,
-    slide forward on use (rewritten at most daily, cookie refreshed by the access layer),
-    and are bound to a digest of issuer, client id and allowed groups (unset hashes in its
-    own domain), so changing those or removing OIDC revokes them without touching password
-    sessions.
+  - Every allowed identity maps to the single account. OIDC sessions slide forward on use
+    (rewritten at most daily, cookie refreshed by the access layer), and their digest
+    hashes an unset `allowed_groups` in its own domain.
 - **Access tokens** are the one credential type for clients other than the browser. They
   are created and managed only by a browser session (see "Access control" below). An MCP
   client is usually an AI assistant acting for the user, so it should get no more access
-  than its task needs. Tokens are independent of the login password: changing the password
-  does not invalidate them.
+  than its task needs. Tokens are independent of the login methods: changing a password or
+  turning a method off does not invalidate them.
+- **Logging the signed-in user.** `redoor-core` logging has a `tokio::task_local!` with the
+  current user, and `log!`/`log_error!` records written inside it get a `user` field
+  (`[user=alice (password)]` before the message in line format, `"user"` in JSON); records
+  without one omit it. The access middleware runs each authenticated request in the scope
+  (`<name> (<method>)` for sessions, `<token name> (token <id>)` for tokens), and `/mcp`
+  enters the same scope in its own bearer middleware. Task-locals do not cross
+  `tokio::spawn`, `spawn_blocking` or threads, so request code hands work to other tasks
+  through `logging::spawn_in_user_scope` and `spawn_blocking_in_user_scope`, which re-enter
+  the scope in the new task (SSH key operations, cancels on drop, MCP background work, the
+  Argon2 and PAM checks, terminal sessions). The router serves everyone, so each
+  `RouterEnvelope` carries the sending task's user and the router handles the message in
+  that scope; a flow remembers the user that created it and the agent's answers to it are
+  handled as that user, which covers copies, moves, uploads, downloads and exec. Device
+  start, stop and restart and server restart and upgrade are logged by their request, and a
+  Start or Retry also leaves its user on the watchdog handle, where the supervisor takes it
+  for the next cycle's spawn, so that start's provisioning logs name the user.
+  Background work with no requester (startup, watchdog reconnects, supervisor restarts)
+  logs without a user, and agents never learn the user.
+- **TEMPORARY MIGRATION: account directory.** Until account names were dropped,
+  `vault.json` and `ssh/` lived in `users/<name>/`. Before the stores open, startup looks
+  for `users/*/` directories holding either; with exactly one, both move to the data
+  directory root with atomic renames (an existing destination is skipped with a warning, so
+  an interrupted start resumes), while `state.json` and `editor-buffers/` stay as that
+  user's own. With more than one it refuses to start and lists them. SSH key headers with
+  the legacy `account` field and legacy `authorized_keys` lines are handled as described in
+  "Encrypted files" and "SSH device keys". All of this is removed once every installation
+  has upgraded and rotated its keys, after asking.
 - **The agent token** is one secret shared by all agents and checked during the websocket
   upgrade. It proves "this is an agent of this server", not which agent: the agent id in
   `hello` is self-reported. Agents are therefore only partly trusted.
 - **SSH device credentials** live in two places, both readable by the server's OS user
   and root: an optional plaintext `password` in `config.toml`, or a managed key under
-  `<data_dir>/users/<account>/ssh/<device-id>/`. A key of an account with a vault is
-  encrypted with it, so a copy of the data dir alone does not log in; the server holds it
+  `<data_dir>/ssh/<device-id>/`. When a vault exists, a key is encrypted with it, so a copy of the data dir alone does not log in; the server holds it
   decrypted only while the device runs after a browser Start, which carries the same
   residual risk as encrypted files (a compromised server, root, and on macOS a same-user
-  process). A plaintext key (account without a vault, or not yet rotated) lets anyone who
+  process). A plaintext key (no vault, or not yet rotated) lets anyone who
   can read the data dir or a copy of it log in to that device; the exposure is limited to
   that device and revocable by removing the key. The SSH key routes (setup, rotation,
   removal, status, rewrap and the vault's SSH key list) are session-only, because they
@@ -2649,8 +2728,9 @@ credential only works on its own endpoints:
 
 ### Access control
 
-Every authenticated request has a `Principal` (`http/access`): `Session` for a browser
-session, or `Token(TokenGrant)` for an access token. A grant is a set of permissions and a
+Every authenticated request has a `Principal` (`http/access`): `Session(SessionUser)` for a
+browser session (the user only says who signed in and how; every session has the same
+access), or `Token(TokenGrant)` for an access token. A grant is a set of permissions and a
 device scope:
 
 | Permission | Grants |

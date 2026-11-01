@@ -354,16 +354,82 @@ fn deliver(entry: LogEntry) {
 
 /// Enqueues an ordinary entry immediately.
 pub fn log(level: Level, message: String) {
-    deliver(LogEntry::new(level, bound_message(message), None));
+    deliver(with_current_user(LogEntry::new(
+        level,
+        bound_message(message),
+        None,
+    )));
 }
 
 /// Enqueues a failure with its preserved anyhow chain and captured backtrace.
 pub fn log_error(message: String, error: &anyhow::Error) {
-    deliver(LogEntry::new(
+    deliver(with_current_user(LogEntry::new(
         Level::Error,
         bound_message(message),
         Some(error_details(error)),
-    ));
+    )));
+}
+
+tokio::task_local! {
+    /// The signed-in user the current task works for, such as `alice (password)`.
+    ///
+    /// A task-local instead of a parameter, because the user must reach log lines deep in
+    /// code that has no reason to know about authentication. Set by the HTTP access layer
+    /// for each request and carried into spawned work by [`spawn_in_user_scope`].
+    static CURRENT_USER: Arc<str>;
+}
+
+/// Adds the current task's user to a record, so every log line written while serving a
+/// request names who made it.
+fn with_current_user(mut entry: LogEntry) -> LogEntry {
+    entry.user = current_user().map(|user| bound_message(user.to_string()));
+    entry
+}
+
+/// The user the current task works for, or `None` for background work without a requester.
+pub fn current_user() -> Option<Arc<str>> {
+    CURRENT_USER.try_with(Arc::clone).ok()
+}
+
+/// Runs `future` with `user` as the user named in its log lines; `None` runs it without one,
+/// for operations started in the background.
+pub async fn user_scope<F: std::future::Future>(user: Option<Arc<str>>, future: F) -> F::Output {
+    match user {
+        Some(user) => CURRENT_USER.scope(user, future).await,
+        None => future.await,
+    }
+}
+
+/// Runs `function` with `user` as the user named in its log lines, for synchronous work such
+/// as an actor handling a message on behalf of whoever sent it; `None` runs it without one.
+pub fn sync_user_scope<R>(user: Option<Arc<str>>, function: impl FnOnce() -> R) -> R {
+    match user {
+        Some(user) => CURRENT_USER.sync_scope(user, function),
+        None => function(),
+    }
+}
+
+/// `tokio::spawn` that keeps the current user for the new task's log lines.
+///
+/// Task-locals do not cross `tokio::spawn`, so request code that hands work to its own task
+/// spawns through this instead, or that work would log without the user who asked for it.
+pub fn spawn_in_user_scope<F>(future: F) -> tokio::task::JoinHandle<F::Output>
+where
+    F: std::future::Future + Send + 'static,
+    F::Output: Send + 'static,
+{
+    tokio::spawn(user_scope(current_user(), future))
+}
+
+/// `tokio::task::spawn_blocking` that keeps the current user for the closure's log lines,
+/// for the same reason as [`spawn_in_user_scope`].
+pub fn spawn_blocking_in_user_scope<F, R>(function: F) -> tokio::task::JoinHandle<R>
+where
+    F: FnOnce() -> R + Send + 'static,
+    R: Send + 'static,
+{
+    let user = current_user();
+    tokio::task::spawn_blocking(move || sync_user_scope(user, function))
 }
 
 /// Enqueues a command failure at the severity its kind deserves.
@@ -669,6 +735,7 @@ second"
             level: Level::Info,
             message: "ready".to_string(),
             error: None,
+            user: None,
         };
         // Line mode must not expose the structured RFC 3339 separator or offset.
         assert_eq!(
@@ -790,6 +857,38 @@ second"
             .parent()
             .expect("core crate should live inside the crates directory");
         assert_no_ordinary_error_macros(crates_dir).await;
+    }
+
+    /// Records written inside a user scope name the user, also from tasks spawned through
+    /// the scope-keeping helpers, and records outside it do not.
+    #[tokio::test]
+    async fn user_scope_reaches_records_and_spawned_tasks() {
+        let user: Arc<str> = Arc::from("alice (password)");
+        let entry = user_scope(Some(user.clone()), async {
+            with_current_user(LogEntry::new(Level::Info, "inside".to_string(), None))
+        })
+        .await;
+        // A record written inside the scope carries the user.
+        assert_eq!(entry.user.as_deref(), Some("alice (password)"));
+        let spawned = user_scope(Some(user.clone()), async {
+            spawn_in_user_scope(async { current_user() }).await.unwrap()
+        })
+        .await;
+        // `tokio::spawn` alone would lose the task-local; the helper carries it over.
+        assert_eq!(spawned.as_deref(), Some("alice (password)"));
+        let blocking = user_scope(Some(user), async {
+            spawn_blocking_in_user_scope(current_user).await.unwrap()
+        })
+        .await;
+        // Blocking work keeps the user too.
+        assert_eq!(blocking.as_deref(), Some("alice (password)"));
+        // Outside any scope there is no user.
+        assert!(current_user().is_none());
+        assert!(
+            with_current_user(LogEntry::new(Level::Info, "outside".to_string(), None))
+                .user
+                .is_none()
+        );
     }
 
     /// Producers write through whatever sink is installed, so tests can capture records.

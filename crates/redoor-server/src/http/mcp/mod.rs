@@ -163,9 +163,12 @@ async fn authenticate(State(state): State<McpState>, mut request: Request, next:
         Ok(permit) => permit,
         Err(status) => return bearer_error(status, "rate_limited", "MCP request limit exceeded"),
     };
-    request.extensions_mut().insert(Principal::Token(grant));
+    let principal = Principal::Token(grant);
+    // Every log line written while serving the call names the token, like REST requests.
+    let user = Some(std::sync::Arc::from(principal.log_label()));
+    request.extensions_mut().insert(principal);
     request.extensions_mut().insert(permit);
-    next.run(request).await
+    redoor_core::logging::user_scope(user, next.run(request)).await
 }
 
 /// Rejects browser origins unless explicitly configured, while native origin-less clients remain valid.

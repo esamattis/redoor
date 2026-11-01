@@ -15,6 +15,7 @@ import {
     FileText,
     RefreshCw,
     ScrollText,
+    UserRound,
     Users,
     X,
     type LucideIcon,
@@ -23,6 +24,8 @@ import {
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { ChangePasswordFlow } from "#ui/components/change-password-dialog";
+import { SignedInUser, useCurrentUser } from "#ui/components/signed-in-user";
 import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { Button } from "#ui/components/button";
 import { IconButton, IconLinkButton } from "#ui/components/icon-button";
@@ -147,6 +150,8 @@ function ApplicationMenu() {
     const isCompact = useIsBelowBreakpoint("lg");
     const [isRestartOpen, setIsRestartOpen] = React.useState(false);
     const openRestart = () => setIsRestartOpen(true);
+    const [isPasswordOpen, setIsPasswordOpen] = React.useState(false);
+    const openPassword = () => setIsPasswordOpen(true);
 
     return (
         <nav
@@ -171,11 +176,17 @@ function ApplicationMenu() {
                         <SideMenuCloseButton />
                     </div>
                     <SidebarFiles isCompact className="px-3" />
-                    <NavigationBar onRestart={openRestart} />
+                    <NavigationBar
+                        onRestart={openRestart}
+                        onChangePassword={openPassword}
+                    />
                 </>
             ) : (
                 <>
-                    <NavigationRail onRestart={openRestart} />
+                    <NavigationRail
+                        onRestart={openRestart}
+                        onChangePassword={openPassword}
+                    />
                     <div className="flex min-w-0 flex-1 flex-col pt-3.5 pr-2 pb-2.5 pl-2.5">
                         {/* The wordmark gives way when a narrowed sidebar has room only
                             for the toggle, rather than shrinking to an ellipsis. */}
@@ -194,12 +205,19 @@ function ApplicationMenu() {
                 isOpen={isRestartOpen}
                 onClose={() => setIsRestartOpen(false)}
             />
+            <ChangePasswordFlow
+                isOpen={isPasswordOpen}
+                onClose={() => setIsPasswordOpen(false)}
+            />
         </nav>
     );
 }
 
 /** Keeps every destination one click away on wide windows while taking only an icon's width. */
-function NavigationRail(props: { onRestart: () => void }) {
+function NavigationRail(props: {
+    onRestart: () => void;
+    onChangePassword: () => void;
+}) {
     const logout = useLogout();
 
     return (
@@ -209,6 +227,7 @@ function NavigationRail(props: { onRestart: () => void }) {
                 <NavigationLink key={item.to} item={item} className="h-9 w-9" />
             ))}
             <div className="flex-1" />
+            <AccountMenu onChangePassword={props.onChangePassword} />
             <IconButton
                 type="button"
                 label="Restart server"
@@ -245,8 +264,12 @@ function NavigationRail(props: { onRestart: () => void }) {
  * behind the last button because, unlike the destinations, a mistaken tap on them costs the
  * user their session or interrupts every device's transfers.
  */
-function NavigationBar(props: { onRestart: () => void }) {
+function NavigationBar(props: {
+    onRestart: () => void;
+    onChangePassword: () => void;
+}) {
     const logout = useLogout();
+    const user = useCurrentUser();
 
     return (
         <div className="grid grid-cols-7 gap-0.5 border-t border-slate-800 p-2">
@@ -268,6 +291,24 @@ function NavigationBar(props: { onRestart: () => void }) {
             >
                 {(close) => (
                     <>
+                        {user ? (
+                            <SignedInUser user={user} className="px-3 py-2" />
+                        ) : null}
+                        {user?.method === "password" ? (
+                            <ActionMenuButton
+                                onClick={() => {
+                                    // Closed first for the same reason as restart below.
+                                    close();
+                                    props.onChangePassword();
+                                }}
+                            >
+                                <KeyRound
+                                    className="h-4 w-4"
+                                    aria-hidden="true"
+                                />
+                                Change password
+                            </ActionMenuButton>
+                        ) : null}
                         <ActionMenuButton
                             onClick={() => {
                                 // The confirmation lives outside the menu, so closing it first
@@ -300,6 +341,48 @@ function NavigationBar(props: { onRestart: () => void }) {
                 )}
             </ActionMenu>
         </div>
+    );
+}
+
+/**
+ * The rail's account button: who is signed in and, for a config file password, the
+ * password change. Several people can sign in to the same account, so the menu says which
+ * one this browser is.
+ */
+function AccountMenu(props: { onChangePassword: () => void }) {
+    const user = useCurrentUser();
+
+    return (
+        <ActionMenu
+            label="Account"
+            title="Account"
+            closeAriaLabel="Close account menu"
+            variant="icon"
+            tooltip={user ? `Signed in as ${user.name}` : "Account"}
+            icon={<UserRound className="h-4 w-4" aria-hidden="true" />}
+            className="h-9 w-9"
+        >
+            {(close) => (
+                <>
+                    {user ? (
+                        <SignedInUser user={user} className="px-3 py-2" />
+                    ) : null}
+                    {user?.method === "password" ? (
+                        <ActionMenuButton
+                            onClick={() => {
+                                // The dialog lives outside the menu, so closing the menu
+                                // first does not take the dialog down with it.
+                                close();
+                                props.onChangePassword();
+                            }}
+                        >
+                            <KeyRound className="h-4 w-4" aria-hidden="true" />
+                            Change password
+                        </ActionMenuButton>
+                    ) : null}
+                </>
+            )}
+        </ActionMenu>
     );
 }
 

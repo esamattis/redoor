@@ -167,6 +167,10 @@ pub(crate) async fn start_agent_handler(
     request: Option<Json<StartAgentRequest>>,
 ) -> Result<Json<StartAgentResponse>, ApiError> {
     let request = request.map(|Json(request)| request).unwrap_or_default();
+    redoor_core::log!(
+        redoor_protocol::wire::log::Level::Info,
+        "Device start requested: device={agent_id}"
+    );
     // Configuration edits hold this lock through shutdown and runtime replacement, so a
     // delayed tab start cannot land behind shutdown and revive the old supervisor.
     let _edit_guard = state.config_edit_lock.lock().await;
@@ -175,14 +179,10 @@ pub(crate) async fn start_agent_handler(
     let was_running = watchdog.snapshot().desired_running;
     super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
         .await?;
-    // Reconnects use the keys and pin of the account that started the device.
-    state
-        .held_ssh_keys
-        .record_start(&agent_id, state.auth.username());
     if let Err(error) = watchdog.start().await {
         // A device that did not start must not keep a key unlocked for token starts.
         if !was_running {
-            state.held_ssh_keys.release_device(&agent_id);
+            state.held_ssh_keys.release(&agent_id);
         }
         return Err(error.into());
     }
@@ -202,6 +202,10 @@ pub(crate) async fn shutdown_agent_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<ShutdownAgentResponse>, ApiError> {
+    redoor_core::log!(
+        redoor_protocol::wire::log::Level::Info,
+        "Device stop requested: device={agent_id}"
+    );
     // Configuration replacement also mutates this supervisor; sharing the lock prevents
     // shutdown from racing a persist-then-register and reviving the outgoing identity.
     let _edit_guard = state.config_edit_lock.lock().await;
@@ -209,7 +213,7 @@ pub(crate) async fn shutdown_agent_handler(
     let watchdog = managed_watchdog(&state, &snapshot)?;
     // A stopped device must be unlocked again by the next browser Start, so its held SSH
     // key goes first; later reconnect attempts of the stopping cycle find it locked.
-    state.held_ssh_keys.release_device(&agent_id);
+    state.held_ssh_keys.release(&agent_id);
     tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown())
         .await
         .map_err(|_| {
@@ -241,6 +245,10 @@ pub(crate) async fn restart_agent_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<RestartResponse>, ApiError> {
+    redoor_core::log!(
+        redoor_protocol::wire::log::Level::Info,
+        "Device restart requested: device={agent_id}"
+    );
     state.agents.call(&agent_id, Restart {}).await?;
     Ok(Json(RestartResponse { restarting: true }))
 }

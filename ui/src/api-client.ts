@@ -45,6 +45,7 @@ import type { ChangePasswordResponse } from "#bindings/ChangePasswordResponse";
 import type { LoginRequest } from "#bindings/LoginRequest";
 import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LoginMethodsResponse } from "#bindings/LoginMethodsResponse";
+import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { CreateOneTimeTokenResponse } from "#bindings/CreateOneTimeTokenResponse";
@@ -1305,9 +1306,9 @@ export class ApiClient {
     }
 
     /**
-     * Replaces the TOML-configured login password. The server signs out every other
-     * password session and answers with a new cookie for this one, which Node-based
-     * clients have to pick up explicitly like after `login`.
+     * Replaces the signed-in user's TOML-configured login password. The server signs out
+     * that user's other sessions and answers with a new cookie for this one, which
+     * Node-based clients have to pick up explicitly like after `login`.
      */
     async changePassword(
         currentPassword: string,
@@ -1340,6 +1341,15 @@ export class ApiClient {
         }
 
         return response.json();
+    }
+
+    /** Says who is signed in and how, for the application menu and the password form. */
+    async getCurrentUser(): Promise<CurrentUserResponse> {
+        return apiRequest<CurrentUserResponse>(
+            `${this.baseUrl}/api/v1/auth/me`,
+            undefined,
+            this.requestContext(),
+        );
     }
 
     /** Lists the sign-in methods the public login page should offer. */

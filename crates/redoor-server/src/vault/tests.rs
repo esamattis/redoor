@@ -80,10 +80,10 @@ fn passkey_slot() -> VaultSlotInput {
 
 /// A store in a fresh home with a vault created, plus its proof.
 async fn created(temp: &TempDir) -> (VaultStore, Proof, VaultSummary) {
-    let store = VaultStore::new(
-        redoor_core::paths::AppPaths::for_home("redoor-test", temp.path()),
-        "tester".to_string(),
-    );
+    let store = VaultStore::new(redoor_core::paths::AppPaths::for_home(
+        "redoor-test",
+        temp.path(),
+    ));
     let proof = Proof::new();
     let summary = store
         .create(CreateVaultRequest {
@@ -170,10 +170,10 @@ async fn create_refuses_a_second_vault_and_writes_a_private_file() {
 #[tokio::test]
 async fn create_accepts_passkey_only_and_refuses_no_slots() {
     let temp = TempDir::create();
-    let store = VaultStore::new(
-        redoor_core::paths::AppPaths::for_home("redoor-test", temp.path()),
-        "tester".to_string(),
-    );
+    let store = VaultStore::new(redoor_core::paths::AppPaths::for_home(
+        "redoor-test",
+        temp.path(),
+    ));
     let request = |slots| CreateVaultRequest {
         vault_id: id("vlt_"),
         label: "tester".to_string(),

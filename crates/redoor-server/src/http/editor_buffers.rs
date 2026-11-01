@@ -1,11 +1,13 @@
-//! Per-account editor buffers of open files, one file per buffer in the account's
-//! `editor-buffers` directory.
+//! Per-user editor buffers of open files, one file per buffer in
+//! `<data_dir>/users/<name>/editor-buffers`.
 //!
 //! Buffers are separate from the user state document because that document is replaced
 //! whole on every preference change: keeping buffers there would rewrite every buffer on each
 //! debounced keystroke and let two browsers overwrite each other's unrelated buffers.
 //!
-//! Buffers belong to one user, who edits from one computer at a time, so the store is plain
+//! Buffers belong to the user whose open files list holds them (see `user_state`), so one
+//! user's closed files never delete another's drafts. A user edits from one computer at a
+//! time, so the store is plain
 //! last-writer-wins: every write gets a new server-assigned version that browsers compare to
 //! notice a buffer written on another computer. The open files list in the user state decides
 //! which buffers may stay: replacing the user state deletes the buffers of files that are no
@@ -14,7 +16,7 @@
 use std::{collections::HashSet, path::PathBuf};
 
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -26,15 +28,16 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{
+    access::Principal,
     error::ApiError,
     state::ServerState,
-    user_state::{account_directory, prepare_account_directory, write_private_file_atomically},
+    user_state::{prepare_user_directory, user_directory, write_private_file_atomically},
 };
 
 /// Longest accepted buffer key, generous for an agent id plus a deep path.
 const MAX_KEY_BYTES: usize = 8 * 1024;
 
-/// Directory, inside the account directory, that holds one file per buffer.
+/// Directory, inside a user's directory, that holds one file per buffer.
 const BUFFERS_DIRECTORY: &str = "editor-buffers";
 
 /// The on-disk record. The key is stored alongside the data so a read can verify that the
@@ -49,10 +52,11 @@ struct StoredEditorBuffer {
 /// Route: `GET /api/v1/user/editor-buffers/{key}` returns the stored buffer or null.
 pub(crate) async fn get_editor_buffer_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(encoded_key): Path<String>,
 ) -> Result<Json<EditorBufferResponse>, ApiError> {
     let key = decode_key(&encoded_key)?;
-    let path = buffer_path(&state, &key)?;
+    let path = buffer_path(&state.runtime.paths, &principal, &key)?;
     let buffer = read_buffer(&path, &key).await?.map(|stored| EditorBuffer {
         version: stored.version,
         data: stored.data,
@@ -65,6 +69,7 @@ pub(crate) async fn get_editor_buffer_handler(
 /// returns its new version.
 pub(crate) async fn put_editor_buffer_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(encoded_key): Path<String>,
     Json(request): Json<PutEditorBufferRequest>,
 ) -> Result<Json<PutEditorBufferResponse>, ApiError> {
@@ -76,7 +81,7 @@ pub(crate) async fn put_editor_buffer_handler(
             "Editor buffers of encrypted files are never stored",
         ));
     }
-    let path = buffer_path(&state, &key)?;
+    let path = buffer_path(&state.runtime.paths, &principal, &key)?;
     // Serializes writes, so versions only grow and a cleanup cannot interleave with a write.
     let _guard = state.editor_buffer_lock.lock().await;
     let previous = read_buffer(&path, &key).await?.map(|stored| stored.version);
@@ -87,7 +92,7 @@ pub(crate) async fn put_editor_buffer_handler(
         data: request.data,
     };
 
-    write_buffer(&state, &path, &stored).await?;
+    write_buffer(&state, &principal, &path, &stored).await?;
 
     Ok(Json(PutEditorBufferResponse {
         key,
@@ -98,10 +103,11 @@ pub(crate) async fn put_editor_buffer_handler(
 /// Route: `DELETE /api/v1/user/editor-buffers/{key}` forgets a buffer when its file is closed.
 pub(crate) async fn delete_editor_buffer_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(encoded_key): Path<String>,
 ) -> Result<Json<DeleteEditorBufferResponse>, ApiError> {
     let key = decode_key(&encoded_key)?;
-    let path = buffer_path(&state, &key)?;
+    let path = buffer_path(&state.runtime.paths, &principal, &key)?;
     let _guard = state.editor_buffer_lock.lock().await;
 
     let deleted = match tokio::fs::remove_file(&path).await {
@@ -117,15 +123,15 @@ pub(crate) async fn delete_editor_buffer_handler(
     Ok(Json(DeleteEditorBufferResponse { key, deleted }))
 }
 
-/// Deletes the buffers of files that are not in the open files list of `user_state`. Called
-/// with the buffer lock held, right after the user state is replaced, so a file closed in
-/// any browser loses its buffer even if that browser's own delete never arrived.
+/// Deletes the buffers in `user_directory` of files that are not in the open files list of
+/// that user's `user_state`. Called with the buffer lock held, right after the user state
+/// is replaced, so a file closed in any of the user's browsers loses its buffer even if that
+/// browser's own delete never arrived.
 pub(super) async fn delete_closed_buffers(
-    paths: &redoor_core::paths::AppPaths,
-    username: &str,
+    user_directory: &std::path::Path,
     user_state: &serde_json::Value,
 ) -> anyhow::Result<()> {
-    let directory = account_directory(paths, username)?.join(BUFFERS_DIRECTORY);
+    let directory = user_directory.join(BUFFERS_DIRECTORY);
     let open: HashSet<String> = open_file_keys(user_state)
         .iter()
         .map(|key| buffer_file_name(key))
@@ -199,8 +205,12 @@ fn decode_key(encoded_key: &str) -> Result<String, ApiError> {
 
 /// Names the file by the key's SHA-256, so no key, however crafted, can leave the directory
 /// or collide with the temporary files written next to it.
-fn buffer_path(state: &ServerState, key: &str) -> Result<PathBuf, ApiError> {
-    let directory = account_directory(&state.runtime.paths, state.auth.username())
+fn buffer_path(
+    paths: &redoor_core::paths::AppPaths,
+    principal: &Principal,
+    key: &str,
+) -> Result<PathBuf, ApiError> {
+    let directory = user_directory(paths, &principal.session_user()?.name)
         .map_err(|error| ApiError::internal(error.to_string()))?
         .join(BUFFERS_DIRECTORY);
 
@@ -236,16 +246,18 @@ async fn read_buffer(
     Ok((stored.key == key).then_some(stored))
 }
 
-/// Writes a buffer atomically inside the private account directory.
+/// Writes a buffer atomically inside the user's private buffers directory.
 async fn write_buffer(
     state: &ServerState,
+    principal: &Principal,
     path: &std::path::Path,
     stored: &StoredEditorBuffer,
 ) -> Result<(), ApiError> {
+    let name = principal.session_user()?.name.as_str();
     let write = async {
-        let account =
-            prepare_account_directory(&state.runtime.paths, state.auth.username()).await?;
-        let directory = account.join(BUFFERS_DIRECTORY);
+        let directory = prepare_user_directory(&state.runtime.paths, name)
+            .await?
+            .join(BUFFERS_DIRECTORY);
         tokio::fs::create_dir_all(&directory).await?;
         #[cfg(unix)]
         super::user_state::ensure_private_directory(&directory).await?;

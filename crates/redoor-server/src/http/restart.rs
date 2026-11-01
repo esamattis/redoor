@@ -72,6 +72,7 @@ impl ServerState {
 /// cannot take the running process down. Concurrent restarts get 409 once
 /// the oneshot sender has already been taken.
 pub(crate) async fn restart_server_handler(State(state): State<ServerState>) -> impl IntoResponse {
+    log!(Level::Info, "Server restart requested");
     match state.request_restart().await {
         Ok(()) => Json(RestartResponse { restarting: true }).into_response(),
         Err(error) => {

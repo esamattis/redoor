@@ -80,7 +80,9 @@ class MockProvider {
 
     /** Stops the provider so the test process can exit. */
     async stop(): Promise<void> {
-        await new Promise<void>((resolve) => this.server?.close(() => resolve()));
+        await new Promise<void>((resolve) =>
+            this.server?.close(() => resolve()),
+        );
     }
 
     /** Routes one request to the matching endpoint. */
@@ -116,7 +118,11 @@ class MockProvider {
             target.searchParams.set("code", code);
             target.searchParams.set("state", params.get("state") ?? "");
 
-            return { status: 302, headers: { Location: target.href }, body: "" };
+            return {
+                status: 302,
+                headers: { Location: target.href },
+                body: "",
+            };
         }
 
         if (url.pathname === "/token" && method === "POST") {
@@ -335,9 +341,10 @@ describe("OIDC sign-in", () => {
             ),
         );
 
-        // The session belongs to the server's single account and records how it was created.
+        // The session records how it was created and names the provider's user, which
+        // logs and the UI show; it still grants the server's single account.
         expect(stored).toMatchObject({
-            username: TEST_USERNAME,
+            username: "alice",
             method: "oidc",
         });
 

@@ -26,7 +26,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use super::{auth::SessionMethod, error::ApiError, state::ServerState};
+use super::{error::ApiError, state::ServerState};
 
 /// Cookie binding a pending sign-in to the browser that started it, so a callback URL
 /// opened in another browser (login CSRF) cannot complete it.
@@ -104,6 +104,7 @@ struct IdTokenClaims {
     azp: Option<String>,
     nonce: Option<String>,
     preferred_username: Option<String>,
+    email: Option<String>,
     #[serde(default)]
     groups: Vec<String>,
 }
@@ -121,6 +122,19 @@ enum Audience {
 struct SignedInUser {
     subject: String,
     username: Option<String>,
+    email: Option<String>,
+}
+
+impl SignedInUser {
+    /// The name the session records for display and logs: the readable username, else the
+    /// email address, else the stable subject. Never used for authorization.
+    fn display_name(&self) -> &str {
+        [&self.username, &self.email]
+            .into_iter()
+            .filter_map(|name| name.as_deref())
+            .find(|name| !name.trim().is_empty())
+            .unwrap_or(&self.subject)
+    }
 }
 
 /// Why an ID token was refused. `NotAllowed` is the only outcome users can fix themselves,
@@ -399,6 +413,7 @@ fn validate_id_token(
     Ok(SignedInUser {
         subject: claims.sub,
         username: claims.preferred_username,
+        email: claims.email,
     })
 }
 
@@ -615,7 +630,11 @@ pub(crate) async fn oidc_callback_handler(
             return fail(&state, failure, &login.return_path);
         }
     };
-    let session = match state.auth.create_session(SessionMethod::Oidc).await {
+    let session = match state
+        .auth
+        .create_oidc_session(user.display_name().to_string())
+        .await
+    {
         Ok(session) => session,
         Err(error) => {
             log_error!(error, "Failed to create session");
@@ -624,10 +643,11 @@ pub(crate) async fn oidc_callback_handler(
     };
     log!(
         Level::Info,
-        "OIDC sign-in: subject={}, preferred_username={}, account={}",
+        "OIDC sign-in: subject={}, preferred_username={}, email={}, user={}",
         user.subject,
         user.username.as_deref().unwrap_or("-"),
-        session.username
+        user.email.as_deref().unwrap_or("-"),
+        session.user.log_label()
     );
     let mut response = see_other(&login.return_path);
     let response_headers = response.headers_mut();
@@ -690,6 +710,7 @@ mod tests {
             Ok(SignedInUser {
                 subject: "user-1".to_string(),
                 username: Some("alice".to_string()),
+                email: None,
             })
         );
         let mut many = claims();
@@ -697,6 +718,33 @@ mod tests {
         many["azp"] = serde_json::json!("redoor");
         // Several audiences are fine when this client is the authorized party.
         assert!(validate(many).is_ok());
+    }
+
+    /// The session's display name falls back from the username to the email to the subject.
+    #[test]
+    fn display_name_falls_back_to_email_and_subject() {
+        let user = |username: Option<&str>, email: Option<&str>| SignedInUser {
+            subject: "user-1".to_string(),
+            username: username.map(str::to_string),
+            email: email.map(str::to_string),
+        };
+        // The readable username wins when the provider sends one.
+        assert_eq!(
+            user(Some("alice"), Some("a@example.org")).display_name(),
+            "alice"
+        );
+        // Providers without `preferred_username` still give a recognisable name.
+        assert_eq!(
+            user(None, Some("a@example.org")).display_name(),
+            "a@example.org"
+        );
+        // The subject is always there.
+        assert_eq!(user(None, None).display_name(), "user-1");
+        // An empty username does not hide a usable email address.
+        assert_eq!(
+            user(Some(""), Some("a@example.org")).display_name(),
+            "a@example.org"
+        );
     }
 
     /// Without `allowed_groups` the groups claim is not consulted at all.

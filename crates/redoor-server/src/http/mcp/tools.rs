@@ -478,7 +478,7 @@ async fn run_command(
         output_limit,
     );
     if background {
-        tokio::spawn(task);
+        redoor_core::logging::spawn_in_user_scope(task);
         Ok(json!({"operation_id":operation_id,"state":"running"}))
     } else {
         task.await;
@@ -1042,7 +1042,7 @@ async fn transfer(
         record.remote_id = Some(remote_id);
         record.state = "running".to_string();
     }
-    tokio::spawn(collect_transfer(
+    redoor_core::logging::spawn_in_user_scope(collect_transfer(
         state.mcp.operations.clone(),
         record.clone(),
         terminal,

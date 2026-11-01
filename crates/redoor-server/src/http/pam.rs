@@ -1,7 +1,9 @@
 //! Verifies the OS password of the process owner via Linux PAM.
 //!
-//! Used when `[server]` omits `username`/`password` so local operators can log
-//! in with their existing system account instead of a second shared secret.
+//! Used when `[server.pam] enabled = true`, so local operators can log in with their
+//! existing system account instead of a second secret. Only the process user is ever
+//! checked, under the `login` service: that user can check its own password without
+//! privileges (`unix_chkpwd`), so the server needs no access to `/etc/shadow`.
 
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int, c_void};
@@ -88,10 +90,10 @@ struct PamApiInner {
 }
 
 impl PamApi {
-    /// Loads PAM only for system-user authentication so configured credentials need no PAM runtime.
+    /// Loads PAM only when PAM login is enabled, so servers without it need no PAM runtime.
     pub(crate) fn load() -> Result<Self> {
         Self::load_library().with_context(|| {
-            "Linux PAM authentication requires libpam.so.0 and its standard symbols; install the PAM runtime package (for example libpam0g on Debian/Ubuntu or pam on Fedora/RHEL/Arch), or set both server.username and server.password"
+            "Linux PAM authentication requires libpam.so.0 and its standard symbols; install the PAM runtime package (for example libpam0g on Debian/Ubuntu or pam on Fedora/RHEL/Arch), or remove [server.pam] enabled = true"
         })
     }
 
@@ -227,11 +229,11 @@ fn pam_error_message(api: &PamApi, pamh: *mut PamHandle, status: c_int) -> Strin
     }
 }
 
-impl PamApi {
+impl super::auth::PamBackend for PamApi {
     /// Returns `true` when PAM authenticates the password and authorizes the process user.
     ///
     /// Blocking: call only from `spawn_blocking` so the async runtime stays responsive.
-    pub(crate) fn verify_current_user_password(&self, password: &str) -> Result<bool> {
+    fn verify_current_user_password(&self, password: &str) -> Result<bool> {
         // 1. Resolve the effective UID to a username PAM understands.
         let uid = getuid();
         let user = User::from_uid(uid)

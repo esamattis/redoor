@@ -268,7 +268,7 @@ impl Drop for UploadCancelGuard {
         let router = self.router.clone();
         let agent_id = self.agent_id.clone();
         let request_id = self.request_id;
-        tokio::spawn(async move {
+        redoor_core::logging::spawn_in_user_scope(async move {
             if let Err(error) = router
                 .send_async(RouterMsg::CancelTransfer {
                     agent_id: agent_id.clone(),

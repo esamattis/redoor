@@ -24,7 +24,6 @@ const MIN_PASSWORD_CHARS = 8;
  */
 export function ChangePasswordButton() {
     const [isOpen, setIsOpen] = React.useState(false);
-    const [changed, setChanged] = React.useState(false);
 
     return (
         <>
@@ -32,25 +31,44 @@ export function ChangePasswordButton() {
                 type="button"
                 variant="secondary"
                 size="sm"
-                tooltip="Change the login password stored in the config file"
+                tooltip="Change your login password stored in the config file"
                 onClick={() => setIsOpen(true)}
             >
                 <KeyRound className="h-4 w-4" aria-hidden="true" />
                 Change password
             </Button>
-            {isOpen ? (
+            <ChangePasswordFlow
+                isOpen={isOpen}
+                onClose={() => setIsOpen(false)}
+            />
+        </>
+    );
+}
+
+/**
+ * The password change dialog plus its success toast, for triggers that are not a plain
+ * button, such as a menu item that closes its menu before the dialog opens.
+ */
+export function ChangePasswordFlow(props: {
+    isOpen: boolean;
+    onClose: () => void;
+}) {
+    const [changed, setChanged] = React.useState(false);
+
+    return (
+        <>
+            {props.isOpen ? (
                 <ChangePasswordDialog
-                    onClose={() => setIsOpen(false)}
+                    onClose={props.onClose}
                     onChanged={() => {
-                        setIsOpen(false);
+                        props.onClose();
                         setChanged(true);
                     }}
                 />
             ) : null}
             {changed ? (
                 <Toast tone="success" onDismiss={() => setChanged(false)}>
-                    Password changed. Other browsers signed in with the old
-                    password were signed out.
+                    Password changed. Your other browsers were signed out.
                 </Toast>
             ) : null}
         </>
@@ -58,7 +76,7 @@ export function ChangePasswordButton() {
 }
 
 /**
- * Changes the TOML-configured login password. The current password is asked again so a
+ * Changes the signed-in user's TOML-configured login password. The current password is asked again so a
  * browser left signed in cannot be used to take over the account, and the new one is typed
  * twice because a typo would lock the user out.
  */
@@ -121,7 +139,7 @@ export function ChangePasswordDialog(props: {
                     value={newPassword}
                     autoComplete="new-password"
                     required
-                    description={`At least ${MIN_PASSWORD_CHARS} characters. Other browsers are signed out.`}
+                    description={`At least ${MIN_PASSWORD_CHARS} characters. Your other browsers are signed out.`}
                     disabled={change.isPending}
                     onChange={setNewPassword}
                 />

@@ -8,14 +8,15 @@ use redoor_protocol::{
 };
 use uuid::Uuid;
 
-use crate::http::error::ApiError;
+use crate::http::{auth::SessionUser, error::ApiError};
 
 /// The authenticated caller, inserted into request extensions by the access middleware (REST)
 /// and the MCP bearer middleware.
 #[derive(Clone, Debug)]
 pub(crate) enum Principal {
-    /// A browser session: the single account with full access, including session-only routes.
-    Session,
+    /// A browser session: the single account with full access, including session-only
+    /// routes. The user only says who signed in and how, for logs and the UI.
+    Session(SessionUser),
     /// An access token, limited to its permissions on the devices in its scope.
     Token(TokenGrant),
 }
@@ -24,6 +25,8 @@ pub(crate) enum Principal {
 #[derive(Clone, Debug)]
 pub(crate) struct TokenGrant {
     pub(crate) id: Uuid,
+    /// The token's display name, for log lines and `GET /api/v1/auth/me`.
+    pub(crate) name: String,
     pub(crate) permissions: BTreeSet<Permission>,
     pub(crate) devices: DeviceScope,
 }
@@ -58,7 +61,7 @@ impl Principal {
     /// Whether the device is in scope, used to filter inventory and transfer listings.
     pub(crate) fn can_see(&self, device: &AgentId) -> bool {
         match self {
-            Principal::Session => true,
+            Principal::Session(_) => true,
             Principal::Token(grant) => grant.devices.contains(device),
         }
     }
@@ -67,7 +70,7 @@ impl Principal {
     /// the token can never use.
     pub(crate) fn holds(&self, permission: Permission) -> bool {
         match self {
-            Principal::Session => true,
+            Principal::Session(_) => true,
             Principal::Token(grant) => grant.permissions.contains(&permission),
         }
     }
@@ -76,7 +79,15 @@ impl Principal {
     /// token can never widen its own access.
     pub(crate) fn require_session(&self) -> Result<(), ApiError> {
         match self {
-            Principal::Session => Ok(()),
+            Principal::Session(_) => Ok(()),
+            Principal::Token(_) => Err(ApiError::forbidden("Requires a browser session")),
+        }
+    }
+
+    /// The signed-in user of a browser session, for per-user state; tokens have none.
+    pub(crate) fn session_user(&self) -> Result<&SessionUser, ApiError> {
+        match self {
+            Principal::Session(user) => Ok(user),
             Principal::Token(_) => Err(ApiError::forbidden("Requires a browser session")),
         }
     }
@@ -84,8 +95,17 @@ impl Principal {
     /// The token id, which owns MCP operations; `None` for browser sessions.
     pub(crate) fn token_id(&self) -> Option<Uuid> {
         match self {
-            Principal::Session => None,
+            Principal::Session(_) => None,
             Principal::Token(grant) => Some(grant.id),
+        }
+    }
+
+    /// How log lines written for this caller name it: `alice (password)` for a session and
+    /// the token's name and id for a token.
+    pub(crate) fn log_label(&self) -> String {
+        match self {
+            Principal::Session(user) => user.log_label(),
+            Principal::Token(grant) => format!("{} (token {})", grant.name, grant.id),
         }
     }
 }
@@ -99,6 +119,7 @@ mod tests {
     fn token(permissions: &[Permission], devices: DeviceScope) -> Principal {
         Principal::Token(TokenGrant {
             id: Uuid::new_v4(),
+            name: "test token".to_string(),
             permissions: permissions.iter().copied().collect(),
             devices,
         })
@@ -109,9 +130,13 @@ mod tests {
     fn require_matrix() {
         let a = redoor_core::test_support::test_agent_id("a");
         let b = redoor_core::test_support::test_agent_id("b");
-        // A browser session may do everything.
-        assert!(Principal::Session.require(&Permission::ALL, &a).is_ok());
-        assert!(Principal::Session.require_session().is_ok());
+        let session = Principal::Session(crate::http::auth::SessionUser {
+            name: "alice".to_string(),
+            method: crate::http::auth::SessionMethod::Password,
+        });
+        // A browser session may do everything, whichever method it signed in with.
+        assert!(session.require(&Permission::ALL, &a).is_ok());
+        assert!(session.require_session().is_ok());
 
         let all = token(&[Permission::FilesRead], DeviceScope::All);
         // An all-device token keeps its permission on any device, including new ones.

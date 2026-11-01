@@ -15,12 +15,12 @@ import {
 import { useSuspenseQuery } from "@tanstack/react-query";
 
 import type { Agent } from "#ui/api-client";
-import type { ServerAuthMode } from "#bindings/ServerAuthMode";
 import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
 import { Button } from "#ui/components/button";
 import { ChangePasswordButton } from "#ui/components/change-password-dialog";
 import { ServerUpdateButton } from "#ui/components/server-update-button";
+import { SignedInUser, useCurrentUser } from "#ui/components/signed-in-user";
 import {
     CopyableCodeRow,
     CopyablePath,
@@ -38,16 +38,6 @@ import { sortAgentsByName } from "#ui/utils/agents";
 export const Route = createFileRoute("/_app/")({
     component: Index,
 });
-
-/** Human-readable label for the configured browser login backend. */
-function authModeLabel(authMode: ServerAuthMode): string {
-    switch (authMode) {
-        case "toml":
-            return "TOML (username/password in config file)";
-        case "pam":
-            return "PAM (system account)";
-    }
-}
 
 /** Labeled path row that keeps long absolute paths scannable and copyable. */
 function PathField(props: {
@@ -158,6 +148,7 @@ function Index() {
     const { api } = Route.useRouteContext();
     const agents = useAgents();
     const { data: serverInfo } = useSuspenseQuery(serverInfoQueryOptions(api));
+    const user = useCurrentUser();
 
     const serverProtocol =
         window.location.protocol === "https:" ? "https:" : "http:";
@@ -223,11 +214,11 @@ server = ${JSON.stringify(serverAddress)}
                             <h2 className="text-sm font-medium text-slate-400">
                                 Authentication
                             </h2>
-                            <p className="mt-1 text-sm text-slate-100">
-                                {authModeLabel(serverInfo.auth_mode)}
-                            </p>
-                            {/* A PAM password belongs to the operating system. */}
-                            {serverInfo.auth_mode === "toml" ? (
+                            {user ? (
+                                <SignedInUser user={user} className="mt-1" />
+                            ) : null}
+                            {/* PAM and OIDC passwords belong to the system and the provider. */}
+                            {user?.method === "password" ? (
                                 <div className="mt-2">
                                     <ChangePasswordButton />
                                 </div>

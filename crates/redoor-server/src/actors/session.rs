@@ -727,7 +727,12 @@ mod tests {
     }
 
     /// Builds a session runtime over a capturing router mailbox.
-    fn capture_session(agent_id: Option<AgentId>) -> (SessionRuntime, mpsc::Receiver<RouterMsg>) {
+    fn capture_session(
+        agent_id: Option<AgentId>,
+    ) -> (
+        SessionRuntime,
+        mpsc::Receiver<crate::actors::router::RouterEnvelope>,
+    ) {
         let (sender, receiver) = mpsc::channel(8);
         let (lanes, _receivers) = ControlLanes::bounded(1, 1);
         let runtime = SessionRuntime {
@@ -758,7 +763,7 @@ mod tests {
         assert_eq!(step, SessionStep::Continue);
         // The request it names is failed with an internal error.
         assert!(matches!(
-            receiver.try_recv(),
+            receiver.try_recv().map(|envelope| envelope.message),
             Ok(RouterMsg::RouteResponse(RouteResponse {
                 request_id,
                 result: CommandOutcome::Error(_),
@@ -797,7 +802,12 @@ mod tests {
             // The socket is dropped instead of waiting for a hello that may never come.
             assert_eq!(step, SessionStep::Close);
             // Nothing may be queued for the router before the hello was accepted.
-            assert!(receiver.try_recv().is_err());
+            assert!(
+                receiver
+                    .try_recv()
+                    .map(|envelope| envelope.message)
+                    .is_err()
+            );
         }
     }
 
@@ -817,7 +827,9 @@ mod tests {
             )
             .await;
         // The router sees the session's identity and socket, which it checks for ownership.
-        let Ok(RouterMsg::RouteResponse(response)) = receiver.try_recv() else {
+        let Ok(RouterMsg::RouteResponse(response)) =
+            receiver.try_recv().map(|envelope| envelope.message)
+        else {
             panic!("registered session should forward the response");
         };
         assert_eq!(response.agent_id, own);
@@ -838,7 +850,12 @@ mod tests {
             .await;
         // Switching identity mid-connection would let one agent speak for another.
         assert_eq!(step, SessionStep::Close);
-        assert!(receiver.try_recv().is_err());
+        assert!(
+            receiver
+                .try_recv()
+                .map(|envelope| envelope.message)
+                .is_err()
+        );
     }
 
     /// Exercises session dispatch under backpressure so completion cleanup cannot be lost.
@@ -875,13 +892,13 @@ mod tests {
         assert!(futures_util::poll!(&mut response).is_pending());
         // Only the preexisting message may occupy the mailbox while completion is waiting.
         assert!(matches!(
-            receiver.recv().await,
+            receiver.recv().await.map(|envelope| envelope.message),
             Some(RouterMsg::CheckPendingUiRefresh)
         ));
         response.await;
         // The completion payload must survive capacity pressure unchanged for transfer cleanup.
         assert!(matches!(
-            receiver.recv().await,
+            receiver.recv().await.map(|envelope| envelope.message),
             Some(RouterMsg::RouteResponse(RouteResponse {
                 agent_id: received_agent_id,
                 request_id: received_request_id,
@@ -917,10 +934,10 @@ mod tests {
         // A full mailbox must backpressure teardown instead of completing after dropping cleanup.
         assert!(!shutdown_task.is_finished());
         assert!(matches!(
-            receiver.recv().await,
+            receiver.recv().await.map(|envelope| envelope.message),
             Some(RouterMsg::CheckPendingUiRefresh)
         ));
-        let cleanup = receiver.recv().await;
+        let cleanup = receiver.recv().await.map(|envelope| envelope.message);
         // Releasing one slot must deliver the exact session cleanup that was waiting for capacity.
         assert!(matches!(
             cleanup,

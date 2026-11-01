@@ -317,7 +317,7 @@ pub enum VaultObjectKind {
     #[serde(rename = "file")]
     File,
     /// A managed SSH private key of one device, stored on the server and bound to the
-    /// account and device by its header context (see [`SSH_KEY_CONTEXT_FIELDS`]).
+    /// device by its header context (see [`SSH_KEY_CONTEXT_FIELDS`]).
     #[serde(rename = "ssh-key")]
     SshKey,
 }
@@ -332,10 +332,16 @@ impl VaultObjectKind {
     }
 }
 
-/// Header context of an SSH key: the account and device it belongs to, and its OpenSSH
-/// public key, so the fingerprint and the `authorized_keys` marker work while the key is
-/// locked. Exactly these fields, all non-empty; the header MAC covers them.
-pub const SSH_KEY_CONTEXT_FIELDS: [&str; 3] = ["account", "device_id", "public_key"];
+/// Header context of an SSH key: the device it belongs to and its OpenSSH public key, so
+/// the fingerprint and the `authorized_keys` marker work while the key is locked. Exactly
+/// these fields, all non-empty; the header MAC covers them.
+pub const SSH_KEY_CONTEXT_FIELDS: [&str; 2] = ["device_id", "public_key"];
+
+/// TEMPORARY MIGRATION: the header context of SSH keys written before redoor dropped the
+/// account name, which added an `account` field. Still accepted when opening a key; new
+/// keys and rewraps write [`SSH_KEY_CONTEXT_FIELDS`]. Remove once every installation has
+/// rotated its device keys (see `plans/login-methods.md`).
+pub const LEGACY_SSH_KEY_CONTEXT_FIELDS: [&str; 3] = ["account", "device_id", "public_key"];
 
 /// How the payload of an encrypted file is encrypted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]

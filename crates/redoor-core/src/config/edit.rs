@@ -94,11 +94,11 @@ pub async fn edit_local_agent(
 /// Why [`set_server_password`] refused to write.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerPasswordEditError {
-    /// The file no longer holds the credentials the running server uses, for example after
-    /// a hand edit that switched to PAM or renamed the account. Writing only the password
-    /// would leave a config that means something different from what the user confirmed.
+    /// The file no longer has a password login for this user, for example after a hand edit
+    /// that removed or renamed it. Writing the password anyway would leave a config that
+    /// means something different from what the user confirmed.
     #[error(
-        "The config file no longer sets username '{0}' under [server]; restart the server to apply the hand-edited credentials first"
+        "The config file no longer has a password login named '{0}'; restart the server to apply the hand-edited logins first"
     )]
     CredentialsChanged(String),
     /// Reading, parsing, locking or replacing the file failed.
@@ -112,31 +112,32 @@ const BOOTSTRAP_PASSWORD_COMMENT: &str =
     "# Browser login uses username redoor and password changeme.
 ";
 
-/// Replaces `[server].password` with `password_hash`, a PHC string, keeping the rest of the
-/// file and the value's own comments as they are.
+/// Replaces the password of the login `name` with `password_hash`, a PHC string, keeping the
+/// rest of the file and the value's own comments as they are.
 ///
-/// The write is refused unless `[server]` still sets `username` to `username` and has a
-/// `password`, so a file edited by hand since startup is never half-updated.
+/// The login is the `[server] username`/`password` shorthand when its username is `name`,
+/// otherwise the `[[server.users]]` entry with that name. The write is refused when neither
+/// exists with a string password, so a file edited by hand since startup is never
+/// half-updated.
 pub async fn set_server_password(
     path: &Path,
-    username: &str,
+    name: &str,
     password_hash: &str,
 ) -> std::result::Result<(), ServerPasswordEditError> {
     let mut transaction = ConfigTransaction::begin(path).await?;
-    let changed = || ServerPasswordEditError::CredentialsChanged(username.to_string());
+    let changed = || ServerPasswordEditError::CredentialsChanged(name.to_string());
     let server = transaction
         .document
         .get_mut("server")
         .and_then(Item::as_table_like_mut)
         .ok_or_else(changed)?;
-    if server.get("username").and_then(Item::as_str) != Some(username) {
-        return Err(changed());
+    let password = if server.get("username").and_then(Item::as_str) == Some(name) {
+        server.get_mut("password").and_then(Item::as_value_mut)
+    } else {
+        user_entry_password(server.get_mut("users"), name)
     }
-    let password = server
-        .get_mut("password")
-        .and_then(Item::as_value_mut)
-        .filter(|value| value.is_str())
-        .ok_or_else(changed)?;
+    .filter(|value| value.is_str())
+    .ok_or_else(changed)?;
     // Keeps a trailing comment such as `# rotated yearly` on the line.
     let decor = password.decor().clone();
     *password = toml_edit::Value::from(password_hash);
@@ -144,6 +145,29 @@ pub async fn set_server_password(
     remove_bootstrap_password_comment(&mut transaction.document);
     transaction.commit().await?;
     Ok(())
+}
+
+/// The `password` value of the `[[server.users]]` entry named `name`, written either as an
+/// array of tables or as an inline array of inline tables.
+fn user_entry_password<'a>(
+    users: Option<&'a mut Item>,
+    name: &str,
+) -> Option<&'a mut toml_edit::Value> {
+    let is_named =
+        |entry: &dyn toml_edit::TableLike| entry.get("name").and_then(Item::as_str) == Some(name);
+    match users? {
+        Item::ArrayOfTables(tables) => tables
+            .iter_mut()
+            .find(|table| is_named(*table))?
+            .get_mut("password")?
+            .as_value_mut(),
+        Item::Value(toml_edit::Value::Array(array)) => array
+            .iter_mut()
+            .filter_map(toml_edit::Value::as_inline_table_mut)
+            .find(|table| is_named(*table))?
+            .get_mut("password"),
+        _ => None,
+    }
 }
 
 /// Drops [`BOOTSTRAP_PASSWORD_COMMENT`] from the comments above the first key, where the
@@ -690,6 +714,37 @@ port = 7666
         assert!(content.starts_with("# Redoor configuration"), "{content}");
     }
 
+    /// A `[[server.users]]` entry gets its own password changed and no other entry's.
+    #[tokio::test]
+    async fn sets_a_listed_users_password_in_place() {
+        let original = r#"agent_token = "t"
+
+[[server.users]]
+name = "alice"
+password = "alice-password" # first
+
+[[server.users]]
+name = "bob"
+password = "bob-password"
+"#;
+        let (_directory, path) = config_file(original).await;
+        set_server_password(&path, "bob", "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA")
+            .await
+            .expect("the password must be written");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        // Only bob's value changes.
+        assert!(
+            content.contains(r#"password = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA""#),
+            "{content}"
+        );
+        // Alice's password and its comment are untouched.
+        assert!(
+            content.contains(r#"password = "alice-password" # first"#),
+            "{content}"
+        );
+        assert!(!content.contains("bob-password"), "{content}");
+    }
+
     /// A file whose credentials were edited by hand since startup is left alone, because
     /// writing only the password could produce credentials nobody confirmed.
     #[tokio::test]
@@ -705,6 +760,11 @@ password = "x"
 port = 7666
 "#,
             r#"agent_token = "t"
+"#,
+            r#"agent_token = "t"
+[[server.users]]
+name = "other"
+password = "x"
 "#,
         ];
         for original in cases {

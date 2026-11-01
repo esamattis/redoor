@@ -1,40 +1,66 @@
-//! Per-user persisted UI state document stored on the server.
+//! Per-user persisted UI state document, `<data_dir>/users/<name>/state.json`.
+//!
+//! Everyone who signs in shares one account (vault, SSH keys, devices), but preferences and
+//! the open files list are personal, so each login name gets its own document. The name is
+//! the one the session signed in with, so the same person signing in with a TOML password
+//! or PAM under the same name keeps one state.
 
 use std::path::{Path, PathBuf};
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{Extension, Json, extract::State, http::StatusCode, response::IntoResponse};
 use redoor_protocol::api::{
     ErrorResponse,
     user_state::{UpdateUserStateRequest, UserStateResponse},
 };
+use sha2::{Digest, Sha256};
 
-use super::state::ServerState;
+use super::{access::Principal, state::ServerState};
+
+/// File name of the UI state document in a user's directory.
+const USER_STATE_FILE: &str = "state.json";
+/// Directory of the per-user directories inside the data directory.
+const USERS_DIRECTORY: &str = "users";
 
 /// Route: `GET /api/v1/user/state`
 ///
 /// Missing files become an empty object so first-run clients can apply schema defaults.
-pub(crate) async fn get_user_state_handler(State(state): State<ServerState>) -> impl IntoResponse {
-    match read_user_state(&state.runtime.paths, state.auth.username()).await {
+pub(crate) async fn get_user_state_handler(
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+) -> impl IntoResponse {
+    let user = match principal.session_user() {
+        Ok(user) => user,
+        Err(error) => return error.into_response(),
+    };
+    let read = async {
+        let directory = user_directory(&state.runtime.paths, &user.name)?;
+        read_user_state(&directory.join(USER_STATE_FILE)).await
+    };
+    match read.await {
         Ok(value) => Json(UserStateResponse { state: value }).into_response(),
         Err(error) => state_io_error(error),
     }
 }
 
-/// Route: `PUT /api/v1/user/state` replaces the authenticated user's stored document.
+/// Route: `PUT /api/v1/user/state` replaces the signed-in user's stored document.
 ///
 /// Replaces the on-disk document atomically so a crash cannot leave truncated JSON, then
-/// deletes the editor buffers of files the new document no longer lists as open.
+/// deletes the user's editor buffers of files the new document no longer lists as open.
 pub(crate) async fn update_user_state_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Json(request): Json<UpdateUserStateRequest>,
 ) -> impl IntoResponse {
+    let user = match principal.session_user() {
+        Ok(user) => user,
+        Err(error) => return error.into_response(),
+    };
     // Held across both steps, so the cleanup sees the list this update wrote, not a later one.
     let _buffers_guard = state.editor_buffer_lock.lock().await;
     let written = async {
-        let paths = &state.runtime.paths;
-        let username = state.auth.username();
-        write_user_state(paths, username, &request.state).await?;
-        super::editor_buffers::delete_closed_buffers(paths, username, &request.state).await
+        let directory = prepare_user_directory(&state.runtime.paths, &user.name).await?;
+        write_user_state(&directory, &request.state).await?;
+        super::editor_buffers::delete_closed_buffers(&directory, &request.state).await
     };
 
     match written.await {
@@ -46,13 +72,9 @@ pub(crate) async fn update_user_state_handler(
     }
 }
 
-/// Reads the account document, treating a missing file as `{}` rather than an error.
-async fn read_user_state(
-    paths: &redoor_core::paths::AppPaths,
-    username: &str,
-) -> anyhow::Result<serde_json::Value> {
-    let path = user_state_path(paths, username)?;
-    match tokio::fs::read(&path).await {
+/// Reads a user's document, treating a missing file as `{}` rather than an error.
+async fn read_user_state(path: &Path) -> anyhow::Result<serde_json::Value> {
+    match tokio::fs::read(path).await {
         Ok(contents) if contents.is_empty() => Ok(serde_json::json!({})),
         Ok(contents) => serde_json::from_slice(&contents).map_err(|error| {
             anyhow::anyhow!(
@@ -69,36 +91,64 @@ async fn read_user_state(
 }
 
 /// Writes through a temporary sibling so readers never observe a partial document.
-async fn write_user_state(
-    paths: &redoor_core::paths::AppPaths,
-    username: &str,
-    state: &serde_json::Value,
-) -> anyhow::Result<()> {
-    let path = user_state_path(paths, username)?;
-    let account_directory = prepare_account_directory(paths, username).await?;
+async fn write_user_state(directory: &Path, state: &serde_json::Value) -> anyhow::Result<()> {
     let contents = serde_json::to_vec(state)?;
-    write_private_file_atomically(&account_directory.join(".state.json.tmp"), &path, &contents)
-        .await
+    write_private_file_atomically(
+        &directory.join(".state.json.tmp"),
+        &directory.join(USER_STATE_FILE),
+        &contents,
+    )
+    .await
 }
 
-/// Creates the login account's private directory, so every per-user file (preferences,
-/// editor buffers) shares one owner check and mode instead of each writer repeating it.
-pub(crate) async fn prepare_account_directory(
+/// `<data_dir>/users/<name>`, the directory of one user's personal files (UI state and
+/// editor buffers).
+///
+/// Login names from the config and PAM follow the portable allowlist and are used as they
+/// are. OIDC names are whatever the provider sends (an email address, a subject), so any
+/// other name becomes `~` and its SHA-256: `~` is outside the allowlist, so such a name can
+/// never take another user's directory, and no name can leave `users/`.
+pub(crate) fn user_directory(
     paths: &redoor_core::paths::AppPaths,
-    username: &str,
+    name: &str,
 ) -> anyhow::Result<PathBuf> {
-    let account_directory = account_directory(paths, username)?;
-    let users_directory = account_directory
-        .parent()
-        .expect("account directories live under users/");
+    let component =
+        redoor_core::config::parse_server_username(name, "user name").unwrap_or_else(|_| {
+            let digest = Sha256::digest(name.as_bytes());
+            let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
+            format!("~{hex}")
+        });
+    Ok(paths.data_dir()?.join(USERS_DIRECTORY).join(component))
+}
 
-    tokio::fs::create_dir_all(&account_directory).await?;
+/// Creates a user's private directory (and `users/`), so every per-user file shares one
+/// owner check and mode instead of each writer repeating it.
+pub(crate) async fn prepare_user_directory(
+    paths: &redoor_core::paths::AppPaths,
+    name: &str,
+) -> anyhow::Result<PathBuf> {
+    let directory = user_directory(paths, name)?;
+    tokio::fs::create_dir_all(&directory).await?;
     #[cfg(unix)]
     {
-        ensure_private_directory(users_directory).await?;
-        ensure_private_directory(&account_directory).await?;
+        let users = directory
+            .parent()
+            .expect("user directories live under users/");
+        ensure_private_directory(users).await?;
+        ensure_private_directory(&directory).await?;
     }
-    Ok(account_directory)
+    Ok(directory)
+}
+
+/// Creates the data directory that holds the shared account files (the vault) before one
+/// of them is first written. The files themselves are written 0600, so the data
+/// directory's own mode is left to the operator.
+pub(crate) async fn prepare_data_directory(
+    paths: &redoor_core::paths::AppPaths,
+) -> anyhow::Result<PathBuf> {
+    let directory = paths.data_dir()?;
+    tokio::fs::create_dir_all(&directory).await?;
+    Ok(directory)
 }
 
 /// Replaces `path` through `temporary_path` in the same directory, so a crash or a
@@ -118,25 +168,7 @@ pub(crate) async fn write_private_file_atomically(
     Ok(())
 }
 
-/// Locates the account's preference document inside its private directory.
-fn user_state_path(
-    paths: &redoor_core::paths::AppPaths,
-    username: &str,
-) -> anyhow::Result<PathBuf> {
-    Ok(account_directory(paths, username)?.join("state.json"))
-}
-
-/// Keeps each login name as one path component so a crafted username cannot escape the data dir.
-pub(crate) fn account_directory(
-    paths: &redoor_core::paths::AppPaths,
-    username: &str,
-) -> anyhow::Result<PathBuf> {
-    redoor_core::config::parse_server_username(username)
-        .map_err(|_| anyhow::anyhow!("login username cannot be used as a state directory name"))?;
-    Ok(paths.data_dir()?.join("users").join(username))
-}
-
-/// Writes bytes with mode 0600 so local users cannot read another account's preferences.
+/// Writes bytes with mode 0600 so other local users cannot read anyone's preferences.
 async fn write_private_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
 
@@ -150,7 +182,8 @@ async fn write_private_file(path: &Path, contents: &[u8]) -> anyhow::Result<()> 
     Ok(())
 }
 
-/// Ensures the users directory is owned by this process user and mode 0700.
+/// Ensures a private directory (`users/`, a user's directory, its editor buffers) is owned
+/// by this process user and mode 0700.
 #[cfg(unix)]
 pub(super) async fn ensure_private_directory(path: &Path) -> anyhow::Result<()> {
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -187,4 +220,39 @@ fn state_io_error(error: anyhow::Error) -> axum::response::Response {
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Allowlisted names are their own directory, and any other name gets a hashed one that
+    /// cannot collide with them or leave `users/`.
+    #[test]
+    fn user_directories_stay_inside_users() {
+        let paths = redoor_core::paths::AppPaths::for_home("redoor-test", Path::new("/home/t"));
+        let users = Path::new("/home/t/.local/share/redoor-test/users");
+        // A config or PAM login name is used as is, so the directory is recognisable.
+        assert_eq!(
+            user_directory(&paths, "alice").unwrap(),
+            users.join("alice")
+        );
+        for name in ["alice@example.org", "../alice", "a/b", ".."] {
+            let directory = user_directory(&paths, name).unwrap();
+            // Every other name stays one hashed component inside `users/`.
+            assert_eq!(directory.parent(), Some(users), "{name}");
+            assert!(
+                directory
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with('~') && name.len() == 65),
+                "{name}"
+            );
+        }
+        // Different names never share a directory.
+        assert_ne!(
+            user_directory(&paths, "a@example.org").unwrap(),
+            user_directory(&paths, "b@example.org").unwrap()
+        );
+    }
 }

@@ -12,9 +12,6 @@
 //! Locking the vault in the browser does not drop held keys, because that must not break
 //! the reconnects of running devices. Access tokens cannot unlock the vault, but can start
 //! a device whose key is still held.
-//!
-//! The map also records which account started each device, so the watchdog's reconnects
-//! use that account's key and pin.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -23,81 +20,43 @@ use redoor_protocol::ids::AgentId;
 
 use super::keys::SshPrivateKey;
 
-/// The held keys and the account that started each device. Cloned cheaply: every clone
-/// shares one map.
+/// The held keys by device. Cloned cheaply: every clone shares one map.
 #[derive(Clone, Default)]
 pub(crate) struct HeldSshKeys {
-    /// The shared state, behind a synchronous lock that is never held across an await.
-    inner: Arc<Mutex<HeldState>>,
-}
-
-/// What [`HeldSshKeys`] guards.
-#[derive(Default)]
-struct HeldState {
-    /// Decrypted keys by account and device.
-    keys: HashMap<(String, AgentId), Arc<SshPrivateKey>>,
-    /// The account whose Start made each device desired-running.
-    started_by: HashMap<AgentId, String>,
+    /// Decrypted keys by device, behind a synchronous lock that is never held across an
+    /// await.
+    keys: Arc<Mutex<HashMap<AgentId, Arc<SshPrivateKey>>>>,
 }
 
 impl HeldSshKeys {
-    /// Locks the state; a poisoned lock still holds consistent maps, because every update
-    /// is a single insert or remove.
-    fn state(&self) -> std::sync::MutexGuard<'_, HeldState> {
-        self.inner
+    /// Locks the map; a poisoned lock still holds a consistent map, because every update is
+    /// a single insert or remove.
+    fn keys(&self) -> std::sync::MutexGuard<'_, HashMap<AgentId, Arc<SshPrivateKey>>> {
+        self.keys
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Holds `key` for the account's device until it is released.
-    pub(crate) fn hold(&self, account: &str, device: &AgentId, key: Arc<SshPrivateKey>) {
-        self.state()
-            .keys
-            .insert((account.to_string(), device.clone()), key);
+    /// Holds `key` for the device until it is released.
+    pub(crate) fn hold(&self, device: &AgentId, key: Arc<SshPrivateKey>) {
+        self.keys().insert(device.clone(), key);
     }
 
-    /// The held key of the account's device, if any.
-    pub(crate) fn get(&self, account: &str, device: &AgentId) -> Option<Arc<SshPrivateKey>> {
-        self.state()
-            .keys
-            .get(&(account.to_string(), device.clone()))
-            .cloned()
+    /// The held key of the device, if any.
+    pub(crate) fn get(&self, device: &AgentId) -> Option<Arc<SshPrivateKey>> {
+        self.keys().get(device).cloned()
     }
 
-    /// Drops the held key of the account's device.
-    pub(crate) fn release(&self, account: &str, device: &AgentId) {
-        self.state()
-            .keys
-            .remove(&(account.to_string(), device.clone()));
-    }
-
-    /// Drops every account's held key of a device and forgets who started it, because the
-    /// device stopped or its configuration changed.
-    pub(crate) fn release_device(&self, device: &AgentId) {
-        let mut state = self.state();
-        state
-            .keys
-            .retain(|(_, held_device), _| held_device != device);
-        state.started_by.remove(device);
-    }
-
-    /// Records that `account` started the device, so its reconnects use that account's key
-    /// and pin.
-    pub(crate) fn record_start(&self, device: &AgentId, account: &str) {
-        self.state()
-            .started_by
-            .insert(device.clone(), account.to_string());
-    }
-
-    /// The account that started the device, if it was started since the last release.
-    pub(crate) fn started_by(&self, device: &AgentId) -> Option<String> {
-        self.state().started_by.get(device).cloned()
+    /// Drops the held key of the device, because it stopped, its configuration changed or
+    /// its key was removed.
+    pub(crate) fn release(&self, device: &AgentId) {
+        self.keys().remove(device);
     }
 
     /// Whether any key is held, for tests that check a request did not leave one behind.
     #[cfg(test)]
     pub(crate) fn is_empty(&self) -> bool {
-        self.state().keys.is_empty()
+        self.keys().is_empty()
     }
 }
 
@@ -105,25 +64,20 @@ impl HeldSshKeys {
 mod tests {
     use super::*;
 
-    /// Releasing a device drops every account's key of it, but no other device's.
+    /// Releasing a device drops its key, but no other device's.
     #[test]
-    fn release_device_drops_only_that_device() {
+    fn release_drops_only_that_device() {
         let held = HeldSshKeys::default();
         let device = AgentId::generate();
         let other = AgentId::generate();
         let key = Arc::new(SshPrivateKey::generate().unwrap());
-        held.hold("alice", &device, key.clone());
-        held.hold("bob", &device, key.clone());
-        held.hold("alice", &other, key);
-        held.record_start(&device, "alice");
+        held.hold(&device, key.clone());
+        held.hold(&other, key);
 
-        held.release_device(&device);
-        // Both accounts' keys of the stopped device are gone.
-        assert!(held.get("alice", &device).is_none());
-        assert!(held.get("bob", &device).is_none());
-        // Who started it is forgotten, so a later start records it again.
-        assert!(held.started_by(&device).is_none());
+        held.release(&device);
+        // The stopped device's key is gone.
+        assert!(held.get(&device).is_none());
         // The other device keeps running with its key.
-        assert!(held.get("alice", &other).is_some());
+        assert!(held.get(&other).is_some());
     }
 }

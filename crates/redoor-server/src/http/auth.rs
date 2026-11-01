@@ -1,10 +1,15 @@
 //! Browser login, cookie sessions and login rate limiting.
+//!
+//! Redoor has exactly one account with full access; several login methods lead into it.
+//! The name a session signed in with only says who is working, for logs and the UI:
+//! everyone who can sign in can already run commands as the server's user, so per-user
+//! rights would only pretend to protect anything.
 
 use std::{
     collections::HashMap,
     net::IpAddr,
     path::PathBuf,
-    sync::Mutex,
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -18,15 +23,17 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use redoor_core::config::{AuthMode, ConfiguredPassword, OidcConfig, ServerPasswordEditError};
-use redoor_core::log_error;
+use redoor_core::config::{
+    ConfiguredPassword, ConfiguredUser, OidcConfig, ServerPasswordEditError,
+};
+use redoor_core::{log, log_error};
 use redoor_protocol::api::{
     ErrorResponse,
     auth::{LoginRequest, LoginResponse, LogoutResponse},
 };
+use redoor_protocol::wire::log::Level;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use super::state::ServerState;
@@ -50,51 +57,101 @@ const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// configs keep working, but a password chosen in the UI should resist online guessing.
 pub(crate) const MIN_NEW_PASSWORD_CHARS: usize = 8;
 
-/// How browser login passwords are verified after the username check succeeds.
+/// The verifier of one `[[server.users]]` login, kept together because a password change
+/// must replace the hash and the session fingerprint at once.
 #[derive(Clone)]
-enum PasswordBackend {
-    /// Argon2id PHC hash of a password stored in the TOML config.
-    ConfiguredHash(String),
-    /// Linux PAM against the OS account running the server process.
-    #[cfg(target_os = "linux")]
-    SystemPam(super::pam::PamApi),
-}
-
-/// The password half of the login, kept together because a password change must replace
-/// the verifier and the session fingerprint at once.
-struct PasswordCredentials {
-    /// Either a config password hash or Linux PAM for the process owner.
-    backend: PasswordBackend,
-    /// Stable digest so password rotation (configured mode) invalidates old sessions.
+struct PasswordUser {
+    /// Argon2id PHC hash of the password.
+    hash: String,
+    /// Stable digest of the password, so changing it revokes this user's sessions.
     fingerprint: String,
 }
 
-/// Holds hashed credentials and the durable directory used to validate opaque cookies.
+/// Checks the password of the server process's own OS user.
+///
+/// A trait so login order tests can stand in for PAM, which cannot be driven from tests.
+pub(crate) trait PamBackend: Send + Sync {
+    /// Whether `password` is the process user's password and the account may log in.
+    ///
+    /// Blocking: call only from the blocking pool so the async runtime stays responsive.
+    fn verify_current_user_password(&self, password: &str) -> anyhow::Result<bool>;
+}
+
+/// The PAM login for the process user, present only when `[server.pam] enabled = true`.
+#[derive(Clone)]
+pub(crate) struct PamLogin {
+    /// Verifies the password.
+    backend: Arc<dyn PamBackend>,
+    /// The process user's name, the only name PAM is ever asked about.
+    user: String,
+    /// Binds PAM sessions to PAM being enabled for this user.
+    fingerprint: String,
+}
+
+impl PamLogin {
+    /// A PAM login for `user` through `backend`.
+    pub(crate) fn new(backend: Arc<dyn PamBackend>, user: String) -> Self {
+        Self {
+            fingerprint: credentials_fingerprint(PAM_FINGERPRINT_DOMAIN, &user),
+            backend,
+            user,
+        }
+    }
+
+    /// Loads libpam and resolves the process user, failing startup when either is missing,
+    /// so a broken PAM setup is reported before anyone tries to sign in.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn load_system() -> anyhow::Result<Self> {
+        // Dynamic library loading and passwd lookups can block on filesystem or NSS work,
+        // so they run away from Tokio's async worker threads.
+        let (user, pam_api) = tokio::task::spawn_blocking(|| {
+            let pam_api = super::pam::PamApi::load()?;
+            let uid = nix::unistd::Uid::current();
+            let user = nix::unistd::User::from_uid(uid)
+                .map_err(|error| anyhow::anyhow!("failed to look up process user: {error}"))?
+                .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))?
+                .name;
+            Ok::<_, anyhow::Error>((user, pam_api))
+        })
+        .await
+        .map_err(|error| {
+            anyhow::anyhow!("failed to join PAM authentication startup task: {error}")
+        })??;
+        Ok(Self::new(Arc::new(pam_api), user))
+    }
+}
+
+/// Holds the login verifiers and the durable directory used to validate opaque cookies.
 #[derive(Clone)]
 pub(crate) struct AuthState {
-    username: String,
-    /// Behind a lock because the password change form replaces it while the server runs.
-    /// Only ever held for a clone or a swap, never across an await or an Argon2 run.
-    credentials: std::sync::Arc<std::sync::RwLock<PasswordCredentials>>,
+    /// Password logins by name. Behind a lock because the password change form replaces one
+    /// entry while the server runs; only ever held for a lookup or a swap, never across an
+    /// await or an Argon2 run.
+    users: Arc<std::sync::RwLock<HashMap<String, PasswordUser>>>,
+    /// The process user's PAM login, when enabled.
+    pam: Option<PamLogin>,
+    /// Argon2 hash of a random password with the default parameters, verified for names
+    /// that are no login at all so the response time does not reveal which names exist.
+    dummy_hash: Arc<str>,
     /// Serializes password changes, so two concurrent changes cannot both verify the old
-    /// password and then race over the file and the in-memory credentials.
-    password_change_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    /// password and then race over the file and the in-memory verifier.
+    password_change_lock: Arc<tokio::sync::Mutex<()>>,
     sessions_directory: PathBuf,
     /// When true, Set-Cookie includes `Secure` so browsers only send the session over HTTPS.
     cookie_secure: bool,
     /// Shared secret agents must present at registration to prevent unauthenticated hijacks.
     agent_token: String,
-    /// Counts failed logins and failed current-password checks of the change form alike, so
-    /// a stolen session cannot be used to guess the password faster than the login page.
-    pub(crate) login_limiter: std::sync::Arc<LoginRateLimiter>,
+    /// Counts failed logins of every method and failed current-password checks of the change
+    /// form alike, so a stolen session cannot be used to guess a password faster than the
+    /// login page.
+    pub(crate) login_limiter: Arc<LoginRateLimiter>,
     /// Present when OIDC sign-in is configured; governs the sessions it creates.
     oidc_sessions: Option<OidcSessionPolicy>,
     /// Orders session renewals against logouts, so a renewal racing a logout cannot write
     /// the just-deleted session file back.
-    session_file_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
+    session_file_lock: Arc<tokio::sync::Mutex<()>>,
     /// Serializes PAM because blocking checks can otherwise exhaust Tokio's blocking pool.
-    #[cfg(target_os = "linux")]
-    pam_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
+    pam_semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 /// How sessions created by OIDC sign-in are bound and how long they live.
@@ -107,16 +164,49 @@ struct OidcSessionPolicy {
     lifetime: Duration,
 }
 
-/// Which login created a session, because the two kinds expire and invalidate differently.
+/// Which login created a session, because each kind is bound to its own part of the config
+/// and revoked on its own.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SessionMethod {
-    /// Username and password; fixed lifetime, invalidated when the configured password changes.
-    /// The default keeps session files written before OIDC support valid.
+    /// A `[[server.users]]` name and password; fixed lifetime, revoked when that user's
+    /// password changes or the user is removed. The default keeps session files written
+    /// before OIDC support valid.
     #[default]
     Password,
-    /// OpenID Connect sign-in; sliding lifetime, invalidated when the OIDC settings change.
+    /// The process user's system password through PAM; fixed lifetime, revoked when PAM is
+    /// turned off.
+    Pam,
+    /// OpenID Connect sign-in; sliding lifetime, revoked when the OIDC settings change.
     Oidc,
+}
+
+impl SessionMethod {
+    /// The method as written in logs and the API.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Password => "password",
+            Self::Pam => "pam",
+            Self::Oidc => "oidc",
+        }
+    }
+}
+
+/// Who a browser session belongs to and how they signed in. Only for display and logs:
+/// every session has the same full access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionUser {
+    /// The login name, or the OIDC user's readable name.
+    pub(crate) name: String,
+    /// The login method that created the session.
+    pub(crate) method: SessionMethod,
+}
+
+impl SessionUser {
+    /// How log lines name this user, e.g. `alice (password)`.
+    pub(crate) fn log_label(&self) -> String {
+        format!("{} ({})", self.name, self.method.as_str())
+    }
 }
 
 /// Outcome of checking a request's session cookie.
@@ -124,22 +214,28 @@ pub(crate) enum SessionCheck {
     /// No usable session; the request must be treated as unauthenticated.
     Invalid,
     /// The session is valid and its cookie needs no update.
-    Valid,
+    Valid(SessionUser),
     /// The session is valid and its expiry slid forward, so the response must refresh the
     /// browser cookie's lifetime to match.
-    Renewed(HeaderValue),
+    Renewed(SessionUser, HeaderValue),
+}
+
+/// A successful credential check: who signed in and the fingerprint the new session is
+/// bound to. The fingerprint is the one of the verifier that was checked, so a password
+/// change finishing in between cannot hand a session made with the old password the new
+/// fingerprint.
+struct SessionGrant {
+    user: SessionUser,
+    fingerprint: String,
 }
 
 /// Distinguishes rejected credentials from temporary PAM saturation for correct HTTP responses.
 enum LoginVerification {
-    /// Authentication succeeded, so the handler may create a session. Carries the session
-    /// fingerprint of the credentials that were checked, so a password change finishing in
-    /// between cannot hand a session made with the old password the new fingerprint.
-    Authenticated { fingerprint: String },
+    /// Authentication succeeded, so the handler may create a session.
+    Authenticated(SessionGrant),
     /// Authentication failed, so the rate limiter must record the rejected attempt.
     Rejected,
     /// PAM is already running, so callers should retry without counting a credential failure.
-    #[cfg(target_os = "linux")]
     Busy,
 }
 
@@ -222,8 +318,9 @@ impl LoginRateLimiter {
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionFile {
     session_id: String,
+    /// The login name the session signed in with; for OIDC the user's readable name.
     username: String,
-    /// Binds the cookie to the password that was current when the session was issued.
+    /// Binds the cookie to the credential that was current when the session was issued.
     credentials_fingerprint: String,
     expires_at: i64,
     #[serde(default)]
@@ -231,70 +328,27 @@ struct SessionFile {
 }
 
 impl AuthState {
-    /// Creates the private session directory before requests arrive so login failures are actionable.
+    /// Creates the private session directory before requests arrive so login failures are
+    /// actionable, and drops sessions of logins that no longer exist.
     pub(crate) async fn new(
-        credentials: AuthMode,
+        users: Vec<ConfiguredUser>,
+        pam: Option<PamLogin>,
         oidc: Option<&OidcConfig>,
         agent_token: String,
         cookie_secure: bool,
         data_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        let (username, password_backend, credentials_fingerprint) = match credentials {
-            AuthMode::Configured {
-                username,
-                password: ConfiguredPassword::Plaintext(password),
-            } => {
-                let password_hash = hash_password(&password)?;
-                // Fingerprint is independent of the per-process argon2 salt so sessions survive
-                // restarts until the operator actually changes the configured password.
-                let fingerprint = credentials_fingerprint(PLAINTEXT_FINGERPRINT_DOMAIN, &password);
-                // Drop the only plaintext copy once derived secrets exist.
-                drop(password);
-                (
-                    username,
-                    PasswordBackend::ConfiguredHash(password_hash),
-                    fingerprint,
-                )
-            }
-            AuthMode::Configured {
-                username,
-                password: ConfiguredPassword::Argon2Hash(password_hash),
-            } => {
-                // The stored hash has a fixed salt, so it fingerprints the password as stably
-                // as the plaintext does, and matches what a password change computed in memory.
-                let fingerprint = credentials_fingerprint(HASH_FINGERPRINT_DOMAIN, &password_hash);
-                (
-                    username,
-                    PasswordBackend::ConfiguredHash(password_hash),
-                    fingerprint,
-                )
-            }
-            #[cfg(target_os = "linux")]
-            AuthMode::SystemAccount => {
-                // Dynamic library loading and passwd lookups can block on filesystem or NSS work,
-                // so validate the complete PAM backend away from Tokio's async worker threads.
-                let (username, pam_api) = tokio::task::spawn_blocking(|| {
-                    let pam_api = super::pam::PamApi::load()?;
-                    let uid = nix::unistd::Uid::current();
-                    let username = nix::unistd::User::from_uid(uid)
-                        .map_err(|error| {
-                            anyhow::anyhow!("failed to look up process user: {error}")
-                        })?
-                        .ok_or_else(|| anyhow::anyhow!("no system user for process UID {uid}"))?
-                        .name;
-                    Ok::<_, anyhow::Error>((username, pam_api))
-                })
-                .await
-                .map_err(|error| {
-                    anyhow::anyhow!("failed to join PAM authentication startup task: {error}")
-                })??;
-                // Fixed marker: OS password changes do not bulk-invalidate PAM sessions;
-                // sessions still expire via SESSION_LIFETIME.
-                let fingerprint =
-                    credentials_fingerprint(PLAINTEXT_FINGERPRINT_DOMAIN, "pam-system-auth-v1");
-                (username, PasswordBackend::SystemPam(pam_api), fingerprint)
-            }
-        };
+        // Argon2 is deliberately slow, so plaintext passwords are hashed off the async workers.
+        let (users, dummy_hash) = tokio::task::spawn_blocking(move || {
+            let users = users
+                .into_iter()
+                .map(|user| password_user(user.password).map(|verifier| (user.name, verifier)))
+                .collect::<anyhow::Result<HashMap<_, _>>>()?;
+            let dummy_hash = hash_password(&Uuid::new_v4().to_string())?;
+            Ok::<_, anyhow::Error>((users, dummy_hash))
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("password hashing task failed: {error}"))??;
 
         // Keep independent application namespaces from sharing browser sessions on disk.
         let sessions_directory = data_dir.join("sessions");
@@ -306,26 +360,24 @@ impl AuthState {
         }
 
         let auth = Self {
-            username,
-            credentials: std::sync::Arc::new(std::sync::RwLock::new(PasswordCredentials {
-                backend: password_backend,
-                fingerprint: credentials_fingerprint,
-            })),
-            password_change_lock: std::sync::Arc::default(),
-            sessions_directory: sessions_directory.clone(),
+            users: Arc::new(std::sync::RwLock::new(users)),
+            pam,
+            dummy_hash: Arc::from(dummy_hash),
+            password_change_lock: Arc::default(),
+            sessions_directory,
             cookie_secure,
             agent_token,
-            login_limiter: std::sync::Arc::new(LoginRateLimiter::new()),
+            login_limiter: Arc::new(LoginRateLimiter::new()),
             oidc_sessions: oidc.map(|config| OidcSessionPolicy {
                 fingerprint: oidc_fingerprint(config),
                 lifetime: config.session_lifetime,
             }),
-            session_file_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
-            #[cfg(target_os = "linux")]
-            pam_semaphore: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+            session_file_lock: Arc::new(tokio::sync::Mutex::new(())),
+            pam_semaphore: Arc::new(tokio::sync::Semaphore::new(1)),
         };
 
-        // Drop sessions issued under a previous password so rotation takes effect immediately.
+        // Drop sessions of changed passwords and removed logins so the change takes effect
+        // immediately.
         auth.purge_stale_sessions().await?;
 
         Ok(auth)
@@ -336,11 +388,6 @@ impl AuthState {
         &self.agent_token
     }
 
-    /// Identifies the single login account so per-user files can be stored without parsing cookies.
-    pub(crate) fn username(&self) -> &str {
-        &self.username
-    }
-
     /// Maps a validated UUID to its one-file-per-session storage path.
     fn session_path(&self, session_id: &str) -> Option<PathBuf> {
         Uuid::parse_str(session_id).ok().map(|_| {
@@ -349,7 +396,8 @@ impl AuthState {
         })
     }
 
-    /// Reads the session file on every request so logout and server restarts share one source of truth.
+    /// Reads the session file on every request so logout and server restarts share one
+    /// source of truth.
     pub(crate) async fn check_session(&self, headers: &HeaderMap) -> SessionCheck {
         let Some(session_id) = session_cookie(headers) else {
             return SessionCheck::Invalid;
@@ -373,45 +421,53 @@ impl AuthState {
             let _ = tokio::fs::remove_file(path).await;
             return SessionCheck::Invalid;
         }
+        let user = SessionUser {
+            name: session.username.clone(),
+            method: session.method,
+        };
 
         let Some(policy) = self
             .oidc_sessions
             .as_ref()
             .filter(|_| session.method == SessionMethod::Oidc)
         else {
-            return SessionCheck::Valid;
+            return SessionCheck::Valid(user);
         };
         let lifetime = policy.lifetime.as_secs() as i64;
         let renewal_interval = SESSION_RENEWAL_INTERVAL.min(policy.lifetime / 2).as_secs() as i64;
         if session.expires_at - now > lifetime - renewal_interval {
-            return SessionCheck::Valid;
+            return SessionCheck::Valid(user);
         }
         session.expires_at = now + lifetime;
         let _guard = self.session_file_lock.lock().await;
         if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
             // Logged out while this request was in flight; let this request finish but do not
             // bring the session back.
-            return SessionCheck::Valid;
+            return SessionCheck::Valid(user);
         }
         if let Err(error) = self.write_session(&session).await {
             // The session is still valid until its old expiry, so a failed renewal must not
             // log the user out; the next request simply tries again.
             log_error!(error, "Failed to renew session");
-            return SessionCheck::Valid;
+            return SessionCheck::Valid(user);
         }
-        SessionCheck::Renewed(self.session_set_cookie(&session_id, policy.lifetime))
+        SessionCheck::Renewed(user, self.session_set_cookie(&session_id, policy.lifetime))
     }
 
-    /// Whether a stored session still matches the account and the login rules that issued it.
+    /// Whether a stored session still matches the login that issued it in the running
+    /// config. Each method is checked against its own credential, so changing one user's
+    /// password or turning one method off revokes only those sessions.
     fn is_current(&self, session: &SessionFile) -> bool {
-        if session.username != self.username {
-            return false;
-        }
         match session.method {
-            SessionMethod::Password => {
-                session.credentials_fingerprint == self.read_credentials().fingerprint
-            }
-            // Removing the OIDC config revokes every session it created.
+            SessionMethod::Password => self
+                .read_users()
+                .get(&session.username)
+                .is_some_and(|user| session.credentials_fingerprint == user.fingerprint),
+            SessionMethod::Pam => self.pam.as_ref().is_some_and(|pam| {
+                session.username == pam.user && session.credentials_fingerprint == pam.fingerprint
+            }),
+            // Removing the OIDC config revokes every session it created. The name is only
+            // for display, so it is not checked.
             SessionMethod::Oidc => self
                 .oidc_sessions
                 .as_ref()
@@ -419,53 +475,56 @@ impl AuthState {
         }
     }
 
-    /// The current password credentials. A poisoned lock still holds a complete value,
-    /// because writers only ever swap the whole struct.
-    fn read_credentials(&self) -> std::sync::RwLockReadGuard<'_, PasswordCredentials> {
-        self.credentials
+    /// The current password logins. A poisoned lock still holds a complete map, because
+    /// writers only ever replace whole entries.
+    fn read_users(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, PasswordUser>> {
+        self.users
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Creates a session for the single configured account, recording how the user signed in.
-    pub(crate) async fn create_session(&self, method: SessionMethod) -> anyhow::Result<NewSession> {
-        match (method, &self.oidc_sessions) {
-            (SessionMethod::Password, _) => {
-                let fingerprint = self.read_credentials().fingerprint.clone();
-                self.create_password_session(fingerprint).await
-            }
-            (SessionMethod::Oidc, Some(policy)) => {
-                self.issue_session(method, policy.fingerprint.clone(), policy.lifetime)
-                    .await
-            }
-            (SessionMethod::Oidc, None) => anyhow::bail!("OIDC sign-in is not configured"),
-        }
+    /// The verifier of one password login, cloned so no lock is held through Argon2.
+    fn password_user(&self, name: &str) -> Option<PasswordUser> {
+        self.read_users().get(name).cloned()
     }
 
-    /// Creates a password session bound to `fingerprint`, the credentials the caller checked.
-    async fn create_password_session(&self, fingerprint: String) -> anyhow::Result<NewSession> {
-        self.issue_session(SessionMethod::Password, fingerprint, SESSION_LIFETIME)
-            .await
+    /// Creates a session for an OIDC sign-in; `name` is the provider's readable name for the
+    /// user, recorded for display and logs only.
+    pub(crate) async fn create_oidc_session(&self, name: String) -> anyhow::Result<NewSession> {
+        let policy = self
+            .oidc_sessions
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("OIDC sign-in is not configured"))?;
+        self.issue_session(
+            SessionGrant {
+                user: SessionUser {
+                    name,
+                    method: SessionMethod::Oidc,
+                },
+                fingerprint: policy.fingerprint.clone(),
+            },
+            policy.lifetime,
+        )
+        .await
     }
 
-    /// Writes a new session file and builds its cookie.
+    /// Writes a new session file for a checked credential and builds its cookie.
     async fn issue_session(
         &self,
-        method: SessionMethod,
-        fingerprint: String,
+        grant: SessionGrant,
         lifetime: Duration,
     ) -> anyhow::Result<NewSession> {
         let session = SessionFile {
             session_id: Uuid::new_v4().to_string(),
-            username: self.username.clone(),
-            credentials_fingerprint: fingerprint,
+            username: grant.user.name.clone(),
+            credentials_fingerprint: grant.fingerprint,
             expires_at: (jiff::Timestamp::now() + lifetime).as_second(),
-            method,
+            method: grant.user.method,
         };
         self.write_session(&session).await?;
         Ok(NewSession {
             cookie: self.session_set_cookie(&session.session_id, lifetime),
-            username: session.username,
+            user: grant.user,
         })
     }
 
@@ -520,7 +579,8 @@ impl AuthState {
         }
     }
 
-    /// Removes sessions that no longer match the configured credentials (e.g. after password rotation).
+    /// Removes sessions that no longer match the running config (a changed password, a
+    /// removed user, PAM or OIDC turned off).
     async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
         let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
         while let Some(entry) = entries.next_entry().await? {
@@ -545,79 +605,109 @@ impl AuthState {
         Ok(())
     }
 
-    /// Verifies username + password against the configured backend.
+    /// Verifies a login name and password.
     ///
-    /// Always verifies configured password hashes on username mismatch so timing does not
-    /// reveal which half of the credential pair was wrong. PAM rejects mismatched usernames
-    /// before entering its serialized blocking verification path.
-    async fn verify_login(&self, username: &str, password: &str) -> LoginVerification {
-        let username_ok = constant_time_eq(username, &self.username);
-        // Cloned so the lock is not held through Argon2 or PAM; the fingerprint is taken in
-        // the same read so it always describes the verifier that was used.
-        let (backend, fingerprint) = {
-            let credentials = self.read_credentials();
-            (credentials.backend.clone(), credentials.fingerprint.clone())
-        };
-        let password_ok = match &backend {
-            PasswordBackend::ConfiguredHash(password_hash) => {
-                verify_password_hash(password, password_hash)
-            }
-            #[cfg(target_os = "linux")]
-            PasswordBackend::SystemPam(pam_api) => {
-                // Configured auth still runs Argon2 for a wrong username so its cost does not
-                // reveal whether that username exists. PAM must return early instead: many PAM
-                // stacks delay wrong passwords but accept the correct password quickly, so
-                // checking the real account here would let a mismatched username probe whether
-                // a candidate system password is valid.
-                if !username_ok {
-                    return LoginVerification::Rejected;
-                }
-                let Ok(permit) = self.pam_semaphore.clone().try_acquire_owned() else {
-                    return LoginVerification::Busy;
-                };
-                let password = password.to_string();
-                let pam_api = pam_api.clone();
-                match tokio::task::spawn_blocking(move || {
-                    let _permit = permit;
-                    pam_api.verify_current_user_password(&password)
-                })
-                .await
-                {
-                    Ok(Ok(valid)) => valid,
-                    Ok(Err(error)) => {
-                        log_error!(error, "PAM authentication failed");
-                        false
-                    }
-                    Err(error) => {
-                        log_error!(anyhow::Error::new(error), "PAM authentication task failed");
-                        false
-                    }
-                }
-            }
-        };
-        if username_ok && password_ok {
-            LoginVerification::Authenticated { fingerprint }
-        } else {
-            LoginVerification::Rejected
+    /// A `[[server.users]]` password is checked first, because Argon2 has no side effects,
+    /// while a failed PAM check costs PAM's failure delay and counts towards `pam_faillock`.
+    /// PAM is asked only for the process user's own name: many PAM stacks answer a correct
+    /// password faster than a wrong one, so checking the real account for another name would
+    /// let anyone probe the system password. A name that is no login at all is verified
+    /// against a dummy hash, so the response time does not reveal which names exist.
+    async fn verify_login(&self, name: &str, password: &str) -> LoginVerification {
+        let password_user = self.password_user(name);
+        if let Some(user) = &password_user
+            && verify_password_hash_off_thread(password, &user.hash).await
+        {
+            return LoginVerification::Authenticated(SessionGrant {
+                user: SessionUser {
+                    name: name.to_string(),
+                    method: SessionMethod::Password,
+                },
+                fingerprint: user.fingerprint.clone(),
+            });
         }
+        if let Some(pam) = self.pam.as_ref().filter(|pam| pam.user == name) {
+            return self.verify_pam(pam, password).await;
+        }
+        if password_user.is_none() {
+            verify_password_hash_off_thread(password, &self.dummy_hash).await;
+        }
+        LoginVerification::Rejected
     }
+
+    /// Checks the process user's password with PAM, one check at a time.
+    async fn verify_pam(&self, pam: &PamLogin, password: &str) -> LoginVerification {
+        let Ok(permit) = self.pam_semaphore.clone().try_acquire_owned() else {
+            return LoginVerification::Busy;
+        };
+        let password = zeroize::Zeroizing::new(password.to_string());
+        let backend = pam.backend.clone();
+        let valid = match redoor_core::logging::spawn_blocking_in_user_scope(move || {
+            let _permit = permit;
+            backend.verify_current_user_password(&password)
+        })
+        .await
+        {
+            Ok(Ok(valid)) => valid,
+            Ok(Err(error)) => {
+                log_error!(error, "PAM authentication failed");
+                false
+            }
+            Err(error) => {
+                log_error!(anyhow::Error::new(error), "PAM authentication task failed");
+                false
+            }
+        };
+        if !valid {
+            return LoginVerification::Rejected;
+        }
+        LoginVerification::Authenticated(SessionGrant {
+            user: SessionUser {
+                name: pam.user.clone(),
+                method: SessionMethod::Pam,
+            },
+            fingerprint: pam.fingerprint.clone(),
+        })
+    }
+}
+
+/// Builds the verifier of one configured password.
+fn password_user(password: ConfiguredPassword) -> anyhow::Result<PasswordUser> {
+    Ok(match password {
+        ConfiguredPassword::Plaintext(password) => {
+            let password = zeroize::Zeroizing::new(password);
+            PasswordUser {
+                hash: hash_password(&password)?,
+                // Independent of the per-process Argon2 salt, so sessions survive restarts
+                // until the operator actually changes the password.
+                fingerprint: credentials_fingerprint(PLAINTEXT_FINGERPRINT_DOMAIN, &password),
+            }
+        }
+        // The stored hash has a fixed salt, so it fingerprints the password as stably as the
+        // plaintext does, and matches what a password change computed in memory.
+        ConfiguredPassword::Argon2Hash(hash) => PasswordUser {
+            fingerprint: credentials_fingerprint(HASH_FINGERPRINT_DOMAIN, &hash),
+            hash,
+        },
+    })
 }
 
 /// Why a password change was refused.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PasswordChangeError {
-    /// The login uses PAM, whose password belongs to the operating system.
+    /// The session did not sign in with a `[[server.users]]` password, whose owner is
+    /// redoor; PAM and OIDC passwords belong to the system and the provider.
     #[error(
-        "The login password is the system account's password; change it with the operating system"
+        "Only password logins from the config file can change their password here; change a system or identity provider password where it is managed"
     )]
-    NotConfigured,
+    NotPasswordSession,
     /// The current password was wrong; counted like a failed login.
     #[error("The current password is incorrect")]
     WrongCurrentPassword,
     /// The new password does not meet the form's rules.
     #[error("{0}")]
     InvalidNewPassword(String),
-    /// The config file's credentials were edited by hand since startup.
+    /// The config file's logins were edited by hand since startup.
     #[error(transparent)]
     CredentialsChanged(ServerPasswordEditError),
     /// Hashing, writing the file or creating the new session failed.
@@ -626,42 +716,44 @@ pub(crate) enum PasswordChangeError {
 }
 
 impl AuthState {
-    /// Replaces the TOML-configured password with `new_password`, writes its Argon2id hash
-    /// into `config_path` and signs out every other password session.
+    /// Replaces the password of the signed-in `user` with `new_password`, writes its
+    /// Argon2id hash into that user's entry in `config_path` and signs out that user's other
+    /// password sessions. Other users' sessions are not affected.
     ///
-    /// The file is written before the in-memory credentials change, so a failed write leaves
+    /// The file is written before the in-memory verifier changes, so a failed write leaves
     /// the old password working everywhere, and the hash in memory is the one in the file,
     /// so sessions created now survive the next restart. Returns a new session for the
     /// browser that made the change, because the purge also removed its old one.
     pub(crate) async fn change_password(
         &self,
         config_path: &std::path::Path,
+        user: &SessionUser,
         current_password: &str,
         new_password: &str,
     ) -> Result<NewSession, PasswordChangeError> {
-        let _change = self.password_change_lock.lock().await;
-        if !matches!(
-            self.read_credentials().backend,
-            PasswordBackend::ConfiguredHash(_)
-        ) {
-            return Err(PasswordChangeError::NotConfigured);
+        if user.method != SessionMethod::Password {
+            return Err(PasswordChangeError::NotPasswordSession);
         }
+        let _change = self.password_change_lock.lock().await;
+        // A valid password session's user is configured; a missing one was removed in a
+        // way the running server does not know about yet.
+        let Some(verifier) = self.password_user(&user.name) else {
+            return Err(PasswordChangeError::CredentialsChanged(
+                ServerPasswordEditError::CredentialsChanged(user.name.clone()),
+            ));
+        };
         validate_new_password(new_password)?;
-        match self.verify_login(&self.username, current_password).await {
-            LoginVerification::Authenticated { .. } => {}
-            LoginVerification::Rejected => return Err(PasswordChangeError::WrongCurrentPassword),
-            #[cfg(target_os = "linux")]
-            // Only PAM is ever busy, and PAM was ruled out above.
-            LoginVerification::Busy => {
-                return Err(anyhow::anyhow!("Authentication is busy. Try again later.").into());
-            }
+        if !verify_password_hash_off_thread(current_password, &verifier.hash).await {
+            return Err(PasswordChangeError::WrongCurrentPassword);
         }
         let new_password = zeroize::Zeroizing::new(new_password.to_string());
         // Argon2 is deliberately slow, so it runs off the async workers.
-        let password_hash = tokio::task::spawn_blocking(move || hash_password(&new_password))
-            .await
-            .map_err(|error| anyhow::anyhow!("password hashing task failed: {error}"))??;
-        redoor_core::config::set_server_password(config_path, &self.username, &password_hash)
+        let password_hash = redoor_core::logging::spawn_blocking_in_user_scope(move || {
+            hash_password(&new_password)
+        })
+        .await
+        .map_err(|error| anyhow::anyhow!("password hashing task failed: {error}"))??;
+        redoor_core::config::set_server_password(config_path, &user.name, &password_hash)
             .await
             .map_err(|error| match error {
                 ServerPasswordEditError::CredentialsChanged(_) => {
@@ -672,27 +764,39 @@ impl AuthState {
                 }
             })?;
         let fingerprint = credentials_fingerprint(HASH_FINGERPRINT_DOMAIN, &password_hash);
-        *self
-            .credentials
+        self.users
             .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = PasswordCredentials {
-            backend: PasswordBackend::ConfiguredHash(password_hash),
-            fingerprint: fingerprint.clone(),
-        };
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                user.name.clone(),
+                PasswordUser {
+                    hash: password_hash,
+                    fingerprint: fingerprint.clone(),
+                },
+            );
+        log!(
+            Level::Info,
+            "Changed the login password of user {}",
+            user.name
+        );
         // Old sessions are already refused by the fingerprint check on every request; the
         // purge only removes their files, so a failure must not report the change as failed.
         if let Err(error) = self.purge_stale_sessions().await {
             log_error!(error, "Failed to remove sessions after a password change");
         }
-        self.create_password_session(fingerprint)
-            .await
-            .map_err(|error| {
-                PasswordChangeError::Internal(
-                    error.context(
-                        "The password was changed, but signing this browser in again failed",
-                    ),
-                )
-            })
+        self.issue_session(
+            SessionGrant {
+                user: user.clone(),
+                fingerprint,
+            },
+            SESSION_LIFETIME,
+        )
+        .await
+        .map_err(|error| {
+            PasswordChangeError::Internal(
+                error.context("The password was changed, but signing this browser in again failed"),
+            )
+        })
     }
 }
 
@@ -720,7 +824,8 @@ fn hash_password(password: &str) -> anyhow::Result<String> {
         .map_err(|error| anyhow::anyhow!("failed to hash password: {error}"))
 }
 
-/// Constant-time password verification against a stored PHC string.
+/// Constant-time password verification against a stored PHC string. Blocking: Argon2 is
+/// deliberately slow, so async callers use [`verify_password_hash_off_thread`].
 fn verify_password_hash(candidate: &str, password_hash: &str) -> bool {
     let Ok(parsed) = PasswordHash::new(password_hash) else {
         return false;
@@ -730,12 +835,36 @@ fn verify_password_hash(candidate: &str, password_hash: &str) -> bool {
         .is_ok()
 }
 
-/// Fingerprint domain of plaintext config passwords and of the PAM marker. Unchanged since
-/// sessions were introduced, so upgrades do not sign anyone out.
+/// [`verify_password_hash`] on the blocking pool, keeping the user scope for its log lines.
+async fn verify_password_hash_off_thread(candidate: &str, password_hash: &str) -> bool {
+    let candidate = zeroize::Zeroizing::new(candidate.to_string());
+    let password_hash = password_hash.to_string();
+    match redoor_core::logging::spawn_blocking_in_user_scope(move || {
+        verify_password_hash(&candidate, &password_hash)
+    })
+    .await
+    {
+        Ok(valid) => valid,
+        Err(error) => {
+            log_error!(
+                anyhow::Error::new(error),
+                "Password verification task failed"
+            );
+            false
+        }
+    }
+}
+
+/// Fingerprint domain of plaintext config passwords. Unchanged since sessions were
+/// introduced, so upgrades do not sign anyone out.
 const PLAINTEXT_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1:";
 /// Fingerprint domain of Argon2 hashes from the config, kept apart so a plaintext password
 /// can never fingerprint like a hash string.
 const HASH_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1-argon2:";
+/// Fingerprint domain of PAM sessions, hashed with the process user's name, so turning PAM
+/// off (or running the server as another user) revokes them and they can never match a
+/// password user's fingerprint.
+const PAM_FINGERPRINT_DOMAIN: &[u8] = b"redoor-session-v1-pam:";
 
 /// Builds a stable fingerprint so rotating the config password invalidates existing cookies.
 fn credentials_fingerprint(domain: &[u8], secret: &str) -> String {
@@ -776,17 +905,10 @@ fn oidc_fingerprint(config: &OidcConfig) -> String {
         .collect()
 }
 
-/// A freshly created session: the account it belongs to and the cookie that carries it.
+/// A freshly created session: who signed in and the cookie that carries it.
 pub(crate) struct NewSession {
-    pub(crate) username: String,
+    pub(crate) user: SessionUser,
     pub(crate) cookie: HeaderValue,
-}
-
-/// Constant-time string equality via fixed-length digests so length and content do not leak via timing.
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    let left_digest = Sha256::digest(left.as_bytes());
-    let right_digest = Sha256::digest(right.as_bytes());
-    bool::from(left_digest.ct_eq(&right_digest))
 }
 
 /// Writes bytes with mode 0600 so local users cannot steal bearer session IDs from disk.
@@ -841,7 +963,7 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
         .find_map(|(name, value)| (name == SESSION_COOKIE_NAME).then(|| value.to_string()))
 }
 
-/// Verifies configured credentials and persists a new server-side login session.
+/// Verifies a login name and password and persists a new server-side login session.
 pub(crate) async fn login_handler(
     State(state): State<ServerState>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
@@ -863,19 +985,23 @@ pub(crate) async fn login_handler(
             .into_response();
     }
 
-    // Configured auth verifies the hash on username mismatch to avoid a timing signal,
-    // while PAM rejects mismatched usernames before its blocking check.
-    let fingerprint = match state
+    let grant = match state
         .auth
         .verify_login(&request.username, &request.password)
         .await
     {
-        LoginVerification::Authenticated { fingerprint } => fingerprint,
+        LoginVerification::Authenticated(grant) => grant,
         LoginVerification::Rejected => {
             state
                 .auth
                 .login_limiter
                 .record_failure(client_ip, Instant::now());
+            // Debug-quoted, because the name is whatever the client sent.
+            log!(
+                Level::Info,
+                "Failed login: name={:?}, address={client_ip}",
+                request.username
+            );
             return (
                 StatusCode::UNAUTHORIZED,
                 Json(ErrorResponse {
@@ -885,7 +1011,6 @@ pub(crate) async fn login_handler(
             )
                 .into_response();
         }
-        #[cfg(target_os = "linux")]
         LoginVerification::Busy => {
             return (
                 StatusCode::TOO_MANY_REQUESTS,
@@ -898,7 +1023,7 @@ pub(crate) async fn login_handler(
         }
     };
 
-    let session = match state.auth.create_password_session(fingerprint).await {
+    let session = match state.auth.issue_session(grant, SESSION_LIFETIME).await {
         Ok(session) => session,
         Err(error) => {
             // Keep IO/path details off the wire; operators still see them in server logs.
@@ -913,9 +1038,14 @@ pub(crate) async fn login_handler(
                 .into_response();
         }
     };
+    log!(
+        Level::Info,
+        "Signed in: user={}, address={client_ip}",
+        session.user.log_label()
+    );
 
     let mut response = Json(LoginResponse {
-        username: session.username,
+        username: session.user.name,
     })
     .into_response();
     response
@@ -956,17 +1086,98 @@ pub(crate) async fn logout_handler(
 mod tests {
     use super::{
         AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
-        LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification,
-        PasswordChangeError, SESSION_COOKIE_NAME, SessionCheck, SessionFile, SessionMethod,
-        oidc_fingerprint,
+        LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification, PamBackend,
+        PamLogin, PasswordChangeError, SESSION_COOKIE_NAME, SESSION_LIFETIME, SessionCheck,
+        SessionFile, SessionGrant, SessionMethod, SessionUser, oidc_fingerprint,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
-    use redoor_core::config::{AuthMode, ConfiguredPassword, OidcConfig};
+    use redoor_core::config::{ConfiguredPassword, ConfiguredUser, OidcConfig};
     use redoor_core::test_support::TempDir;
     use std::{
         net::{IpAddr, Ipv4Addr},
+        sync::{Arc, Mutex},
         time::{Duration, Instant},
     };
+
+    /// Stands in for PAM: accepts one password and records every password it was asked
+    /// about, so tests can see whether PAM was consulted at all.
+    struct FakePam {
+        password: String,
+        calls: Mutex<Vec<String>>,
+    }
+
+    impl PamBackend for FakePam {
+        /// Records the call and compares with the one accepted password.
+        fn verify_current_user_password(&self, password: &str) -> anyhow::Result<bool> {
+            self.calls.lock().unwrap().push(password.to_string());
+            Ok(password == self.password)
+        }
+    }
+
+    /// A fake PAM for process user `root-user` with password `pam-password`.
+    fn fake_pam() -> (Arc<FakePam>, PamLogin) {
+        let backend = Arc::new(FakePam {
+            password: "pam-password".to_string(),
+            calls: Mutex::default(),
+        });
+        let login = PamLogin::new(backend.clone(), "root-user".to_string());
+        (backend, login)
+    }
+
+    /// A plaintext `[[server.users]]` entry.
+    fn user(name: &str, password: &str) -> ConfiguredUser {
+        ConfiguredUser {
+            name: name.to_string(),
+            password: ConfiguredPassword::Plaintext(password.to_string()),
+        }
+    }
+
+    /// Auth state with the given logins stored in `directory`, as a restart would build it.
+    async fn auth_with(
+        directory: &TempDir,
+        users: Vec<ConfiguredUser>,
+        pam: Option<PamLogin>,
+        oidc: Option<&OidcConfig>,
+    ) -> AuthState {
+        AuthState::new(
+            users,
+            pam,
+            oidc,
+            "agent-token".to_string(),
+            false,
+            directory.path(),
+        )
+        .await
+        .expect("auth state must initialize")
+    }
+
+    /// A password session of `name`, created through the real login check.
+    async fn login(auth: &AuthState, name: &str, password: &str) -> HeaderMap {
+        let LoginVerification::Authenticated(grant) = auth.verify_login(name, password).await
+        else {
+            panic!("{name} must be able to sign in");
+        };
+        session_headers(auth, grant).await
+    }
+
+    /// Issues a session for a checked credential and returns the cookie it set.
+    async fn session_headers(auth: &AuthState, grant: SessionGrant) -> HeaderMap {
+        cookie_headers(
+            &auth
+                .issue_session(grant, SESSION_LIFETIME)
+                .await
+                .expect("session")
+                .cookie,
+        )
+    }
+
+    /// The signed-in user of a session, or `None` when the session is not valid.
+    async fn session_user(auth: &AuthState, headers: &HeaderMap) -> Option<SessionUser> {
+        match auth.check_session(headers).await {
+            SessionCheck::Invalid => None,
+            SessionCheck::Valid(user) | SessionCheck::Renewed(user, _) => Some(user),
+        }
+    }
 
     /// OIDC settings with the given allowed groups and a one-year sliding lifetime.
     fn oidc_config(groups: &[&str]) -> OidcConfig {
@@ -984,20 +1195,9 @@ mod tests {
         }
     }
 
-    /// Auth state for a password account, optionally with OIDC, stored in `directory`.
+    /// Auth state for a password user `admin`, optionally with OIDC, stored in `directory`.
     async fn auth_state(directory: &TempDir, oidc: Option<&OidcConfig>) -> AuthState {
-        AuthState::new(
-            AuthMode::Configured {
-                username: "admin".to_string(),
-                password: ConfiguredPassword::Plaintext("password".to_string()),
-            },
-            oidc,
-            "agent-token".to_string(),
-            false,
-            directory.path(),
-        )
-        .await
-        .expect("auth state must initialize")
+        auth_with(directory, vec![user("admin", "password")], None, oidc).await
     }
 
     /// Request headers carrying the cookie from a `Set-Cookie` value.
@@ -1041,7 +1241,7 @@ mod tests {
         let oidc = oidc_config(&["admins"]);
         let auth = auth_state(&directory, Some(&oidc)).await;
         let session = auth
-            .create_session(SessionMethod::Oidc)
+            .create_oidc_session("alice".to_string())
             .await
             .expect("session must be created");
         // The browser cookie lasts as long as the configured sliding lifetime.
@@ -1053,23 +1253,24 @@ mod tests {
                 .contains("Max-Age=31536000")
         );
         let headers = cookie_headers(&session.cookie);
-        // A brand-new session needs no renewal, so no disk write or cookie per request.
+        // A brand-new session needs no renewal, so no disk write or cookie per request, and
+        // it names the OIDC user.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(SessionUser { name, method: SessionMethod::Oidc }) if name == "alice"
         ));
 
         let now = jiff::Timestamp::now().as_second();
         set_expiry(&directory, &headers, now + 60).await;
         // A session close to expiry is extended and the cookie is re-issued.
-        let SessionCheck::Renewed(cookie) = auth.check_session(&headers).await else {
+        let SessionCheck::Renewed(_, cookie) = auth.check_session(&headers).await else {
             panic!("a used session close to expiry must be renewed");
         };
         assert!(cookie.to_str().expect("ASCII").contains("Max-Age=31536000"));
         // After renewal the stored expiry is a full lifetime away again.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
 
         set_expiry(&directory, &headers, now - 1).await;
@@ -1086,8 +1287,12 @@ mod tests {
         let directory = TempDir::create();
         let oidc = oidc_config(&["admins"]);
         let auth = auth_state(&directory, Some(&oidc)).await;
+        let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
+        else {
+            panic!("admin must be able to sign in");
+        };
         let session = auth
-            .create_session(SessionMethod::Password)
+            .issue_session(grant, SESSION_LIFETIME)
             .await
             .expect("session must be created");
         // Password sessions keep the existing one-week cookie.
@@ -1108,7 +1313,7 @@ mod tests {
         // Use near expiry does not extend a password session.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
     }
 
@@ -1121,18 +1326,12 @@ mod tests {
         let auth = auth_state(&directory, Some(&oidc)).await;
         let oidc_headers = cookie_headers(
             &auth
-                .create_session(SessionMethod::Oidc)
+                .create_oidc_session("alice".to_string())
                 .await
                 .expect("session")
                 .cookie,
         );
-        let password_headers = cookie_headers(
-            &auth
-                .create_session(SessionMethod::Password)
-                .await
-                .expect("session")
-                .cookie,
-        );
+        let password_headers = login(&auth, "admin", "password").await;
 
         let widened = oidc_config(&["admins", "family"]);
         let restarted = auth_state(&directory, Some(&widened)).await;
@@ -1144,12 +1343,12 @@ mod tests {
         // Password sessions do not depend on the OIDC settings.
         assert!(matches!(
             restarted.check_session(&password_headers).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
 
         let oidc_headers = cookie_headers(
             &restarted
-                .create_session(SessionMethod::Oidc)
+                .create_oidc_session("alice".to_string())
                 .await
                 .expect("session")
                 .cookie,
@@ -1163,7 +1362,7 @@ mod tests {
         // Without OIDC configured, no OIDC session can be created at all.
         assert!(
             without_oidc
-                .create_session(SessionMethod::Oidc)
+                .create_oidc_session("alice".to_string())
                 .await
                 .is_err()
         );
@@ -1194,11 +1393,7 @@ mod tests {
     async fn legacy_session_files_remain_password_sessions() {
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
-        let session = auth
-            .create_session(SessionMethod::Password)
-            .await
-            .expect("session");
-        let headers = cookie_headers(&session.cookie);
+        let headers = login(&auth, "admin", "password").await;
         let value = headers[header::COOKIE].to_str().expect("ASCII");
         let session_id = value
             .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
@@ -1216,7 +1411,7 @@ mod tests {
         // Upgrading the server must not sign out existing browsers.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
     }
 
@@ -1244,18 +1439,16 @@ password = {stored}
         )
         .await
         .expect("write config");
-        let auth = AuthState::new(
-            AuthMode::Configured {
-                username: "admin".to_string(),
+        let auth = auth_with(
+            directory,
+            vec![ConfiguredUser {
+                name: "admin".to_string(),
                 password,
-            },
+            }],
             None,
-            "agent-token".to_string(),
-            false,
-            directory.path(),
+            None,
         )
-        .await
-        .expect("auth state must initialize");
+        .await;
         (config_path, auth)
     }
 
@@ -1283,16 +1476,10 @@ password = {stored}
             ConfiguredPassword::Plaintext("old-password".into()),
         )
         .await;
-        let other = cookie_headers(
-            &auth
-                .create_session(SessionMethod::Password)
-                .await
-                .expect("session")
-                .cookie,
-        );
+        let other = login(&auth, "admin", "old-password").await;
 
         let session = auth
-            .change_password(&config_path, "old-password", "new-password")
+            .change_password(&config_path, &admin(), "old-password", "new-password")
             .await
             .expect("the change must succeed");
 
@@ -1300,13 +1487,13 @@ password = {stored}
         // The file never gets the plaintext; it gets a hash the config parser accepts.
         assert!(stored.starts_with("$argon2id$"), "{stored}");
         assert_eq!(
-            ConfiguredPassword::parse(stored.clone()).expect("valid hash"),
+            ConfiguredPassword::parse(stored.clone(), "server.password").expect("valid hash"),
             ConfiguredPassword::Argon2Hash(stored.clone())
         );
         // The new password works at once and the old one no longer does.
         assert!(matches!(
             auth.verify_login("admin", "new-password").await,
-            LoginVerification::Authenticated { .. }
+            LoginVerification::Authenticated(_)
         ));
         assert!(matches!(
             auth.verify_login("admin", "old-password").await,
@@ -1321,7 +1508,7 @@ password = {stored}
         // The browser that made the change gets a working session.
         assert!(matches!(
             auth.check_session(&current).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
 
         let (_, restarted) =
@@ -1330,12 +1517,12 @@ password = {stored}
         // session survives a restart.
         assert!(matches!(
             restarted.check_session(&current).await,
-            SessionCheck::Valid
+            SessionCheck::Valid(_)
         ));
         // And the hash from the file verifies the new password.
         assert!(matches!(
             restarted.verify_login("admin", "new-password").await,
-            LoginVerification::Authenticated { .. }
+            LoginVerification::Authenticated(_)
         ));
     }
 
@@ -1353,7 +1540,7 @@ password = {stored}
             .expect("config");
 
         let wrong = auth
-            .change_password(&config_path, "guess", "new-password")
+            .change_password(&config_path, &admin(), "guess", "new-password")
             .await
             .err();
         // A stolen session alone cannot set a new password.
@@ -1362,7 +1549,7 @@ password = {stored}
             Some(PasswordChangeError::WrongCurrentPassword)
         ));
         let short = auth
-            .change_password(&config_path, "old-password", "short")
+            .change_password(&config_path, &admin(), "old-password", "short")
             .await
             .err();
         // The form's minimum length is enforced by the server, not only by the UI.
@@ -1379,8 +1566,255 @@ password = {stored}
         );
         assert!(matches!(
             auth.verify_login("admin", "old-password").await,
-            LoginVerification::Authenticated { .. }
+            LoginVerification::Authenticated(_)
         ));
+    }
+
+    /// The signed-in password user `admin`, as the change form receives it.
+    fn admin() -> SessionUser {
+        SessionUser {
+            name: "admin".to_string(),
+            method: SessionMethod::Password,
+        }
+    }
+
+    /// Only password sessions may change a password; PAM and OIDC passwords are managed
+    /// elsewhere.
+    #[tokio::test]
+    async fn password_change_needs_a_password_session() {
+        let directory = TempDir::create();
+        let (config_path, auth) = configured_auth(
+            &directory,
+            ConfiguredPassword::Plaintext("old-password".into()),
+        )
+        .await;
+        for method in [SessionMethod::Pam, SessionMethod::Oidc] {
+            let user = SessionUser {
+                name: "admin".to_string(),
+                method,
+            };
+            let error = auth
+                .change_password(&config_path, &user, "old-password", "new-password")
+                .await
+                .err();
+            // Even with the right name and current password, the method decides.
+            assert!(
+                matches!(error, Some(PasswordChangeError::NotPasswordSession)),
+                "{method:?}"
+            );
+        }
+    }
+
+    /// Several `[[server.users]]` sign in with their own passwords, and a wrong name or a
+    /// wrong password fails.
+    #[tokio::test]
+    async fn each_listed_user_signs_in_with_their_own_password() {
+        let directory = TempDir::create();
+        let auth = auth_with(
+            &directory,
+            vec![user("alice", "alice-password"), user("bob", "bob-password")],
+            None,
+            None,
+        )
+        .await;
+        for (name, password) in [("alice", "alice-password"), ("bob", "bob-password")] {
+            // Each user's own password signs them in as themselves.
+            assert!(matches!(
+                auth.verify_login(name, password).await,
+                LoginVerification::Authenticated(SessionGrant { user, .. })
+                    if user.name == name && user.method == SessionMethod::Password
+            ));
+        }
+        // Another user's password does not work.
+        assert!(matches!(
+            auth.verify_login("alice", "bob-password").await,
+            LoginVerification::Rejected
+        ));
+        // Unknown names are rejected.
+        assert!(matches!(
+            auth.verify_login("carol", "alice-password").await,
+            LoginVerification::Rejected
+        ));
+    }
+
+    /// TOML passwords are checked first and PAM only for the process user: a TOML success
+    /// never runs PAM, a failed TOML check of the process user falls through to PAM, and
+    /// other names never reach PAM.
+    #[tokio::test]
+    async fn login_order_checks_toml_first_and_pam_only_for_the_process_user() {
+        let directory = TempDir::create();
+        let (pam, pam_login) = fake_pam();
+        let auth = auth_with(
+            &directory,
+            vec![
+                user("root-user", "toml-password"),
+                user("alice", "alice-password"),
+            ],
+            Some(pam_login),
+            None,
+        )
+        .await;
+
+        // The TOML password of the process user signs in without asking PAM.
+        assert!(matches!(
+            auth.verify_login("root-user", "toml-password").await,
+            LoginVerification::Authenticated(SessionGrant { user, .. })
+                if user.method == SessionMethod::Password
+        ));
+        assert!(pam.calls.lock().unwrap().is_empty());
+
+        // A failed TOML check of the process user falls through to PAM.
+        assert!(matches!(
+            auth.verify_login("root-user", "pam-password").await,
+            LoginVerification::Authenticated(SessionGrant { user, .. })
+                if user.name == "root-user" && user.method == SessionMethod::Pam
+        ));
+        assert_eq!(*pam.calls.lock().unwrap(), ["pam-password"]);
+
+        // Another TOML user's wrong password and unknown names never reach PAM, even with
+        // the system password, so PAM's timing cannot be probed through them.
+        assert!(matches!(
+            auth.verify_login("alice", "pam-password").await,
+            LoginVerification::Rejected
+        ));
+        assert!(matches!(
+            auth.verify_login("mallory", "pam-password").await,
+            LoginVerification::Rejected
+        ));
+        assert_eq!(pam.calls.lock().unwrap().len(), 1);
+
+        // A wrong password for the process user is rejected by both.
+        assert!(matches!(
+            auth.verify_login("root-user", "guess").await,
+            LoginVerification::Rejected
+        ));
+        assert_eq!(pam.calls.lock().unwrap().len(), 2);
+    }
+
+    /// Sessions are revoked per user and per method: removing one user signs out only that
+    /// user, and turning PAM off signs out only PAM sessions.
+    #[tokio::test]
+    async fn sessions_are_revoked_per_user_and_method() {
+        let directory = TempDir::create();
+        let (_, pam_login) = fake_pam();
+        let auth = auth_with(
+            &directory,
+            vec![user("alice", "alice-password"), user("bob", "bob-password")],
+            Some(pam_login.clone()),
+            None,
+        )
+        .await;
+        let alice = login(&auth, "alice", "alice-password").await;
+        let bob = login(&auth, "bob", "bob-password").await;
+        let pam = login(&auth, "root-user", "pam-password").await;
+        // Each session knows who signed in and how.
+        assert_eq!(
+            session_user(&auth, &pam).await,
+            Some(SessionUser {
+                name: "root-user".to_string(),
+                method: SessionMethod::Pam
+            })
+        );
+
+        let without_bob = auth_with(
+            &directory,
+            vec![user("alice", "alice-password")],
+            Some(pam_login),
+            None,
+        )
+        .await;
+        // Removing bob from the config revokes bob's session at the restart ...
+        assert!(session_user(&without_bob, &bob).await.is_none());
+        // ... and nobody else's.
+        assert!(session_user(&without_bob, &alice).await.is_some());
+        assert!(session_user(&without_bob, &pam).await.is_some());
+
+        let without_pam = auth_with(
+            &directory,
+            vec![user("alice", "alice-password")],
+            None,
+            None,
+        )
+        .await;
+        // Turning PAM off revokes PAM sessions only.
+        assert!(session_user(&without_pam, &pam).await.is_none());
+        assert!(session_user(&without_pam, &alice).await.is_some());
+    }
+
+    /// Changing one user's password signs out that user's other sessions and keeps every
+    /// other user signed in.
+    #[tokio::test]
+    async fn password_change_signs_out_only_that_user() {
+        let directory = TempDir::create();
+        let config_path = directory.path().join("config.toml");
+        tokio::fs::write(
+            &config_path,
+            r#"agent_token = "t"
+[[server.users]]
+name = "alice"
+password = "alice-password"
+[[server.users]]
+name = "bob"
+password = "bob-password"
+"#,
+        )
+        .await
+        .expect("write config");
+        let auth = auth_with(
+            &directory,
+            vec![user("alice", "alice-password"), user("bob", "bob-password")],
+            None,
+            None,
+        )
+        .await;
+        let alice_elsewhere = login(&auth, "alice", "alice-password").await;
+        let bob = login(&auth, "bob", "bob-password").await;
+        let alice = SessionUser {
+            name: "alice".to_string(),
+            method: SessionMethod::Password,
+        };
+
+        auth.change_password(&config_path, &alice, "alice-password", "alice-new-password")
+            .await
+            .expect("the change must succeed");
+        // Alice's other browser is signed out.
+        assert!(session_user(&auth, &alice_elsewhere).await.is_none());
+        // Bob is not affected.
+        assert!(session_user(&auth, &bob).await.is_some());
+        // Only alice's entry changed in the file.
+        let content = tokio::fs::read_to_string(&config_path).await.unwrap();
+        assert!(content.contains("bob-password"), "{content}");
+        assert!(!content.contains("alice-password"), "{content}");
+    }
+
+    /// Session files written by the previous version for a PAM login said `password`, so
+    /// they no longer match anything and sign in again.
+    #[tokio::test]
+    async fn legacy_pam_session_files_sign_in_again() {
+        let directory = TempDir::create();
+        let (_, pam_login) = fake_pam();
+        let auth = auth_with(&directory, vec![], Some(pam_login), None).await;
+        let pam = login(&auth, "root-user", "pam-password").await;
+        let value = pam[header::COOKIE].to_str().expect("ASCII");
+        let session_id = value
+            .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
+            .expect("session cookie");
+        let path = directory
+            .path()
+            .join("sessions")
+            .join(format!("session_{session_id}.json"));
+        let mut stored: SessionFile =
+            serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+        stored.method = SessionMethod::Password;
+        stored.credentials_fingerprint = super::credentials_fingerprint(
+            super::PLAINTEXT_FINGERPRINT_DOMAIN,
+            "pam-system-auth-v1",
+        );
+        tokio::fs::write(&path, serde_json::to_vec(&stored).unwrap())
+            .await
+            .unwrap();
+        // The old shape names no password user, so it is not a valid session any more.
+        assert!(session_user(&auth, &pam).await.is_none());
     }
 
     /// Ensures failed-login state expires at the boundary without sleeps or resetting active bans.

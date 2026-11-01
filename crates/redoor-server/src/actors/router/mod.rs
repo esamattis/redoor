@@ -51,13 +51,13 @@ pub const ROUTER_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 /// Shared sender used to interact with the single-owner router task.
 #[derive(Clone, Debug)]
 pub struct RouterHandle {
-    sender: mpsc::Sender<RouterMsg>,
+    sender: mpsc::Sender<RouterEnvelope>,
     request_ids: RequestIds,
 }
 
 impl RouterHandle {
     /// Creates a new handle from the router mailbox sender.
-    pub(super) fn new(sender: mpsc::Sender<RouterMsg>) -> Self {
+    pub(super) fn new(sender: mpsc::Sender<RouterEnvelope>) -> Self {
         Self {
             sender,
             request_ids: RequestIds::default(),
@@ -76,16 +76,18 @@ impl RouterHandle {
     /// shutdown error, so callers cannot mistake dropped work for a stopped router. Async
     /// contexts must use [`RouterHandle::send_async`], which waits for capacity instead.
     pub fn send(&self, message: RouterMsg) -> Result<(), RouterSendError> {
-        self.sender.try_send(message).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => RouterSendError::Full,
-            mpsc::error::TrySendError::Closed(_) => RouterSendError::Stopped,
-        })
+        self.sender
+            .try_send(RouterEnvelope::from_current_task(message))
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => RouterSendError::Full,
+                mpsc::error::TrySendError::Closed(_) => RouterSendError::Stopped,
+            })
     }
 
     /// Queues one router message, waiting for mailbox capacity when necessary.
     pub async fn send_async(&self, message: RouterMsg) -> Result<(), RouterSendError> {
         self.sender
-            .send(message)
+            .send(RouterEnvelope::from_current_task(message))
             .await
             .map_err(|_| RouterSendError::Stopped)
     }
@@ -174,6 +176,27 @@ impl Drop for StreamCloseGuard {
     }
 }
 
+/// A router message and the user whose request sent it.
+///
+/// Task-locals do not reach the router's task, so the sender's user travels with the
+/// message and the router handles it, and logs, as that user.
+pub struct RouterEnvelope {
+    /// The sending task's user; `None` for agent frames and background work.
+    pub(crate) user: Option<std::sync::Arc<str>>,
+    /// The message itself.
+    pub(crate) message: RouterMsg,
+}
+
+impl RouterEnvelope {
+    /// Wraps `message` with the current task's user.
+    fn from_current_task(message: RouterMsg) -> Self {
+        Self {
+            user: redoor_core::logging::current_user(),
+            message,
+        }
+    }
+}
+
 /// Why a router message was not queued; a full mailbox must never look like a stopped router.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum RouterSendError {
@@ -198,7 +221,7 @@ pub enum RouterCallError {
 
 /// Spawns the router task and returns its handle plus join handle.
 pub fn spawn_router() -> (RouterHandle, tokio::task::JoinHandle<()>) {
-    let (sender, receiver) = mpsc::channel::<RouterMsg>(ROUTER_MAILBOX_CAPACITY);
+    let (sender, receiver) = mpsc::channel::<RouterEnvelope>(ROUTER_MAILBOX_CAPACITY);
     let router_handle = RouterHandle::new(sender);
     let state = RouterState::with_request_ids(
         ui::start_refresh_check_task(router_handle.clone()),
@@ -246,7 +269,10 @@ impl RouterState {
             );
             return;
         };
-        match self.flows.get(flow_id) {
+        // The answer arrives from the agent's session, so it is logged as the user whose
+        // request started the flow.
+        let user = self.flows.user(flow_id);
+        redoor_core::logging::sync_user_scope(user, || match self.flows.get(flow_id) {
             Some(Flow::Command(_)) => self.finish_command(flow_id, response),
             Some(Flow::Output(_)) => self.finish_output_response(flow_id, response),
             Some(Flow::Upload(_)) => {
@@ -259,7 +285,7 @@ impl RouterState {
                 self.finish_copy_response(flow_id, response);
             }
             None => {}
-        }
+        });
     }
 
     /// Fails the flow of a stream whose agent ignored its credit; the connection reader
@@ -435,13 +461,15 @@ impl RouterState {
     }
 
     /// Runs the router event loop so all correlated routing state stays single-owner.
-    async fn run(mut self, mut receiver: mpsc::Receiver<RouterMsg>) {
+    async fn run(mut self, mut receiver: mpsc::Receiver<RouterEnvelope>) {
         log!(Level::Info, "Router task started");
-        while let Some(message) = receiver.recv().await {
+        while let Some(RouterEnvelope { user, message }) = receiver.recv().await {
             if matches!(message, RouterMsg::Shutdown) {
                 break;
             }
-            self.handle(message);
+            // The router serves every request, so its own task has no user; each message is
+            // handled as the user who sent it, and flows it creates remember that user.
+            redoor_core::logging::sync_user_scope(user, || self.handle(message));
         }
         self.ui.refresh_check_task.abort();
         log!(Level::Info, "Router task stopped");

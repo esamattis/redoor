@@ -21,7 +21,7 @@ use zeroize::Zeroizing;
 use super::ProvisionError;
 use super::encrypted_keys::SshKeySeal;
 use super::held_keys::HeldSshKeys;
-use super::keys::{AccountSshKeys, HostKey, ManagedKey, StagedKey, StoredKey, device_marker};
+use super::keys::{HostKey, ManagedKey, SshKeyStore, StagedKey, StoredKey, device_marker};
 use super::shell::quote;
 use super::transport::{
     AuthPolicy, HostKeyPolicy, PinnedHostKey, SshConfigDump, SshHost, SshOutput, SshRunOptions,
@@ -102,15 +102,14 @@ impl PendingKey {
     }
 }
 
-/// One SSH device's key and host key operations, for one account.
+/// One SSH device's key and host key operations.
 pub(crate) struct ManagedKeyDevice {
     /// The device's current config entry.
     config: SshBackedAgentConfig,
     /// The device id, which names the key's directory and is the `HostKeyAlias`.
     device: AgentId,
-    /// Where the account's keys and pins are stored; `None` for relays, which belong to no
-    /// account and so have neither.
-    keys: Option<AccountSshKeys>,
+    /// Where keys and pins are stored; `None` for relays, which have neither.
+    keys: Option<SshKeyStore>,
     /// Decrypted keys of running devices.
     held: HeldSshKeys,
 }
@@ -119,7 +118,7 @@ impl ManagedKeyDevice {
     /// Binds the operations to one config entry; entries without an id cannot have keys.
     pub(crate) fn new(
         config: SshBackedAgentConfig,
-        keys: Option<AccountSshKeys>,
+        keys: Option<SshKeyStore>,
         held: HeldSshKeys,
     ) -> Result<Self, ProvisionError> {
         let device = config.id.clone().ok_or_else(|| {
@@ -136,20 +135,15 @@ impl ManagedKeyDevice {
         })
     }
 
-    /// The account's key store; key operations always run for an account.
-    fn keys(&self) -> Result<&AccountSshKeys, ManagedKeyError> {
+    /// The key store; key operations only run on the server, which always has one.
+    fn keys(&self) -> Result<&SshKeyStore, ManagedKeyError> {
         self.keys.as_ref().ok_or_else(|| {
-            ManagedKeyError::Local("SSH key operations need a login account".to_string())
+            ManagedKeyError::Local("SSH key operations are not available for relays".to_string())
         })
     }
 
-    /// The account the key operations run for.
-    fn account(&self) -> Option<&str> {
-        self.keys.as_ref().map(AccountSshKeys::account)
-    }
-
     /// The pinned host key policy, or `None` when nothing is pinned yet (or there is no
-    /// account to hold a pin).
+    /// key store to hold a pin).
     async fn pinned_policy(&self) -> std::io::Result<Option<PinnedHostKey>> {
         let Some(keys) = &self.keys else {
             return Ok(None);
@@ -173,42 +167,28 @@ impl ManagedKeyDevice {
     }
 
     /// Decrypts the device's encrypted key with its file key, after the caller checked the
-    /// header against the vault. Checks the MAC, the account and device binding and that
-    /// the private key matches the header's public key.
+    /// header against the vault. Checks the MAC, the device binding and that the private
+    /// key matches the header's public key.
     pub(crate) async fn unlock(
         &self,
         file: &super::encrypted_keys::EncryptedKeyFile,
         file_key: &redoor_vault::FileKey,
     ) -> Result<ManagedKey, super::encrypted_keys::SshKeyOpenError> {
-        let account = self
-            .account()
-            .ok_or_else(|| {
-                super::encrypted_keys::SshKeyOpenError::Mismatch(
-                    "SSH keys belong to a login account".to_string(),
-                )
-            })?
-            .to_string();
-        let private_key = file.open(file_key, &account, &self.device).await?;
+        let private_key = file.open(file_key, &self.device).await?;
         Ok(ManagedKey::from_decrypted(
             self.device.clone(),
-            account,
             std::sync::Arc::new(private_key),
         ))
     }
 
-    /// The key the server holds for this account's device, if any.
+    /// The key the server holds for this device, if any.
     ///
     /// It is not compared with the key file: a rotation of a running device holds the new
     /// key just before renaming it into place, and both keys stay authorized on the device
     /// until the old line is removed afterwards, so either one logs in during the switch.
     pub(crate) fn held_key(&self) -> Option<ManagedKey> {
-        let account = self.account()?;
-        let key = self.held.get(account, &self.device)?;
-        Some(ManagedKey::from_decrypted(
-            self.device.clone(),
-            account.to_string(),
-            key,
-        ))
+        let key = self.held.get(&self.device)?;
+        Some(ManagedKey::from_decrypted(self.device.clone(), key))
     }
 
     /// The host every agent start uses for a device with a managed key: pinned host key and
@@ -388,7 +368,7 @@ impl ManagedKeyDevice {
     /// is not touched, so running agents and new starts keep using it until the commit.
     ///
     /// `current` is the operation credential of a rotation (required when the device has a
-    /// managed key); `vault` encrypts the new key with the account's vault.
+    /// managed key); `vault` encrypts the new key with the vault.
     pub(crate) async fn install_new_key(
         &self,
         confirmed_host_key: Option<&str>,
@@ -420,9 +400,8 @@ impl ManagedKeyDevice {
             ))?;
         log!(
             Level::Info,
-            "Staged managed SSH key: device={}, account={}, fingerprint={}, encrypted={}",
+            "Staged managed SSH key: device={}, fingerprint={}, encrypted={}",
             self.device,
-            self.account().unwrap_or_default(),
             key.key.fingerprint(),
             key.encrypted
         );
@@ -533,7 +512,7 @@ impl ManagedKeyDevice {
         }
     }
 
-    /// Removes every line this account installed for this device from the device, logging
+    /// Removes every line redoor installed for this device from the device, logging
     /// in with `credential`, the operation credential of the current key. Returns why the
     /// device could not be cleaned up, if it could not; the caller deletes the local keys
     /// either way.
@@ -698,7 +677,7 @@ impl ManagedKeyDevice {
         let new_line = new_key.map(|key| (key.authorized_keys_line(), key.fingerprint()));
         let keys = self.keys()?;
         let script = install_script(
-            &device_marker(&self.device, keys.account()),
+            &device_marker(&self.device),
             keep,
             new_line
                 .as_ref()
@@ -775,12 +754,20 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 
 /// Builds the script that rewrites `~/.ssh/authorized_keys` on the device.
 ///
-/// It drops every line with `marker` (this device and account, see [`device_marker`]) whose
-/// key fingerprint is not in `keep`,
-/// appends the new line (dropping an older copy with the same fingerprint first, so running
-/// it again gives the same file) and moves the result over the file atomically, so sshd
-/// never sees a half-written file. Lines of other devices and other tools are copied
-/// unchanged.
+/// A line belongs to this device when its comment contains `marker`, the device prefix
+/// `redoor:<device-id>:` (see [`device_marker`]); the trailing colon keeps `dev_abc` from
+/// matching `dev_abcd`. Such a line is a given key's when the rest of its marker is the
+/// key's fingerprint or ends with `:<fingerprint>`. The script drops every line of this
+/// device whose key is not in `keep`, appends the new line (dropping an older copy of the
+/// same key first, so running it again gives the same file) and moves the result over the
+/// file atomically, so sshd never sees a half-written file. Lines of other devices and
+/// other tools are copied unchanged.
+///
+/// TEMPORARY MIGRATION: the `:<fingerprint>` suffix match is what recognises legacy
+/// `redoor:<device-id>:<account>:<fingerprint>` lines. Rotation keeps the current key's
+/// legacy line during the install (a failed verification rolls back with the old key, which
+/// needs that line) and removes it afterwards, and removal and device deletion drop legacy
+/// lines with the rest. Keep the suffix match for as long as legacy lines can exist.
 ///
 /// A symlinked `authorized_keys` is written through: the new file is built next to the link
 /// target and renamed over the target, so the link survives. Proxmox VE links root's file
@@ -791,8 +778,8 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 /// because creating or replacing it would either fail half way or fight its owner.
 ///
 /// `new` is the new line and its key's fingerprint. Fingerprints contain `+`, `/` and
-/// possibly `=`, so the awk filter compares them only as literal strings (`index` and
-/// `==`, never a regex), and receives them through `ENVIRON`, which unlike `awk -v` does
+/// possibly `=`, so the awk filter compares them only as literal strings (`index`, `substr`
+/// and `==`, never a regex), and receives them through `ENVIRON`, which unlike `awk -v` does
 /// not interpret backslash escapes. That works the same in GNU awk, BSD awk and busybox.
 fn install_script(marker: &str, keep: &[String], new: Option<(&str, &str)>) -> String {
     // Fingerprints and key lines never contain a single quote today, but the script runs
@@ -841,17 +828,27 @@ temp=$(mktemp "$target_dir/.authorized_keys.redoor.XXXXXX")
 trap 'rm -f "$temp"' EXIT
 if [ -f "$target" ]; then
   REDOOR_MARKER="$marker" REDOOR_KEEP="$keep" REDOOR_SKIP="$skip" awk '
+    # Whether the marker rest names the key: the fingerprint itself, or a legacy
+    # `<account>:<fingerprint>` that ends with it.
+    function is_key(rest, fingerprint) {{
+      if (fingerprint == "") return 0
+      if (rest == fingerprint) return 1
+      return length(rest) > length(fingerprint) + 1 && substr(rest, length(rest) - length(fingerprint)) == ":" fingerprint
+    }}
     BEGIN {{
       marker = ENVIRON["REDOOR_MARKER"]
-      keep = ENVIRON["REDOOR_KEEP"]
       skip = ENVIRON["REDOOR_SKIP"]
+      kept = split(ENVIRON["REDOOR_KEEP"], keep, " ")
     }}
     {{
       position = index($0, marker)
       if (position > 0) {{
-        fingerprint = substr($0, position + length(marker))
-        sub(/[ \t\r].*$/, "", fingerprint)
-        if (fingerprint == "" || fingerprint == skip || index(keep, " " fingerprint " ") == 0) next
+        rest = substr($0, position + length(marker))
+        sub(/[ \t\r].*$/, "", rest)
+        if (rest == "" || is_key(rest, skip)) next
+        found = 0
+        for (i = 1; i <= kept; i++) if (is_key(rest, keep[i])) found = 1
+        if (!found) next
       }}
       print
     }}' "$target" > "$temp"
@@ -893,12 +890,10 @@ mod tests {
         child.wait_with_output().await.unwrap()
     }
 
-    /// The script keeps other lines byte for byte, removes stale lines of this device and
-    /// account only, and running it twice does not duplicate the new line. The fingerprints
-    /// contain `+`, `/` and `=`, which must be matched literally, and a fingerprint that is a
-    /// prefix of a kept one must not count as kept. Another account's lines for the same
-    /// device are never touched, so one account's setup, rotation and removal cannot revoke
-    /// another's key.
+    /// The script keeps other lines byte for byte, removes stale lines of this device only,
+    /// and running it twice does not duplicate the new line. The fingerprints contain `+`,
+    /// `/` and `=`, which must be matched literally, and a fingerprint that is a prefix of a
+    /// kept one must not count as kept.
     #[tokio::test]
     async fn install_script_rewrites_only_this_devices_lines() {
         let home = redoor_core::test_support::TempDir::create();
@@ -911,22 +906,21 @@ mod tests {
         let kept_prefix = "SHA256:ke+pt";
         let new = "SHA256:n+e/w==";
         let unrelated = "ssh-ed25519 AAAAunrelated  user@laptop\t# odd   spacing";
-        let marker = device_marker(&device, "alice");
+        let marker = device_marker(&device);
         let original = format!(
             "{unrelated}
-ssh-ed25519 AAAAstale redoor:{device}:alice:{stale}
-ssh-ed25519 AAAAprefix redoor:{device}:alice:{kept_prefix}
-ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
-ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
-ssh-ed25519 AAAAkept redoor:{device}:alice:{kept}\r
-ssh-ed25519 AAAAempty redoor:{device}:alice:
+ssh-ed25519 AAAAstale redoor:{device}:{stale}
+ssh-ed25519 AAAAprefix redoor:{device}:{kept_prefix}
+ssh-ed25519 AAAAother redoor:{other_device}:{stale}
+ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
+ssh-ed25519 AAAAempty redoor:{device}:
 "
         );
         tokio::fs::write(ssh_dir.join("authorized_keys"), &original)
             .await
             .unwrap();
         let new_line =
-            format!("restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:alice:{new}");
+            format!("restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:{new}");
         let script = install_script(
             &marker,
             &[kept.to_string(), new.to_string()],
@@ -943,16 +937,14 @@ ssh-ed25519 AAAAempty redoor:{device}:alice:
             .unwrap();
         let expected = format!(
             "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
-ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
-ssh-ed25519 AAAAkept redoor:{device}:alice:{kept}\r
+ssh-ed25519 AAAAother redoor:{other_device}:{stale}
+ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
 {new_line}
 "
         );
         // Unrelated lines survive unchanged (even a CRLF line ending), the stale, prefix and
-        // empty-fingerprint lines of this device and account are gone, the other device's
-        // and the other account's lines with the same fingerprint stay, and the new line
-        // appears exactly once.
+        // empty-fingerprint lines of this device are gone, the other device's line with the
+        // same fingerprint stays, and the new line appears exactly once.
         assert_eq!(written, expected);
 
         let rotated = install_script(&marker, &[new.to_string()], None);
@@ -967,8 +959,7 @@ ssh-ed25519 AAAAkept redoor:{device}:alice:{kept}\r
             written,
             format!(
                 "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
-ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
+ssh-ed25519 AAAAother redoor:{other_device}:{stale}
 {new_line}
 "
             )
@@ -981,15 +972,116 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
         let written = tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
             .await
             .unwrap();
-        // Every line of this device and account is removed, nothing else.
+        // Every line of this device is removed, nothing else.
         assert_eq!(
             written,
             format!(
                 "{unrelated}
-ssh-ed25519 AAAAother redoor:{other_device}:alice:{stale}
-ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
+ssh-ed25519 AAAAother redoor:{other_device}:{stale}
 "
             )
+        );
+    }
+
+    /// A device id that is a prefix of another must not claim the other device's lines; the
+    /// marker's trailing colon is what separates them.
+    #[tokio::test]
+    async fn install_script_does_not_match_a_longer_device_id() {
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let fingerprint = "SHA256:same";
+        let original = format!(
+            "ssh-ed25519 AAAAshort redoor:dev_abc:{fingerprint}
+ssh-ed25519 AAAAlong redoor:dev_abcd:{fingerprint}
+ssh-ed25519 AAAAlegacy redoor:dev_abcd:alice:{fingerprint}
+"
+        );
+        tokio::fs::write(ssh_dir.join("authorized_keys"), &original)
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &install_script("redoor:dev_abc:", &[], None)).await;
+        // Removing every line of `dev_abc` succeeds ...
+        assert!(output.status.success(), "{output:?}");
+        // ... and leaves both kinds of `dev_abcd` lines alone.
+        assert_eq!(
+            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
+                .await
+                .unwrap(),
+            format!(
+                "ssh-ed25519 AAAAlong redoor:dev_abcd:{fingerprint}
+ssh-ed25519 AAAAlegacy redoor:dev_abcd:alice:{fingerprint}
+"
+            )
+        );
+    }
+
+    /// TEMPORARY MIGRATION: legacy `redoor:<device-id>:<account>:<fingerprint>` lines. A
+    /// rotation keeps the current key's legacy line while the new key is installed (a
+    /// failed verification rolls back with the old key, which needs that line) and removes
+    /// it when the rotation finishes; removal drops legacy lines too. A later simplification
+    /// of the filter must not break this while legacy lines still exist.
+    #[tokio::test]
+    async fn install_script_handles_legacy_lines() {
+        let home = redoor_core::test_support::TempDir::create();
+        let ssh_dir = home.path().join(".ssh");
+        tokio::fs::create_dir(&ssh_dir).await.unwrap();
+        let device = AgentId::generate();
+        let marker = device_marker(&device);
+        let current = "SHA256:cur+rent/k=";
+        let stale = "SHA256:st+ale";
+        let new = "SHA256:n+ew";
+        let current_line = format!("ssh-ed25519 AAAAcurrent redoor:{device}:esamatti:{current}");
+        let stale_line = format!("ssh-ed25519 AAAAstale redoor:{device}:esamatti:{stale}");
+        // A legacy line whose account part only ends like a kept fingerprint without the
+        // separating colon must not count as that key.
+        let lookalike = format!("ssh-ed25519 AAAAlookalike redoor:{device}:x{current}");
+        tokio::fs::write(
+            ssh_dir.join("authorized_keys"),
+            format!("{current_line}\n{stale_line}\n{lookalike}\n"),
+        )
+        .await
+        .unwrap();
+        let new_line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:{new}");
+
+        let install = install_script(
+            &marker,
+            &[current.to_string(), new.to_string()],
+            Some((&new_line, new)),
+        );
+        let output = run_script(home.path(), &install).await;
+        assert!(output.status.success(), "{output:?}");
+        // During the install the current key's legacy line stays next to the new line, and
+        // other legacy lines of the device are gone.
+        assert_eq!(
+            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
+                .await
+                .unwrap(),
+            format!("{current_line}\n{new_line}\n")
+        );
+
+        let finish = install_script(&marker, &[new.to_string()], None);
+        let output = run_script(home.path(), &finish).await;
+        assert!(output.status.success(), "{output:?}");
+        // Finishing the rotation leaves only the new-format line.
+        assert_eq!(
+            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
+                .await
+                .unwrap(),
+            format!("{new_line}\n")
+        );
+
+        tokio::fs::write(ssh_dir.join("authorized_keys"), format!("{current_line}\n"))
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
+        assert!(output.status.success(), "{output:?}");
+        // Removing a legacy key removes its line.
+        assert_eq!(
+            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
+                .await
+                .unwrap(),
+            ""
         );
     }
 
@@ -1002,9 +1094,7 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
         use crate::ssh::keys::{SshKeyStore, StoredKey};
 
         let home = redoor_core::test_support::TempDir::create();
-        let keys = SshKeyStore::for_data_dir(home.path())
-            .account("alice")
-            .unwrap();
+        let keys = SshKeyStore::for_data_dir(home.path());
         let device = AgentId::generate();
         let seal = SshKeySeal {
             vault_id: "vlt_0123456789abcdef0123456789abcdef".to_string(),
@@ -1062,11 +1152,11 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
     async fn install_script_quotes_values() {
         let home = redoor_core::test_support::TempDir::create();
         let device = AgentId::generate();
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:it's; touch pwned");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:it's; touch pwned");
         let output = run_script(
             home.path(),
             &install_script(
-                &device_marker(&device, "alice"),
+                &device_marker(&device),
                 &[],
                 Some((&line, "it's; touch pwned")),
             ),
@@ -1103,8 +1193,8 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
             .await
             .unwrap();
         let device = AgentId::generate();
-        let marker = device_marker(&device, "alice");
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let marker = device_marker(&device);
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:y");
         let output = run_script(
             home.path(),
             &install_script(&marker, &["y".to_string()], Some((&line, "y"))),
@@ -1152,8 +1242,8 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
     async fn install_script_refuses_unusable_link_targets() {
         use std::os::unix::fs::PermissionsExt;
         let device = AgentId::generate();
-        let marker = device_marker(&device, "alice");
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:y");
+        let marker = device_marker(&device);
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:y");
         let script = install_script(&marker, &["y".to_string()], Some((&line, "y")));
 
         let home = redoor_core::test_support::TempDir::create();
@@ -1237,11 +1327,11 @@ ssh-ed25519 AAAAbob redoor:{device}:bob:{stale}
         let home = redoor_core::test_support::TempDir::create();
         let device = AgentId::generate();
         let key = "SHA256:new+key/a";
-        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:alice:{key}");
+        let line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:{key}");
         let output = run_script(
             home.path(),
             &install_script(
-                &device_marker(&device, "alice"),
+                &device_marker(&device),
                 &[key.to_string()],
                 Some((&line, key)),
             ),

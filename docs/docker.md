@@ -11,9 +11,14 @@ agent_token = "replace-with-a-long-random-secret"
 
 [server]
 bind = "0.0.0.0"
-username = "admin"
+
+# One entry per person who signs in; all of them share the one Redoor account.
+[[server.users]]
+name = "admin"
 password = "replace-with-a-long-private-password"
 ```
+
+PAM login (`[server.pam]`) checks the password of the user the server runs as, which inside the container is not a person's account, so use `[[server.users]]` or `[server.oidc]` here. See [docs/config.md](config.md#browser-authentication).
 
 The server must bind to `0.0.0.0` inside the container. Keep the configuration file readable by the container and restrict access to its parent directory because it contains credentials.
 

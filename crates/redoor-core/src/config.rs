@@ -198,38 +198,27 @@ impl AgentConfig {
     }
 }
 
-/// Browser login backend selected by the `[server]` credentials.
+/// One account that signs in with a name and a password from the TOML file, either a
+/// `[[server.users]]` entry or the `[server] username`/`password` shorthand.
 ///
-/// An enum instead of two optional strings: the "exactly both or neither" rule is
-/// enforced once at parse time, and the PAM variant only exists where PAM does, so
-/// no consumer has to handle impossible combinations.
+/// Every user signs in to the same single account; the name only identifies who signed in
+/// for logs and the UI, and selects which password a change rewrites.
 #[derive(Clone)]
-pub enum AuthMode {
-    /// `username`/`password` pair from the TOML file.
-    Configured {
-        /// Login name, already restricted to a portable path component.
-        username: String,
-        /// The password as written: plaintext, or an Argon2 hash that keeps the secret out
-        /// of the file.
-        password: ConfiguredPassword,
-    },
-    /// Linux PAM for the account running the server, chosen when TOML omits both credentials.
-    #[cfg(target_os = "linux")]
-    SystemAccount,
+pub struct ConfiguredUser {
+    /// Login name, restricted to [`parse_server_username`]'s allowlist.
+    pub name: String,
+    /// The password as written: plaintext, or an Argon2 hash that keeps the secret out of the
+    /// file.
+    pub password: ConfiguredPassword,
 }
 
-impl std::fmt::Debug for AuthMode {
-    /// Redacts the configured password so config debugging cannot leak it.
+impl std::fmt::Debug for ConfiguredUser {
+    /// Redacts the password so config debugging cannot leak it.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Configured { username, .. } => f
-                .debug_struct("Configured")
-                .field("username", username)
-                .field("password", &"***")
-                .finish(),
-            #[cfg(target_os = "linux")]
-            Self::SystemAccount => f.write_str("SystemAccount"),
-        }
+        f.debug_struct("ConfiguredUser")
+            .field("name", &self.name)
+            .field("password", &"***")
+            .finish()
     }
 }
 
@@ -255,13 +244,14 @@ const ARGON2_PHC_PREFIX: &str = "$argon2";
 impl ConfiguredPassword {
     /// Reads a non-empty `password` value, rejecting a hash-looking value that does not
     /// parse, because silently treating a mistyped hash as a plaintext password would lock
-    /// the operator out with a misleading "wrong password".
-    pub fn parse(value: String) -> Result<Self, String> {
+    /// the operator out with a misleading "wrong password". `key` is the config key path named
+    /// in the error.
+    pub fn parse(value: String, key: &str) -> Result<Self, String> {
         if !value.starts_with(ARGON2_PHC_PREFIX) {
             return Ok(Self::Plaintext(value));
         }
         let not_a_hash = |error: &dyn std::fmt::Display| {
-            format!("server.password is not a valid Argon2 PHC hash: {error}")
+            format!("{key} is not a valid Argon2 PHC hash: {error}")
         };
         let hash =
             argon2::password_hash::PasswordHash::new(&value).map_err(|error| not_a_hash(&error))?;
@@ -303,17 +293,6 @@ impl std::fmt::Debug for ConfiguredPassword {
     }
 }
 
-impl From<&AuthMode> for redoor_protocol::api::server::ServerAuthMode {
-    /// Projects the backend into the public server-info vocabulary shown by the UI.
-    fn from(mode: &AuthMode) -> Self {
-        match mode {
-            AuthMode::Configured { .. } => Self::Toml,
-            #[cfg(target_os = "linux")]
-            AuthMode::SystemAccount => Self::Pam,
-        }
-    }
-}
-
 /// Parsed `[server]` table with optional listener settings and the resolved login backend.
 ///
 /// The shared `agent_token` lives at the document root, not here.
@@ -332,8 +311,12 @@ pub struct ServerSection {
     pub log_level: Option<Level>,
     /// Initial process output format; browser streams remain structured.
     pub log_format: Option<LogFormat>,
-    /// Browser login backend derived from `username`/`password`.
-    pub auth: AuthMode,
+    /// Name and password logins from `[[server.users]]` or the `username`/`password`
+    /// shorthand; names are unique.
+    pub users: Vec<ConfiguredUser>,
+    /// `[server.pam] enabled`: whether the server process's own OS user may sign in with its
+    /// system password. Only ever true on Linux.
+    pub pam: bool,
     /// When true, session cookies are marked `Secure` for HTTPS deployments.
     pub cookie_secure: bool,
     /// Browser origins allowed to call MCP; origin-less native clients do not need an entry.
@@ -344,8 +327,8 @@ pub struct ServerSection {
 
 /// Parsed `[server.oidc]` table enabling browser sign-in through an OpenID Connect provider.
 ///
-/// OIDC only creates browser sessions for the server's single account; it never replaces the
-/// password backend, so a provider outage cannot lock the operator out.
+/// OIDC only creates browser sessions for the server's single account, like every other
+/// login method.
 #[derive(Clone)]
 pub struct OidcConfig {
     /// Provider issuer URL; `/.well-known/openid-configuration` is fetched below it.
@@ -525,20 +508,20 @@ pub fn require_relay<'a>(config: &'a RedoorConfig, id: &str) -> Result<&'a Relay
         .with_context(|| format!("relay '{id}' is not configured"))
 }
 
-/// Restricts login names to one portable path component so account files cannot escape the data
-/// dir. The allowlist also keeps `:` and whitespace out, because the name is part of the
-/// `redoor:<device-id>:<account>:` marker of managed SSH keys in `authorized_keys`.
-pub fn parse_server_username(value: &str) -> Result<String, String> {
+/// Restricts login names to a small portable alphabet. Names appear in log lines, session
+/// files and the UI, so whitespace, control characters and separators are kept out; `key`
+/// is the config key path named in the error.
+pub fn parse_server_username(value: &str, key: &str) -> Result<String, String> {
     if value.is_empty() || value == "." || value == ".." {
-        return Err("server.username must not be empty, '.' or '..'".to_string());
+        return Err(format!("{key} must not be empty, '.' or '..'"));
     }
     if !value
         .bytes()
         .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
     {
-        return Err(
-            "server.username may contain only ASCII letters, numbers, '.', '_' and '-'".to_string(),
-        );
+        return Err(format!(
+            "{key} may contain only ASCII letters, numbers, '.', '_' and '-'"
+        ));
     }
     Ok(value.to_string())
 }
@@ -626,12 +609,12 @@ mod tests {
         (directory, path)
     }
 
-    /// Ensures login names stay inside the same allowlist used for on-disk account directories.
+    /// Ensures login names stay inside a portable allowlist that is safe in logs and the UI.
     #[test]
     fn parse_server_username_allows_portable_path_components() {
         for valid in ["test-user", "alice", "user.name", "user_1"] {
             assert_eq!(
-                parse_server_username(valid).as_deref(),
+                parse_server_username(valid, "server.username").as_deref(),
                 Ok(valid),
                 "a portable login name should be accepted: {valid}"
             );
@@ -649,7 +632,7 @@ mod tests {
             "ålice",
         ] {
             assert!(
-                parse_server_username(invalid).is_err(),
+                parse_server_username(invalid, "server.username").is_err(),
                 "a non-portable login name should be rejected: {invalid:?}"
             );
         }
@@ -1115,36 +1098,39 @@ target = "host"
 
         #[cfg(target_os = "linux")]
         {
-            // Linux starter configs omit credentials so login uses PAM.
+            // Linux starter configs enable PAM explicitly, since it is no longer implicit.
             assert!(
-                matches!(server.auth, AuthMode::SystemAccount),
-                "Linux default config should omit username/password for PAM login"
+                server.pam && server.users.is_empty(),
+                "Linux default config should sign in with PAM only"
             );
             assert!(
                 bootstrap.password.is_none(),
                 "Linux bootstrap should not print a generated password"
             );
             assert!(
-                content.contains("# username =") && content.contains("# password ="),
-                "Linux starter config should leave username/password commented"
+                content.contains("[server.pam]\nenabled = true"),
+                "Linux starter config should enable PAM explicitly"
             );
             assert!(
-                content.contains("PAM"),
-                "Linux starter config should document PAM login"
+                content.contains("# [[server.users]]"),
+                "Linux starter config should show how to add password logins"
             );
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let AuthMode::Configured { username, password } = &server.auth;
+            let [user] = server.users.as_slice() else {
+                panic!("the demo config has exactly one password login");
+            };
             assert_eq!(
-                username, "redoor",
+                user.name, "redoor",
                 "macOS demo login should use the fixed redoor username"
             );
             assert_eq!(
-                password,
-                &ConfiguredPassword::Plaintext("changeme".to_string()),
+                user.password,
+                ConfiguredPassword::Plaintext("changeme".to_string()),
                 "macOS demo login should use the fixed changeme password"
             );
+            assert!(!server.pam, "PAM is Linux only");
             assert_eq!(
                 bootstrap.password.as_deref(),
                 Some("changeme"),
@@ -1223,28 +1209,147 @@ log = "log/agent.log"
         assert_eq!(agent.log.as_deref(), Some("log/agent.log"));
     }
 
-    /// Verifies Linux accepts a credentials-free [server] table for PAM login.
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn test_parse_config_file_allows_missing_credentials_on_linux() {
-        let (_directory, temp) = test_config_path();
-        std::fs::write(
-            &temp,
-            r#"agent_token = "test-agent-token"
-
+    /// Parses a config made of a top-level token and the given `[server]` body.
+    fn parse_server(body: &str) -> Result<ServerSection, ConfigError> {
+        parse_config_str(
+            Path::new("config.toml"),
+            &format!(
+                r#"agent_token = "t"
 [server]
-"#,
+{body}
+"#
+            ),
         )
-        .unwrap();
+        .map(|config| config.server.expect("server section"))
+    }
 
-        let config = parse_config_file(&temp).await.unwrap();
-
-        let server = config.server.expect("[server] should be present");
+    /// A `[server]` without any login method used to mean PAM; it now fails and says how to
+    /// get PAM back, because that is the likely cause after an upgrade.
+    #[test]
+    fn missing_login_method_names_the_pam_setting() {
+        let error = parse_server("port = 3000").expect_err("no login method is configured");
+        // The message points at the explicit setting that replaced the implicit fallback.
         assert!(
-            matches!(server.auth, AuthMode::SystemAccount),
-            "omitted credentials should select PAM mode"
+            error.to_string().contains("[server.pam] enabled = true"),
+            "{error}"
         );
-        assert_eq!(config.agent_token, "test-agent-token");
+        // `enabled = false` is the same as no PAM.
+        assert!(parse_server("[server.pam]\nenabled = false").is_err());
+    }
+
+    /// Explicit PAM is a login method of its own on Linux and refused elsewhere.
+    #[test]
+    fn pam_is_explicit_and_linux_only() {
+        let parsed = parse_server("[server.pam]\nenabled = true");
+        #[cfg(target_os = "linux")]
+        {
+            let server = parsed.expect("PAM alone is a valid login method on Linux");
+            // PAM is on and no password logins exist.
+            assert!(server.pam);
+            assert!(server.users.is_empty());
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let error = parsed.expect_err("PAM is not available on this platform");
+            // The message names the key so the operator knows what to remove.
+            assert!(error.to_string().contains("server.pam.enabled"), "{error}");
+        }
+    }
+
+    /// OIDC alone is enough to start; it is a login method like the others.
+    #[test]
+    fn oidc_alone_is_a_login_method() {
+        let server = parse_server(&format!("[server.oidc]\n{VALID_OIDC}"))
+            .expect("an OIDC-only server is valid");
+        // No password logins and no PAM, only OIDC.
+        assert!(server.users.is_empty());
+        assert!(!server.pam);
+        assert!(server.oidc.is_some());
+    }
+
+    /// `[[server.users]]` lists several password logins in file order.
+    #[test]
+    fn server_users_list_is_read_in_order() {
+        let server = parse_server(
+            r#"[[server.users]]
+name = "alice"
+password = "alice-password"
+[[server.users]]
+name = "bob"
+password = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E""#,
+        )
+        .expect("a users list is valid");
+        let names: Vec<&str> = server.users.iter().map(|user| user.name.as_str()).collect();
+        // Both users are present, in the order written.
+        assert_eq!(names, ["alice", "bob"]);
+        // Each entry accepts plaintext and Argon2 hashes like the shorthand.
+        assert!(matches!(
+            server.users[1].password,
+            ConfiguredPassword::Argon2Hash(_)
+        ));
+        // Debug output never contains a password.
+        assert!(!format!("{:?}", server.users).contains("alice-password"));
+    }
+
+    /// The shorthand is one user, and it cannot be mixed with the list.
+    #[test]
+    fn shorthand_is_one_user_and_excludes_the_list() {
+        let server = parse_server("username = \"admin\"\npassword = \"secret\"")
+            .expect("the shorthand is valid");
+        // The shorthand is exactly one user.
+        assert_eq!(server.users.len(), 1);
+        assert_eq!(server.users[0].name, "admin");
+        let error = parse_server(
+            r#"username = "admin"
+password = "secret"
+[[server.users]]
+name = "bob"
+password = "x""#,
+        )
+        .expect_err("the shorthand and the list cannot be combined");
+        // The message names both forms.
+        assert!(
+            error
+                .to_string()
+                .contains("[[server.users]] cannot be used together"),
+            "{error}"
+        );
+    }
+
+    /// Broken `[[server.users]]` entries fail at startup with the entry named.
+    #[test]
+    fn invalid_server_users_are_rejected() {
+        let cases = [
+            (
+                "[[server.users]]\nname = \"a\"\npassword = \"x\"\n[[server.users]]\nname = \"a\"\npassword = \"y\"",
+                "duplicate user name 'a'",
+            ),
+            (
+                "[[server.users]]\nname = \"a b\"\npassword = \"x\"",
+                "server.users entry #0 'name' may contain only",
+            ),
+            (
+                "[[server.users]]\nname = \"a\"",
+                "server.users entry #0 ('a') must have a non-empty 'password'",
+            ),
+            (
+                "[[server.users]]\nname = \"a\"\npassword = \"\"",
+                "must have a non-empty 'password'",
+            ),
+            (
+                "[[server.users]]\npassword = \"x\"",
+                "server.users entry #0 has no 'name'",
+            ),
+            (
+                "[[server.users]]\nname = \"a\"\npassword = \"$argon2id$v=19$m=19456\"",
+                "server.users entry #0 'password' is not a valid Argon2 PHC hash",
+            ),
+        ];
+        for (body, expected) in cases {
+            let error = parse_server(body).expect_err("the entry must be rejected");
+            // The message names what is wrong and where.
+            assert!(error.to_string().contains(expected), "{body}: {error}");
+        }
     }
 
     /// Verifies a half-specified credential pair is rejected instead of mixed auth modes.
@@ -1272,7 +1377,7 @@ password = "only-password"
         }
     }
 
-    /// Rejects login names that would escape `users/<username>/` before the server starts.
+    /// Rejects login names outside the allowlist before the server starts.
     #[tokio::test]
     async fn test_parse_config_file_rejects_unsafe_username() {
         let (_directory, temp) = test_config_path();
@@ -1724,10 +1829,13 @@ password = {}
                     toml_edit::Value::from(password)
                 ),
             )
-            .map(|config| match config.server.expect("server section").auth {
-                AuthMode::Configured { password, .. } => password,
-                #[cfg(target_os = "linux")]
-                AuthMode::SystemAccount => panic!("credentials were configured"),
+            .map(|config| {
+                config
+                    .server
+                    .expect("server section")
+                    .users
+                    .remove(0)
+                    .password
             })
         };
         let hash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E";
@@ -1775,8 +1883,8 @@ password = {}
         let config = parse_oidc(VALID_OIDC).expect("minimal OIDC settings are valid");
         let server = config.server.expect("server section");
         let oidc = server.oidc.expect("oidc section");
-        // OIDC is added next to the password login, never instead of it.
-        assert!(matches!(server.auth, AuthMode::Configured { .. }));
+        // OIDC is added next to the password login, which stays configured.
+        assert_eq!(server.users.len(), 1);
         // The default scopes release the groups claim on common providers.
         assert_eq!(oidc.scopes, ["openid", "profile", "groups"]);
         // A month-long sliding session is the default.

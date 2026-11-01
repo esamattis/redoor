@@ -1,4 +1,4 @@
-//! The per-user vault store: `<data_dir>/users/<username>/vault.json`.
+//! The account's vault store: `<data_dir>/vault.json`.
 //!
 //! The server stores only wrapped keys and a proof verifier, never a vault key: the browser
 //! creates, unwraps and rewraps every key. What the server decides is which changes it
@@ -28,28 +28,24 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::http::error::ApiError;
-use crate::http::user_state::{
-    account_directory, prepare_account_directory, write_private_file_atomically,
-};
+use crate::http::user_state::{prepare_data_directory, write_private_file_atomically};
 
-/// File name inside the account directory.
+/// File name inside the data directory.
 const VAULT_FILE: &str = "vault.json";
 
-/// Owns reads and writes of one account's `vault.json`.
+/// Owns reads and writes of the account's `vault.json`.
 #[derive(Clone)]
 pub(crate) struct VaultStore {
     paths: redoor_core::paths::AppPaths,
-    username: String,
     /// Serializes read-modify-write cycles, so two changes can never lose each other.
     lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl VaultStore {
-    /// A store for the login account; nothing is read until the first request.
-    pub(crate) fn new(paths: redoor_core::paths::AppPaths, username: String) -> Self {
+    /// The account's store; nothing is read until the first request.
+    pub(crate) fn new(paths: redoor_core::paths::AppPaths) -> Self {
         Self {
             paths,
-            username,
             lock: Arc::default(),
         }
     }
@@ -376,10 +372,10 @@ impl VaultStore {
         Ok(summarize(&document))
     }
 
-    /// The file's location; per account, like the editor buffers, because the vault belongs
-    /// to the person holding its passkeys.
+    /// The file's location in the data directory; everyone who signs in shares it.
     fn path(&self) -> Result<PathBuf, ApiError> {
-        account_directory(&self.paths, &self.username)
+        self.paths
+            .data_dir()
             .map(|directory| directory.join(VAULT_FILE))
             .map_err(storage_error)
     }
@@ -411,7 +407,7 @@ impl VaultStore {
     /// Writes the document with mode 0600 through a sibling, so a crash never leaves a
     /// truncated vault behind: losing `vault.json` loses every file.
     async fn save(&self, document: &VaultDocument) -> Result<(), ApiError> {
-        let directory = prepare_account_directory(&self.paths, &self.username)
+        let directory = prepare_data_directory(&self.paths)
             .await
             .map_err(storage_error)?;
         let contents =

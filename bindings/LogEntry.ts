@@ -17,4 +17,9 @@ message: string,
 /**
  * Exists only for failures sent through the dedicated error logger.
  */
-error: LogErrorDetails | null, };
+error: LogErrorDetails | null, 
+/**
+ * The signed-in user whose request wrote the record, such as `alice (password)`; absent
+ * for background work, so operators can tell who did what on a shared account.
+ */
+user?: string, };

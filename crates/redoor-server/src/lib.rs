@@ -2,6 +2,7 @@
 // An `async fn` that never awaits hides that it cannot block; actor handlers must stay that way.
 #![warn(clippy::unused_async)]
 
+mod account_migration;
 pub mod actors;
 mod binaries;
 pub mod http;

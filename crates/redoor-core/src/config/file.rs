@@ -13,7 +13,7 @@ use redoor_protocol::ids::{AgentId, validate_device_name};
 use serde::Deserialize;
 
 use super::{
-    AgentConfig, AgentSection, AuthMode, ConfiguredPassword, LocalAgentConfig, OidcConfig,
+    AgentConfig, AgentSection, ConfiguredPassword, ConfiguredUser, LocalAgentConfig, OidcConfig,
     RedoorConfig, RelayConfig, ServerSection, SshBackedAgentConfig, parse_relay_id,
     parse_server_username,
 };
@@ -32,7 +32,7 @@ pub(super) struct RawConfig {
     relays: Vec<RawRelay>,
 }
 
-/// `[server]` as written; credentials stay optional until the pair rule is applied.
+/// `[server]` as written; credentials stay optional until the login rules are applied.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServerSection {
@@ -44,11 +44,30 @@ struct RawServerSection {
     log_format: Option<String>,
     username: Option<String>,
     password: Option<String>,
+    users: Option<Vec<RawServerUser>>,
+    pam: Option<RawPamSection>,
     #[serde(default)]
     cookie_secure: bool,
     #[serde(default)]
     mcp_allowed_origins: Vec<String>,
     oidc: Option<RawOidcSection>,
+}
+
+/// One `[[server.users]]` entry as written; both keys are checked in `validate` so a missing
+/// one is reported with the entry's position.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawServerUser {
+    name: Option<String>,
+    password: Option<String>,
+}
+
+/// `[server.pam]` as written.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPamSection {
+    #[serde(default)]
+    enabled: bool,
 }
 
 /// `[server.oidc]` as written; required keys are checked in `validate` for clearer messages.
@@ -295,34 +314,21 @@ impl RawServerSection {
     fn validate(self) -> Result<ServerSection, Invalid> {
         let log_level = parse_named(self.log_level, "server.log_level")?;
         let log_format = parse_named(self.log_format, "server.log_format")?;
-        let username = self
-            .username
-            .map(|value| parse_server_username(&value).map_err(invalid))
-            .transpose()?;
-        if self.password.as_deref() == Some("") {
+        let users = Self::validate_users(self.username, self.password, self.users)?;
+        let pam = self.pam.is_some_and(|pam| pam.enabled);
+        if pam && !cfg!(target_os = "linux") {
             return Err(invalid(
-                "server.password must be a non-empty string when set",
+                "server.pam.enabled is only supported on Linux; use [[server.users]] or [server.oidc] on this platform",
             ));
         }
-        // Requiring the pair keeps a half-configured file from silently falling back to
-        // system auth while still embedding one of the secrets.
-        let auth = match (username, self.password) {
-            (Some(username), Some(password)) => AuthMode::Configured {
-                username,
-                password: ConfiguredPassword::parse(password).map_err(invalid)?,
-            },
-            (Some(_), None) => {
-                return Err(invalid(
-                    "server.password is required when server.username is set",
-                ));
-            }
-            (None, Some(_)) => {
-                return Err(invalid(
-                    "server.username is required when server.password is set",
-                ));
-            }
-            (None, None) => system_account_auth()?,
-        };
+        let oidc = self.oidc.map(RawOidcSection::validate).transpose()?;
+        if users.is_empty() && !pam && oidc.is_none() {
+            // Older versions fell back to PAM when [server] had no credentials; say how to get
+            // that back, since it is the likely cause after an upgrade.
+            return Err(invalid(
+                "no login method is configured; add [[server.users]] entries (or server.username and server.password), set [server.pam] enabled = true to sign in with the server user's system password (no longer enabled implicitly when credentials are omitted), or configure [server.oidc]",
+            ));
+        }
         if let Some(origin) = self
             .mcp_allowed_origins
             .iter()
@@ -339,11 +345,81 @@ impl RawServerSection {
             log_max_size: parse_byte_size(self.log_max_size, "server.log_max_size")?,
             log_level,
             log_format,
-            auth,
+            users,
+            pam,
             cookie_secure: self.cookie_secure,
             mcp_allowed_origins: self.mcp_allowed_origins,
-            oidc: self.oidc.map(RawOidcSection::validate).transpose()?,
+            oidc,
         })
+    }
+
+    /// Resolves the password logins from either the `username`/`password` shorthand or the
+    /// `[[server.users]]` list, never both, so it is always clear which entry a password change
+    /// rewrites.
+    fn validate_users(
+        username: Option<String>,
+        password: Option<String>,
+        users: Option<Vec<RawServerUser>>,
+    ) -> Result<Vec<ConfiguredUser>, Invalid> {
+        if users.is_some() && (username.is_some() || password.is_some()) {
+            return Err(invalid(
+                "server.username/server.password and [[server.users]] cannot be used together; move the shorthand login into a [[server.users]] entry",
+            ));
+        }
+        if let Some(users) = users {
+            let mut validated: Vec<ConfiguredUser> = Vec::with_capacity(users.len());
+            for (index, user) in users.into_iter().enumerate() {
+                let key = format!("server.users entry #{index}");
+                let name = user
+                    .name
+                    .ok_or_else(|| invalid(format!("{key} has no 'name'")))?;
+                let name =
+                    parse_server_username(&name, &format!("{key} 'name'")).map_err(invalid)?;
+                let password = match user.password {
+                    Some(password) if !password.is_empty() => password,
+                    _ => {
+                        return Err(invalid(format!(
+                            "{key} ('{name}') must have a non-empty 'password'"
+                        )));
+                    }
+                };
+                if validated.iter().any(|existing| existing.name == name) {
+                    return Err(invalid(format!(
+                        "duplicate user name '{name}' in [[server.users]]"
+                    )));
+                }
+                validated.push(ConfiguredUser {
+                    password: ConfiguredPassword::parse(password, &format!("{key} 'password'"))
+                        .map_err(invalid)?,
+                    name,
+                });
+            }
+            return Ok(validated);
+        }
+        let username = username
+            .map(|value| parse_server_username(&value, "server.username").map_err(invalid))
+            .transpose()?;
+        if password.as_deref() == Some("") {
+            return Err(invalid(
+                "server.password must be a non-empty string when set",
+            ));
+        }
+        // Requiring the pair keeps a half-configured file from embedding one of the secrets
+        // without it doing anything.
+        match (username, password) {
+            (Some(name), Some(password)) => Ok(vec![ConfiguredUser {
+                name,
+                password: ConfiguredPassword::parse(password, "server.password")
+                    .map_err(invalid)?,
+            }]),
+            (Some(_), None) => Err(invalid(
+                "server.password is required when server.username is set",
+            )),
+            (None, Some(_)) => Err(invalid(
+                "server.username is required when server.password is set",
+            )),
+            (None, None) => Ok(Vec::new()),
+        }
     }
 }
 
@@ -452,20 +528,6 @@ fn parse_oidc_url(value: &str, key: &str) -> Result<url::Url, Invalid> {
         Err(invalid(format!(
             "server.oidc.{key} must be an https:// URL (http:// is only allowed for localhost)"
         )))
-    }
-}
-
-/// Selects PAM login where it exists; other platforms need explicit TOML credentials.
-fn system_account_auth() -> Result<AuthMode, Invalid> {
-    #[cfg(target_os = "linux")]
-    {
-        Ok(AuthMode::SystemAccount)
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        Err(invalid(
-            "server.username and server.password are required on this platform; system-account (PAM) login is only supported on Linux",
-        ))
     }
 }
 

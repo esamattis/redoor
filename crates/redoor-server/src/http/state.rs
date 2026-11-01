@@ -8,7 +8,6 @@ use crate::one_time_token_registry::OneTimeTokenRegistry;
 use crate::watchdog::WatchdogRegistry;
 use clap::Args;
 use redoor_core::logging::LogFormat;
-use redoor_protocol::api::server::ServerAuthMode;
 use redoor_protocol::wire::log::Level;
 
 use super::auth::AuthState;
@@ -56,16 +55,14 @@ pub(crate) struct ServerState {
     pub(crate) config_edit_lock: Arc<tokio::sync::Mutex<()>>,
     /// Serializes editor buffer writes so a revision check and its write cannot interleave.
     pub(crate) editor_buffer_lock: Arc<tokio::sync::Mutex<()>>,
-    /// The login account's vault (`vault.json`), which encrypts `.redoorencrypted` files.
+    /// The account's vault (`vault.json`), which encrypts `.redoorencrypted` files.
     pub(crate) vault: crate::vault::VaultStore,
-    /// Managed SSH keys and pinned host keys of SSH devices, per account.
+    /// Managed SSH keys and pinned host keys of SSH devices.
     pub(crate) ssh_keys: crate::ssh::keys::SshKeyStore,
     /// Decrypted SSH keys of running devices, shared with the launcher's provisioning.
     pub(crate) held_ssh_keys: crate::ssh::held_keys::HeldSshKeys,
     /// Devices with a key operation or edit in progress, so they cannot race each other.
     pub(crate) ssh_key_operations: super::ssh_keys::SshKeyOperations,
-    /// Login backend resolved from the TOML credentials (or their absence).
-    pub(crate) auth_mode: ServerAuthMode,
     /// Signals axum graceful shutdown; restart fires this after a successful
     /// pre-validation so the listener is dropped before exec.
     pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
@@ -106,8 +103,7 @@ pub struct CoordinatorArgs {
     /// Path to the TOML config file. When omitted, Redoor loads or creates
     /// `/etc/<app-name>/config.toml` as root, otherwise `~/.config/<app-name>/config.toml`.
     /// Top-level `agent_token` is required; `[server]` holds listener/auth
-    /// settings (browser `username`/`password` may be omitted together on Linux
-    /// for PAM). Optional `[[agents]]` entries are either SSH-backed (`target`)
+    /// settings (`[[server.users]]`, `[server.pam]` on Linux, `[server.oidc]`). Optional `[[agents]]` entries are either SSH-backed (`target`)
     /// or local (`local = true`) and start lazily from the UI or management API.
     #[arg(long)]
     pub(crate) config: Option<String>,

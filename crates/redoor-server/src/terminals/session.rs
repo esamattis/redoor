@@ -260,7 +260,9 @@ pub(crate) fn spawn_session<O: TerminalOutput, I: TerminalInput>(
     let serial = Arc::new(AtomicU64::new(0));
     let (input_queue, input_chunks) = mpsc::channel(MAX_PENDING_INPUT_FRAMES);
     let (ready, ready_rx) = watch::channel(false);
-    let forwarder = tokio::spawn(forward_input(
+    // The session outlives the request that opened it, so its tasks keep the opener as the
+    // user of their log lines.
+    let forwarder = redoor_core::logging::spawn_in_user_scope(forward_input(
         io.input.clone(),
         input_chunks,
         serial.clone(),
@@ -294,7 +296,7 @@ pub(crate) fn spawn_session<O: TerminalOutput, I: TerminalInput>(
     if task.mirror.is_none() {
         task.finish(emulator_failed());
     }
-    tokio::spawn(task.run());
+    redoor_core::logging::spawn_in_user_scope(task.run());
     TerminalSessionHandle {
         commands: commands_tx,
         info: info_rx,

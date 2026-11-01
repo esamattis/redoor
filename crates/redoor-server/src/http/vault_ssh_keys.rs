@@ -18,12 +18,12 @@ use redoor_protocol::wire::log::Level;
 
 use super::access::ResolvedDevice;
 use super::agents::list_agent_snapshots;
-use super::ssh_keys::{account_keys, complete_operation, status_handler};
+use super::ssh_keys::{complete_operation, status_handler};
 use super::vault_files::{file_key, format_error};
 use super::{error::ApiError, state::ServerState};
 use crate::ssh::keys::StoredKey;
 
-/// Route: `GET /api/v1/vault/ssh-keys` lists the account's encrypted SSH keys with their
+/// Route: `GET /api/v1/vault/ssh-keys` lists the encrypted SSH keys with their
 /// generation, so the settings page can rewrap them after a rotation.
 pub(crate) async fn list_handler(
     AxumState(state): AxumState<ServerState>,
@@ -78,7 +78,7 @@ async fn rewrap(
 ) -> Result<(), ApiError> {
     let key = file_key(&request.file_key)?;
     let document = state.vault.require_current(&request.key_id).await?;
-    let keys = account_keys(state)?;
+    let keys = &state.ssh_keys;
     let StoredKey::Encrypted(file) = keys
         .load(agent_id)
         .await
@@ -130,11 +130,12 @@ pub(crate) async fn require_no_ssh_key_on(
     ))
 }
 
-/// The account's encrypted SSH keys.
+/// Every encrypted SSH key.
 async fn encrypted_keys(
     state: &ServerState,
 ) -> Result<Vec<(AgentId, crate::ssh::encrypted_keys::EncryptedKeyFile)>, ApiError> {
-    account_keys(state)?
+    state
+        .ssh_keys
         .encrypted_keys()
         .await
         .map_err(|error| ApiError::internal(format!("Failed to list the SSH keys: {error}")))

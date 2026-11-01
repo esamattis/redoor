@@ -226,7 +226,7 @@ impl Drop for PendingCommand {
                 let router = self.router.clone();
                 let agent_id = self.agent_id.clone();
                 let request_id = self.request_id;
-                tokio::spawn(async move {
+                redoor_core::logging::spawn_in_user_scope(async move {
                     // Waits for mailbox capacity: losing this would leave the agent working for nobody.
                     let _ = router
                         .send_async(RouterMsg::AbandonCommand {

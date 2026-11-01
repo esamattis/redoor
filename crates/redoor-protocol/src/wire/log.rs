@@ -115,6 +115,11 @@ pub struct LogEntry {
     pub message: String,
     /// Exists only for failures sent through the dedicated error logger.
     pub error: Option<LogErrorDetails>,
+    /// The signed-in user whose request wrote the record, such as `alice (password)`; absent
+    /// for background work, so operators can tell who did what on a shared account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub user: Option<String>,
 }
 
 impl LogEntry {
@@ -127,15 +132,24 @@ impl LogEntry {
             level,
             message,
             error,
+            user: None,
         }
     }
 
-    /// Preserves the established human-readable line format for existing consumers.
+    /// Preserves the established human-readable line format for existing consumers; a
+    /// record written for a signed-in user gets a `[user=...]` field before the message.
     pub fn render_line(&self) -> String {
         let timestamp = jiff::Zoned::strptime("%Y-%m-%dT%H:%M:%S%.f%:z", &self.timestamp)
             .expect("logger-created timestamps must remain valid RFC 3339 values")
             .strftime("%Y-%m-%d %H:%M:%S%.3f");
-        format!("[{timestamp}] [{}] {}", self.level.as_str(), self.message)
+        match &self.user {
+            Some(user) => format!(
+                "[{timestamp}] [{}] [user={user}] {}",
+                self.level.as_str(),
+                self.message
+            ),
+            None => format!("[{timestamp}] [{}] {}", self.level.as_str(), self.message),
+        }
     }
 }
 
@@ -203,6 +217,10 @@ impl LogEvent {
     pub fn diagnostics_are_bounded(&self) -> bool {
         let valid_entry = |entry: &LogEntry| {
             entry.message.len() <= LOG_MESSAGE_LIMIT
+                && entry
+                    .user
+                    .as_ref()
+                    .is_none_or(|user| user.len() <= LOG_MESSAGE_LIMIT)
                 && entry.error.as_ref().is_none_or(|details| {
                     details.chain.len() <= LOG_DIAGNOSTIC_LIMIT
                         && details
@@ -234,7 +252,35 @@ mod tests {
             level: Level::Info,
             message: message.to_string(),
             error: None,
+            user: None,
         }
+    }
+
+    /// A record of a signed-in user names them in both renderings, and records without one
+    /// keep the established shapes.
+    #[test]
+    fn user_field_is_rendered_only_when_present() {
+        let plain = entry("ready");
+        // Records without a user keep the line and JSON shapes existing consumers parse.
+        assert_eq!(
+            plain.render_line(),
+            "[2026-08-27 12:34:56.789] [INFO] ready"
+        );
+        assert!(serde_json::to_value(&plain).unwrap().get("user").is_none());
+        let with_user = LogEntry {
+            user: Some("alice (password)".to_string()),
+            ..entry("ready")
+        };
+        // The line format puts the user before the message.
+        assert_eq!(
+            with_user.render_line(),
+            "[2026-08-27 12:34:56.789] [INFO] [user=alice (password)] ready"
+        );
+        // JSON carries it as its own field.
+        assert_eq!(
+            serde_json::to_value(&with_user).unwrap()["user"],
+            "alice (password)"
+        );
     }
 
     /// Locks the browser protocol tags and field names to stable JSON shapes.

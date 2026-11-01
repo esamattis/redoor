@@ -93,13 +93,18 @@ Full reference for every option: [docs/config.md](docs/config.md).
 agent_token = "secret"
 
 [server]
-# Web UI login. On Linux, omit both to use PAM (system user).
-# username = "admin"
-# password = "long-private-password"
-
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind HTTPS
+
+# Web UI login: list people with passwords, enable PAM (Linux), or both.
+[[server.users]]
+name = "admin"
+password = "long-private-password"
+
+# Sign in with the system password of the user running the server.
+# [server.pam]
+# enabled = true
 
 ## Automatically spawn agents via SSH
 [[agents]]
