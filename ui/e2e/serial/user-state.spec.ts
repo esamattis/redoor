@@ -78,6 +78,10 @@ test.describe.serial("User state", () => {
             page.getByRole("button", { name: "Show hidden files" }),
         ).toHaveAttribute("aria-pressed", "false");
 
+        // The toggle is optimistic; let its write finish before navigation can abort it.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ showHiddenFiles: false });
         await page.reload();
 
         // Reload must restore the persisted preference from the server, not localStorage.
