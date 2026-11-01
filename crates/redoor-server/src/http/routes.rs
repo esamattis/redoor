@@ -82,6 +82,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route("/api/v1/login", post(login_handler))
         .route("/api/v1/logout", post(logout_handler))
         .route(
+            "/api/v1/auth/password",
+            put(super::password::change_password_handler),
+        )
+        .route(
             "/api/v1/auth/methods",
             get(super::oidc::login_methods_handler),
         )

@@ -27,6 +27,7 @@ pub(crate) mod oidc;
 #[cfg(target_os = "linux")]
 mod pam;
 mod partials;
+mod password;
 mod protocol_mismatches;
 mod raw;
 mod restart;

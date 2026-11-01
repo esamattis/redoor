@@ -40,6 +40,8 @@ import type { TerminalSessionList } from "#bindings/TerminalSessionList";
 import type { CreateTerminalSessionRequest } from "#bindings/CreateTerminalSessionRequest";
 import type { CreateTerminalSessionResponse } from "#bindings/CreateTerminalSessionResponse";
 import type { CloseTerminalSessionResponse } from "#bindings/CloseTerminalSessionResponse";
+import type { ChangePasswordRequest } from "#bindings/ChangePasswordRequest";
+import type { ChangePasswordResponse } from "#bindings/ChangePasswordResponse";
 import type { LoginRequest } from "#bindings/LoginRequest";
 import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LoginMethodsResponse } from "#bindings/LoginMethodsResponse";
@@ -1296,6 +1298,44 @@ export class ApiClient {
         const setCookie = response.headers.get("set-cookie");
 
         if (setCookie) {
+            this.sessionCookie = setCookie.split(";", 1)[0] ?? null;
+        }
+
+        return response.json();
+    }
+
+    /**
+     * Replaces the TOML-configured login password. The server signs out every other
+     * password session and answers with a new cookie for this one, which Node-based
+     * clients have to pick up explicitly like after `login`.
+     */
+    async changePassword(
+        currentPassword: string,
+        newPassword: string,
+    ): Promise<ChangePasswordResponse> {
+        const request: ChangePasswordRequest = {
+            current_password: currentPassword,
+            new_password: newPassword,
+        };
+
+        const context = this.requestContext();
+
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/auth/password`,
+            withAuthentication(
+                {
+                    method: "PUT",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(request),
+                },
+                context,
+            ),
+        );
+
+        await requireSuccessfulResponse(response, context);
+        const setCookie = response.headers.get("set-cookie");
+
+        if (setCookie && this.sessionCookie !== null) {
             this.sessionCookie = setCookie.split(";", 1)[0] ?? null;
         }
 

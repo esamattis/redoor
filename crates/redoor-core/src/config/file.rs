@@ -13,8 +13,9 @@ use redoor_protocol::ids::{AgentId, validate_device_name};
 use serde::Deserialize;
 
 use super::{
-    AgentConfig, AgentSection, AuthMode, LocalAgentConfig, OidcConfig, RedoorConfig, RelayConfig,
-    ServerSection, SshBackedAgentConfig, parse_relay_id, parse_server_username,
+    AgentConfig, AgentSection, AuthMode, ConfiguredPassword, LocalAgentConfig, OidcConfig,
+    RedoorConfig, RelayConfig, ServerSection, SshBackedAgentConfig, parse_relay_id,
+    parse_server_username,
 };
 
 /// Whole-document shape; every section is optional because roles validate their own needs.
@@ -306,7 +307,10 @@ impl RawServerSection {
         // Requiring the pair keeps a half-configured file from silently falling back to
         // system auth while still embedding one of the secrets.
         let auth = match (username, self.password) {
-            (Some(username), Some(password)) => AuthMode::Configured { username, password },
+            (Some(username), Some(password)) => AuthMode::Configured {
+                username,
+                password: ConfiguredPassword::parse(password).map_err(invalid)?,
+            },
             (Some(_), None) => {
                 return Err(invalid(
                     "server.password is required when server.username is set",

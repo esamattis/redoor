@@ -58,7 +58,7 @@ Required when running `redoor server`. Optional in agent-only configs.
 | `log_level`     | string        | `info`             | Initial threshold: `trace`, `debug`, `info`, `warning`, or `error`. Override with `--log-level` or `REDOOR_SERVER_LOG_LEVEL`. Runtime UI/API changes last only until restart. |
 | `log_format`    | string        | `line`             | Process stdout/file format: `line` or newline-delimited `json`. Override with `--log-format` or `REDOOR_SERVER_LOG_FORMAT`. Browser streams are always structured.            |
 | `username`      | string        | see auth below     | Browser UI login username. Non-empty when set.                                                                                                                                |
-| `password`      | string        | see auth below     | Browser UI login password. Non-empty when set.                                                                                                                                |
+| `password`      | string        | see auth below     | Browser UI login password, in plaintext or as an Argon2 PHC hash (`$argon2id$...`). Non-empty when set.                                                                      |
 | `cookie_secure` | bool          | `false`            | When `true`, session cookies are marked `Secure` (use behind HTTPS).                                                                                                          |
 
 \*Default log path: `~/.local/share/redoor/server.log` (non-root) or `/var/log/redoor/server.log` (root).
@@ -70,6 +70,18 @@ Required when running `redoor server`. Optional in agent-only configs.
 - **Both set** — dedicated Redoor credentials for the web UI.
 - **Both omitted on Linux** — PAM authenticates as the process owner's system account.
 - **Both omitted on non-Linux** — rejected; config credentials are required (PAM is Linux-only).
+
+`password` may be an Argon2 PHC string instead of plaintext, so the file does not hold a recoverable password. A value starting with `$argon2` is read as a hash and must parse as one, otherwise the server refuses to start:
+
+```toml
+[server]
+username = "admin"
+password = "$argon2id$v=19$m=19456,t=2,p=1$..."
+```
+
+With TOML credentials, the server home page has a **Change password** button. It asks for the current password and a new one of at least 8 characters, writes the new password into this file as an Argon2id hash (keeping the rest of the file and its comments), and takes effect at once without a restart. Every other browser signed in with a password is signed out; access tokens and OIDC sessions keep working. The username cannot be changed from the UI, because it also names the account's data (vault, SSH keys, bookmarks).
+
+Changing `password` by hand, including replacing a plaintext password with a hash of the same password, signs out password sessions on the next start.
 
 Do not put `agent_token` under `[server]`; it must stay at the top level.
 

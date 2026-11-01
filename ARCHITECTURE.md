@@ -2540,11 +2540,29 @@ credential only works on its own endpoints:
 | Agents | The shared `agent_token` bearer | `/api/v1/agent/ws` only |
 | Plain download links | One-time token | One file on one agent, once |
 
-- **Login** checks the configured username and password (hashed in memory). If none is
-  configured, it checks the password of the server process's OS user through PAM. Logins are
-  rate limited.
+- **Login** checks the configured username and password. `[server].password` is either
+  plaintext, hashed with Argon2id in memory at startup, or an Argon2 PHC string (recognised
+  by its `$argon2` prefix and checked when the config is parsed, so a broken hash fails
+  startup instead of every login), which keeps a recoverable secret out of the file. If none
+  is configured, it checks the password of the server process's OS user through PAM. Logins
+  are rate limited.
   - Sessions are files in the server data dir and expire after 7 days.
-  - Changing the configured password invalidates existing sessions.
+  - Password sessions are bound to a fingerprint of the configured password (plaintext and
+    hash in separate digest domains), so changing it invalidates existing sessions.
+  - **Password change** (`PUT /api/v1/auth/password`, session only, TOML credentials only,
+    `http/password.rs`): the UI's form sends the current and the new password. The current
+    one is checked again, with failures counted by the login rate limiter, so a stolen
+    session cannot take over the account or guess faster than the login page. The new
+    password is hashed with Argon2id and written into `config.toml` through the same locked,
+    format-preserving rewrite as device edits, refusing if `[server]` no longer has the
+    running username (a hand edit since startup). Only after the write do the in-memory
+    verifier and fingerprint change, together under one lock, so a failed write changes
+    nothing and the fingerprint matches what the next startup derives from the file. Other
+    password sessions are then removed and the response sets a new cookie for the browser
+    that made the change. A login racing the change binds its session to the fingerprint of
+    the password it actually checked, so it cannot slip through with the old password. The
+    username cannot be changed this way: it also names the account's data directory, the
+    SSH key headers and `authorized_keys` markers (see "SSH device keys").
 - **OIDC sign-in** (optional, `[server.oidc]`, `http/oidc.rs`) is a second way to get the same
   browser session; the password login stays as a fallback. `GET /api/v1/auth/oidc/login`
   starts an authorization code flow with PKCE and redirects to the provider;

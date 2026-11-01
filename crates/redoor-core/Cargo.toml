@@ -9,6 +9,7 @@ publish.workspace = true
 test-support = []
 
 [dependencies]
+argon2.workspace = true
 blake3.workspace = true
 redoor-protocol.workspace = true
 anyhow.workspace = true

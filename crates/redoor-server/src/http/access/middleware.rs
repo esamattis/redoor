@@ -63,9 +63,12 @@ pub(crate) async fn access_control(
     }
     parts.extensions.insert(principal);
     let mut response = next.run(Request::from_parts(parts, body)).await;
-    if let Some(cookie) = renewed_cookie {
-        // A sliding session moved its expiry forward; the browser cookie must follow or it
-        // would still expire at the original time.
+    // A sliding session moved its expiry forward; the browser cookie must follow or it would
+    // still expire at the original time. A handler that set the session cookie itself (a
+    // password change issuing a new session) wins, because browsers keep the last one.
+    if let Some(cookie) = renewed_cookie
+        && !response.headers().contains_key(header::SET_COOKIE)
+    {
         response.headers_mut().append(header::SET_COOKIE, cookie);
     }
     response

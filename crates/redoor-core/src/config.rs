@@ -20,8 +20,8 @@ pub use bootstrap::{
     CreatedDefaultConfig, create_default_config_if_missing, default_local_agent_name,
 };
 pub use edit::{
-    DeviceIdScope, append_local_agent, append_ssh_agent, assign_missing_device_ids,
-    edit_local_agent, edit_ssh_agent,
+    DeviceIdScope, ServerPasswordEditError, append_local_agent, append_ssh_agent,
+    assign_missing_device_ids, edit_local_agent, edit_ssh_agent, set_server_password,
 };
 pub use import::import_agent_config_from_stdin;
 pub use local_agent::spawn_local_agent;
@@ -209,8 +209,9 @@ pub enum AuthMode {
     Configured {
         /// Login name, already restricted to a portable path component.
         username: String,
-        /// Plaintext password; hashed by the server at startup.
-        password: String,
+        /// The password as written: plaintext, or an Argon2 hash that keeps the secret out
+        /// of the file.
+        password: ConfiguredPassword,
     },
     /// Linux PAM for the account running the server, chosen when TOML omits both credentials.
     #[cfg(target_os = "linux")]
@@ -228,6 +229,76 @@ impl std::fmt::Debug for AuthMode {
                 .finish(),
             #[cfg(target_os = "linux")]
             Self::SystemAccount => f.write_str("SystemAccount"),
+        }
+    }
+}
+
+/// `[server].password` as written in the TOML file.
+///
+/// Both forms are accepted so a quick setup can use plaintext, while operators who do not
+/// want a recoverable secret in a file that backups and editors copy around can store an
+/// Argon2 PHC hash instead. The password change form always writes the hash form.
+#[derive(Clone, PartialEq, Eq)]
+pub enum ConfiguredPassword {
+    /// Plaintext password; the server hashes it in memory at startup.
+    Plaintext(String),
+    /// Argon2 PHC string (`$argon2id$v=19$m=...`), already checked to parse, verified as is.
+    Argon2Hash(String),
+}
+
+/// Prefix shared by every Argon2 PHC string (`$argon2id$`, `$argon2i$`, `$argon2d$`).
+///
+/// A plaintext password starting with it is not realistic, so the prefix alone decides how
+/// the value is read and no separate `password_hash` key is needed.
+const ARGON2_PHC_PREFIX: &str = "$argon2";
+
+impl ConfiguredPassword {
+    /// Reads a non-empty `password` value, rejecting a hash-looking value that does not
+    /// parse, because silently treating a mistyped hash as a plaintext password would lock
+    /// the operator out with a misleading "wrong password".
+    pub fn parse(value: String) -> Result<Self, String> {
+        if !value.starts_with(ARGON2_PHC_PREFIX) {
+            return Ok(Self::Plaintext(value));
+        }
+        let not_a_hash = |error: &dyn std::fmt::Display| {
+            format!("server.password is not a valid Argon2 PHC hash: {error}")
+        };
+        let hash =
+            argon2::password_hash::PasswordHash::new(&value).map_err(|error| not_a_hash(&error))?;
+        // `PasswordHash` reads the algorithm, version, cost parameters and salt only as opaque
+        // text, so they are checked here; otherwise every login would fail with "wrong password".
+        argon2::Algorithm::try_from(hash.algorithm).map_err(|error| not_a_hash(&error))?;
+        if let Some(version) = hash.version {
+            argon2::Version::try_from(version).map_err(|error| not_a_hash(&error))?;
+        }
+        argon2::Params::try_from(&hash).map_err(|error| not_a_hash(&error))?;
+        // A PHC salt is at most `Salt::MAX_LENGTH` Base64 characters, so it decodes to fewer bytes.
+        let mut salt = [0_u8; argon2::password_hash::Salt::MAX_LENGTH];
+        let salt_len = hash
+            .salt
+            .ok_or_else(|| not_a_hash(&"the salt is missing"))?
+            .decode_b64(&mut salt)
+            .map_err(|error| not_a_hash(&error))?
+            .len();
+        if salt_len < argon2::MIN_SALT_LEN {
+            return Err(not_a_hash(&format!(
+                "the salt must be at least {} bytes",
+                argon2::MIN_SALT_LEN
+            )));
+        }
+        if hash.hash.is_none() {
+            return Err(not_a_hash(&"the hash output is missing"));
+        }
+        Ok(Self::Argon2Hash(value))
+    }
+}
+
+impl std::fmt::Debug for ConfiguredPassword {
+    /// Redacts the secret; even a hash allows offline guessing, so neither form is logged.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plaintext(_) => f.write_str("Plaintext(***)"),
+            Self::Argon2Hash(_) => f.write_str("Argon2Hash(***)"),
         }
     }
 }
@@ -1070,7 +1141,8 @@ target = "host"
                 "macOS demo login should use the fixed redoor username"
             );
             assert_eq!(
-                password, "changeme",
+                password,
+                &ConfiguredPassword::Plaintext("changeme".to_string()),
                 "macOS demo login should use the fixed changeme password"
             );
             assert_eq!(
@@ -1634,6 +1706,60 @@ client_id = "redoor"
 client_secret = "client-secret"
 redirect_url = "https://redoor.example.org/api/v1/auth/oidc/callback"
 allowed_groups = ["admins"]"#;
+
+    /// `server.password` may hold an Argon2 PHC hash, recognised by its prefix; anything
+    /// else stays a plaintext password, and a broken hash is refused instead of being taken
+    /// as a plaintext password nobody could type.
+    #[test]
+    fn server_password_accepts_argon2_hashes() {
+        let parse = |password: &str| {
+            parse_config_str(
+                Path::new("config.toml"),
+                &format!(
+                    r#"agent_token = "t"
+[server]
+username = "a"
+password = {}
+"#,
+                    toml_edit::Value::from(password)
+                ),
+            )
+            .map(|config| match config.server.expect("server section").auth {
+                AuthMode::Configured { password, .. } => password,
+                #[cfg(target_os = "linux")]
+                AuthMode::SystemAccount => panic!("credentials were configured"),
+            })
+        };
+        let hash = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E";
+        // A valid PHC string is verified as a hash, not compared as text.
+        assert_eq!(
+            parse(hash).expect("valid hash"),
+            ConfiguredPassword::Argon2Hash(hash.to_string())
+        );
+        // Ordinary passwords, even with `$` in them, keep working as before.
+        assert_eq!(
+            parse("pa$$word").expect("plaintext"),
+            ConfiguredPassword::Plaintext("pa$$word".to_string())
+        );
+        // A truncated hash would otherwise lock the operator out with "wrong password".
+        let error = parse("$argon2id$v=19$m=19456").expect_err("broken hash");
+        assert!(
+            error.to_string().contains("not a valid Argon2 PHC hash"),
+            "{error}"
+        );
+        // An unknown version or a salt shorter than Argon2's 8 bytes is caught at startup too.
+        assert!(parse("$argon2id$v=20$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E").is_err());
+        assert!(
+            parse(
+                "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E"
+            )
+            .is_err()
+        );
+        // Unsupported cost parameters are caught at startup, not at the first login.
+        assert!(parse("$argon2id$v=19$m=1,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$Ul8Ff2Wy3Y5r5U8rJ0mYbV2WlZ6oJZ7z7lbqQhB4W3E").is_err());
+        // Debug output never shows the secret in either form.
+        assert!(!format!("{:?}", parse(hash).expect("valid hash")).contains("argon2id$"));
+    }
 
     /// OIDC stays off unless configured, and a minimal section gets safe defaults.
     #[test]

@@ -3548,6 +3548,7 @@ name = "redoor-core"
 version = "1.10.1"
 dependencies = [
  "anyhow",
+ "argon2",
  "blake3",
  "fastrand",
  "getrandom 0.4.3",

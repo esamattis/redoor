@@ -91,6 +91,77 @@ pub async fn edit_local_agent(
     transaction.commit().await
 }
 
+/// Why [`set_server_password`] refused to write.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerPasswordEditError {
+    /// The file no longer holds the credentials the running server uses, for example after
+    /// a hand edit that switched to PAM or renamed the account. Writing only the password
+    /// would leave a config that means something different from what the user confirmed.
+    #[error(
+        "The config file no longer sets username '{0}' under [server]; restart the server to apply the hand-edited credentials first"
+    )]
+    CredentialsChanged(String),
+    /// Reading, parsing, locking or replacing the file failed.
+    #[error(transparent)]
+    Io(#[from] anyhow::Error),
+}
+
+/// The line the non-Linux starter config writes about its demo login. It would be false after
+/// a password change, so the change removes it.
+const BOOTSTRAP_PASSWORD_COMMENT: &str =
+    "# Browser login uses username redoor and password changeme.
+";
+
+/// Replaces `[server].password` with `password_hash`, a PHC string, keeping the rest of the
+/// file and the value's own comments as they are.
+///
+/// The write is refused unless `[server]` still sets `username` to `username` and has a
+/// `password`, so a file edited by hand since startup is never half-updated.
+pub async fn set_server_password(
+    path: &Path,
+    username: &str,
+    password_hash: &str,
+) -> std::result::Result<(), ServerPasswordEditError> {
+    let mut transaction = ConfigTransaction::begin(path).await?;
+    let changed = || ServerPasswordEditError::CredentialsChanged(username.to_string());
+    let server = transaction
+        .document
+        .get_mut("server")
+        .and_then(Item::as_table_like_mut)
+        .ok_or_else(changed)?;
+    if server.get("username").and_then(Item::as_str) != Some(username) {
+        return Err(changed());
+    }
+    let password = server
+        .get_mut("password")
+        .and_then(Item::as_value_mut)
+        .filter(|value| value.is_str())
+        .ok_or_else(changed)?;
+    // Keeps a trailing comment such as `# rotated yearly` on the line.
+    let decor = password.decor().clone();
+    *password = toml_edit::Value::from(password_hash);
+    *password.decor_mut() = decor;
+    remove_bootstrap_password_comment(&mut transaction.document);
+    transaction.commit().await?;
+    Ok(())
+}
+
+/// Drops [`BOOTSTRAP_PASSWORD_COMMENT`] from the comments above the first key, where the
+/// starter config puts it.
+fn remove_bootstrap_password_comment(document: &mut DocumentMut) {
+    let Some((mut key, _)) = document.iter_mut().next() else {
+        return;
+    };
+    let decor = key.leaf_decor_mut();
+    let Some(prefix) = decor.prefix().and_then(|prefix| prefix.as_str()) else {
+        return;
+    };
+    if prefix.contains(BOOTSTRAP_PASSWORD_COMMENT) {
+        let cleaned = prefix.replacen(BOOTSTRAP_PASSWORD_COMMENT, "", 1);
+        decor.set_prefix(cleaned);
+    }
+}
+
 /// Builds the persisted table in one place so create and update stay identical.
 fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
     let mut table = Table::new();
@@ -582,5 +653,72 @@ target = "pi.local"
         // The file itself is untouched.
         let content = tokio::fs::read_to_string(&path).await.unwrap();
         assert!(!content.contains("dev_"), "{content}");
+    }
+
+    /// A password change swaps only the value, keeping comments, the line's own comment and
+    /// the rest of the file, and drops the starter config's now false demo-password note.
+    #[tokio::test]
+    async fn sets_the_server_password_in_place() {
+        let original = r#"# Redoor configuration
+# Browser login uses username redoor and password changeme.
+agent_token = "t"
+
+[server]
+# who may log in
+username = "redoor"
+password = "changeme" # demo
+port = 7666
+"#;
+        let (_directory, path) = config_file(original).await;
+        set_server_password(
+            &path,
+            "redoor",
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA",
+        )
+        .await
+        .expect("the password must be written");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        // Only the value changes; the trailing comment and neighbouring keys stay.
+        assert!(
+            content.contains(r#"password = "$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA" # demo"#),
+            "{content}"
+        );
+        assert!(content.contains("# who may log in"), "{content}");
+        assert!(content.contains("port = 7666"), "{content}");
+        // The starter note would name a password that no longer works.
+        assert!(!content.contains("password changeme"), "{content}");
+        assert!(content.starts_with("# Redoor configuration"), "{content}");
+    }
+
+    /// A file whose credentials were edited by hand since startup is left alone, because
+    /// writing only the password could produce credentials nobody confirmed.
+    #[tokio::test]
+    async fn refuses_to_set_the_password_when_credentials_changed() {
+        let cases = [
+            r#"agent_token = "t"
+[server]
+username = "other"
+password = "x"
+"#,
+            r#"agent_token = "t"
+[server]
+port = 7666
+"#,
+            r#"agent_token = "t"
+"#,
+        ];
+        for original in cases {
+            let (_directory, path) = config_file(original).await;
+            let error = set_server_password(&path, "redoor", "$argon2id$hash")
+                .await
+                .expect_err("a changed file must not be written");
+            // The caller tells the user to restart instead of reporting an I/O failure.
+            assert!(
+                matches!(error, ServerPasswordEditError::CredentialsChanged(_)),
+                "{error:?}"
+            );
+            // Nothing was written.
+            assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), original);
+        }
     }
 }

@@ -68,6 +68,9 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("GET" | "PUT", "/api/v1/agents/{agent}/logging-level")
         | ("POST", "/api/v1/agents/{agent}/echo") => Access::SessionOnly,
 
+        // Changing the login password: a token must never be able to take over the account.
+        ("PUT", "/api/v1/auth/password") => Access::SessionOnly,
+
         // SSH keys and host keys carry login passwords and file keys and change what the
         // server can log in to.
         ("GET", "/api/v1/agents/{agent}/ssh-host-key")
@@ -229,6 +232,7 @@ mod tests {
             (Method::POST, "/api/v1/login", Access::Public),
             (Method::GET, "/api/v1/auth/oidc/callback", Access::Public),
             (Method::GET, "/api/v1/auth/methods", Access::Public),
+            (Method::PUT, "/api/v1/auth/password", Access::SessionOnly),
             (Method::GET, "/api/v1/agents", Access::AnyPrincipal),
             (Method::POST, "/api/v1/agents", Access::SessionOnly),
             (Method::GET, "/api/v1/agents/{agent}", Access::Device(&[])),

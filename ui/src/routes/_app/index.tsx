@@ -19,6 +19,7 @@ import type { ServerAuthMode } from "#bindings/ServerAuthMode";
 import { AgentStatusDot } from "#ui/components/agent-status-dot";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
 import { Button } from "#ui/components/button";
+import { ChangePasswordButton } from "#ui/components/change-password-dialog";
 import { ServerUpdateButton } from "#ui/components/server-update-button";
 import {
     CopyableCodeRow,
@@ -218,13 +219,19 @@ server = ${JSON.stringify(serverAddress)}
                     </div>
                     <div className="flex items-start gap-3 border-t border-slate-800 pt-4">
                         <KeyRound className="mt-0.5 h-5 w-5 shrink-0 text-slate-400" />
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                             <h2 className="text-sm font-medium text-slate-400">
                                 Authentication
                             </h2>
                             <p className="mt-1 text-sm text-slate-100">
                                 {authModeLabel(serverInfo.auth_mode)}
                             </p>
+                            {/* A PAM password belongs to the operating system. */}
+                            {serverInfo.auth_mode === "toml" ? (
+                                <div className="mt-2">
+                                    <ChangePasswordButton />
+                                </div>
+                            ) : null}
                         </div>
                     </div>
                     <BinaryIdentityFields
