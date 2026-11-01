@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.1.2
+
+_2026-11-01_
+
+### Fixes
+
+- Password logins added, changed, or removed in the config file take effect without restarting the server. If the file cannot be loaded, the last valid logins remain active and password changes are unavailable until the file is fixed.
+- SSH-backed agents and managed SSH keys work in the container image, which now includes the OpenSSH client.
+
 ## v2.1.1
 
 _2026-11-01_
