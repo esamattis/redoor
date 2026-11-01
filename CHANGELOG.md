@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.1.1
+
+_2026-11-01_
+
+### Breaking changes
+
+- PAM login has been removed. It never worked in the published Linux builds, where a server with `[server.pam] enabled = true` refused to start. Remove `[server.pam]` from `config.toml`, because the server now refuses to start on it as an unknown key, and sign in with `[[server.users]]`, `server.username`/`server.password`, or `[server.oidc]`. Existing PAM sessions are signed out. New Linux installs get the same `redoor`/`changeme` starter login as macOS.
+
+### Features
+
+- The server update dialog can install a chosen release, not just the latest, so you can roll the server back from the UI. Leave the version field empty to install the latest.
+- When an identity provider is configured, the login page shows the password form next to the provider button instead of behind an extra click.
+
 ## v2.1.0
 
 _2026-11-01_
