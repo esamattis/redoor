@@ -141,11 +141,16 @@ test.describe("Diff context expansion", () => {
         // One step reveals the twenty lines just above the visible context.
         await expect(row(7)).toBeVisible();
 
-        // The open actions follow the hovered line instead of sitting on every row.
-        await row(30).hover();
-        await diff
-            .getByRole("link", { name: "Open line 30 in editor" })
-            .click();
+        // Keyboard selection keeps the action active when layout or refetches move the pointer.
+        // This workflow checks history restoration; pointer actions have their own coverage.
+        const lines = diff.getByRole("group", {
+            name: "Diff lines. Use the arrow keys to pick a line to open.",
+        });
+
+        await lines.focus();
+        await lines.press("ArrowDown");
+        await lines.press("Tab");
+        await page.keyboard.press("Enter");
         // Opening the editor leaves the diff, which unmounts it with its folds.
         await expect(page).not.toHaveURL(/\bview=git\b/);
         await expect(
@@ -195,11 +200,16 @@ test.describe("Diff context expansion", () => {
         await expect(row(60)).toBeVisible();
         await expect(folds).toHaveCount(0);
 
-        // The open actions follow the hovered line instead of sitting on every row.
-        await row(30).hover();
-        await diff
-            .getByRole("link", { name: "Open line 30 in editor" })
-            .click();
+        // Keyboard selection keeps the action active when layout or refetches move the pointer.
+        // This workflow checks history restoration; pointer actions have their own coverage.
+        const lines = diff.getByRole("group", {
+            name: "Diff lines. Use the arrow keys to pick a line to open.",
+        });
+
+        await lines.focus();
+        await lines.press("ArrowDown");
+        await lines.press("Tab");
+        await page.keyboard.press("Enter");
         // Opening the editor leaves the diff, which unmounts it with its choices.
         await expect(page).not.toHaveURL(/\bview=git\b/);
         await expect(
