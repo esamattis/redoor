@@ -39,7 +39,6 @@
 - Do not run tests or builds for changes limited to documentation, plans, or code comments. If those edits accompany real code changes, run the checks required for the code changes.
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
 - Purely visual changes (layout, spacing, wrapping, responsive breakpoints, colors) must not have tests. Do not assert element positions, sizes or styles in Playwright or unit tests
-- Always add `| cat` to git commands to avoid getting stuck in interactive pager
 - Do all work and commits directly on the `main` branch; do not create feature branches
 - When making git commits always add description explaining why the change was made, not what it does
 - Make multiple commits if there are clear distinct edits
