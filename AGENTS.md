@@ -50,7 +50,6 @@
 - Always write multiline strings with real newlines inside the quotes, never escaped `\n` sequences.
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
 - When you see a transient flaky test that succeeds on second run log them to `./flaky-tests.md`
-- When `./flaky-tests.md` shows the same test has been flaky more than once, spawn a subagent to fix its flakiness at the root cause, or to remove the test if it cannot be made reliable
 - A flake can be a real product bug (a late connect redirect and cancelled commit pagination both were), so do not dismiss one because the current change does not touch that code
 - When fixing a flake, first make it reproduce deterministically (hold a response, CPU throttling, a parallel upload loop, `--repeat-each`), then verify the fix with repeated runs
 
