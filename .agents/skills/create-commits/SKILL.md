@@ -15,7 +15,7 @@ Create focused Git commits for the work completed in the current conversation. N
 4. If a file contains both thread-related and unrelated edits, stage only the relevant hunks. If that cannot be done safely, stop and explain what prevents a safe commit.
 5. Never discard, overwrite, or revert unrelated work to make the commit easier.
 
-Run shell commands through `mise exec -- …`. For read-only Git commands, use `git --no-pager` and append `| cat` as required by this project.
+Run shell commands through `mise exec -- …`.
 
 ## Decide Commit Boundaries
 

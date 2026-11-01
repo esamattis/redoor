@@ -34,7 +34,7 @@ The user may name a platform, a check, a workflow, a matrix cell, paste a GitHub
 
 ## Commit And Push
 
-1. Inspect `git status`, `git diff`, and `git log --oneline -10` before committing. Append `| cat` to Git commands as required by this repository.
+1. Inspect `git status`, `git diff`, and `git log --oneline -10` before committing.
 2. Stage only files related to this CI fix. Do not stage skill, agent, or other unrelated worktree changes unless the user asked for those edits.
 3. Create a non-empty commit with an imperative title and a body explaining why the job failed and why the fix is appropriate.
 4. Push the current branch without force. Existing local commits may be pushed with it; do not rewrite them.
