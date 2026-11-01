@@ -21,9 +21,7 @@ use crate::http::state::{CoordinatorArgs, ServerState};
 use crate::http::watchdog::ManagedLauncher;
 use crate::one_time_token_registry::OneTimeTokenRegistry;
 use crate::watchdog::WatchdogRegistry;
-use redoor_core::config::{
-    AgentConfig, ConfiguredUser, LocalServerEndpoint, RedoorConfig, ServerTls,
-};
+use redoor_core::config::{AgentConfig, LocalServerEndpoint, RedoorConfig, ServerTls};
 use redoor_core::log;
 use redoor_core::logging::LogFormat;
 use redoor_core::paths::AppPaths;
@@ -194,8 +192,6 @@ struct ServerConfig {
     log_level: Level,
     /// Process output format.
     log_format: LogFormat,
-    /// Name and password logins.
-    users: Vec<ConfiguredUser>,
     /// Whether session cookies require HTTPS; always true with built-in TLS.
     cookie_secure: bool,
     /// Built-in HTTPS certificate source; `None` serves plain HTTP.
@@ -251,7 +247,6 @@ impl ServerConfig {
             log_max_size: server.log_max_size,
             log_level,
             log_format,
-            users: server.users,
             // Browsers only reach a TLS listener over HTTPS, so the cookie never needs plain HTTP.
             cookie_secure: server.cookie_secure || server.tls.is_some(),
             tls: server.tls,
@@ -317,7 +312,7 @@ impl ServerRuntime {
             tls: tls_acceptor.is_some(),
         };
         let auth = AuthState::new(
-            config.users,
+            config.config_path.clone(),
             config.oidc.as_ref(),
             config.agent_token.clone(),
             config.cookie_secure,
@@ -609,8 +604,6 @@ log_format = "json"
         // Values without an env override still come from the file.
         assert_eq!(config.listen_address(), "0.0.0.0:4000");
         assert_eq!(config.log, "/file/server.log");
-        // Explicit TOML credentials are one password login.
-        assert_eq!(config.users.len(), 1);
     }
 
     /// Built-in defaults apply only when no tier sets a value.

@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use anyhow::Context;
 use argon2::{
     Argon2,
     password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString},
@@ -23,9 +24,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use redoor_core::config::{
-    ConfiguredPassword, ConfiguredUser, OidcConfig, ServerPasswordEditError,
-};
+use redoor_core::config::{OidcConfig, ServerPasswordEditError};
 use redoor_core::{log, log_error};
 use redoor_protocol::api::{
     ErrorResponse,
@@ -37,6 +36,9 @@ use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use super::state::ServerState;
+use password_logins::{Logins, PasswordLogins};
+
+mod password_logins;
 
 /// Cookie carrying the opaque browser session id.
 const SESSION_COOKIE_NAME: &str = "redoor_session";
@@ -57,28 +59,17 @@ const LOGIN_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// configs keep working, but a password chosen in the UI should resist online guessing.
 pub(crate) const MIN_NEW_PASSWORD_CHARS: usize = 8;
 
-/// The verifier of one `[[server.users]]` login, kept together because a password change
-/// must replace the hash and the session fingerprint at once.
-#[derive(Clone)]
-struct PasswordUser {
-    /// Argon2id PHC hash of the password.
-    hash: String,
-    /// Stable digest of the password, so changing it revokes this user's sessions.
-    fingerprint: String,
-}
-
 /// Holds the login verifiers and the durable directory used to validate opaque cookies.
 #[derive(Clone)]
 pub(crate) struct AuthState {
-    /// Password logins by name. Behind a lock because the password change form replaces one
-    /// entry while the server runs; only ever held for a lookup or a swap, never across an
-    /// await or an Argon2 run.
-    users: Arc<std::sync::RwLock<HashMap<String, PasswordUser>>>,
+    /// Password logins, read from the config file whenever it changes, so hand edits and
+    /// the password change form take effect without a restart.
+    logins: Arc<PasswordLogins>,
     /// Argon2 hash of a random password with the default parameters, verified for names
     /// that are no login at all so the response time does not reveal which names exist.
     dummy_hash: Arc<str>,
     /// Serializes password changes, so two concurrent changes cannot both verify the old
-    /// password and then race over the file and the in-memory verifier.
+    /// password and then both write the file.
     password_change_lock: Arc<tokio::sync::Mutex<()>>,
     sessions_directory: PathBuf,
     /// When true, Set-Cookie includes `Secure` so browsers only send the session over HTTPS.
@@ -265,26 +256,23 @@ struct SessionFile {
 }
 
 impl AuthState {
-    /// Creates the private session directory before requests arrive so login failures are
-    /// actionable, and drops sessions of logins that no longer exist.
+    /// Reads the password logins from `config_path`, creates the private session directory
+    /// before requests arrive so login failures are actionable, and drops sessions of logins
+    /// that no longer exist.
     pub(crate) async fn new(
-        users: Vec<ConfiguredUser>,
+        config_path: PathBuf,
         oidc: Option<&OidcConfig>,
         agent_token: String,
         cookie_secure: bool,
         data_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
-        // Argon2 is deliberately slow, so plaintext passwords are hashed off the async workers.
-        let (users, dummy_hash) = tokio::task::spawn_blocking(move || {
-            let users = users
-                .into_iter()
-                .map(|user| password_user(user.password).map(|verifier| (user.name, verifier)))
-                .collect::<anyhow::Result<HashMap<_, _>>>()?;
-            let dummy_hash = hash_password(&Uuid::new_v4().to_string())?;
-            Ok::<_, anyhow::Error>((users, dummy_hash))
-        })
-        .await
-        .map_err(|error| anyhow::anyhow!("password hashing task failed: {error}"))??;
+        let logins = PasswordLogins::load(config_path)
+            .await
+            .context("Failed to read the password logins")?;
+        // Argon2 is deliberately slow, so the dummy hash is made off the async workers.
+        let dummy_hash = tokio::task::spawn_blocking(|| hash_password(&Uuid::new_v4().to_string()))
+            .await
+            .map_err(|error| anyhow::anyhow!("password hashing task failed: {error}"))??;
 
         // Keep independent application namespaces from sharing browser sessions on disk.
         let sessions_directory = data_dir.join("sessions");
@@ -296,7 +284,7 @@ impl AuthState {
         }
 
         let auth = Self {
-            users: Arc::new(std::sync::RwLock::new(users)),
+            logins: Arc::new(logins),
             dummy_hash: Arc::from(dummy_hash),
             password_change_lock: Arc::default(),
             sessions_directory,
@@ -347,8 +335,9 @@ impl AuthState {
         };
 
         let now = jiff::Timestamp::now().as_second();
+        let logins = self.logins.current().await;
         if session.session_id != session_id
-            || !self.is_current(&session)
+            || !self.is_current(&session, &logins)
             || session.expires_at <= now
         {
             // Remove expired or credential-mismatched files so disk does not retain stealable IDs.
@@ -388,13 +377,13 @@ impl AuthState {
         SessionCheck::Renewed(user, self.session_set_cookie(&session_id, policy.lifetime))
     }
 
-    /// Whether a stored session still matches the login that issued it in the running
+    /// Whether a stored session still matches the login that issued it: a password session
+    /// against the config file's current `logins`, an OIDC session against the running
     /// config. Each method is checked against its own credential, so changing one user's
     /// password or turning one method off revokes only those sessions.
-    fn is_current(&self, session: &SessionFile) -> bool {
+    fn is_current(&self, session: &SessionFile, logins: &Logins) -> bool {
         match session.method {
-            SessionMethod::Password => self
-                .read_users()
+            SessionMethod::Password => logins
                 .get(&session.username)
                 .is_some_and(|user| session.credentials_fingerprint == user.fingerprint),
             // Removing the OIDC config revokes every session it created. The name is only
@@ -404,19 +393,6 @@ impl AuthState {
                 .as_ref()
                 .is_some_and(|policy| session.credentials_fingerprint == policy.fingerprint),
         }
-    }
-
-    /// The current password logins. A poisoned lock still holds a complete map, because
-    /// writers only ever replace whole entries.
-    fn read_users(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, PasswordUser>> {
-        self.users
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// The verifier of one password login, cloned so no lock is held through Argon2.
-    fn password_user(&self, name: &str) -> Option<PasswordUser> {
-        self.read_users().get(name).cloned()
     }
 
     /// Creates a session for an OIDC sign-in; `name` is the provider's readable name for the
@@ -513,6 +489,7 @@ impl AuthState {
     /// Removes sessions that no longer match the running config (a changed password, a
     /// removed user, OIDC turned off).
     async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
+        let logins = self.logins.current().await;
         let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -529,7 +506,7 @@ impl AuthState {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
             };
-            if !self.is_current(&session) {
+            if !self.is_current(&session, &logins) {
                 let _ = tokio::fs::remove_file(&path).await;
             }
         }
@@ -541,7 +518,7 @@ impl AuthState {
     /// A name that is no login at all is verified against a dummy hash, so the response time
     /// does not reveal which names exist.
     async fn verify_login(&self, name: &str, password: &str) -> LoginVerification {
-        let password_user = self.password_user(name);
+        let password_user = self.logins.user(name).await;
         if let Some(user) = &password_user
             && verify_password_hash_off_thread(password, &user.hash).await
         {
@@ -560,27 +537,6 @@ impl AuthState {
     }
 }
 
-/// Builds the verifier of one configured password.
-fn password_user(password: ConfiguredPassword) -> anyhow::Result<PasswordUser> {
-    Ok(match password {
-        ConfiguredPassword::Plaintext(password) => {
-            let password = zeroize::Zeroizing::new(password);
-            PasswordUser {
-                hash: hash_password(&password)?,
-                // Independent of the per-process Argon2 salt, so sessions survive restarts
-                // until the operator actually changes the password.
-                fingerprint: credentials_fingerprint(PLAINTEXT_FINGERPRINT_DOMAIN, &password),
-            }
-        }
-        // The stored hash has a fixed salt, so it fingerprints the password as stably as the
-        // plaintext does, and matches what a password change computed in memory.
-        ConfiguredPassword::Argon2Hash(hash) => PasswordUser {
-            fingerprint: credentials_fingerprint(HASH_FINGERPRINT_DOMAIN, &hash),
-            hash,
-        },
-    })
-}
-
 /// Why a password change was refused.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum PasswordChangeError {
@@ -596,7 +552,13 @@ pub(crate) enum PasswordChangeError {
     /// The new password does not meet the form's rules.
     #[error("{0}")]
     InvalidNewPassword(String),
-    /// The config file's logins were edited by hand since startup.
+    /// The config file is missing or broken, so the server runs on the last logins that
+    /// loaded and a password written now would not apply.
+    #[error(
+        "The config file has an error, so a new password would not take effect; fix the file (see the server log) and try again"
+    )]
+    ConfigNotLoaded,
+    /// The user's login was removed from the config file while the change was running.
     #[error(transparent)]
     CredentialsChanged(ServerPasswordEditError),
     /// Hashing, writing the file or creating the new session failed.
@@ -624,9 +586,15 @@ impl AuthState {
             return Err(PasswordChangeError::NotPasswordSession);
         }
         let _change = self.password_change_lock.lock().await;
-        // A valid password session's user is configured; a missing one was removed in a
-        // way the running server does not know about yet.
-        let Some(verifier) = self.password_user(&user.name) else {
+        // Read from the file as it is now, so the current password is checked against a hand
+        // edit too, and a user removed by hand cannot change a password they no longer have.
+        let snapshot = self.logins.snapshot().await;
+        // A password written into a file that does not load would not apply: the old one
+        // would keep working and this browser's new session would fail its next check.
+        if !snapshot.loaded {
+            return Err(PasswordChangeError::ConfigNotLoaded);
+        }
+        let Some(verifier) = snapshot.logins.get(&user.name).cloned() else {
             return Err(PasswordChangeError::CredentialsChanged(
                 ServerPasswordEditError::CredentialsChanged(user.name.clone()),
             ));
@@ -652,17 +620,9 @@ impl AuthState {
                     PasswordChangeError::Internal(error.context("Failed to write the config file"))
                 }
             })?;
+        // The same fingerprint the logins compute when they read the new hash from the file,
+        // so the session issued below stays valid.
         let fingerprint = credentials_fingerprint(HASH_FINGERPRINT_DOMAIN, &password_hash);
-        self.users
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
-                user.name.clone(),
-                PasswordUser {
-                    hash: password_hash,
-                    fingerprint: fingerprint.clone(),
-                },
-            );
         log!(
             Level::Info,
             "Changed the login password of user {}",
@@ -980,14 +940,48 @@ mod tests {
         }
     }
 
-    /// Auth state with the given logins stored in `directory`, as a restart would build it.
-    async fn auth_with(
-        directory: &TempDir,
-        users: Vec<ConfiguredUser>,
-        oidc: Option<&OidcConfig>,
-    ) -> AuthState {
+    /// The config file of the auth state stored in `directory`.
+    fn config_path(directory: &TempDir) -> std::path::PathBuf {
+        directory.path().join("config.toml")
+    }
+
+    /// A config file body with the given logins as `[[server.users]]` entries.
+    fn users_config(users: &[ConfiguredUser]) -> String {
+        let mut config = r#"agent_token = "t"
+"#
+        .to_string();
+        for user in users {
+            // A TOML literal string: the test passwords and PHC strings contain no quotes.
+            let (ConfiguredPassword::Plaintext(password)
+            | ConfiguredPassword::Argon2Hash(password)) = &user.password;
+            config.push_str(&format!(
+                r#"[[server.users]]
+name = "{}"
+password = '{password}'
+"#,
+                user.name
+            ));
+        }
+        config
+    }
+
+    /// Replaces the config file by rename, as editors and the password form do, so a check
+    /// never reads it half-written.
+    async fn write_config(directory: &TempDir, content: &str) {
+        let temporary = directory.path().join("config.toml.tmp");
+        tokio::fs::write(&temporary, content)
+            .await
+            .expect("write config");
+        tokio::fs::rename(&temporary, config_path(directory))
+            .await
+            .expect("replace config");
+    }
+
+    /// Auth state started from the config file already in `directory`, as a restart would
+    /// build it.
+    async fn auth_from_file(directory: &TempDir, oidc: Option<&OidcConfig>) -> AuthState {
         AuthState::new(
-            users,
+            config_path(directory),
             oidc,
             "agent-token".to_string(),
             false,
@@ -995,6 +989,17 @@ mod tests {
         )
         .await
         .expect("auth state must initialize")
+    }
+
+    /// Auth state with the given logins written to the config file in `directory`, as a
+    /// restart would build it.
+    async fn auth_with(
+        directory: &TempDir,
+        users: Vec<ConfiguredUser>,
+        oidc: Option<&OidcConfig>,
+    ) -> AuthState {
+        write_config(directory, &users_config(&users)).await;
+        auth_from_file(directory, oidc).await
     }
 
     /// A password session of `name`, created through the real login check.
@@ -1261,40 +1266,30 @@ mod tests {
         ));
     }
 
-    /// A config file with the given credentials and the auth state started from it.
+    /// A config file with the given `[server]` shorthand credentials and the auth state
+    /// started from it.
     async fn configured_auth(
         directory: &TempDir,
         password: ConfiguredPassword,
     ) -> (std::path::PathBuf, AuthState) {
-        let config_path = directory.path().join("config.toml");
         // A TOML literal string: the test passwords and PHC strings contain no quotes.
-        let stored = match &password {
-            ConfiguredPassword::Plaintext(value) | ConfiguredPassword::Argon2Hash(value) => {
-                format!("'{value}'")
-            }
-        };
-        tokio::fs::write(
-            &config_path,
-            format!(
+        let (ConfiguredPassword::Plaintext(stored) | ConfiguredPassword::Argon2Hash(stored)) =
+            &password;
+        write_config(
+            directory,
+            &format!(
                 r#"agent_token = "t"
 [server]
 username = "admin"
-password = {stored}
+password = '{stored}'
 "#
             ),
         )
-        .await
-        .expect("write config");
-        let auth = auth_with(
-            directory,
-            vec![ConfiguredUser {
-                name: "admin".to_string(),
-                password,
-            }],
-            None,
-        )
         .await;
-        (config_path, auth)
+        (
+            config_path(directory),
+            auth_from_file(directory, None).await,
+        )
     }
 
     /// Reads `[server].password` back from the config file.
@@ -1507,25 +1502,196 @@ password = {stored}
         assert!(session_user(&without_bob, &alice).await.is_some());
     }
 
+    /// Hand edits of the logins apply on the next request, without a restart: a changed
+    /// password and a removed user sign out those sessions, and an added user can sign in.
+    #[tokio::test]
+    async fn hand_edited_logins_apply_without_a_restart() {
+        let directory = TempDir::create();
+        let auth = auth_with(
+            &directory,
+            vec![user("alice", "alice-password"), user("bob", "bob-password")],
+            None,
+        )
+        .await;
+        let alice = login(&auth, "alice", "alice-password").await;
+        let bob = login(&auth, "bob", "bob-password").await;
+
+        write_config(
+            &directory,
+            &users_config(&[
+                user("alice", "alice-edited-password"),
+                user("carol", "carol-password"),
+            ]),
+        )
+        .await;
+        // A password changed by hand signs out that user's sessions at once.
+        assert!(session_user(&auth, &alice).await.is_none());
+        // A user removed by hand is signed out at once.
+        assert!(session_user(&auth, &bob).await.is_none());
+        // The hand-edited password replaces the old one.
+        assert!(matches!(
+            auth.verify_login("alice", "alice-password").await,
+            LoginVerification::Rejected
+        ));
+        assert!(matches!(
+            auth.verify_login("alice", "alice-edited-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+        // A user added by hand can sign in at once.
+        assert!(matches!(
+            auth.verify_login("carol", "carol-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+    }
+
+    /// A broken config file, such as a half-finished hand edit, keeps the last logins that
+    /// parsed instead of signing everyone out, and the next valid save applies.
+    #[tokio::test]
+    async fn broken_config_keeps_the_last_good_logins() {
+        let directory = TempDir::create();
+        let auth = auth_with(&directory, vec![user("alice", "alice-password")], None).await;
+        let alice = login(&auth, "alice", "alice-password").await;
+
+        write_config(
+            &directory,
+            r#"agent_token = "t"
+[[server.users]
+"#,
+        )
+        .await;
+        // The signed-in browser keeps working while the file does not parse.
+        assert!(session_user(&auth, &alice).await.is_some());
+        // So does signing in with the last good password.
+        assert!(matches!(
+            auth.verify_login("alice", "alice-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+
+        write_config(
+            &directory,
+            &users_config(&[user("alice", "alice-fixed-password")]),
+        )
+        .await;
+        // Once the file is valid again, its logins apply.
+        assert!(session_user(&auth, &alice).await.is_none());
+        assert!(matches!(
+            auth.verify_login("alice", "alice-fixed-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+    }
+
+    /// Editing unrelated parts of the file keeps the verifiers of unchanged passwords, so a
+    /// plaintext password is not hashed again on every save.
+    #[tokio::test]
+    async fn unrelated_edits_keep_existing_verifiers() {
+        let directory = TempDir::create();
+        let users = vec![user("alice", "alice-password")];
+        let auth = auth_with(&directory, users.clone(), None).await;
+        let before = auth.logins.user("alice").await.expect("alice").hash;
+
+        write_config(
+            &directory,
+            &format!(
+                "# an unrelated edit
+{}",
+                users_config(&users)
+            ),
+        )
+        .await;
+        let after = auth.logins.user("alice").await.expect("alice").hash;
+        // Hashing again would use a new random salt, so an equal hash means it was reused.
+        assert_eq!(before, after);
+    }
+
+    /// The change form checks the current password against the file as it is now, so it
+    /// cannot silently overwrite a password changed by hand with one checked against the old.
+    #[tokio::test]
+    async fn password_change_checks_a_hand_edited_password() {
+        let directory = TempDir::create();
+        let (config_path, auth) = configured_auth(
+            &directory,
+            ConfiguredPassword::Plaintext("old-password".into()),
+        )
+        .await;
+        write_config(
+            &directory,
+            r#"agent_token = "t"
+[server]
+username = "admin"
+password = 'hand-edited-password'
+"#,
+        )
+        .await;
+
+        let stale = auth
+            .change_password(&config_path, &admin(), "old-password", "new-password")
+            .await
+            .err();
+        // The password from before the hand edit no longer counts as current.
+        assert!(matches!(
+            stale,
+            Some(PasswordChangeError::WrongCurrentPassword)
+        ));
+        auth.change_password(
+            &config_path,
+            &admin(),
+            "hand-edited-password",
+            "new-password",
+        )
+        .await
+        .expect("the hand-edited password is the current one");
+        // The change applies on top of the hand edit.
+        assert!(matches!(
+            auth.verify_login("admin", "new-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+    }
+
+    /// While the config file does not load, the change form refuses instead of writing a
+    /// password that would not apply until the file is fixed.
+    #[tokio::test]
+    async fn password_change_refuses_while_the_config_does_not_load() {
+        let directory = TempDir::create();
+        let (config_path, auth) = configured_auth(
+            &directory,
+            ConfiguredPassword::Plaintext("old-password".into()),
+        )
+        .await;
+        // Valid TOML the editor could rewrite, but not a config the server can load.
+        let broken = r#"agent_token = "t"
+[server]
+username = "admin"
+password = 'old-password'
+port = "not-a-port"
+"#;
+        write_config(&directory, broken).await;
+
+        let error = auth
+            .change_password(&config_path, &admin(), "old-password", "new-password")
+            .await
+            .err();
+        // The change is refused rather than reported as done while it cannot apply.
+        assert!(matches!(error, Some(PasswordChangeError::ConfigNotLoaded)));
+        // The file is left as the operator wrote it.
+        assert_eq!(
+            tokio::fs::read_to_string(&config_path)
+                .await
+                .expect("config"),
+            broken
+        );
+        // The last good password keeps working.
+        assert!(matches!(
+            auth.verify_login("admin", "old-password").await,
+            LoginVerification::Authenticated(_)
+        ));
+    }
+
     /// Changing one user's password signs out that user's other sessions and keeps every
     /// other user signed in.
     #[tokio::test]
     async fn password_change_signs_out_only_that_user() {
         let directory = TempDir::create();
-        let config_path = directory.path().join("config.toml");
-        tokio::fs::write(
-            &config_path,
-            r#"agent_token = "t"
-[[server.users]]
-name = "alice"
-password = "alice-password"
-[[server.users]]
-name = "bob"
-password = "bob-password"
-"#,
-        )
-        .await
-        .expect("write config");
+        let config_path = config_path(&directory);
         let auth = auth_with(
             &directory,
             vec![user("alice", "alice-password"), user("bob", "bob-password")],

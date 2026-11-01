@@ -1,4 +1,4 @@
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -46,12 +46,19 @@ async function startServer(): Promise<void> {
     await waitForPort(VITEST_SERVER_PORT);
 }
 
-/** Signs a fresh client in with the given password. */
-async function signIn(password: string): Promise<ApiClient> {
+/** Signs a fresh client in with the given password, as `username` unless `name` is given. */
+async function signIn(password: string, name = username): Promise<ApiClient> {
     const api = new ApiClient(baseUrl);
-    await api.login(username, password);
+    await api.login(name, password);
 
     return api;
+}
+
+/** Replaces the config file by rename, as editors do, so the server never reads it half-written. */
+function writeConfig(content: string): void {
+    const temporaryPath = `${configPath}.tmp`;
+    writeFileSync(temporaryPath, content);
+    renameSync(temporaryPath, configPath);
 }
 
 /** The status of a rejected call, so assertions can name the expected HTTP status. */
@@ -85,8 +92,7 @@ function storedPassword(): string {
 
 beforeAll(async () => {
     rmSync(serverHome, { recursive: true, force: true });
-    writeFileSync(
-        configPath,
+    writeConfig(
         `agent_token = "${TEST_AGENT_TOKEN}"
 
 [server]
@@ -162,5 +168,52 @@ describe("password change", () => {
         // The session issued by the change survives the restart, because the fingerprint
         // computed in memory matches the one derived from the stored hash.
         await expect(changer.listAgents()).resolves.toEqual([]);
+    });
+
+    it("applies hand-edited logins without a restart", async () => {
+        const before = await signIn(newPassword);
+
+        writeConfig(
+            `agent_token = "${TEST_AGENT_TOKEN}"
+
+[[server.users]]
+name = "${username}"
+password = "hand-edited-password"
+
+[[server.users]]
+name = "second-user"
+password = "second-password"
+`,
+        );
+
+        // A password changed by hand signs out that user's sessions on the next request.
+        expect(await failureStatus(before.listAgents())).toBe(401);
+        // The hand-edited password replaces the one set through the form.
+        expect(await failureStatus(signIn(newPassword))).toBe(401);
+        await expect(signIn("hand-edited-password")).resolves.toBeInstanceOf(
+            ApiClient,
+        );
+        // A user added by hand can sign in without a restart.
+        const second = await signIn("second-password", "second-user");
+
+        writeConfig(
+            `agent_token = "${TEST_AGENT_TOKEN}"
+
+[[server.users]
+`,
+        );
+        // A file that does not parse keeps the last good logins instead of signing out.
+        await expect(second.listAgents()).resolves.toEqual([]);
+
+        writeConfig(
+            `agent_token = "${TEST_AGENT_TOKEN}"
+
+[[server.users]]
+name = "${username}"
+password = "hand-edited-password"
+`,
+        );
+        // A user removed by hand is signed out on the next request.
+        expect(await failureStatus(second.listAgents())).toBe(401);
     });
 });

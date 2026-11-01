@@ -203,7 +203,11 @@ The agent runtime and the implementation of every command.
     preference document and one file per open file's editor buffer), keyed by the
     session's login name.
   - `auth`: login verification (`[[server.users]]` passwords), sessions per login method and the password change; `auth_me` answers
-    `GET /api/v1/auth/me`.
+    `GET /api/v1/auth/me`. `auth/password_logins` owns the password logins: the config file
+    is their only source of truth, stat'ed on every login and session check and parsed again
+    when its metadata changes, so hand edits apply without a restart and the password change
+    only writes the file. A file that does not parse keeps the last good logins, and unchanged
+    plaintext passwords keep their in-memory hash. The rest of the config is read at startup.
   - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
     "Encrypted files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
     with the vault.

@@ -109,6 +109,8 @@ password = "long-private-password"
 
 Names may contain only ASCII letters, numbers, `.`, `_` and `-`, and must be unique. Every entry needs a non-empty `password`.
 
+The server reads the logins from the config file again whenever the file changes, so adding, removing or editing a user applies on the next request without a restart. If the edited file does not parse, the server keeps the last logins that did and logs the error, and **Change password** refuses until the file is fixed; the rest of the config still needs a restart.
+
 `[server] username` and `password` are shorthand for a single `[[server.users]]` entry. Both must be set together, and the shorthand cannot be combined with `[[server.users]]`.
 
 `password` may be an Argon2 PHC string instead of plaintext, so the file does not hold a recoverable password. A value starting with `$argon2` is read as a hash and must parse as one, otherwise the server refuses to start. A name that is not a login is checked against a dummy hash with the default Argon2 parameters, so the response time does not tell which names exist; a hand-written hash with other cost parameters takes a different time and so still reveals its name. Hashes written by the password change form always use the default parameters.
@@ -126,7 +128,7 @@ For a `[[server.users]]` (or shorthand) login, the server home page and the appl
 | Password | that user's password changes or the user is removed from the config       |
 | OIDC     | the issuer, client id or allowed groups change, or `[server.oidc]` is removed |
 
-Changing a password by hand, including replacing a plaintext password with a hash of the same password, signs out that user's sessions on the next start.
+Changing a password by hand, including replacing a plaintext password with a hash of the same password, signs out that user's sessions at once, without a restart.
 
 Do not put `agent_token` under `[server]`; it must stay at the top level.
 

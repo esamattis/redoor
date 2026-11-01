@@ -67,6 +67,7 @@ pub(crate) async fn change_password_handler(
                 ApiError::forbidden(error.to_string())
             }
             PasswordChangeError::NotPasswordSession => ApiError::conflict(error.to_string()),
+            PasswordChangeError::ConfigNotLoaded => ApiError::conflict(error.to_string()),
             PasswordChangeError::CredentialsChanged(_) => ApiError::conflict(error.to_string()),
             PasswordChangeError::InvalidNewPassword(_) => ApiError::bad_request(error.to_string()),
             PasswordChangeError::Internal(error) => {

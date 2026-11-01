@@ -97,9 +97,7 @@ pub enum ServerPasswordEditError {
     /// The file no longer has a password login for this user, for example after a hand edit
     /// that removed or renamed it. Writing the password anyway would leave a config that
     /// means something different from what the user confirmed.
-    #[error(
-        "The config file no longer has a password login named '{0}'; restart the server to apply the hand-edited logins first"
-    )]
+    #[error("The config file no longer has a password login named '{0}'")]
     CredentialsChanged(String),
     /// Reading, parsing, locking or replacing the file failed.
     #[error(transparent)]
@@ -117,8 +115,8 @@ const BOOTSTRAP_PASSWORD_COMMENT: &str =
 ///
 /// The login is the `[server] username`/`password` shorthand when its username is `name`,
 /// otherwise the `[[server.users]]` entry with that name. The write is refused when neither
-/// exists with a string password, so a file edited by hand since startup is never
-/// half-updated.
+/// exists with a string password, so a file whose login was removed by hand meanwhile is
+/// never half-updated.
 pub async fn set_server_password(
     path: &Path,
     name: &str,
