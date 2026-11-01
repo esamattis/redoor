@@ -260,8 +260,9 @@ test.describe.serial("Upload conflicts", () => {
         await expect
             .poll(() => exists(path.join(photos, "keep.txt")))
             .toBe(false);
-        await expect(
-            fs.readFile(path.join(photos, "a.txt"), "utf8"),
-        ).resolves.toBe("new a");
+        // Queue workers finish independently, so b.txt does not imply a.txt is written yet.
+        await expect
+            .poll(() => readWhenPresent(path.join(photos, "a.txt")))
+            .toBe("new a");
     });
 });
