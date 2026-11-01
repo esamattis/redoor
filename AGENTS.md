@@ -36,9 +36,6 @@
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
 - Purely visual changes (layout, spacing, wrapping, responsive breakpoints, colors) must not have tests. Do not assert element positions, sizes or styles in Playwright or unit tests
 - Do all work and commits directly on the `main` branch; do not create feature branches
-- When making git commits always add description explaining why the change was made, not what it does
-- Make multiple commits if there are clear distinct edits
-- To make a release run `node scripts/release.mts <patch|minor|major>` on a clean `main`. It pushes `main`, bumps the version in `Cargo.toml`, commits, tags and pushes the tag, so do not bump versions or tag by hand
 - On test failures see the ./log dir for related logs
 - When a single test needs cleanup, always use onTestFinished() instead of try-finally
 - When using `tokio::select!` keep the arm bodies small be delegating to methods/functions, since `cargo fmt` does not work with it.
@@ -54,6 +51,8 @@ Add skills to `.agents/skills/`, which Codex and OpenCode read. `.claude/skills`
 - `add-rest-endpoint`: adding or changing a REST API endpoint. Every REST API feature needs integration tests
 - `write-tests`: writing or changing integration tests or Playwright specs
 - `fix-flaky-test`: a test fails and then passes on a rerun (log it to `flaky-tests.md`), or a flake needs fixing
+- `create-commits`: making any git commit. Commit messages explain why, not what
+- `make-release`: releasing a new version. Never bump versions or tag by hand
 
 # UI
 
