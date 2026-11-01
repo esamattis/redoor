@@ -9,6 +9,7 @@ import { useWaitForServerRestart } from "#ui/use-server-restart";
 import { getErrorMessage } from "#ui/utils/error";
 import { Button } from "./button";
 import { ConfirmationDialog } from "./confirmation-dialog";
+import { TextField } from "./text-field";
 import { Toast } from "./toast";
 
 const rootRouteApi = getRouteApi("__root__");
@@ -57,19 +58,38 @@ function manualRestarts(processes: UpgradeProcessReport[]): ManualRestart[] {
 }
 
 /**
+ * Turns the typed version into a release tag. Releases are tagged `v<version>` while the UI
+ * shows bare versions, so a version starting with a digit gets the prefix; an empty field
+ * means the latest release.
+ */
+function releaseTag(version: string): string | null {
+    const trimmed = version.trim();
+
+    if (trimmed === "") return null;
+
+    return /^\d/.test(trimmed) ? `v${trimmed}` : trimmed;
+}
+
+/**
  * Says what the update did, including the local processes it could not restart, since those
  * keep running the old version until the operator restarts them.
  */
 function updateResult(update: {
     previousVersion: string;
     version: string | undefined;
+    /** Release tag the operator picked, or null for the latest release. */
+    requestedTag: string | null;
     processes: UpgradeProcessReport[];
 }): UpdateResult {
-    const summary =
+    const reinstalled =
         update.version === undefined ||
-        update.version === update.previousVersion
-            ? `Reinstalled ${update.previousVersion}, which is already the latest release`
-            : `Updated the server from ${update.previousVersion} to ${update.version}`;
+        update.version === update.previousVersion;
+
+    const summary = !reinstalled
+        ? `Updated the server from ${update.previousVersion} to ${update.version}`
+        : update.requestedTag === null
+          ? `Reinstalled ${update.previousVersion}, which is already the latest release`
+          : `Reinstalled ${update.previousVersion}`;
 
     const restarts = manualRestarts(update.processes);
 
@@ -86,7 +106,8 @@ function updateResult(update: {
 }
 
 /**
- * Updates the server to the latest published release. The install runs before anything
+ * Updates the server to a published release, the latest unless the operator names a version,
+ * so a bad release can be rolled back from the UI. The install runs before anything
  * restarts, so a failed download or an unwritable binary is reported in the dialog while the
  * old server keeps serving; afterwards the dialog waits for the restarted server.
  */
@@ -100,21 +121,27 @@ export function ServerUpdateButton(props: {
     const queryClient = useQueryClient();
     const waitForServerRestart = useWaitForServerRestart();
     const [isOpen, setIsOpen] = React.useState(false);
+    const [version, setVersion] = React.useState("");
     const [result, setResult] = React.useState<UpdateResult | null>(null);
 
     const updateMutation = useMutation({
-        mutationFn: async () => {
+        mutationFn: async (requestedTag: string | null) => {
             // Read before the update: the refreshed server info re-renders this component
             // with the new version before the summary is built.
             const previousVersion = props.currentVersion;
-            const response = await api.upgradeServer(null);
+            const response = await api.upgradeServer(requestedTag);
             await waitForServerRestart();
 
             const version = queryClient.getQueryData(
                 serverInfoQueryOptions(api).queryKey,
             )?.version;
 
-            return { previousVersion, version, processes: response.processes };
+            return {
+                previousVersion,
+                version,
+                requestedTag,
+                processes: response.processes,
+            };
         },
         onSuccess: (update) => {
             setIsOpen(false);
@@ -134,7 +161,7 @@ export function ServerUpdateButton(props: {
             <Button
                 type="button"
                 variant="subtle"
-                tooltip="Install the latest Redoor release and restart the server"
+                tooltip="Install a Redoor release and restart the server"
                 onClick={() => setIsOpen(true)}
                 className="inline-flex items-center gap-1.5 rounded border border-slate-800 bg-surface px-2 py-0.5 text-sm font-normal text-slate-200 hover:border-slate-600 hover:bg-tint"
             >
@@ -147,7 +174,8 @@ export function ServerUpdateButton(props: {
                 description={
                     <div className="space-y-2">
                         <p>
-                            Downloads the latest Redoor release and replaces{" "}
+                            Downloads the selected Redoor release, or the latest
+                            one when no version is given, and replaces{" "}
                             <code className="font-mono break-all text-slate-200">
                                 {props.exePath}
                             </code>
@@ -169,8 +197,18 @@ export function ServerUpdateButton(props: {
                         : null
                 }
                 onClose={close}
-                onConfirm={() => updateMutation.mutate()}
-            />
+                onConfirm={() => updateMutation.mutate(releaseTag(version))}
+            >
+                <TextField
+                    label="Version"
+                    value={version}
+                    placeholder="latest"
+                    description="Release such as 2.0.0 to install instead of the latest one."
+                    autoComplete="off"
+                    disabled={updateMutation.isPending}
+                    onChange={setVersion}
+                />
+            </ConfirmationDialog>
             {result ? (
                 <Toast tone="success" onDismiss={() => setResult(null)}>
                     <p>{result.summary}</p>

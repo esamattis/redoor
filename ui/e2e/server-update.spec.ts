@@ -105,6 +105,34 @@ test.describe("Server update", () => {
         await expect(page.getByText("99.0.0", { exact: true })).toBeVisible();
     });
 
+    test("installs the version typed into the dialog", async ({ page }) => {
+        await simulateUpgrade(page, "2.0.0");
+        await page.goto(`${WEB_BASE_URL}/`);
+
+        const upgradeRequest = page.waitForRequest(
+            (request) =>
+                request.url() === UPGRADE_URL && request.method() === "POST",
+        );
+
+        await page.getByRole("button", { name: "Update" }).click();
+
+        const dialog = page.getByRole("dialog", {
+            name: "Update the server?",
+        });
+
+        await dialog.getByLabel("Version").fill(" 2.0.0 ");
+        await dialog.getByRole("button", { name: "Update" }).click();
+
+        // The bare version is trimmed and sent as the release's `v`-prefixed tag.
+        expect((await upgradeRequest).postDataJSON()).toEqual({
+            target_version: "v2.0.0",
+        });
+        // The toast names the picked version once the replacement server answered.
+        await expect(page.getByText(/to 2\.0\.0\./)).toBeVisible({
+            timeout: 30_000,
+        });
+    });
+
     test("keeps the dialog open with the reason when the install fails", async ({
         page,
     }) => {
