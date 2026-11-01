@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.1.0
+
+_2026-11-01_
+
+### Breaking changes
+
+- Agents no longer send the agent token over the network. The agent and server now prove to each other that they know it, and an agent refuses to connect to a server that cannot. The agent protocol is now `redoor.v4`, and the new server rejects older standalone agents with 401. Before you upgrade the server, upgrade standalone agents from the Devices view; they reconnect once the server is upgraded. Run `redoor upgrade` on the host of any agent you missed. Managed local and SSH agents need nothing. Consider rotating `agent_token` afterwards, because older agents sent it in the clear.
+
+### Features
+
+- The server can serve HTTPS itself with a new `[server.tls]` table, using your own certificate files or a self-signed certificate it creates on first start and reuses across restarts. Standalone agents connect to a self-signed server with `insecure_tls = true` (or `--insecure-tls`), and the remote CLI with `redoor remote login --insecure-tls`. See [docs/config.md](docs/config.md#servertls-built-in-https).
+- When an agent refuses a server, its log line now gives the reason, so a wrong token can be told apart from a server that is not yours.
+
 ## v2.0.0
 
 _2026-11-01_
