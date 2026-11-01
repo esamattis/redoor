@@ -219,14 +219,6 @@ export function keyMarker(deviceId: string, fingerprint: string): string {
     return `redoor:${deviceId}:${fingerprint}`;
 }
 
-/**
- * TEMPORARY MIGRATION: the marker versions with account names wrote,
- * `redoor:<device-id>:<account>:<fingerprint>`.
- */
-export function legacyKeyMarker(deviceId: string, fingerprint: string): string {
-    return `redoor:${deviceId}:${TEST_USERNAME}:${fingerprint}`;
-}
-
 /** The `authorized_keys` lines of `user` that carry `deviceId`'s marker. */
 export async function remoteDeviceLines(
     user: string,

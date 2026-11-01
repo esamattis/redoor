@@ -309,11 +309,6 @@ impl ServerRuntime {
 
         let address = config.listen_address();
         let data_dir = runtime.paths.data_dir()?;
-        // TEMPORARY MIGRATION: before any store opens, so they all find their files at the
-        // data directory root.
-        crate::account_migration::move_account_directory(&data_dir)
-            .await
-            .context("Failed to move the account files to the data directory")?;
         let pam = Self::pam_login(config.pam).await?;
         let auth = AuthState::new(
             config.users,

@@ -6,8 +6,7 @@ use super::{
 };
 use hmac::{Hmac, KeyInit, Mac};
 use redoor_protocol::api::vault::{
-    LEGACY_SSH_KEY_CONTEXT_FIELDS, SSH_KEY_CONTEXT_FIELDS, VAULT_PAYLOAD_ALG, VAULT_WRAP_ALG,
-    VaultFileHeader, VaultObjectKind,
+    SSH_KEY_CONTEXT_FIELDS, VAULT_PAYLOAD_ALG, VAULT_WRAP_ALG, VaultFileHeader, VaultObjectKind,
 };
 use sha2::Sha256;
 use tokio::io::{AsyncRead, AsyncReadExt};
@@ -202,18 +201,14 @@ fn validate_header(header: &VaultFileHeader) -> Result<(), VaultFormatError> {
         // An SSH key is bound to exactly its device and public key; an extra or missing
         // field would make the server compare less than it thinks it does.
         VaultObjectKind::SshKey => {
-            let exact = |fields: &[&str]| {
-                header.context.len() == fields.len()
-                    && fields.iter().all(|field| {
-                        header
-                            .context
-                            .get(*field)
-                            .is_some_and(|value| !value.is_empty())
-                    })
-            };
-            // TEMPORARY MIGRATION: keys written before the account name was dropped also
-            // carry `account`; accepted until every installation has rotated its keys.
-            if !exact(&SSH_KEY_CONTEXT_FIELDS) && !exact(&LEGACY_SSH_KEY_CONTEXT_FIELDS) {
+            let exact = header.context.len() == SSH_KEY_CONTEXT_FIELDS.len()
+                && SSH_KEY_CONTEXT_FIELDS.iter().all(|field| {
+                    header
+                        .context
+                        .get(*field)
+                        .is_some_and(|value| !value.is_empty())
+                });
+            if !exact {
                 return invalid("an SSH key header needs exactly device_id and public_key");
             }
         }
@@ -390,23 +385,8 @@ pub(super) mod tests {
             VaultPreamble::build(ssh_key_header(&complete[..1]), &key).unwrap_err(),
             VaultFormatError::InvalidHeader(_)
         ));
-        let legacy = [
-            ("account", "alice"),
-            ("device_id", "dev_0123"),
-            ("public_key", "ssh-ed25519 AAAA"),
-        ];
-        // TEMPORARY MIGRATION: keys written with the account name still open until they are
-        // rotated.
-        assert!(VaultPreamble::build(ssh_key_header(&legacy), &key).is_ok());
-        let mut empty_legacy = legacy.to_vec();
-        empty_legacy[0] = ("account", "");
-        // The legacy shape is held to the same rules: no empty values.
-        assert!(matches!(
-            VaultPreamble::build(ssh_key_header(&empty_legacy), &key).unwrap_err(),
-            VaultFormatError::InvalidHeader(_)
-        ));
         // An extra field is refused.
-        let mut extra = legacy.to_vec();
+        let mut extra = complete.to_vec();
         extra.push(("comment", "x"));
         assert!(matches!(
             VaultPreamble::build(ssh_key_header(&extra), &key).unwrap_err(),

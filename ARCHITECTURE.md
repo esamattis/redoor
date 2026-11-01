@@ -259,9 +259,6 @@ The agent runtime and the implementation of every command.
   - `ssh_agent`: the in-process ssh-agent (OpenSSH key agent protocol, not the redoor
     agent) through which `ssh` gets signatures from a managed key without ever reading it.
 - `vault`: `VaultStore`, the shared `vault.json` with its proof checks and validation.
-- `account_migration`: TEMPORARY MIGRATION that moves `vault.json` and `ssh/` of the former
-  named account from `users/<name>/` to the data directory root at startup (see
-  "Authentication and trust").
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
 
@@ -2215,9 +2212,7 @@ device is stopped or the server process exits.
 devices, `ssh-key` for managed SSH private keys stored on the server. The browser binds the
 kind into the file key wrap's associated data, so a user file's key can never be presented
 as an SSH key's and vice versa. `file` headers have no context; `ssh-key` headers carry
-exactly `device_id` and `public_key`, covered by the header MAC. TEMPORARY MIGRATION: the
-older three-field shape with `account` is still accepted when reading; its `account` is
-covered by the MAC but compared to nothing, and a rewrap drops it.
+exactly `device_id` and `public_key`, covered by the header MAC.
 
 ### Keys
 
@@ -2469,13 +2464,9 @@ devices.
      `restrict,port-forwarding <key> redoor:<device-id>:<SHA256 fingerprint>`. A line is the
      device's when its comment contains `redoor:<device-id>:` (the trailing colon keeps
      `dev_abc` from matching `dev_abcd`), and a given key's when the rest of the marker is
-     the fingerprint or ends with `:<fingerprint>`. The awk filter gets the marker and keep
-     list through `ENVIRON` (no escape processing) and compares only literally (`index`,
-     `substr`, `==`), because fingerprints contain `+`, `/` and `=`; it behaves the same in
-     GNU, BSD and busybox awk. TEMPORARY MIGRATION: the suffix match is what recognises
-     legacy `redoor:<device-id>:<account>:<fingerprint>` lines, so a rotation keeps the
-     current key's legacy line during the install (a failed verification rolls back with
-     the old key, which needs it) and removes it afterwards, and removal drops it.
+     the fingerprint. The awk filter gets the marker and keep list through `ENVIRON` (no
+     escape processing) and compares fingerprints only literally (`index`, `==`), because
+     they contain `+`, `/` and `=`; it behaves the same in GNU, BSD and busybox awk.
   4. The key is verified with only that key, against the pin, with a dummy `-R 0:…`
      forward like the agent's, so hosts that refuse forwarding fail here. On failure the
      line is removed again with the bootstrap credential and the staged file deleted.
@@ -2493,8 +2484,7 @@ devices.
      (so it keeps reconnecting, also after a rotation from plaintext, which held nothing),
      and the old held key is dropped otherwise. Then the old line is removed using the new
      key. The UI offers "Rotate to a vault-encrypted key" for a plaintext key once a vault
-     exists. A rotation is what fully upgrades a key from before account names were
-     dropped: two-field header and new-format line.
+     exists.
 - **Operation credential.** Rotation, removal and device deletion log in with the current
   key. For an encrypted key the request may carry `current_file_key`, which is decrypted
   with the same checks as Start, or else the held key is cloned. It is resolved before
@@ -2664,15 +2654,6 @@ own endpoints:
   for the next cycle's spawn, so that start's provisioning logs name the user.
   Background work with no requester (startup, watchdog reconnects, supervisor restarts)
   logs without a user, and agents never learn the user.
-- **TEMPORARY MIGRATION: account directory.** Until account names were dropped,
-  `vault.json` and `ssh/` lived in `users/<name>/`. Before the stores open, startup looks
-  for `users/*/` directories holding either; with exactly one, both move to the data
-  directory root with atomic renames (an existing destination is skipped with a warning, so
-  an interrupted start resumes), while `state.json` and `editor-buffers/` stay as that
-  user's own. With more than one it refuses to start and lists them. SSH key headers with
-  the legacy `account` field and legacy `authorized_keys` lines are handled as described in
-  "Encrypted files" and "SSH device keys". All of this is removed once every installation
-  has upgraded and rotated its keys, after asking.
 - **The agent token** is one secret shared by all agents and checked during the websocket
   upgrade. It proves "this is an agent of this server", not which agent: the agent id in
   `hello` is self-reported. Agents are therefore only partly trusted.

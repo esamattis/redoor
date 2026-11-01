@@ -757,17 +757,11 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 /// A line belongs to this device when its comment contains `marker`, the device prefix
 /// `redoor:<device-id>:` (see [`device_marker`]); the trailing colon keeps `dev_abc` from
 /// matching `dev_abcd`. Such a line is a given key's when the rest of its marker is the
-/// key's fingerprint or ends with `:<fingerprint>`. The script drops every line of this
+/// key's fingerprint. The script drops every line of this
 /// device whose key is not in `keep`, appends the new line (dropping an older copy of the
 /// same key first, so running it again gives the same file) and moves the result over the
 /// file atomically, so sshd never sees a half-written file. Lines of other devices and
 /// other tools are copied unchanged.
-///
-/// TEMPORARY MIGRATION: the `:<fingerprint>` suffix match is what recognises legacy
-/// `redoor:<device-id>:<account>:<fingerprint>` lines. Rotation keeps the current key's
-/// legacy line during the install (a failed verification rolls back with the old key, which
-/// needs that line) and removes it afterwards, and removal and device deletion drop legacy
-/// lines with the rest. Keep the suffix match for as long as legacy lines can exist.
 ///
 /// A symlinked `authorized_keys` is written through: the new file is built next to the link
 /// target and renamed over the target, so the link survives. Proxmox VE links root's file
@@ -778,8 +772,8 @@ fn is_host_key_failure(output: &SshOutput) -> bool {
 /// because creating or replacing it would either fail half way or fight its owner.
 ///
 /// `new` is the new line and its key's fingerprint. Fingerprints contain `+`, `/` and
-/// possibly `=`, so the awk filter compares them only as literal strings (`index`, `substr`
-/// and `==`, never a regex), and receives them through `ENVIRON`, which unlike `awk -v` does
+/// possibly `=`, so the awk filter compares them only as literal strings (`index` and
+/// `==`, never a regex), and receives them through `ENVIRON`, which unlike `awk -v` does
 /// not interpret backslash escapes. That works the same in GNU awk, BSD awk and busybox.
 fn install_script(marker: &str, keep: &[String], new: Option<(&str, &str)>) -> String {
     // Fingerprints and key lines never contain a single quote today, but the script runs
@@ -828,27 +822,17 @@ temp=$(mktemp "$target_dir/.authorized_keys.redoor.XXXXXX")
 trap 'rm -f "$temp"' EXIT
 if [ -f "$target" ]; then
   REDOOR_MARKER="$marker" REDOOR_KEEP="$keep" REDOOR_SKIP="$skip" awk '
-    # Whether the marker rest names the key: the fingerprint itself, or a legacy
-    # `<account>:<fingerprint>` that ends with it.
-    function is_key(rest, fingerprint) {{
-      if (fingerprint == "") return 0
-      if (rest == fingerprint) return 1
-      return length(rest) > length(fingerprint) + 1 && substr(rest, length(rest) - length(fingerprint)) == ":" fingerprint
-    }}
     BEGIN {{
       marker = ENVIRON["REDOOR_MARKER"]
+      keep = ENVIRON["REDOOR_KEEP"]
       skip = ENVIRON["REDOOR_SKIP"]
-      kept = split(ENVIRON["REDOOR_KEEP"], keep, " ")
     }}
     {{
       position = index($0, marker)
       if (position > 0) {{
-        rest = substr($0, position + length(marker))
-        sub(/[ \t\r].*$/, "", rest)
-        if (rest == "" || is_key(rest, skip)) next
-        found = 0
-        for (i = 1; i <= kept; i++) if (is_key(rest, keep[i])) found = 1
-        if (!found) next
+        fingerprint = substr($0, position + length(marker))
+        sub(/[ \t\r].*$/, "", fingerprint)
+        if (fingerprint == "" || fingerprint == skip || index(keep, " " fingerprint " ") == 0) next
       }}
       print
     }}' "$target" > "$temp"
@@ -994,7 +978,6 @@ ssh-ed25519 AAAAother redoor:{other_device}:{stale}
         let original = format!(
             "ssh-ed25519 AAAAshort redoor:dev_abc:{fingerprint}
 ssh-ed25519 AAAAlong redoor:dev_abcd:{fingerprint}
-ssh-ed25519 AAAAlegacy redoor:dev_abcd:alice:{fingerprint}
 "
         );
         tokio::fs::write(ssh_dir.join("authorized_keys"), &original)
@@ -1003,85 +986,15 @@ ssh-ed25519 AAAAlegacy redoor:dev_abcd:alice:{fingerprint}
         let output = run_script(home.path(), &install_script("redoor:dev_abc:", &[], None)).await;
         // Removing every line of `dev_abc` succeeds ...
         assert!(output.status.success(), "{output:?}");
-        // ... and leaves both kinds of `dev_abcd` lines alone.
+        // ... and leaves the `dev_abcd` line alone.
         assert_eq!(
             tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
                 .await
                 .unwrap(),
             format!(
                 "ssh-ed25519 AAAAlong redoor:dev_abcd:{fingerprint}
-ssh-ed25519 AAAAlegacy redoor:dev_abcd:alice:{fingerprint}
 "
             )
-        );
-    }
-
-    /// TEMPORARY MIGRATION: legacy `redoor:<device-id>:<account>:<fingerprint>` lines. A
-    /// rotation keeps the current key's legacy line while the new key is installed (a
-    /// failed verification rolls back with the old key, which needs that line) and removes
-    /// it when the rotation finishes; removal drops legacy lines too. A later simplification
-    /// of the filter must not break this while legacy lines still exist.
-    #[tokio::test]
-    async fn install_script_handles_legacy_lines() {
-        let home = redoor_core::test_support::TempDir::create();
-        let ssh_dir = home.path().join(".ssh");
-        tokio::fs::create_dir(&ssh_dir).await.unwrap();
-        let device = AgentId::generate();
-        let marker = device_marker(&device);
-        let current = "SHA256:cur+rent/k=";
-        let stale = "SHA256:st+ale";
-        let new = "SHA256:n+ew";
-        let current_line = format!("ssh-ed25519 AAAAcurrent redoor:{device}:esamatti:{current}");
-        let stale_line = format!("ssh-ed25519 AAAAstale redoor:{device}:esamatti:{stale}");
-        // A legacy line whose account part only ends like a kept fingerprint without the
-        // separating colon must not count as that key.
-        let lookalike = format!("ssh-ed25519 AAAAlookalike redoor:{device}:x{current}");
-        tokio::fs::write(
-            ssh_dir.join("authorized_keys"),
-            format!("{current_line}\n{stale_line}\n{lookalike}\n"),
-        )
-        .await
-        .unwrap();
-        let new_line = format!("restrict ssh-ed25519 AAAAnew redoor:{device}:{new}");
-
-        let install = install_script(
-            &marker,
-            &[current.to_string(), new.to_string()],
-            Some((&new_line, new)),
-        );
-        let output = run_script(home.path(), &install).await;
-        assert!(output.status.success(), "{output:?}");
-        // During the install the current key's legacy line stays next to the new line, and
-        // other legacy lines of the device are gone.
-        assert_eq!(
-            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
-                .await
-                .unwrap(),
-            format!("{current_line}\n{new_line}\n")
-        );
-
-        let finish = install_script(&marker, &[new.to_string()], None);
-        let output = run_script(home.path(), &finish).await;
-        assert!(output.status.success(), "{output:?}");
-        // Finishing the rotation leaves only the new-format line.
-        assert_eq!(
-            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
-                .await
-                .unwrap(),
-            format!("{new_line}\n")
-        );
-
-        tokio::fs::write(ssh_dir.join("authorized_keys"), format!("{current_line}\n"))
-            .await
-            .unwrap();
-        let output = run_script(home.path(), &install_script(&marker, &[], None)).await;
-        assert!(output.status.success(), "{output:?}");
-        // Removing a legacy key removes its line.
-        assert_eq!(
-            tokio::fs::read_to_string(ssh_dir.join("authorized_keys"))
-                .await
-                .unwrap(),
-            ""
         );
     }
 

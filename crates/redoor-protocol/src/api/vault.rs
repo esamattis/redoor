@@ -337,12 +337,6 @@ impl VaultObjectKind {
 /// these fields, all non-empty; the header MAC covers them.
 pub const SSH_KEY_CONTEXT_FIELDS: [&str; 2] = ["device_id", "public_key"];
 
-/// TEMPORARY MIGRATION: the header context of SSH keys written before redoor dropped the
-/// account name, which added an `account` field. Still accepted when opening a key; new
-/// keys and rewraps write [`SSH_KEY_CONTEXT_FIELDS`]. Remove once every installation has
-/// rotated its device keys (see `plans/login-methods.md`).
-pub const LEGACY_SSH_KEY_CONTEXT_FIELDS: [&str; 3] = ["account", "device_id", "public_key"];
-
 /// How the payload of an encrypted file is encrypted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

@@ -12,7 +12,6 @@ import { ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
 import {
     ALL_PERMISSIONS,
-    TEST_USERNAME,
     VITEST_SERVER_PORT,
     createAccessToken,
     waitForLogMessage,
@@ -46,7 +45,6 @@ import {
     startAndWaitForIssue,
     fixturePassword,
     keyMarker,
-    legacyKeyMarker,
 } from "./ssh-key-test-utils";
 
 describe.skipIf(
@@ -989,70 +987,6 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
                 (await fixture.apiClient.getSshHostKey(newId))
                     .pinned_fingerprint,
             ).toBeNull();
-        },
-        SSH_KEY_TEST_TIMEOUT_MS,
-    );
-
-    // TEMPORARY MIGRATION: keys installed while redoor had account names carry a
-    // `redoor:<device-id>:<account>:<fingerprint>` line. A rotation must end with only a
-    // new-format line, and removal must drop a legacy line, while legacy lines exist.
-    test(
-        "rotation and removal clean up legacy authorized_keys lines",
-        async () => {
-            const fixture = await startKeyFixture({
-                label: "legacy",
-                sshUsers: [SSH_TEST_USER],
-            });
-
-            const deviceId = await createDevice(fixture, {
-                user: SSH_TEST_USER,
-                name: `ssh-keys-legacy-${fixture.suffix}`,
-            });
-
-            /** Rewrites this device's line into the legacy marker shape. */
-            const makeLegacy = async (fingerprint: string) => {
-                await sshTestCommand(
-                    `sed -i ${shellQuote(`s|${keyMarker(deviceId, fingerprint)}|${legacyKeyMarker(deviceId, fingerprint)}|`)} "$HOME/.ssh/authorized_keys"`,
-                );
-                const lines = await remoteDeviceLines(SSH_TEST_USER, deviceId);
-                // The precondition: the device has exactly its legacy line.
-                expect(lines).toHaveLength(1);
-                expect(lines[0]).toContain(
-                    legacyKeyMarker(deviceId, fingerprint),
-                );
-            };
-
-            const first = await enrollConfirmed(fixture, deviceId);
-            await makeLegacy(first.fingerprint);
-
-            const rotated = await fixture.apiClient.enrollSshKey(deviceId, {
-                host_key_fingerprint: null,
-                password: null,
-            });
-            // The rotation logged in with the current key behind the legacy line.
-
-            expect(rotated.rotated).toBe(true);
-
-            const afterRotation = await remoteDeviceLines(
-                SSH_TEST_USER,
-                deviceId,
-            );
-            // Only the new key's line is left, in the new format.
-
-            expect(afterRotation).toHaveLength(1);
-            expect(afterRotation[0]).toContain(
-                keyMarker(deviceId, rotated.fingerprint),
-            );
-            expect(afterRotation[0]).not.toContain(`:${TEST_USERNAME}:`);
-
-            await makeLegacy(rotated.fingerprint);
-            const removal = await fixture.apiClient.removeSshKey(deviceId);
-            // The key was removed from the device too, not only locally.
-            expect(removal.removed_from_device).toBe(true);
-            // Removing a legacy key removes its line.
-            expect(await remoteDeviceLines(SSH_TEST_USER, deviceId)).toEqual(
-                [],
-            );
         },
         SSH_KEY_TEST_TIMEOUT_MS,
     );
