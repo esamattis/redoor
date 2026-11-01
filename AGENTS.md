@@ -51,6 +51,24 @@
 - If you are asked to write a plan: Write a .md file to ./plans dir. Come up with short name
 - When you see a transient flaky test that succeeds on second run log them to `./flaky-tests.md`
 - When `./flaky-tests.md` shows the same test has been flaky more than once, spawn a subagent to fix its flakiness at the root cause, or to remove the test if it cannot be made reliable
+- A flake can be a real product bug (a late connect redirect and cancelled commit pagination both were), so do not dismiss one because the current change does not touch that code
+- When fixing a flake, first make it reproduce deterministically (hold a response, CPU throttling, a parallel upload loop, `--repeat-each`), then verify the fix with repeated runs
+
+# Writing non-flaky tests
+
+Tests run under heavy parallel load (`pn test` runs the Playwright and integration suites side by side), so any assumption about relative timing will eventually fail.
+
+- Never assume one operation is slower or faster than another. To observe an in-flight state, hold it open explicitly (held Playwright route, FIFO, toxiproxy, paused clock) and release it from the test
+- Never test expiry or retention with short real-time lifetimes; inject aged timestamps instead
+- After a UI mutation, wait for the persisted state (the write's response, or read it back from the API) before `page.goto`/`reload`. Optimistic UI updates do not prove the server saved anything, and navigation aborts in-flight writes
+- After navigation, wait for content unique to the new route (or for content unique to the old one to disappear) before interacting. The URL changes before the route loader finishes, and the keyed remount detaches the old controls
+- Specs that count requests or assert that data stays stale must call `ignoreServerEvents`: other parallel specs broadcast `routes_changed`, which refetches all mounted data at random times
+- Wait for every independent side effect you assert on, not just the first one to appear. Before asserting absence or cleanup, first observe the thing existing or an explicit acknowledgement
+- Use exact locators when stale results could also match
+- Prefer keyboard or persistent controls over hover-only toolbars. Use `ui/e2e/background-tabs.ts` for middle-click/new-tab checks. A retry inside `toPass` must reset state (selection, focus, open menus) so each attempt starts clean
+- Tests own their environment: a fixture shell instead of the user's shell, dedicated credentials for rate-limited APIs, per-file dirs and names, and no reuse of HTTP connections across a server restart
+- Hook and test timeouts must be longer than the wait budgets inside them, and teardown must tolerate partially completed setup
+- Before test cleanup, drain intercepted routes with `page.unrouteAll({ behavior: "wait" })`
 
 # UI
 
