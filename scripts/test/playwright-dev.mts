@@ -18,6 +18,8 @@ const HOME_DIRECTORY = join(PROJECT_ROOT, ".test-playwright-home");
 
 const STAGED_BINARY = join(HOME_DIRECTORY, "redoor-test-binary");
 
+const TERMINAL_SHELL = join(HOME_DIRECTORY, "terminal-shell");
+
 const AGENT1_TRASH_DIRECTORY = join(HOME_DIRECTORY, "agent1-trash");
 
 const portsSchema = z.object({ playwright: z.number().int().positive() });
@@ -74,6 +76,20 @@ async function prepareFixtures(): Promise<number> {
     await rm(HOME_DIRECTORY, { recursive: true, force: true });
     await mkdir(join(HOME_DIRECTORY, "lazy-agent"), { recursive: true });
     await mkdir(join(PROJECT_ROOT, "dev_agents/agent2"), { recursive: true });
+    // Ignore the agent's login flag and user startup files: prompts and shell plugins must
+    // not consume early test input or scroll a row while Playwright is selecting it.
+    const shell = (await $`command -v sh`.quiet()).stdout.trim();
+    await writeFile(
+        TERMINAL_SHELL,
+        `#!${shell}
+unset ENV BASH_ENV
+PS1='redoor-test> '
+PS2='> '
+export PS1 PS2
+exec sh -i
+`,
+        { mode: 0o755 },
+    );
     await stageTestBinary(STAGED_BINARY);
     await clearPlaywrightLogs();
     await seedLogFixtures();
@@ -117,7 +133,7 @@ function startChild(
     const processPromise = $({
         cwd: PROJECT_ROOT,
         stdio: "inherit",
-        env: { ...process.env, ...environment },
+        env: { ...process.env, SHELL: TERMINAL_SHELL, ...environment },
     })`${STAGED_BINARY} ${args}`.nothrow();
 
     return { name, process: processPromise };

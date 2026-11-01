@@ -1324,6 +1324,10 @@ sequenceDiagram
   reassembles each line (bounded by the largest valid event) and validates it before
   relaying it to the browser.
 - Each connection allows at most 8 terminals and 8 log streams, enforced on both sides.
+- Playwright agents inherit a fixture-owned `SHELL` wrapper that starts interactive POSIX
+  `sh` without login profiles or `ENV` startup files. A fixed prompt lets command tests wait
+  for shell readiness after PTY attachment, and keeps user prompt plugins from scrolling
+  rows while browser selection gestures are in progress.
 
 ## Browser live updates and transfer progress
 

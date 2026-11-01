@@ -901,6 +901,8 @@ test.describe.serial("Terminal panel lifecycle", () => {
             name: "agent1_src 1",
         });
 
+        // Connected means the PTY exists; wait for the controlled shell to accept commands.
+        await expect.poll(() => terminalOutput).toContain("redoor-test> ");
         await terminalHost.locator("textarea").focus();
         // Octal escapes print the marker without putting it in the echoed command.
         await page.keyboard.type(
@@ -910,10 +912,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
         await expect.poll(() => terminalOutput).toContain("select-me");
 
         /**
-         * Drags across the printed marker the way a user selects text to copy. The shell keeps
-         * drawing its prompt after the marker arrives, and a slow or multi-line prompt scrolls
-         * the marker row away between measuring it and pressing the mouse, so the whole drag is
-         * retried from a fresh measurement until the screen has settled under it.
+         * Drags across the printed marker the way a user selects text to copy. A terminal
+         * redraw can move the row between measuring it and pressing the mouse, so the whole
+         * drag is retried from a fresh measurement until the screen has settled under it.
          *
          * A Shift-press extends a selection that is already on the page instead of starting a
          * new one, so a drag that missed the row would anchor every retry on that wrong row
