@@ -45,7 +45,7 @@ Arrows point from a crate to what it depends on (the binary uses `redoor-protoco
 tests). Dependencies only go downwards, and the three role crates in the middle are siblings
 that cannot import each other.
 
-`redoor-server` also links `libghostty-vt`, Ghostty's terminal emulator library, as the
+`redoor-agent` also links `libghostty-vt`, Ghostty's terminal emulator library, as the
 headless emulator of persistent terminal sessions. Its build script builds Ghostty from source
 with Zig (pinned in `mise.toml`, installed in CI by `mise-action`), clones a pinned Ghostty
 commit and fetches a few Zig packages at build time, and for Android needs the NDK through
@@ -55,7 +55,7 @@ bounds and overflow checks stay on in release builds (see "Authentication and tr
 Zig's standard library gives the binary native ELF thread-locals, which Rust code on Android
 never has because Rust uses emulated TLS there. On arm64 Bionic refuses to start an executable
 whose TLS segment is aligned below 64 bytes, and Zig aligns its thread-locals to only 8. So
-`redoor-server`'s build script links `bionic_tls_align.S` into arm64 Android builds: a single
+`redoor-agent`'s build script links `bionic_tls_align.S` into arm64 Android builds: a single
 64-byte-aligned thread-local, kept through `--gc-sections` by its retain flag and linked with
 `+whole-archive` since nothing references it. The CI Android build fails if the TLS segment
 alignment drops below 64 again.
@@ -65,7 +65,7 @@ alignment drops below 64 again.
 The contract between all parties, with no runtime dependencies (no tokio).
 
 - `wire/`: the agent websocket protocol.
-  - `handshake` holds the upgrade contract: the `redoor.v4` subprotocol, the agent endpoint
+  - `handshake` holds the upgrade contract: the `redoor.v5` subprotocol, the agent endpoint
     path, the `426` body and the protocol-mismatch types the UI lists.
   - `agent_auth` holds the mutual proof of the agent token (see "Mutual token proof"): the
     nonces, the HMAC proofs of each step and their headers, shared by the agent and the
@@ -188,7 +188,17 @@ The agent runtime and the implementation of every command.
   unsupported implementations.
 - `platform/`: mounts, accounts and identity, which keeps OS-specific code out of the
   commands.
-- `terminal`, `logs`: PTY sessions and log streaming, each on one stream of the connection.
+- `terminal/`: terminal sessions, which belong to the process rather than a connection (see
+  "Terminals and live logs").
+  - `registry`: `TerminalSessions` in `AgentServices`, every session of the process. It
+    starts shells for `CreateTerminal`, closes them for `CloseTerminal` and signals every
+    change, which the current connection reports as `terminal_sessions`.
+  - `session`: the session task, which owns the PTY, mirrors its output and serves at most
+    one attachment.
+  - `emulator`: `ScreenMirror`, the `libghostty-vt` emulator on its own thread, and
+    `pending_tail`, which keeps the bytes of an unfinished escape sequence for snapshots.
+  - The module itself bridges one attach stream of the connection to a session.
+- `logs`: live log streaming on one stream of the connection.
 - `device_id`: the `<data_dir>/agent-id` file a standalone agent keeps its id in. Agents
   started with `--agent-id` (managed agents and relays) never read or write it.
 
@@ -234,15 +244,15 @@ The agent runtime and the implementation of every command.
       router.
     - Every router handler is synchronous (enforced by `clippy::unused_async`), so the
       router mailbox never waits on a peer.
-- `terminals/`: server-owned terminal sessions (see "Terminals and live logs").
-  - `registry`: `TerminalRegistry` in `ServerState`, every session by id. It opens the
-    agent terminal stream and spawns the session.
-  - `session`: the session task, which owns the stream, mirrors its output and serves at
-    most one attached browser.
-  - `emulator`: `ScreenMirror`, the `libghostty-vt` emulator on its own thread, and
-    `pending_tail`, which keeps the bytes of an unfinished escape sequence for snapshots.
-  - `http/terminal_sessions` (list, create, delete) and `http/terminals` (the attach
-    websocket) are thin handlers over the registry.
+- `terminals/`: the server's index of terminal sessions (see "Terminals and live logs").
+  - `registry`: `TerminalRegistry` in `ServerState`, every session as its agent last
+    reported it, plus which browser views each one and the closes still owed to agents
+    that are away.
+  - `store`: saves the index to `<data_dir>/terminal-sessions.json` in the background, so
+    a restarted server lists the sessions before their agents reconnect.
+  - `http/terminal_sessions` (list, create, delete) is a thin handler over the registry.
+    `http/terminals` is the attach websocket: it takes the session's viewer slot and
+    relays between the browser and an attach stream on the agent.
 - `watchdog`: one dormant-until-started supervisor per managed agent, with restart backoff,
   a reconnect deadline and generation counters.
 - `ssh/`: preparing remote hosts (OS and architecture probe, binary install), launching
@@ -473,7 +483,7 @@ request ids, and each id is interpreted per connection:
 |---|---|---|
 | Request output (download, exec output, copy source) | `command` | agent → server |
 | Request input (upload, edit, archive upload, copy destination) | `command` | server → agent |
-| Terminal | `terminal_open` | both |
+| Terminal attachment | `terminal_attach` | both |
 | Log stream | `log_stream_open` | agent → server (NDJSON events) |
 
 **Scheduling.** Each side has one writer that drains its lanes in strict order:
@@ -499,11 +509,11 @@ never overfill it; an overflow fails only that stream.
 |---|---|---|
 | Output streams (downloads, exec) | 4 frames | at most 32 concurrent ordinary commands, enforced by the agent |
 | Upload streams (uploads, edits, copy destinations) | 4 frames | at most 32, enforced by the server's router |
-| Terminals | 16 frames each way | at most 8 |
+| Terminal attachments | 16 frames each way | at most 8 |
 | Log streams | 4 frames | at most 8 |
 
 So the worst case per connection is roughly (streams × (window + 1) × 64 KiB), for example
-8 terminals × 2 directions × 17 frames × 64 KiB ≈ 17 MiB for a terminal-heavy agent, and
+8 attachments × 2 directions × 17 frames × 64 KiB ≈ 17 MiB for a terminal-heavy agent, and
 64 × 5 × 64 KiB ≈ 20 MiB for transfers. On top of that the server reads one websocket
 message at a time, capped at 32 MiB (a control result such as a git diff batch can be a few
 MiB; data frames are at most 64 KiB).
@@ -567,14 +577,14 @@ sequenceDiagram
     participant S as Session actor
     participant R as Router
 
-    A->>H: GET /api/v1/agent/ws<br/>X-Redoor-Agent-Nonce: a, X-Redoor-Agent-Proof: HMAC(token, a)<br/>Sec-WebSocket-Protocol: redoor.v4
+    A->>H: GET /api/v1/agent/ws<br/>X-Redoor-Agent-Nonce: a, X-Redoor-Agent-Proof: HMAC(token, a)<br/>Sec-WebSocket-Protocol: redoor.v5
     alt proof missing or made with another token
         H-->>A: 401 (no socket)
     else protocol not offered
         H-->>A: 426 + {server_protocol, server_version, message}
         Note over H: attempt kept in the mismatch list
     else accepted
-        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v4<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
+        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v5<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
         Note over A: a wrong or missing server proof drops the socket before hello
         A->>S: hello {agent_id, agent_name, token_proof: HMAC(token, a, s), identity, capabilities}
         Note over S: any other first frame, or a wrong token_proof, closes the socket
@@ -962,8 +972,9 @@ half-written file.
   `argv[0]` for processes of the same user, and the wait treats a hidden `exe` like macOS:
   the signal delivery is the last thing it can check.
 - **Upgrading from inside a restarted process uses a detached helper.** When an agent's web
-  terminal or exec runs the upgrade, restarting the server drops that agent's connection, and
-  the agent kills its terminals and execs. So the upgrade re-runs itself with the hidden
+  terminal or exec runs the upgrade, restarting the server drops that agent's connection,
+  which stops its execs, and restarting the agent itself ends its shells. So the upgrade
+  re-runs itself with the hidden
   `--restart-pids` option in a new session (`setsid`), outside the process groups that teardown
   signals, and that helper finishes the restarts.
 - **The server updates itself in-process.** `POST /api/v1/server/upgrade` (session only,
@@ -1035,7 +1046,7 @@ flowchart LR
   JSON is produced in exactly one place.
 - The **command lane** is bounded. When it is full, new work is rejected instead of buffered,
   which is the server's admission control.
-- Every frame that starts work (a command, `terminal_open`, `log_stream_open`) carries a
+- Every frame that starts work (a command, `terminal_attach`, `log_stream_open`) carries a
   **write ticket**. The writer claims the ticket just before writing the frame, and a cancel
   first tries to withdraw it. Whichever wins decides: a withdrawn frame is skipped and never
   reaches the agent, otherwise the cancel is sent after it. So a `cancel` can never overtake
@@ -1067,7 +1078,8 @@ agent belongs to exactly one flow, and all flows live in one `FlowTable`.
 - **Keys.** Flows are indexed by agent and request id, so a frame can only resolve work that
   was sent to its own agent. One flow can answer several request ids at once (a cross-agent
   copy has one per agent), and it gets fresh ids when it changes phase.
-- Terminals and log streams are not flows. They are per-connection streams with no result.
+- Terminal attachments and log streams are not flows. They are per-connection streams with
+  no result.
 - **A flow settles exactly once**, and it is removed from the table when it does. A flow
   settles when:
   - the agent's result arrives. This is the normal case, and the result always comes after
@@ -1165,8 +1177,8 @@ agent:  result {id, ok: <response>} or result {id, error: {kind, message}}   (ex
   after the frames it already queued, so an HTTP body aborts visibly instead of looking like a
   short file. Exec output always ends with `FIN`, because the output of a stopped process is
   still all the output there is; its result says how the process ended. Terminals and log
-  streams have no result, so `FIN` is how they end: a terminal always sends it (after its
-  exit or error event), and a log stream sends it unless the server canceled it, because
+  streams have no result, so `FIN` is how they end: a terminal attachment always sends it
+  (after the shell's exit or error event, or when it is detached), and a log stream sends it unless the server canceled it, because
   then nobody listens any more.
 - **Initial credit is in the command.** Output streams (downloads, exec) get their first
   window (`credit: 4`) in the command frame, so output starts without a round trip. Uploads
@@ -1378,84 +1390,114 @@ Directory archives start over.
 
 ## Terminals and live logs
 
-A terminal is a server-owned session, not a browser socket. The session holds the agent's
-terminal stream, so the shell survives a page reload, a sleeping laptop and a phone switching
-networks, and any browser can pick it up again. One browser views a session at a time.
+A terminal is a session of the agent process, not of a browser socket or of a connection.
+The agent owns the shell's PTY and a mirror of its screen, so the shell survives a page
+reload, a sleeping laptop, a phone switching networks, a dropped agent connection and a
+server restart, and any browser can pick it up again. The server keeps an index of the
+sessions and relays one browser per session to the agent.
 
 ```mermaid
 sequenceDiagram
     participant B1 as Browser 1
     participant B2 as Browser 2
-    participant T as Session task
-    participant R as Router
+    participant S as Server
     participant A as Agent
 
-    B1->>T: POST /api/v1/agents/{agent}/terminals
-    T->>R: open terminal
-    R->>R: allocate stream id, output slot,<br/>input credit and event queue (max 8)
-    R->>A: terminal_open {stream, size, cwd}
-    Note over B1,T: the reply comes once the stream is allocated,<br/>status starting
-    A->>T: terminal_event {ready}
-    B1->>T: attach GET /api/v1/terminals/{id}/ws
-    T->>B1: ready, snapshot of the mirror, then live output
-    B1-->>T: socket closes (reload, network change): detach only
-    A->>T: PTY output, fed into the mirror
-    B2->>T: attach
-    T->>B1: taken_over, close
-    T->>B2: ready, snapshot, live output
-    B2->>T: DELETE /api/v1/terminals/{id}
-    T->>B2: closed
-    T->>R: close stream
-    R->>A: cancel {id: stream}
+    B1->>S: POST /api/v1/agents/{agent}/terminals
+    S->>A: command CreateTerminal {id, cwd, title, number, size}
+    A->>A: start shell, mirror and session task (max 8 running)
+    A->>S: result: the session's record
+    A->>S: terminal_sessions [records]
+    B1->>S: attach GET /api/v1/terminals/{id}/ws
+    S->>A: terminal_attach {stream, session, size}
+    A->>S: ready, snapshot of the mirror, then live output
+    S->>B1: relayed
+    B1-->>S: socket closes (reload, network change)
+    S->>A: cancel {id: stream}: detach only
+    B2->>S: attach
+    S->>B1: taken_over, close
+    S->>A: terminal_attach on a new stream
+    Note over S,A: server restarts; the agent reconnects
+    A->>S: terminal_sessions [records]
+    B2->>S: DELETE /api/v1/terminals/{id}
+    S->>B2: closed
+    S->>A: command CloseTerminal {id}
 ```
 
-- **The session task owns the stream.** `POST` waits only for the router to allocate the
-  stream, so a full agent is a `409` instead of a dead tab, then spawns the task and
-  registers it before replying. The task waits for `ready` itself, under a setup timeout.
-  Its loop serves commands (attach, detach, input routing, resize, close) first, then agent
-  lifecycle events, then output, and no command waits for a viewer or for credit, so a
-  takeover or close is never stuck behind a slow browser.
+- **The agent owns the session.** `TerminalSessions` lives in the agent's process-wide
+  services. `CreateTerminal` starts the shell before it answers, so a full agent or a missing
+  directory is an error for the creating window instead of a dead tab. Each session is a
+  task whose loop serves commands (attach, detach, resize, close) first, then the shell's
+  exit, then output, and no command waits for an attachment or for credit, so a takeover or
+  close is never stuck behind a slow server.
+- **Attachments.** `terminal_attach` binds a session to one stream of the current
+  connection: the agent sends `ready` (for a running shell), the snapshot, then live
+  output, and writes the stream's input to the PTY. Canceling the stream or losing the
+  connection only detaches. A newer attach of the same session takes it over and ends the
+  older stream. The agent opens the input route before it sends `ready`, and the server
+  reads nothing from the browser before `ready`, so early keystrokes wait in the browser
+  socket instead of reaching an agent that would drop them.
+- **The agent reports its sessions.** After `hello`, and again whenever a session is created,
+  exits or is closed, the agent sends `terminal_sessions` with every record (id, directory,
+  title, number, creation time, status). The whole list replaces what the server knew about
+  that agent, which is how a restarted server learns which shells still run.
+- **The server's index.** `TerminalRegistry` keeps the records as each agent last reported
+  them and saves them to `<data_dir>/terminal-sessions.json`. A restarted server therefore
+  lists the sessions before their agents reconnect, so browsers keep their tabs, which
+  attach as soon as the agent is back. Records stay while their agent is disconnected,
+  because the shells keep running there. A session the agent no longer reports (it was
+  restarted) stays listed as exited ("Shell ended when its device restarted") until its tab
+  is closed, like a shell that exited, so the tab explains what happened and offers a new
+  shell; the server answers its attach itself.
+- **Closing.** `DELETE` removes the record, tells the attached browser `closed` and sends
+  `CloseTerminal`. The close is remembered (and saved) until the agent no longer reports the
+  session, so a close made while the agent is away reaches it when it reconnects, and its
+  next report does not bring the tab back. At most 256 closes are remembered.
 - **The mirror.** Every output chunk is fed into a headless `libghostty-vt` emulator, the
-  engine the browser renders with, so the server parses output exactly as the client does.
-  On attach the task asks it for a snapshot: a reset (`ESC c`, so a browser emulator reused
-  after a takeover starts clean), the screen, scrollback (up to 1000 lines), cursor and
-  input modes as VT sequences, then the bytes of an escape sequence or UTF-8 character that
-  output had started but not finished, which `libghostty-vt` keeps in its parser state but
-  does not expose. The snapshot request goes on the same ordered channel as the feeds and no
-  output is pulled until it arrives, so it reflects exactly the output before it and live
-  output continues after it, with nothing lost or repeated. Tab stops are left out because
-  the formatter writes them after the cursor, which would move it. The emulator's types are
-  `!Send`, so each session's emulator runs on its own thread; a 200x60 mirror with full
-  scrollback takes about 2 MiB. An exited session compacts it once, a running one when idle.
-- **Backpressure.** Output is pulled from the agent only once the viewer's queue and the
-  emulator's queue both have room, so agent credit holds a slow browser's shell back as
-  before and memory stays bounded. Without a viewer, output is drained into the mirror at
-  once, so a detached shell never blocks on output. Keystrokes go to a small forwarder task
-  of the session, because sending waits for credit. It holds input that arrives before the
-  PTY is ready, and drops input of a replaced viewer right before sending it.
-- **One viewer.** Attaching takes the session over: the previous viewer gets `taken_over`
-  and its socket closes. The reason travels on a separate oneshot, not the data queue, so it
-  reaches a viewer whose queue is full and interrupts a send stuck on a slow browser; a
-  takeover therefore never looks like a dropped connection, which the browser would answer
-  by attaching again.
+  engine the browser renders with, so the agent parses output exactly as the client does.
+  On attach the session asks it for a snapshot: a reset (`ESC c`, so a browser emulator
+  reused after a takeover starts clean), the screen, scrollback (up to 1000 lines), cursor
+  and input modes as VT sequences, then the bytes of an escape sequence or UTF-8 character
+  that output had started but not finished, which `libghostty-vt` keeps in its parser state
+  but does not expose. The snapshot request goes on the same ordered channel as the feeds
+  and no output is read until it arrives, so it reflects exactly the output before it and
+  live output continues after it, with nothing lost or repeated. Tab stops are left out
+  because the formatter writes them after the cursor, which would move it. The emulator's
+  types are `!Send`, so each session's emulator runs on its own thread; a 200x60 mirror with
+  full scrollback takes about 2 MiB. An exited session compacts it once, a running one when
+  idle. Keeping the mirror on the agent spreads that memory and parsing over the devices.
+- **Backpressure.** PTY output is read only once the attachment's queue and the emulator's
+  queue both have room, so stream credit holds a slow browser's shell back and memory stays
+  bounded. Without an attachment, output is drained into the mirror at once, so a detached
+  shell never blocks on output. Keystrokes go to a small forwarder task and then to a PTY
+  writer task, because writing waits while the shell does not read; the forwarder drops
+  input of a replaced attachment right before writing it.
+- **One viewer.** The server decides which browser views a session: attaching takes the
+  session over, and the previous viewer gets `taken_over` and its socket closes. The reason
+  travels on a separate oneshot, not the data path, so it reaches a viewer whose socket is
+  stalled and interrupts a send stuck on a slow browser; a takeover therefore never looks
+  like a dropped connection, which the browser would answer by attaching again. When the
+  agent is away, the attach socket closes without an event, so the browser does attach
+  again, and succeeds once the agent is back.
 - **Lifecycle.**
 
   | Event | Result |
   | --- | --- |
   | Browser socket closes | Detach. The shell keeps running. |
   | Another browser attaches | The old viewer gets `taken_over`, the new one the snapshot. |
-  | `DELETE /api/v1/terminals/{id}` | Stream cancelled, PTY killed, session removed. An attached viewer gets `closed`. |
+  | `DELETE /api/v1/terminals/{id}` | Record removed, PTY killed (when the agent is back, if it is away). An attached viewer gets `closed`. |
   | Shell exits | `exited { message }`. The mirror stays, so a reload shows the last screen and why it ended. |
-  | Agent disconnects | Same as exit, with "Agent disconnected". |
-  | Server restart | All sessions are gone; browsers drop the tabs they cannot find. |
+  | Agent disconnects | The shell keeps running and stays listed; viewers' sockets close and they attach again. |
+  | Server restart | The shells keep running; the saved index keeps the tabs listed until the agents report again. |
+  | Agent restart or upgrade | Its shells are gone; after its first report they are listed as exited, and their viewers get `closed`. |
 
-  An exited session keeps only its mirror and frees the agent's stream slot. Sessions live
-  until their tab is closed, without a timeout: every window restores every session as a
-  tab, so a forgotten shell is always visible there. The server keeps at most 64 sessions.
-- **Not across server restarts or agent reconnects.** The agent kills every PTY when its
-  connection ends, because they belong to that connection's streams, and the sessions live
-  in the server's memory. Keeping shells across those would need the agent to adopt PTYs by session
-  id after reconnecting, which is a wire protocol change.
+  An exited session keeps only its mirror. Sessions live until their tab is closed, without
+  a timeout: every window restores every session as a tab, so a forgotten shell is always
+  visible there. An agent runs at most 8 shells and keeps at most 64 sessions.
+- **Managed agents restart with the server.** Managed local agents and the `ssh -R` clients
+  of SSH agents are children of the server, so a server restart restarts those agents and
+  their shells end. Only standalone agents and agents behind a relay keep their shells
+  across a server restart.
 - The session routes are session-only, so API tokens and MCP cannot list, open or take over
   interactive shells. Creating, deleting and a shell exiting publish `terminals_changed` on
   the UI socket, so other windows update their tabs.
@@ -1475,7 +1517,8 @@ sequenceDiagram
 - Live logs (`log_stream_open`) send NDJSON `LogEvent` lines that may span frames; the bridge
   reassembles each line (bounded by the largest valid event) and validates it before
   relaying it to the browser.
-- Each connection allows at most 8 terminals and 8 log streams, enforced on both sides.
+- Each connection allows at most 8 terminal attachments and 8 log streams, enforced on both
+  sides.
 - Playwright agents inherit a fixture-owned `SHELL` wrapper that starts interactive POSIX
   `sh` without login profiles or `ENV` startup files. A fixed prompt lets command tests wait
   for shell readiness after PTY attachment, and keeps user prompt plugins from scrolling
@@ -1709,8 +1752,10 @@ context (`useTerminals`, `useUploads`).
   effect after each render, because a tab that was just revealed is inert until React has
   committed it.
   - An unexpected close re-attaches after 0.5, 1, 2 and 4 seconds, then offers "Reconnect".
-    Before each attempt it checks that the session still exists, because after a server
-    restart it never will ("Terminal session no longer exists").
+    Before each attempt it checks that the session is still listed, because once it was
+    closed elsewhere or its agent restarted it never will be ("Terminal session no longer
+    exists"). A server restart keeps it listed, so the tab attaches again once the agent has
+    reconnected.
   - `taken_over` keeps the last screen visible and dimmed, takes the input's focus away,
     and attaches again only on a focus, click or "Take over", so two open windows never
     take a session back and forth by themselves.
@@ -2842,16 +2887,21 @@ own endpoints:
     of the agent token registers as X. This is the same limit every agent check has, and
     the duplicate-id detection only reacts to the behavior of cloned agents. Proper
     per-agent credentials are a separate topic.
-- **Terminal output is parsed by native code on the server.** The server used to relay
-  terminal bytes without reading them. Now `libghostty-vt` parses every byte to keep the
-  session mirror, and those bytes come from any program on the agent (`cat` of a hostile
-  file), so they are untrusted input to native code. The browser parses the same bytes, but
-  inside its wasm sandbox. Ghostty treats `vt_write` input as untrusted, and the server builds
-  it in Zig's `ReleaseSafe` mode, which keeps bounds and overflow checks in release builds:
-  a parser bug stops the process with a safety panic instead of corrupting memory. A
-  failure of the emulator thread itself ends only its session ("Terminal emulator failed").
-  The mirror never answers terminal queries (DSR, DA), so a program cannot make the server
-  write to the PTY; the browser answers them.
+- **Terminal output is parsed by native code on the agent.** `libghostty-vt` parses every
+  byte to keep the session mirror, and those bytes come from any program in the shell (`cat`
+  of a hostile file), so they are untrusted input to native code. The browser parses the
+  same bytes, but inside its wasm sandbox. Ghostty treats `vt_write` input as untrusted, and
+  the build uses Zig's `ReleaseSafe` mode, which keeps bounds and overflow checks in release
+  builds: a parser bug stops the process with a safety panic instead of corrupting memory.
+  The mirror runs in the agent, on the host the bytes come from, so such a panic stops that
+  one agent rather than the server every device depends on. A failure of the emulator
+  thread itself ends only its session ("Terminal emulator failed"). The mirror never
+  answers terminal queries (DSR, DA), so a program cannot make the agent write to the PTY;
+  the browser answers them.
+- **The terminal index is not trusted for access.** The saved
+  `<data_dir>/terminal-sessions.json` (mode 0600) only lists sessions; attaching still goes
+  to the agent, which refuses ids it does not run, and an agent's report only replaces
+  that agent's own records, because the connection, not the frame, names the agent.
 - **Browser protections.**
   - The cookie is `HttpOnly` and `SameSite=Lax`.
   - JSON endpoints require `Content-Type: application/json`.

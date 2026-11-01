@@ -407,11 +407,11 @@ pub struct OutboundFailure {
     pub reason: OutboundFailureReason,
 }
 
-/// Opens a terminal on a connected agent as one stream of its connection.
-pub struct OpenTerminalRequest {
+/// Attaches to a terminal session of a connected agent as one stream of its connection.
+pub struct AttachTerminalRequest {
     pub agent_id: AgentId,
+    pub session: redoor_protocol::ids::TerminalSessionId,
     pub size: TerminalSize,
-    pub cwd: String,
     pub reply: RouterReply<Result<TerminalStream, RouterError>>,
 }
 
@@ -421,14 +421,14 @@ pub struct OpenAgentLogStreamRequest {
     pub reply: RouterReply<Result<LogStream, RouterError>>,
 }
 
-/// The server's ends of one terminal stream.
+/// The server's ends of one terminal attach stream.
 pub struct TerminalStream {
     pub stream: RequestId,
-    /// PTY output frames, credited with the terminal window.
+    /// The session's snapshot, then live PTY output, credited with the terminal window.
     pub output: OutputReceiver,
     /// Keystrokes to the PTY, on the interactive lane.
     pub input: OutboundStream,
-    /// Ready, exit and setup error events, in the stream's frame order.
+    /// Ready, exit and attach error events, in the stream's frame order.
     pub events: tokio::sync::mpsc::Receiver<TerminalServerMessage>,
 }
 
@@ -535,7 +535,7 @@ pub enum RouterMsg {
     },
     StartCopyRest(StartCopyRequest),
     TransferProgressUpdate(TransferProgressUpdateRequest),
-    OpenTerminal(OpenTerminalRequest),
+    AttachTerminal(AttachTerminalRequest),
     OpenAgentLogStream(OpenAgentLogStreamRequest),
     /// A terminal or log bridge ended: forget the stream and stop it on the agent.
     CloseStream {

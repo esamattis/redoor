@@ -586,7 +586,11 @@ async fn sync_dir(dir: &Path) -> std::io::Result<()> {
 
 /// Writes `content` to a sibling temp file created with its final `mode`, then renames it
 /// over `path`, so the file is never briefly readable with a wider mode or half-written.
-async fn write_atomically(path: &Path, content: &[u8], mode: u32) -> std::io::Result<()> {
+pub(crate) async fn write_atomically(
+    path: &Path,
+    content: &[u8],
+    mode: u32,
+) -> std::io::Result<()> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())

@@ -20,13 +20,13 @@ mod ui;
 
 pub use error::RouterError;
 pub use messages::{
-    AgentListEntry, ApplyManagedLifecycleRequest, CancelPublicTransferError,
+    AgentListEntry, ApplyManagedLifecycleRequest, AttachTerminalRequest, CancelPublicTransferError,
     CommitDirectUploadRequest, CopyTarget, ExecuteCommandRequest, ExecuteStreamRequest, LogStream,
-    OpenAgentLogStreamRequest, OpenTerminalRequest, OutboundFailure, OutboundFailureReason,
-    OutputStreamTracking, RegisterAgentRequest, RegisterManagedAgentRequest,
-    RegisterUiSubscriberRequest, RegistrationRejection, ResumeVerification, RouteResponse,
-    RouteTransferReadyRequest, RouterMsg, StartCopyRequest, StartUploadRequest, TerminalStream,
-    TransferProgressUpdateRequest, UnregisterManagedAgentRequest, UploadStartOutcome,
+    OpenAgentLogStreamRequest, OutboundFailure, OutboundFailureReason, OutputStreamTracking,
+    RegisterAgentRequest, RegisterManagedAgentRequest, RegisterUiSubscriberRequest,
+    RegistrationRejection, ResumeVerification, RouteResponse, RouteTransferReadyRequest, RouterMsg,
+    StartCopyRequest, StartUploadRequest, TerminalStream, TransferProgressUpdateRequest,
+    UnregisterManagedAgentRequest, UploadStartOutcome,
 };
 pub use state::CopyContentKind;
 pub use state::CopyOperation;
@@ -62,6 +62,13 @@ impl RouterHandle {
             sender,
             request_ids: RequestIds::default(),
         }
+    }
+
+    /// A handle whose router is gone, so every call fails at once, for tests of callers that
+    /// must cope with a router (and thus every agent) being unavailable.
+    #[cfg(test)]
+    pub(crate) fn closed_for_test() -> Self {
+        Self::new(mpsc::channel(1).0)
     }
 
     /// Allocates a request id from the router's own sequence, so a caller can name a command
@@ -451,7 +458,7 @@ impl RouterState {
                     self.route_progress_update(request)
                 }
             }
-            RouterMsg::OpenTerminal(request) => self.open_terminal(request),
+            RouterMsg::AttachTerminal(request) => self.attach_terminal(request),
             RouterMsg::OpenAgentLogStream(request) => self.open_log_stream(request),
             RouterMsg::CloseStream { agent_id, stream } => self.close_stream(&agent_id, stream),
             RouterMsg::TerminalsChanged => self.notify_terminals_changed(),

@@ -16,6 +16,7 @@ pub(crate) use redoor_protocol::wire::request::{
     ListPartials, ListTrash, Ls, Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete,
     ReadPartial, RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
 };
+use redoor_protocol::wire::request::{CloseTerminal, CreateTerminal};
 use std::time::Duration;
 
 /// Deadline for ordinary filesystem, git and inventory commands.
@@ -162,6 +163,25 @@ impl AgentCall for GetLoggingLevel {
 
 impl AgentCall for SetLoggingLevel {
     const OPERATION: &'static str = "changing the logging level";
+
+    fn timeout(&self) -> Option<Duration> {
+        Some(QUICK_TIMEOUT)
+    }
+}
+
+impl AgentCall for CreateTerminal {
+    const OPERATION: &'static str = "starting a terminal";
+
+    /// Starting a shell answers at once; a slow answer means the agent is in trouble.
+    fn timeout(&self) -> Option<Duration> {
+        Some(QUICK_TIMEOUT)
+    }
+}
+
+impl AgentCall for CloseTerminal {
+    const OPERATION: &'static str = "closing a terminal";
+    /// The tab is already gone when the browser stops waiting, so the shell must still go.
+    const RUNS_TO_COMPLETION: bool = true;
 
     fn timeout(&self) -> Option<Duration> {
         Some(QUICK_TIMEOUT)

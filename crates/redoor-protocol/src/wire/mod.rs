@@ -67,8 +67,8 @@ pub enum ServerToAgent {
     /// Orders upload publication against cancellation in the router's authoritative lifecycle.
     PublishDecision { id: RequestId, allowed: bool },
 
-    /// Asks the agent to stop a request-cancelable command, a terminal or a log stream; they
-    /// share one id space per connection.
+    /// Asks the agent to stop a request-cancelable command, a terminal attachment or a log
+    /// stream; they share one id space per connection.
     ///
     /// Only sent for a command whose frame was already written, so the agent always knows the
     /// id; a cancel for an id the agent has already answered is ignored.
@@ -78,14 +78,18 @@ pub enum ServerToAgent {
         reason: partials::CancelReason,
     },
 
-    /// Starts a PTY whose output and input travel on stream `stream` of this connection.
-    TerminalOpen {
+    /// Attaches terminal session `session` to stream `stream` of this connection: the agent
+    /// sends `ready` (for a running shell), the session's screen, then live output, and
+    /// writes input frames of the stream to the shell. Canceling the stream only detaches;
+    /// the shell keeps running in the agent process. A newer attach of the same session ends
+    /// the older stream.
+    TerminalAttach {
         stream: RequestId,
+        session: crate::ids::TerminalSessionId,
         size: terminal::TerminalSize,
-        cwd: String,
     },
 
-    /// Resizes the PTY of terminal stream `stream`.
+    /// Resizes the PTY of the session attached to stream `stream`.
     TerminalResize {
         stream: RequestId,
         size: terminal::TerminalSize,
@@ -185,13 +189,20 @@ pub enum AgentToServer {
     /// the agent's signal that its worker is ready for data.
     Credit { stream: RequestId, frames: u32 },
 
-    /// Lifecycle of terminal stream `stream` (ready, exit, setup error).
+    /// Lifecycle of terminal attach stream `stream` (ready, exit, attach error).
     ///
     /// Sent in the terminal's own frame order, so an exit always follows the output that
     /// preceded it.
     TerminalEvent {
         stream: RequestId,
         event: terminal::TerminalServerMessage,
+    },
+
+    /// Every terminal session of the agent process, sent after `hello` and again whenever one
+    /// is created, exits or is closed. Sessions outlive connections, so this is how a
+    /// restarted server learns them; the whole list replaces what the server knew.
+    TerminalSessions {
+        sessions: Vec<terminal::TerminalSessionRecord>,
     },
 }
 
@@ -213,6 +224,7 @@ impl AgentToServer {
             Self::PublishRequest { .. } => "publish_request",
             Self::Credit { .. } => "credit",
             Self::TerminalEvent { .. } => "terminal_event",
+            Self::TerminalSessions { .. } => "terminal_sessions",
         }
     }
 }

@@ -24,6 +24,6 @@ test.describe("Protocol mismatches", () => {
             refused.getByRole("row").filter({ hasText: version }),
         ).toContainText("redoor.v1");
         // The explanation names the protocol the agent has to speak instead.
-        await expect(refused).toContainText("redoor.v4");
+        await expect(refused).toContainText("redoor.v5");
     });
 });

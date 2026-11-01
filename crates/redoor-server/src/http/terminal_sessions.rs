@@ -1,11 +1,11 @@
-//! REST resource of server-owned terminal sessions: list, create and close. Attaching a
-//! browser is the websocket in `terminals`.
+//! REST resource of terminal sessions: list, create and close. Attaching a browser is the
+//! websocket in `terminals`.
 
 use super::{
     access::ResolvedDevice, agent_helpers::require_absolute_path, error::ApiError,
     state::ServerState,
 };
-use crate::terminals::registry::CreateSessionError;
+use crate::actors::router::RouterError;
 use axum::{
     Json,
     extract::{Path, State},
@@ -51,9 +51,12 @@ pub(crate) async fn create_terminal_session_handler(
         .create(agent_id, request)
         .await
         .map_err(|error| match error {
-            CreateSessionError::AgentLimit
-            | CreateSessionError::ServerLimit
-            | CreateSessionError::NotConnected => ApiError::conflict(error.to_string()),
+            // A device that is known but away cannot start a shell; that is a conflict the
+            // user resolves by reconnecting it, not a missing resource.
+            ApiError::Router(RouterError::AgentNotFound { .. }) => {
+                ApiError::conflict("Agent is not connected")
+            }
+            error => error,
         })?;
     Ok((
         StatusCode::CREATED,
@@ -61,7 +64,8 @@ pub(crate) async fn create_terminal_session_handler(
     ))
 }
 
-/// Kills a session's shell and forgets it, telling an attached browser it was closed.
+/// Kills a session's shell and forgets it, telling an attached browser it was closed. An
+/// agent that is away kills the shell when it reconnects.
 pub(crate) async fn delete_terminal_session_handler(
     Path(id): Path<String>,
     State(state): State<ServerState>,
@@ -80,7 +84,7 @@ pub(crate) fn parse_session_id(value: &str) -> Result<TerminalSessionId, ApiErro
     TerminalSessionId::parse(value).ok_or_else(session_not_found)
 }
 
-/// The error for an id that names no session, such as after a server restart.
+/// The error for an id that names no session, such as one closed in another window.
 pub(crate) fn session_not_found() -> ApiError {
     ApiError::not_found("Terminal session no longer exists")
 }

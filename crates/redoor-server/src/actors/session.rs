@@ -7,6 +7,7 @@ use crate::actors::router::{
     ConnectionStreams, RegisterAgentRequest, RegistrationRejection, RouteResponse,
     RouteTransferReadyRequest, RouterHandle, RouterMsg, TransferProgressUpdateRequest,
 };
+use crate::terminals::registry::TerminalRegistry;
 use crate::watchdog::{WatchdogHandle, WatchdogRegistry};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
@@ -130,6 +131,9 @@ struct SessionRuntime {
     /// for agents that aren't supervised (e.g. manually-spawned external agents), whose stale
     /// sockets are closed without restarting a process.
     watchdog: Option<WatchdogHandle>,
+    /// Terminal sessions the agent reports; sessions belong to the agent process, so its
+    /// reports replace what the server knew about them.
+    terminals: TerminalRegistry,
     /// Payload stream tables of the registered session; credit the agent returns for
     /// server-to-agent streams is applied here directly, never through the router mailbox.
     streams: Option<ConnectionStreams>,
@@ -357,6 +361,9 @@ impl SessionRuntime {
                     streams.deliver_terminal_event(stream, event);
                 }
             }
+            AgentToServer::TerminalSessions { sessions } => {
+                self.terminals.report(&agent_id, sessions);
+            }
             AgentToServer::TransferVerification {
                 id,
                 bytes,
@@ -578,11 +585,12 @@ async fn send_ping(sender: &mut SplitSink<WebSocket, WsMessage>, timeout: Durati
 /// Entry point for a new agent connection whose upgrade proved the token. Splits the socket
 /// into send/receive halves and wires them to the router using explicit Tokio channels; the
 /// `hello` must carry `hello_proof` before the agent is registered.
-pub async fn handle_websocket(
+pub(crate) async fn handle_websocket(
     socket: WebSocket,
     socket_id: SocketId,
     router_ref: RouterHandle,
     watchdog_registry: WatchdogRegistry,
+    terminals: TerminalRegistry,
     timeouts: redoor_core::websocket::WebSocketTimeouts,
     hello_proof: TokenProof,
 ) {
@@ -605,6 +613,7 @@ pub async fn handle_websocket(
         lanes,
         hello_proof,
         watchdog: None,
+        terminals,
         streams: None,
         activity: ConnectionActivity::new(ConnectionActivity::healthy_window(&timeouts)),
     };
@@ -768,6 +777,7 @@ mod tests {
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
+            terminals: TerminalRegistry::disabled(),
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),
         };
@@ -931,6 +941,7 @@ mod tests {
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
+            terminals: TerminalRegistry::disabled(),
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),
         };
@@ -981,6 +992,7 @@ mod tests {
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
+            terminals: TerminalRegistry::disabled(),
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),
         };

@@ -4,10 +4,9 @@
 use super::RouterError;
 use super::flows::{CommandFlow, Flow};
 use super::messages::{
-    AgentListEntry, ApplyManagedLifecycleRequest, ExecuteCommandRequest, LogStream,
-    OpenAgentLogStreamRequest, OpenTerminalRequest, RegisterAgentRequest,
-    RegisterManagedAgentRequest, RegistrationRejection, RouteResponse, TerminalStream,
-    UnregisterManagedAgentRequest,
+    AgentListEntry, ApplyManagedLifecycleRequest, AttachTerminalRequest, ExecuteCommandRequest,
+    LogStream, OpenAgentLogStreamRequest, RegisterAgentRequest, RegisterManagedAgentRequest,
+    RegistrationRejection, RouteResponse, TerminalStream, UnregisterManagedAgentRequest,
 };
 use super::state::{AgentConnection, KnownAgent, RouterState};
 use super::streams::{AgentLink, OutboundStart, OutboundStream, StreamLease};
@@ -24,8 +23,8 @@ use redoor_protocol::{
     wire::ServerToAgent,
 };
 
-/// Terminals one connection may run at once, matching the agent's own limit so the server
-/// refuses excess terminals before the agent has to.
+/// Terminal attachments one connection may carry at once, matching the agent's own limit so
+/// the server refuses excess attachments before the agent has to.
 const MAX_TERMINALS_PER_CONNECTION: usize = 8;
 /// Live log streams one connection may run at once, matching the agent's own limit.
 const MAX_LOG_STREAMS_PER_CONNECTION: usize = 8;
@@ -691,11 +690,11 @@ impl RouterState {
         }
     }
 
-    /// Opens a terminal as one stream of the agent's connection.
+    /// Attaches to a terminal session as one stream of the agent's connection.
     ///
     /// Output gets an inbound slot and input an interactive-lane producer before
-    /// `terminal_open` is queued, so no frame of the terminal can arrive unroutable.
-    pub(crate) fn open_terminal(&mut self, request: OpenTerminalRequest) {
+    /// `terminal_attach` is queued, so no frame of the attachment can arrive unroutable.
+    pub(crate) fn attach_terminal(&mut self, request: AttachTerminalRequest) {
         let stream = self.next_id();
         let result = self
             .open_stream(&request.agent_id, stream, true)
@@ -715,10 +714,10 @@ impl RouterState {
                     true,
                 );
                 let events = connection.streams.open_terminal_events(stream);
-                let open = ServerToAgent::TerminalOpen {
+                let open = ServerToAgent::TerminalAttach {
                     stream,
+                    session: request.session,
                     size: request.size,
-                    cwd: request.cwd.clone(),
                 };
                 Self::admit_stream(connection, stream, open)?;
                 Ok(TerminalStream {
@@ -1132,10 +1131,10 @@ mod tests {
         ));
         let open = |state: &mut RouterState| {
             let (reply, receiver) = oneshot::channel();
-            state.open_terminal(super::super::messages::OpenTerminalRequest {
+            state.attach_terminal(super::super::messages::AttachTerminalRequest {
                 agent_id: redoor_core::test_support::test_agent_id("agent"),
+                session: redoor_protocol::ids::TerminalSessionId::new(),
                 size: redoor_protocol::wire::terminal::TerminalSize::new(24, 80).unwrap(),
-                cwd: "/".to_string(),
                 reply,
             });
             receiver
@@ -1150,7 +1149,7 @@ mod tests {
         let first = receivers.commands.try_recv().unwrap();
         assert!(matches!(
             first.frame,
-            ServerToAgent::TerminalOpen { stream, .. } if stream == streams[0]
+            ServerToAgent::TerminalAttach { stream, .. } if stream == streams[0]
         ));
         assert!(first.ticket.unwrap().mark_written());
         // One more would exceed the agent's own limit, so the server refuses it first.
@@ -1160,14 +1159,14 @@ mod tests {
         ));
 
         state.close_stream(&agent_id, streams[0]);
-        // Closing stops the PTY on the agent with the ordinary cancel frame.
+        // Closing detaches on the agent with the ordinary cancel frame.
         let frames: Vec<_> = std::iter::from_fn(|| receivers.priority.try_recv().ok()).collect();
         assert!(frames.iter().any(
             |frame| matches!(frame, ServerToAgent::Cancel { id, reason } if *id == streams[0])
         ));
         state.close_stream(&agent_id, streams[1]);
-        // A terminal whose open frame was never written is withdrawn: a cancel could
-        // overtake the open frame and leave the PTY running.
+        // An attachment whose frame was never written is withdrawn: a cancel could
+        // overtake the attach frame and leave the attachment holding its slot.
         assert!(receivers.priority.try_recv().is_err());
         let second = receivers.commands.try_recv().unwrap();
         assert!(!second.ticket.unwrap().mark_written());

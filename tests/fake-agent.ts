@@ -12,7 +12,7 @@ import {
 } from "./test-utils";
 
 /** Subprotocol of the agent websocket that this helper speaks. */
-export const AGENT_PROTOCOL = "redoor.v4";
+export const AGENT_PROTOCOL = "redoor.v5";
 
 /** Path of the single agent websocket endpoint. */
 export const AGENT_WS_PATH = "/api/v1/agent/ws";

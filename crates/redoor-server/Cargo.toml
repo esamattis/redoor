@@ -28,7 +28,6 @@ zeroize.workspace = true
 headers.workspace = true
 jiff.workspace = true
 libc.workspace = true
-libghostty-vt.workspace = true
 nix.workspace = true
 rcgen.workspace = true
 reqwest.workspace = true
@@ -47,10 +46,6 @@ tokio-rustls.workspace = true
 tokio-util.workspace = true
 tower-http.workspace = true
 uuid.workspace = true
-
-[build-dependencies]
-# Assembles the TLS alignment object that arm64 Android builds need; see build.rs.
-cc.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

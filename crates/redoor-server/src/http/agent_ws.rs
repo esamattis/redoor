@@ -129,6 +129,7 @@ pub(crate) async fn agent_websocket_handler(
     let hello_proof = key.hello_proof(&nonces);
     let router_ref = state.router_ref;
     let watchdog_registry = state.watchdog_registry;
+    let terminals = state.terminals;
     let timeouts = state.runtime.ws_timeouts;
     let mut response = ws
         .protocols([PROTOCOL])
@@ -140,6 +141,7 @@ pub(crate) async fn agent_websocket_handler(
                 SocketId::new(),
                 router_ref,
                 watchdog_registry,
+                terminals,
                 timeouts,
                 hello_proof,
             )
@@ -197,13 +199,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v3, redoor.v4"),
+            HeaderValue::from_static("redoor.v4, redoor.v5"),
         );
         // An agent may offer older protocols too; the server picks its own.
         assert!(offers_protocol(&headers));
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v5"),
+            HeaderValue::from_static("redoor.v6"),
         );
         // A different version alone must be refused.
         assert!(!offers_protocol(&headers));

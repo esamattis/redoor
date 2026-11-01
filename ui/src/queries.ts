@@ -172,7 +172,7 @@ export const queryKeys = {
     protocolMismatches: () =>
         [...queryKeys.all, "protocol-mismatches"] as const,
     userState: () => [...queryKeys.all, "user-state"] as const,
-    /** Every server-owned terminal session; the tabs of every window follow it. */
+    /** Every terminal session the server knows; the tabs of every window follow it. */
     terminalSessions: () => [...queryKeys.all, "terminal-sessions"] as const,
     /** An open file's stored editor buffer, keyed like the open files list. */
     editorBuffer: (key: string) =>

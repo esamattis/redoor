@@ -25,7 +25,7 @@ use redoor_core::{log, log_error};
 use redoor_protocol::wire::handshake::RejectReason;
 use redoor_protocol::wire::registration::{AgentCapabilities, AgentIdentity};
 use redoor_protocol::{
-    ids::{AgentId, RequestId},
+    ids::{AgentId, RequestId, TerminalSessionId},
     wire::{
         AgentToServer, ServerToAgent, command::CommandErrorKind, log::Level,
         request::CommandOutcome, stream::StreamChunk, terminal::TerminalSize,
@@ -464,9 +464,11 @@ impl AgentRuntime {
             ServerToAgent::Cancel { id, reason } => {
                 self.sessions.cancel_request_with_reason(id, reason);
             }
-            ServerToAgent::TerminalOpen { stream, size, cwd } => {
-                self.start_terminal(stream, size, cwd)
-            }
+            ServerToAgent::TerminalAttach {
+                stream,
+                session,
+                size,
+            } => self.attach_terminal(stream, session, size),
             ServerToAgent::TerminalResize { stream, size } => self
                 .dispatcher
                 .services()
@@ -574,8 +576,14 @@ impl AgentRuntime {
         self.schedule_reconnect(handle, reason);
     }
 
-    /// Starts one terminal on stream `stream`; its registration lives as long as its task.
-    fn start_terminal(&mut self, stream: RequestId, size: TerminalSize, cwd: String) {
+    /// Attaches terminal session `session` to stream `stream`; the registration lives as long
+    /// as the attachment, the shell as long as its session.
+    fn attach_terminal(
+        &mut self,
+        stream: RequestId,
+        session: TerminalSessionId,
+        size: TerminalSize,
+    ) {
         let Some(lanes) = self.control.lanes().cloned() else {
             return;
         };
@@ -593,13 +601,24 @@ impl AgentRuntime {
                     tokio::spawn(crate::terminal::refuse(
                         lanes.interactive,
                         stream,
-                        "Too many terminals are open on this agent",
+                        "Too many terminals are attached on this agent",
                     ));
                 }
                 return;
             }
         };
         let services = self.dispatcher.services();
+        let Some(session) = services.terminal_sessions.get(session) else {
+            // The agent restarted since the server last heard of the session.
+            tokio::spawn(crate::terminal::refuse(
+                lanes.interactive,
+                stream,
+                "Terminal session no longer exists",
+            ));
+            return;
+        };
+        // The input route exists before the attachment can send `ready`, which is what lets
+        // the server start sending keystrokes.
         let link = TerminalLink {
             stream,
             interactive: lanes.interactive,
@@ -609,14 +628,7 @@ impl AgentRuntime {
         };
         tokio::spawn(async move {
             let cancel = registration.token().clone();
-            if let Err(error) = crate::terminal::run(link, size, cwd, cancel).await {
-                log!(
-                    Level::Warning,
-                    "Terminal session ended with an error: stream={}, error={}",
-                    stream,
-                    error
-                );
-            }
+            crate::terminal::attach(link, session, size, cancel).await;
             drop(registration);
         });
     }
@@ -900,7 +912,41 @@ impl AgentRuntime {
                 "Failed to send hello"
             );
         }
+        // Queued after the hello, so the server reads the list from a registered agent.
+        tokio::spawn(report_terminal_sessions(
+            control_tx,
+            self.dispatcher.services().terminal_sessions.clone(),
+            self.control.scope().clone(),
+        ));
         None
+    }
+}
+
+/// Sends the process's terminal sessions to the server now and after every change, until
+/// the connection ends. Sessions outlive connections, so this is how a restarted server
+/// learns which shells still run.
+async fn report_terminal_sessions(
+    control: responder::ControlSender,
+    sessions: crate::terminal::registry::TerminalSessions,
+    connection: tokio_util::sync::CancellationToken,
+) {
+    let mut changed = sessions.subscribe();
+    loop {
+        changed.mark_unchanged();
+        let report = AgentToServer::TerminalSessions {
+            sessions: sessions.records(),
+        };
+        if control.send(OutboundFrame::message(report)).await.is_err() {
+            return;
+        }
+        tokio::select! {
+            () = connection.cancelled() => return,
+            changed = changed.changed() => {
+                if changed.is_err() {
+                    return;
+                }
+            }
+        }
     }
 }
 

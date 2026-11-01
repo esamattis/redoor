@@ -1,12 +1,24 @@
-//! Interactive terminal sessions: one PTY bridged to one stream of the agent connection.
+//! Interactive terminal sessions that belong to the agent process.
 //!
-//! PTY output travels on the interactive lane, which the connection writer drains before bulk
+//! A session (see [`session`]) owns its shell's PTY and a headless emulator mirroring the
+//! screen, and lives in the process-wide [`registry`] until it is closed, so the shell
+//! survives server restarts and reconnects. A connection only attaches to a session: one
+//! stream carries the snapshot and live output to the server and keystrokes back. Canceling
+//! the stream or losing the connection only detaches.
+//!
+//! Output travels on the interactive lane, which the connection writer drains before bulk
 //! transfer data, so keystroke echoes never queue behind a download. Both directions are
 //! credited with a terminal-sized window.
+
+pub(crate) mod emulator;
+mod pending_tail;
+pub(crate) mod registry;
+pub(crate) mod session;
 
 use crate::runtime::responder::{ControlSender, OutboundFrame};
 use crate::transfers::stream::{OutputCredits, StreamWriter};
 use anyhow::{Context, Result, anyhow};
+use bytes::Bytes;
 use nix::{
     errno::Errno,
     sys::signal::{Signal, kill, killpg},
@@ -22,24 +34,30 @@ use redoor_protocol::{
         terminal::{TerminalServerMessage, TerminalSize},
     },
 };
+use session::{
+    AttachedViewer, DetachReason, InputChunk, PtyInput, PtyIo, PtyOutput, SessionCommand,
+    TerminalSessionHandle, ViewerFrame,
+};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::{ffi::OsString, os::unix::process::ExitStatusExt, time::Duration};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     process::Child,
-    sync::mpsc,
-    task::JoinHandle,
+    sync::{mpsc, oneshot, watch},
     time::timeout,
 };
 use tokio_util::sync::CancellationToken;
 
 /// PTY read size; small enough to keep interactive output latency low.
 const PTY_BUFFER_SIZE: usize = 8 * 1024;
-/// Pending resizes per terminal; resizes are rare, and a full queue only drops a stale size.
+/// Pending resizes per attachment; resizes are rare, and a full queue only drops a stale size.
 const RESIZE_QUEUE_SIZE: usize = 4;
-/// How long teardown waits for the shell or a bridge task before escalating, so a stuck
-/// session cannot hold resources indefinitely.
+/// Keystroke frames queued for the PTY writer. Small, because a shell that does not read
+/// should hold the attachment's input stream back rather than fill memory.
+const PTY_WRITE_QUEUE: usize = 4;
+/// How long teardown waits for the shell before escalating, so a stuck session cannot hold
+/// resources indefinitely.
 const PROCESS_EXIT_GRACE: Duration = Duration::from_secs(2);
 
 /// Input queues of one terminal, fed by the connection reader.
@@ -144,7 +162,7 @@ impl TerminalInputs {
     }
 }
 
-/// Connection resources one terminal session uses.
+/// Connection resources one attachment uses.
 pub(crate) struct TerminalLink {
     pub(crate) stream: RequestId,
     /// Interactive lane for output frames and lifecycle events, in one order.
@@ -155,25 +173,31 @@ pub(crate) struct TerminalLink {
     pub(crate) input: TerminalInput,
 }
 
-/// Why the session ended first.
-enum SessionEnd {
-    Cancelled,
-    Child(std::process::ExitStatus),
-    /// PTY EOF; carries the writer back because its task must not be polled again.
-    OutputEnded(Option<StreamWriter>),
-    InputEnded(Result<()>),
+/// Tells the session the attachment ended, however the stream ends.
+struct DetachGuard {
+    session: TerminalSessionHandle,
+    serial: u64,
 }
 
-/// Runs one terminal until its shell exits, the server cancels it or the connection ends.
+impl Drop for DetachGuard {
+    fn drop(&mut self) {
+        self.session.send_detached(SessionCommand::Detach {
+            serial: self.serial,
+        });
+    }
+}
+
+/// Serves one attachment of `session` on the link's stream until the server cancels it, the
+/// connection ends, another attachment takes over or the shell's final event was sent.
 ///
 /// The stream always ends with FIN after the last output and lifecycle event, so the server
-/// knows no frame of it follows.
-pub(crate) async fn run(
+/// knows no frame of it follows. The shell keeps running afterwards.
+pub(crate) async fn attach(
     link: TerminalLink,
+    session: TerminalSessionHandle,
     size: TerminalSize,
-    cwd: String,
     cancel: CancellationToken,
-) -> Result<()> {
+) {
     let TerminalLink {
         stream,
         interactive,
@@ -186,139 +210,139 @@ pub(crate) async fn run(
         stream,
         credits.register_with_window(stream, TERMINAL_CREDIT_WINDOW_FRAMES),
     );
-    let started = size
-        .validate()
-        .map_err(|error| anyhow!(error.to_string()))
-        .and_then(|()| start_pty(size, &cwd));
-    let (reader, pty_writer, mut child, process_group_id) = match started {
-        Ok(started) => started,
-        Err(error) => {
-            send_event(
-                &mut writer,
-                stream,
-                TerminalServerMessage::Error {
-                    message: "Failed to start terminal".to_string(),
-                },
-            )
-            .await;
-            writer.send(&[], true).await;
-            return Err(error);
-        }
-    };
-    log!(
-        Level::Info,
-        "Terminal created: stream={}, cwd={}",
-        stream,
-        cwd
-    );
-    send_event(&mut writer, stream, TerminalServerMessage::Ready).await;
-
-    let stop_output = CancellationToken::new();
-    let mut output = tokio::spawn(forward_output(reader, writer, stop_output.clone()));
-    let mut input_task = tokio::spawn(apply_input(input, pty_writer, control, stream));
-    let end = wait_for_end(&mut child, &cancel, &mut output, &mut input_task).await;
-
-    let (status, finished_writer, result) = match end {
-        SessionEnd::Child(status) => (Some(status), None, Ok(())),
-        SessionEnd::OutputEnded(writer) => (
-            timeout(Duration::from_millis(100), child.wait())
-                .await
-                .ok()
-                .and_then(Result::ok),
-            Some(writer),
-            Ok(()),
-        ),
-        SessionEnd::Cancelled => (None, None, Ok(())),
-        SessionEnd::InputEnded(result) => (None, None, result),
-    };
-    teardown_process_group(&mut child, process_group_id).await;
-    input_task.abort();
-    // The PTY closes with the shell, so the output task drains the remaining output and
-    // hands the writer back; the exit status then follows that output on the same lane. An
-    // output task still waiting for credit after the grace period is told to stop, so the
-    // writer always comes back and the stream can still end with FIN.
-    let writer = match finished_writer {
-        Some(writer) => writer,
-        None => match timeout(PROCESS_EXIT_GRACE, &mut output).await {
-            Ok(writer) => writer.ok(),
-            Err(_) => {
-                stop_output.cancel();
-                output.await.ok()
-            }
-        },
-    };
-    if let Some(mut writer) = writer {
-        if let Some(status) = status.filter(|_| !cancel.is_cancelled()) {
-            send_event(
-                &mut writer,
-                stream,
-                TerminalServerMessage::Exit {
-                    code: status.code(),
-                    signal: status.signal(),
-                },
-            )
-            .await;
-        }
+    let Ok(AttachedViewer {
+        serial,
+        frames,
+        reason,
+        input: queue,
+    }) = session.attach(size).await
+    else {
+        send_event(&mut writer, stream, session_gone()).await;
         writer.send(&[], true).await;
-    }
-    log!(Level::Info, "Terminal destroyed: stream={}", stream);
-    result
-}
-
-/// Waits for the first terminal-ending event with small select arms.
-async fn wait_for_end(
-    child: &mut Child,
-    cancel: &CancellationToken,
-    output: &mut JoinHandle<StreamWriter>,
-    input: &mut JoinHandle<Result<()>>,
-) -> SessionEnd {
+        return;
+    };
+    let _detach = DetachGuard {
+        session: session.clone(),
+        serial,
+    };
     tokio::select! {
-        _ = cancel.cancelled() => SessionEnd::Cancelled,
-        status = child.wait() => match status {
-            Ok(status) => SessionEnd::Child(status),
-            Err(error) => SessionEnd::InputEnded(Err(error.into())),
-        },
-        writer = &mut *output => SessionEnd::OutputEnded(writer.ok()),
-        result = &mut *input => SessionEnd::InputEnded(
-            result.context("terminal input task failed").and_then(|result| result),
-        ),
+        () = cancel.cancelled() => {}
+        () = forward_frames(frames, reason, &mut writer, stream) => {}
+        () = apply_input(input, queue, &session, serial, &control, stream) => {}
+    }
+    writer.send(&[], true).await;
+}
+
+/// The event of an attach whose session is gone, such as after the agent restarted.
+fn session_gone() -> TerminalServerMessage {
+    TerminalServerMessage::Error {
+        message: "Terminal session no longer exists".to_string(),
     }
 }
 
-/// Sends one lifecycle event on the terminal's own lane, ordered with its output.
+/// Relays the session's frames to the stream until the session lets this attachment go or
+/// sends the shell's final event.
+async fn forward_frames(
+    mut frames: mpsc::Receiver<ViewerFrame>,
+    mut reason: oneshot::Receiver<DetachReason>,
+    writer: &mut StreamWriter,
+    stream: RequestId,
+) {
+    loop {
+        let frame = tokio::select! {
+            biased;
+            _ = &mut reason => return,
+            frame = frames.recv() => frame,
+        };
+        match frame {
+            None => return,
+            Some(ViewerFrame::Output(bytes)) => {
+                // Waiting for credit must not hide a takeover or close.
+                let sent = tokio::select! {
+                    biased;
+                    _ = &mut reason => return,
+                    sent = writer.send(&bytes, false) => sent,
+                };
+                if !sent {
+                    return;
+                }
+            }
+            Some(ViewerFrame::Event(event)) => {
+                let last = matches!(
+                    event,
+                    TerminalServerMessage::Exit { .. } | TerminalServerMessage::Error { .. }
+                );
+                send_event(writer, stream, event).await;
+                if last {
+                    return;
+                }
+            }
+        }
+    }
+}
+
+/// Hands input frames to the session's PTY queue, applies resizes and returns credit for
+/// consumed input. Only returns when the input route is gone, which ends the attachment.
+async fn apply_input(
+    mut input: TerminalInput,
+    mut queue: Option<mpsc::Sender<InputChunk>>,
+    session: &TerminalSessionHandle,
+    serial: u64,
+    control: &ControlSender,
+    stream: RequestId,
+) {
+    let mut ledger = CreditLedger::default();
+    loop {
+        let event = tokio::select! {
+            size = input.resizes.recv() => size.map(InputEvent::Resize),
+            chunk = input.frames.recv() => chunk.map(InputEvent::Frame),
+        };
+        match event {
+            None => return,
+            Some(InputEvent::Resize(size)) => {
+                if size.validate().is_err()
+                    || session
+                        .send(SessionCommand::Resize { serial, size })
+                        .await
+                        .is_err()
+                {
+                    return;
+                }
+            }
+            Some(InputEvent::Frame(chunk)) => {
+                let consumes_credit = chunk.consumes_credit();
+                if let Some(sender) = &queue
+                    && !chunk.data.is_empty()
+                {
+                    let bytes = Bytes::from(chunk.data);
+                    if sender.send(InputChunk { serial, bytes }).await.is_err() {
+                        // The shell is gone; its exit reaches the server on the output side.
+                        queue = None;
+                    }
+                }
+                if let Some(frames) = ledger.drained(consumes_credit) {
+                    let grant = AgentToServer::Credit { stream, frames };
+                    let _ = control.send(OutboundFrame::message(grant)).await;
+                }
+            }
+        }
+    }
+}
+
+/// One piece of terminal input from the server.
+enum InputEvent {
+    Resize(TerminalSize),
+    Frame(StreamChunk),
+}
+
+/// Sends one lifecycle event on the attachment's own lane, ordered with its output.
 async fn send_event(writer: &mut StreamWriter, stream: RequestId, event: TerminalServerMessage) {
     writer
         .send_message(AgentToServer::TerminalEvent { stream, event })
         .await;
 }
 
-/// Copies PTY output into credited stream frames until EOF, a closed lane or `stop`, then
-/// returns the writer so the session can end the stream after the last output.
-async fn forward_output(
-    mut reader: pty_process::OwnedReadPty,
-    mut writer: StreamWriter,
-    stop: CancellationToken,
-) -> StreamWriter {
-    let mut buffer = vec![0; PTY_BUFFER_SIZE];
-    loop {
-        let read = tokio::select! {
-            _ = stop.cancelled() => None,
-            read = reader.read(&mut buffer) => read.ok().filter(|read| *read > 0),
-        };
-        let Some(read) = read else {
-            return writer;
-        };
-        let sent = tokio::select! {
-            _ = stop.cancelled() => false,
-            sent = writer.send(&buffer[..read], false) => sent,
-        };
-        if !sent {
-            return writer;
-        }
-    }
-}
-
-/// Answers a `terminal_open` the agent cannot honor with an error event and FIN, so the
+/// Answers a `terminal_attach` the agent cannot honor with an error event and FIN, so the
 /// browser shows the reason instead of waiting for a ready event that never comes.
 ///
 /// Both frames are exempt from credit, so no credit registration is needed for a stream that
@@ -345,67 +369,102 @@ pub(crate) async fn refuse(interactive: ControlSender, stream: RequestId, messag
     }
 }
 
-/// Writes input frames to the PTY, applies resizes and returns credit for consumed input.
-async fn apply_input(
-    mut input: TerminalInput,
+/// Reads a live PTY for its session.
+pub(crate) struct LivePtyOutput {
+    reader: pty_process::OwnedReadPty,
+    buffer: Vec<u8>,
+}
+
+impl PtyOutput for LivePtyOutput {
+    async fn recv(&mut self) -> Option<Bytes> {
+        // Linux reports a PTY whose other side closed as EIO, which ends output like EOF.
+        let read = self.reader.read(&mut self.buffer).await.ok()?;
+        (read > 0).then(|| Bytes::copy_from_slice(&self.buffer[..read]))
+    }
+}
+
+/// Writes to a live PTY through its writer task, so a shell that does not read never blocks
+/// the session loop.
+#[derive(Clone)]
+pub(crate) struct LivePtyInput {
+    writes: mpsc::Sender<Bytes>,
+    size: Arc<watch::Sender<TerminalSize>>,
+}
+
+impl PtyInput for LivePtyInput {
+    async fn send(&self, bytes: Bytes) -> Result<(), ()> {
+        self.writes.send(bytes).await.map_err(|_| ())
+    }
+
+    fn resize(&self, size: TerminalSize) {
+        self.size.send_replace(size);
+    }
+}
+
+/// Owns the PTY's write side: writes keystrokes and applies the latest size, until the
+/// session drops its input.
+async fn write_pty(
     mut pty: pty_process::OwnedWritePty,
-    control: ControlSender,
-    stream: RequestId,
-) -> Result<()> {
-    let mut ledger = CreditLedger::default();
+    mut writes: mpsc::Receiver<Bytes>,
+    mut size: watch::Receiver<TerminalSize>,
+) {
     loop {
-        let event = tokio::select! {
-            size = input.resizes.recv() => size.map(InputEvent::Resize),
-            chunk = input.frames.recv() => chunk.map(InputEvent::Frame),
-        };
-        match event {
-            None => return Ok(()),
-            Some(InputEvent::Resize(size)) => resize(&pty, size)?,
-            Some(InputEvent::Frame(chunk)) => {
-                if !write_input(&mut pty, &chunk).await? {
-                    return Ok(());
+        tokio::select! {
+            biased;
+            changed = size.changed() => {
+                if changed.is_err() {
+                    return;
                 }
-                if let Some(frames) = ledger.drained(chunk.consumes_credit()) {
-                    let grant = AgentToServer::Credit { stream, frames };
-                    let _ = control.send(OutboundFrame::message(grant)).await;
+                let size = *size.borrow_and_update();
+                resize_pty(&pty, size);
+            }
+            bytes = writes.recv() => {
+                let Some(bytes) = bytes else { return };
+                if pty.write_all(&bytes).await.is_err() {
+                    return;
                 }
             }
         }
     }
 }
 
-/// One piece of terminal input from the server.
-enum InputEvent {
-    Resize(TerminalSize),
-    Frame(StreamChunk),
+/// Validates a size again before invoking the PTY ioctl; a failed resize only logs, because
+/// the shell keeps working at its old size.
+fn resize_pty(pty: &pty_process::OwnedWritePty, size: TerminalSize) {
+    if size.validate().is_err() {
+        return;
+    }
+    if let Err(error) = pty.resize(pty_process::Size::new(size.rows, size.cols)) {
+        log!(Level::Warning, "Failed to resize a PTY: {error}");
+    }
 }
 
-/// Writes one input frame; returns `false` once the server ended the input stream.
-async fn write_input(pty: &mut pty_process::OwnedWritePty, chunk: &StreamChunk) -> Result<bool> {
-    pty.write_all(&chunk.data)
-        .await
-        .context("failed to write PTY input")?;
-    Ok(!chunk.is_last)
+/// Waits for the shell to exit or to be killed, reports how it ended and then stops what is
+/// left of its session's processes, which closes the PTY.
+async fn watch_shell(
+    mut child: Child,
+    process_group_id: i32,
+    exit: oneshot::Sender<TerminalServerMessage>,
+    kill: CancellationToken,
+) {
+    let status = tokio::select! {
+        status = child.wait() => status.ok(),
+        () = kill.cancelled() => None,
+    };
+    if let Some(status) = status {
+        let _ = exit.send(TerminalServerMessage::Exit {
+            code: status.code(),
+            signal: status.signal(),
+        });
+    }
+    teardown_process_group(&mut child, process_group_id).await;
 }
 
-/// Validates a resize again before invoking the PTY ioctl.
-fn resize(pty: &pty_process::OwnedWritePty, size: TerminalSize) -> Result<()> {
-    size.validate()
-        .map_err(|error| anyhow!(error.to_string()))?;
-    pty.resize(pty_process::Size::new(size.rows, size.cols))
-        .context("failed to resize PTY")
-}
-
-/// Allocates the PTY and starts the login shell in `cwd`.
-fn start_pty(
+/// Allocates the PTY, starts the login shell in `cwd` and wires it for a session.
+pub(crate) fn start_pty(
     size: TerminalSize,
     cwd: &str,
-) -> Result<(
-    pty_process::OwnedReadPty,
-    pty_process::OwnedWritePty,
-    Child,
-    i32,
-)> {
+) -> Result<PtyIo<LivePtyOutput, LivePtyInput>> {
     let (pty, pts) = pty_process::open().context("failed to allocate PTY")?;
     pty.resize(pty_process::Size::new(size.rows, size.cols))
         .context("failed to set initial PTY size")?;
@@ -429,7 +488,25 @@ fn start_pty(
     let process_group_id =
         i32::try_from(process_group_id).context("terminal process id is too large")?;
     let (reader, writer) = pty.into_split();
-    Ok((reader, writer, child, process_group_id))
+
+    let (writes, write_queue) = mpsc::channel(PTY_WRITE_QUEUE);
+    let (size_tx, size_rx) = watch::channel(size);
+    tokio::spawn(write_pty(writer, write_queue, size_rx));
+    let (exit_tx, exit) = oneshot::channel();
+    let kill = CancellationToken::new();
+    tokio::spawn(watch_shell(child, process_group_id, exit_tx, kill.clone()));
+    Ok(PtyIo {
+        output: LivePtyOutput {
+            reader,
+            buffer: vec![0; PTY_BUFFER_SIZE],
+        },
+        input: LivePtyInput {
+            writes,
+            size: Arc::new(size_tx),
+        },
+        exit,
+        kill: Some(kill.drop_guard()),
+    })
 }
 
 /// Sends escalating signals to every PTY session member and reaps its leader.

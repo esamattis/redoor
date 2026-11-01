@@ -3,7 +3,7 @@
 use crate::errors::AgentCommandError;
 use crate::runtime::cancel::Registration;
 use crate::runtime::responder::{ControlSender, Responder, ResultLedger};
-use crate::terminal::TerminalInputs;
+use crate::terminal::{TerminalInputs, registry::TerminalSessions};
 use crate::transfers::{
     copy::CopyContext,
     stream::{OutputCredits, StreamWriter},
@@ -40,8 +40,10 @@ pub(crate) struct AgentServices {
     pub(crate) grep_slots: Arc<Semaphore>,
     /// Routes inbound upload chunks and publication decisions to their workers.
     pub(crate) upload_routes: UploadRoutes,
-    /// Routes inbound terminal input and resizes to their PTY sessions.
+    /// Routes inbound terminal input and resizes to their attachments.
     pub(crate) terminal_inputs: TerminalInputs,
+    /// Every terminal session of the process; they outlive connections.
+    pub(crate) terminal_sessions: TerminalSessions,
     /// Routes server credit grants to the output stream writers waiting for them.
     pub(crate) output_credits: OutputCredits,
     /// Requests of the current connection that still owe their one result.
@@ -65,6 +67,7 @@ impl AgentServices {
             grep_slots: Arc::new(Semaphore::new(CONTENT_GREP_SLOTS)),
             upload_routes: UploadRoutes::default(),
             terminal_inputs: TerminalInputs::default(),
+            terminal_sessions: TerminalSessions::default(),
             output_credits: OutputCredits::default(),
             results: ResultLedger::default(),
             loaded_config_path: loaded_config_path

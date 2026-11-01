@@ -1,12 +1,16 @@
-//! Browser terminal endpoint: attaches one browser websocket to one server-owned terminal
-//! session. Closing the socket only detaches; the shell keeps running in its session.
+//! Browser terminal endpoint: attaches one browser websocket to one terminal session, through
+//! an attach stream to the agent that runs the shell. Closing the socket only detaches; the
+//! shell keeps running in the agent.
 
 use super::{
     state::ServerState, terminal_sessions::parse_session_id, websocket_security::is_same_origin,
 };
-use crate::terminals::session::{
-    AttachedViewer, DetachReason, InputChunk, SessionCommand, TerminalSessionHandle, ViewerFrame,
+use crate::actors::lanes::ControlLanes;
+use crate::actors::router::{
+    AttachTerminalRequest, OutboundStream, OutputReceiver, RouterHandle, RouterMsg,
+    StreamCloseGuard, TerminalStream,
 };
+use crate::terminals::registry::{DetachReason, TerminalRegistry, ViewerTicket};
 use axum::{
     extract::{
         Path, Query, State as AxumState,
@@ -20,10 +24,18 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
 };
 use redoor_core::websocket::WebSocketTimeouts;
-use redoor_protocol::wire::terminal::{TerminalClientMessage, TerminalServerMessage, TerminalSize};
+use redoor_protocol::{
+    ids::{RequestId, TerminalSessionId},
+    wire::{
+        ServerToAgent,
+        request::CommandError,
+        stream::StreamChunk,
+        terminal::{TerminalClientMessage, TerminalServerMessage, TerminalSize},
+    },
+};
 use serde::Deserialize;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Caps websocket frames on terminal sockets so one message cannot force a large allocation.
 const MAX_TERMINAL_MESSAGE_SIZE: usize = 1024 * 1024;
@@ -38,7 +50,7 @@ pub(crate) struct AttachQuery {
     cols: u16,
 }
 
-/// Upgrades a same-origin browser request and attaches it to an existing session.
+/// Upgrades a same-origin browser request and attaches it to a listed session.
 pub(crate) async fn attach_terminal_websocket_handler(
     Path(id): Path<String>,
     Query(query): Query<AttachQuery>,
@@ -57,46 +69,50 @@ pub(crate) async fn attach_terminal_websocket_handler(
         )
             .into_response();
     }
-    let session = match parse_session_id(&id).map(|id| state.terminals.get(id)) {
-        Ok(Some(session)) => session,
-        Ok(None) => return super::terminal_sessions::session_not_found().into_response(),
+    let id = match parse_session_id(&id) {
+        Ok(id) if state.terminals.contains(id) => id,
+        Ok(_) => return super::terminal_sessions::session_not_found().into_response(),
         Err(error) => return error.into_response(),
     };
     let timeouts = state.runtime.ws_timeouts;
+    let registry = state.terminals.clone();
+    let router = state.router_ref.clone();
     websocket
         .max_message_size(MAX_TERMINAL_MESSAGE_SIZE)
         .max_frame_size(MAX_TERMINAL_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_viewer(socket, session, size, timeouts))
+        .on_upgrade(move |socket| run_viewer(socket, registry, router, id, size, timeouts))
         .into_response()
 }
 
-/// Tells the session the viewer left, however the bridge ends.
+/// Tells the registry the viewer left, however the bridge ends.
 struct DetachGuard {
-    session: TerminalSessionHandle,
+    registry: TerminalRegistry,
+    id: TerminalSessionId,
     serial: u64,
 }
 
 impl Drop for DetachGuard {
     fn drop(&mut self) {
-        self.session.send_detached(SessionCommand::Detach {
-            serial: self.serial,
-        });
+        self.registry.detach(self.id, self.serial);
     }
 }
 
-/// Attaches and relays until the browser leaves or the session lets the viewer go.
+/// Becomes the session's viewer and relays between the browser and an attach stream on the
+/// agent until the browser leaves, the session lets the viewer go or the stream ends.
 async fn run_viewer(
     mut browser: WebSocket,
-    session: TerminalSessionHandle,
+    registry: TerminalRegistry,
+    router: RouterHandle,
+    id: TerminalSessionId,
     size: TerminalSize,
     timeouts: WebSocketTimeouts,
 ) {
-    let Ok(AttachedViewer {
+    let Some(ViewerTicket {
         serial,
-        frames,
+        agent_id,
         reason,
-        input,
-    }) = session.attach(size).await
+        ended,
+    }) = registry.attach(id)
     else {
         // Closed between the lookup and the attach.
         let _ = send_event(&mut browser, &TerminalServerMessage::Closed).await;
@@ -104,33 +120,68 @@ async fn run_viewer(
         return;
     };
     let _detach = DetachGuard {
-        session: session.clone(),
+        registry,
+        id,
         serial,
     };
-    let (sink, stream) = browser.split();
+    if let Some(event) = ended {
+        let _ = send_event(&mut browser, &event).await;
+        let _ = browser.close().await;
+        return;
+    }
+    let attached = router
+        .request(|reply| {
+            RouterMsg::AttachTerminal(AttachTerminalRequest {
+                agent_id: agent_id.clone(),
+                session: id,
+                size,
+                reply,
+            })
+        })
+        .await;
+    let Ok(Ok(terminal)) = attached else {
+        // The agent is away, such as while it reconnects after a server restart. Closing
+        // without an event makes the browser attach again, which works once it is back.
+        let _ = browser.close().await;
+        return;
+    };
+    let _close = StreamCloseGuard::new(router, agent_id, terminal.stream);
+    let TerminalStream {
+        stream,
+        output,
+        input,
+        events,
+    } = terminal;
+    let resizes = input.lease().link.lanes().clone();
+    let (ready, ready_rx) = watch::channel(false);
+    let (sink, source) = browser.split();
     tokio::select! {
-        () = forward_browser_to_session(stream, &session, serial, input) => {}
-        () = forward_session_to_browser(frames, reason, sink, timeouts) => {}
+        () = forward_browser_to_agent(source, &input, &resizes, stream, ready_rx) => {}
+        () = forward_agent_to_browser(output, events, reason, sink, timeouts, ready) => {}
     }
 }
 
 /// Relays keystrokes and validated resizes until the browser closes.
 ///
-/// Keystrokes wait for room in the session's input queue, which holds the browser back while
-/// the agent is slow, instead of buffering without bound.
-async fn forward_browser_to_session(
+/// Nothing is read before the agent's `ready`, because the agent routes input only once the
+/// attachment exists; keystrokes typed meanwhile wait in the socket. Sending waits for
+/// credit, which holds the browser back while the shell is slow instead of buffering.
+async fn forward_browser_to_agent(
     mut browser: SplitStream<WebSocket>,
-    session: &TerminalSessionHandle,
-    serial: u64,
-    mut input: Option<mpsc::Sender<InputChunk>>,
+    input: &OutboundStream,
+    resizes: &ControlLanes,
+    stream: RequestId,
+    mut ready: watch::Receiver<bool>,
 ) {
+    if ready.wait_for(|ready| *ready).await.is_err() {
+        return std::future::pending().await;
+    }
     while let Some(Ok(frame)) = browser.next().await {
         match frame {
             WsMessage::Binary(bytes) => {
-                let Some(queue) = &input else { continue };
-                if queue.send(InputChunk { serial, bytes }).await.is_err() {
-                    // The shell is gone; its exit event follows on the other direction.
-                    input = None;
+                if input.send_data(&bytes, false).await.is_err() {
+                    // The attachment is gone; its end reaches the browser the other way.
+                    return std::future::pending().await;
                 }
             }
             WsMessage::Text(text) => {
@@ -139,14 +190,11 @@ async fn forward_browser_to_session(
                 else {
                     return;
                 };
-                if size.validate().is_err()
-                    || session
-                        .send(SessionCommand::Resize { serial, size })
-                        .await
-                        .is_err()
-                {
+                if size.validate().is_err() {
                     return;
                 }
+                // Resizes go ahead of queued keystrokes, so a paste does not delay them.
+                resizes.try_priority_or_command(ServerToAgent::TerminalResize { stream, size });
             }
             WsMessage::Ping(_) | WsMessage::Pong(_) => {}
             WsMessage::Close(_) => return,
@@ -154,50 +202,83 @@ async fn forward_browser_to_session(
     }
 }
 
-/// What the session side produced for the browser.
+/// What the agent side produced for the browser.
 enum ViewerEvent {
     Released(Result<DetachReason, oneshot::error::RecvError>),
-    Frame(Option<ViewerFrame>),
+    Event(Option<TerminalServerMessage>),
+    Output(Option<Result<StreamChunk, CommandError>>),
     Keepalive,
 }
 
-/// Relays the session's frames until the session ends or lets this viewer go.
+/// Relays the attach stream until it ends or the registry lets this viewer go.
 ///
 /// The release reason is watched next to every send, so a takeover or close interrupts a
 /// send stuck on a slow browser, and the browser always learns why it was let go instead of
-/// seeing a dropped connection it would answer by attaching again.
-async fn forward_session_to_browser(
-    mut frames: mpsc::Receiver<ViewerFrame>,
+/// seeing a dropped connection it would answer by attaching again. A stream that ends
+/// without a final event (the agent disconnected) closes the socket without one, so the
+/// browser does attach again.
+async fn forward_agent_to_browser(
+    mut output: OutputReceiver,
+    events: mpsc::Receiver<TerminalServerMessage>,
     mut reason: oneshot::Receiver<DetachReason>,
     mut browser: SplitSink<WebSocket, WsMessage>,
     timeouts: WebSocketTimeouts,
+    ready: watch::Sender<bool>,
 ) {
+    let mut events = Some(events);
+    // The shell's final event; it is sent once the output before it has been relayed.
+    let mut ending = None;
     let mut keepalive = timeouts.keepalive_interval();
     loop {
         let next = tokio::select! {
             biased;
             released = &mut reason => ViewerEvent::Released(released),
-            frame = frames.recv() => ViewerEvent::Frame(frame),
+            event = recv_event(&mut events) => ViewerEvent::Event(event),
+            chunk = output.recv() => ViewerEvent::Output(chunk),
             _ = keepalive.tick() => ViewerEvent::Keepalive,
         };
         let message = match next {
-            ViewerEvent::Released(Ok(reason)) => {
-                return finish(&mut browser, &reason.message()).await;
+            ViewerEvent::Released(released) => {
+                let event = released.map_or(TerminalServerMessage::Closed, DetachReason::message);
+                return finish(&mut browser, Some(&event)).await;
             }
-            // The session ended without a word, which only happens when it is gone.
-            ViewerEvent::Released(Err(_)) | ViewerEvent::Frame(None) => {
-                return finish(&mut browser, &TerminalServerMessage::Closed).await;
+            ViewerEvent::Event(None) => {
+                // A closed channel returns at once on every poll, so the arm turns off.
+                events = None;
+                continue;
             }
-            ViewerEvent::Frame(Some(ViewerFrame::Output(bytes))) => WsMessage::Binary(bytes),
-            ViewerEvent::Frame(Some(ViewerFrame::Event(event))) => {
-                if matches!(
-                    event,
-                    TerminalServerMessage::Exit { .. } | TerminalServerMessage::Error { .. }
-                ) {
-                    // The final event follows the last output; the viewer has seen it all.
-                    return finish(&mut browser, &event).await;
+            ViewerEvent::Event(Some(TerminalServerMessage::Ready)) => {
+                let _ = ready.send(true);
+                event_message(&TerminalServerMessage::Ready)
+            }
+            ViewerEvent::Event(Some(
+                event @ (TerminalServerMessage::Exit { .. } | TerminalServerMessage::Error { .. }),
+            )) => {
+                ending = Some(event);
+                continue;
+            }
+            // Server-only messages from an agent mean nothing.
+            ViewerEvent::Event(Some(_)) => continue,
+            ViewerEvent::Output(Some(Ok(chunk))) if chunk.is_last => {
+                if !chunk.data.is_empty()
+                    && browser
+                        .send(WsMessage::Binary(chunk.data.into()))
+                        .await
+                        .is_err()
+                {
+                    return;
                 }
-                event_message(&event)
+                // The event travels before FIN, so it has been received by now.
+                if ending.is_none()
+                    && let Some(events) = &mut events
+                {
+                    ending = events.try_recv().ok();
+                }
+                return finish(&mut browser, ending.as_ref()).await;
+            }
+            ViewerEvent::Output(Some(Ok(chunk))) => WsMessage::Binary(chunk.data.into()),
+            ViewerEvent::Output(Some(Err(_)) | None) => {
+                return finish(&mut browser, ending.as_ref()).await;
             }
             ViewerEvent::Keepalive => WsMessage::Ping(bytes::Bytes::new()),
         };
@@ -205,13 +286,23 @@ async fn forward_session_to_browser(
             biased;
             released = &mut reason => {
                 let event = released.map_or(TerminalServerMessage::Closed, DetachReason::message);
-                return finish(&mut browser, &event).await;
+                return finish(&mut browser, Some(&event)).await;
             }
             sent = browser.send(message) => sent,
         };
         if sent.is_err() {
             return;
         }
+    }
+}
+
+/// Next lifecycle event; never resolves once the channel is gone.
+async fn recv_event(
+    events: &mut Option<mpsc::Receiver<TerminalServerMessage>>,
+) -> Option<TerminalServerMessage> {
+    match events {
+        Some(events) => events.recv().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -226,11 +317,16 @@ async fn send_event(socket: &mut WebSocket, event: &TerminalServerMessage) -> bo
     socket.send(event_message(event)).await.is_ok()
 }
 
-/// Sends the last event and closes the socket, bounded so a stalled browser cannot keep the
-/// bridge alive.
-async fn finish(browser: &mut SplitSink<WebSocket, WsMessage>, event: &TerminalServerMessage) {
+/// Sends the last event, if there is one, and closes the socket, bounded so a stalled
+/// browser cannot keep the bridge alive.
+async fn finish(
+    browser: &mut SplitSink<WebSocket, WsMessage>,
+    event: Option<&TerminalServerMessage>,
+) {
     let _ = tokio::time::timeout(FINAL_SEND_TIMEOUT, async {
-        browser.send(event_message(event)).await?;
+        if let Some(event) = event {
+            browser.send(event_message(event)).await?;
+        }
         browser.send(WsMessage::Close(None)).await
     })
     .await;

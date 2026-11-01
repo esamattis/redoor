@@ -8,6 +8,7 @@ import {
     waitForValue,
 } from "./test-utils";
 import {
+    TEST_TERMINAL_SIZE,
     TerminalViewer,
     createTerminalSession,
     openTerminal,
@@ -30,7 +31,7 @@ let testAgent: Agent;
 
 let agentPid: number;
 
-/** The router's cap on terminal streams per agent connection. */
+/** The agent's cap on running shells. */
 const MAX_TERMINALS_PER_AGENT = 8;
 
 beforeAll(async () => {
@@ -338,10 +339,10 @@ describe("terminal sessions", () => {
         }
 
         await api.deleteTerminalSession(first.id);
-        // Closing a session frees its slot.
+        // Closing a session frees its slot; the shell runs once the create answers.
         expect(
             (await createTerminalSession(api, testAgent, agentCwd)).status.type,
-        ).toBe("starting");
+        ).toBe("running");
     });
 
     it("answers unknown or malformed session ids with 404", async () => {
@@ -401,16 +402,85 @@ describe("terminal sessions", () => {
         });
     });
 
+    it("keeps the shell and its screen across a server restart", async () => {
+        const { session, viewer } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
+        );
+
+        const pid = await shellPid(viewer, "BEFORE_RESTART");
+        const bootId = (await api.getServerInfo()).boot_id;
+        await api.restartServer();
+        await waitForValue({
+            timeoutMs: 20_000,
+            description: "restarted server",
+            predicate: async () => {
+                const info = await api.getServerInfo().catch(() => undefined);
+
+                return info !== undefined && info.boot_id !== bootId
+                    ? true
+                    : undefined;
+            },
+        });
+
+        // The restarted server lists the session from its saved index, so browser tabs stay.
+        expect(
+            (await api.listTerminalSessions()).sessions.map(
+                (listed) => listed.id,
+            ),
+        ).toContain(session.id);
+
+        await waitForValue({
+            timeoutMs: 30_000,
+            description: "agent reconnected to the restarted server",
+            predicate: async () =>
+                (await api.listAgents()).find(
+                    (agent) =>
+                        agent.id === testAgent.id &&
+                        agent.status === "connected",
+                ),
+        });
+
+        const reattached = new TerminalViewer(
+            api,
+            session.id,
+            TEST_TERMINAL_SIZE,
+        );
+
+        await reattached.waitForReady();
+        // The agent kept the screen, so the output from before the restart is restored.
+        expect(
+            await reattached.waitForOutput(`__PID_BEFORE_RESTART_${pid}__`),
+        ).toBeTruthy();
+        // It is the same shell, which kept running while the server restarted.
+        expect(await shellPid(reattached, "AFTER_RESTART")).toBe(pid);
+    }, 60_000);
+
     // Last: it stops the suite's agent.
-    it("marks running sessions exited when the agent disconnects", async () => {
+    it("keeps sessions listed while their agent is away", async () => {
         const { session } = await openTerminal(api, testAgent, agentCwd);
         processManager.kill(agentPid);
-
-        const listed = await waitForListedStatus(session.id, "exited");
-        // The session stays, with the reason, so its tab can show why the shell ended.
-        expect(listed.status).toEqual({
-            type: "exited",
-            message: "Agent disconnected",
+        await waitForValue({
+            description: "agent disconnected",
+            predicate: async () =>
+                (await api.listAgents()).find(
+                    (agent) =>
+                        agent.id === testAgent.id &&
+                        agent.status !== "connected",
+                ),
         });
+
+        const listed = (await api.listTerminalSessions()).sessions.find(
+            (entry) => entry.id === session.id,
+        );
+
+        // The shell may come back with its agent, so its tab stays as it was.
+        expect(listed?.status).toEqual({ type: "running" });
+
+        const viewer = new TerminalViewer(api, session.id, TEST_TERMINAL_SIZE);
+        await viewer.waitForClose();
+        // Without an event the browser treats it as a dropped connection and retries.
+        expect(viewer.events).toEqual([]);
     });
 });

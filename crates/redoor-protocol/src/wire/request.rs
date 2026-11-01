@@ -28,12 +28,14 @@ use crate::api::git::worktree_status::GitWorktreeStatusResponse;
 use crate::api::search::{CaseSensitivity, ContentGrepResponse, FileSearchResponse};
 use crate::api::transfers::CopyExistingMode;
 use crate::api::trash::TrashListResponse;
+use crate::ids::TerminalSessionId;
 use crate::wire::command::{
     Command, CommandErrorKind, EchoResult, GitRevisionStatResult, LsDirectoryResult, LsFileResult,
     MoveMetadataResult, MoveSourceIdentity,
 };
 use crate::wire::exec::{ExecEvent, ExecRequest};
 use crate::wire::log::Level;
+use crate::wire::terminal::{TerminalSessionRecord, TerminalSize};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -606,6 +608,27 @@ pub struct HashSegments {
     pub expected_identity: Option<MoveSourceIdentity>,
 }
 
+/// Starts a shell that belongs to the agent process rather than to a connection, so it keeps
+/// running across server restarts and reconnects until it is closed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateTerminal {
+    /// Chosen by the server, so its index knows the id before the agent answers.
+    pub id: TerminalSessionId,
+    /// Absolute directory the shell starts in.
+    pub cwd: String,
+    /// Tab title, kept by the agent so a restarted server can list the session again.
+    pub title: String,
+    /// Per-device tab number, kept for the same reason.
+    pub number: u32,
+    pub size: TerminalSize,
+}
+
+/// Kills a session's shell and forgets the session; answers whether it existed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseTerminal {
+    pub id: TerminalSessionId,
+}
+
 /// Ties each request struct to its [`Command`] variant and its response type.
 macro_rules! agent_requests {
     ($($request:ident => $response:ty),* $(,)?) => {
@@ -679,6 +702,8 @@ agent_requests! {
     SetLoggingLevel => Level,
     Restart => (),
     SelfExec => (),
+    CreateTerminal => TerminalSessionRecord,
+    CloseTerminal => bool,
 }
 
 #[cfg(test)]

@@ -3,4 +3,4 @@
 /**
  * Where a terminal session is in its life, so a restored tab knows whether it can type.
  */
-export type TerminalSessionStatus = { "type": "starting" } | { "type": "running" } | { "type": "exited", message: string, };
+export type TerminalSessionStatus = { "type": "running" } | { "type": "exited", message: string, };

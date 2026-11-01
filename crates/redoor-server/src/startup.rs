@@ -377,6 +377,14 @@ impl ServerRuntime {
             runtime.paths.data_dir()?,
         );
         let vault = crate::vault::VaultStore::new(runtime.paths.clone());
+        let (terminal_store, stored_terminals) =
+            crate::terminals::store::SessionStore::open(runtime.paths.data_dir()?).await;
+        let terminals = crate::terminals::registry::TerminalRegistry::new(
+            crate::http::agent_client::AgentClient::new(router.clone()),
+            crate::terminals::TerminalsChangedNotifier::new(router.clone()),
+            terminal_store,
+            stored_terminals,
+        );
         let state = ServerState {
             vault,
             runtime,
@@ -384,7 +392,7 @@ impl ServerRuntime {
             launcher: launcher.clone(),
             router_ref: router.clone(),
             agents: crate::http::agent_client::AgentClient::new(router.clone()),
-            terminals: crate::terminals::registry::TerminalRegistry::new(router.clone()),
+            terminals,
             transfers: transfer_service,
             watchdog_registry: watchdogs.clone(),
             one_time_token_registry: OneTimeTokenRegistry::new(),

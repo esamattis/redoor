@@ -1,4 +1,5 @@
-//! Server-owned terminal sessions: shells that outlive the browser socket viewing them.
+//! Terminal sessions: shells that run in the agent process and outlive both the browser socket
+//! viewing them and the server relaying it.
 
 use crate::ids::{AgentId, TerminalSessionId, UnixTimestampMillis};
 use crate::wire::terminal::TerminalSize;
@@ -10,9 +11,8 @@ use ts_rs::TS;
 #[ts(export)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum TerminalSessionStatus {
-    /// The agent is still starting the PTY.
-    Starting,
-    /// The shell runs and accepts input.
+    /// The shell runs and accepts input, as far as the server knows: while the agent is
+    /// disconnected its sessions keep the status they last had.
     Running,
     /// The shell is gone. The last screen is kept so a reloaded tab can show why it ended.
     Exited { message: String },

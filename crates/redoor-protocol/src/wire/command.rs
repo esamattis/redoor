@@ -64,6 +64,8 @@ pub enum Command {
     SetLoggingLevel(request::SetLoggingLevel),
     Restart(request::Restart),
     SelfExec(request::SelfExec),
+    CreateTerminal(request::CreateTerminal),
+    CloseTerminal(request::CloseTerminal),
 }
 
 impl Command {
@@ -230,6 +232,10 @@ impl Command {
             Self::SetLoggingLevel(request) => format!("SetLoggingLevel level={}", request.level),
             Self::Restart(_) => "Restart".to_string(),
             Self::SelfExec(request) => format!("SelfExec path={}", request.path),
+            Self::CreateTerminal(request) => {
+                format!("CreateTerminal id={} cwd={}", request.id, request.cwd)
+            }
+            Self::CloseTerminal(request) => format!("CloseTerminal id={}", request.id),
         }
     }
 }

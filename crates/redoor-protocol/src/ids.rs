@@ -153,7 +153,7 @@ impl fmt::Display for SocketId {
     }
 }
 
-/// Identifies one server-owned terminal session across REST, the attach websocket and
+/// Identifies one terminal session across REST, the attach websocket, the agent that runs it and
 /// every browser window that shows it as a tab.
 ///
 /// A random v4 UUID because the id is the only handle to a running shell: it must not be

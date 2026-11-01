@@ -89,7 +89,7 @@ jobs:
           cache-key: ${{ matrix.target }}
           build-warnings: warn
 
-      # Zig builds libghostty-vt, the server's headless terminal emulator. The version comes from
+      # Zig builds libghostty-vt, the agent's headless terminal emulator. The version comes from
       # mise.toml so CI and local builds share one pin. The Android build also needs the NDK,
       # which Ghostty finds through ANDROID_NDK_HOME, preset on GitHub's Ubuntu runners.
       - name: Install Zig

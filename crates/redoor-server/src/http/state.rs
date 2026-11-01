@@ -26,7 +26,8 @@ pub(crate) struct ServerState {
     pub(crate) router_ref: actors::router::RouterHandle,
     /// Typed one-shot agent commands with their deadlines and cancel-on-abandon behavior.
     pub(crate) agents: super::agent_client::AgentClient,
-    /// Server-owned terminal sessions, which outlive the browser sockets viewing them.
+    /// The index of terminal sessions, which run in the agents and outlive both the browser
+    /// sockets viewing them and server restarts.
     pub(crate) terminals: crate::terminals::registry::TerminalRegistry,
     /// Starts copies and moves for REST and MCP alike.
     pub(crate) transfers: super::services::transfer::TransferService,

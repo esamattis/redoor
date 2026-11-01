@@ -20,6 +20,7 @@ grep-regex.workspace = true
 ignore.workspace = true
 jiff.workspace = true
 libc.workspace = true
+libghostty-vt.workspace = true
 mime_guess.workspace = true
 nix.workspace = true
 nucleo-matcher.workspace = true
@@ -36,6 +37,10 @@ tokio-tungstenite.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true
 url.workspace = true
+
+[build-dependencies]
+# Assembles the TLS alignment object that arm64 Android builds need; see build.rs.
+cc.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 mountpoints.workspace = true

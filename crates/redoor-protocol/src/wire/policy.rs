@@ -183,7 +183,9 @@ impl Command {
             | Self::GetLoggingLevel(_)
             | Self::SetLoggingLevel { .. }
             | Self::Restart(_)
-            | Self::SelfExec { .. } => CommandPolicy::CONTROL,
+            | Self::SelfExec { .. }
+            | Self::CreateTerminal(_)
+            | Self::CloseTerminal(_) => CommandPolicy::CONTROL,
         }
     }
 }
@@ -261,11 +263,13 @@ mod tests {
             Command::GitWorktreeStatus(request::GitWorktreeStatus { .. }) => 51,
             Command::GitDirectoryEntries(request::GitDirectoryEntries { .. }) => 52,
             Command::GitFileBases(request::GitFileBases { .. }) => 53,
+            Command::CreateTerminal(request::CreateTerminal { .. }) => 54,
+            Command::CloseTerminal(request::CloseTerminal { .. }) => 55,
         }
     }
 
     /// Number of variants covered by `variant_index`.
-    const VARIANT_COUNT: usize = 54;
+    const VARIANT_COUNT: usize = 56;
 
     /// Builds one instance of every command variant for table-wide policy checks.
     fn every_command() -> Vec<Command> {
@@ -469,6 +473,16 @@ mod tests {
             Command::SetLoggingLevel(request::SetLoggingLevel { level: Level::Info }),
             Command::Restart(request::Restart {}),
             Command::SelfExec(request::SelfExec { path: path() }),
+            Command::CreateTerminal(request::CreateTerminal {
+                id: crate::ids::TerminalSessionId::new(),
+                cwd: path(),
+                title: "t".to_string(),
+                number: 1,
+                size: crate::wire::terminal::TerminalSize::new(24, 80).unwrap(),
+            }),
+            Command::CloseTerminal(request::CloseTerminal {
+                id: crate::ids::TerminalSessionId::new(),
+            }),
         ]
     }
 

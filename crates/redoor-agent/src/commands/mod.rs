@@ -461,6 +461,16 @@ impl RunCommand for Command {
                 outcome: request::Restart::encode(Ok(())),
                 path: None,
             },
+            Command::CreateTerminal(request) => {
+                Reply::of::<request::CreateTerminal>(ctx.services.terminal_sessions.create(request))
+            }
+            Command::CloseTerminal(request::CloseTerminal { id }) => {
+                Reply::of::<request::CloseTerminal>(Ok(ctx
+                    .services
+                    .terminal_sessions
+                    .close(id)
+                    .await))
+            }
             Command::SelfExec(request::SelfExec { path }) => match host::self_exec(path) {
                 Ok(path) => Reply::Reexec {
                     outcome: request::SelfExec::encode(Ok(())),

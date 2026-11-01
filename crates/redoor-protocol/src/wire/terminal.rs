@@ -1,5 +1,7 @@
 //! Terminal sizes and lifecycle messages for interactive PTY sessions on agents.
 
+use crate::api::terminals::TerminalSessionStatus;
+use crate::ids::{TerminalSessionId, UnixTimestampMillis};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use ts_rs::TS;
@@ -48,11 +50,28 @@ pub enum TerminalClientMessage {
     Resize { size: TerminalSize },
 }
 
+/// One terminal session as the agent that runs it reports it.
+///
+/// The agent owns the shell and keeps this record next to it, so a restarted server learns
+/// every session again, with the metadata its tabs show, as soon as the agent reconnects.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSessionRecord {
+    pub id: TerminalSessionId,
+    /// Directory the shell started in.
+    pub cwd: String,
+    /// Tab title chosen by the creating window.
+    pub title: String,
+    /// Per-device tab number.
+    pub number: u32,
+    pub created_at: UnixTimestampMillis,
+    pub status: TerminalSessionStatus,
+}
+
 /// Lifecycle notifications sent from the agent terminal to the browser.
 ///
 /// `Ready`, `Exit` and `Error` come from the agent. `TakenOver` and `Closed` are only ever
-/// sent by the server to an attached browser, because the server owns the session and
-/// decides who views it; an agent sending them is ignored.
+/// sent by the server to an attached browser, because the server decides which browser views
+/// a session; an agent sending them is ignored.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export)]
