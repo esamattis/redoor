@@ -12,4 +12,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 ts-rs.workspace = true
 getrandom.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
 uuid.workspace = true

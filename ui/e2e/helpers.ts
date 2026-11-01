@@ -1,3 +1,4 @@
+import { createHmac, randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -337,6 +338,13 @@ const AGENT_TOKEN = "test-agent-token";
 export function upgradeWithProtocol(protocol: string, version: string) {
     const url = new URL("/api/v1/agent/ws", WEB_BASE_URL);
 
+    // The server checks the token proof before the protocol, as in `redoor_protocol::wire::agent_auth`.
+    const nonce = randomBytes(32).toString("hex");
+
+    const proof = createHmac("sha256", AGENT_TOKEN)
+        .update(`redoor agent upgrade\n${nonce}`)
+        .digest("hex");
+
     return new Promise<number>((resolve, reject) => {
         const request = http.request(url, {
             headers: {
@@ -346,7 +354,8 @@ export function upgradeWithProtocol(protocol: string, version: string) {
                 "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
                 "Sec-WebSocket-Protocol": protocol,
                 "X-Redoor-Agent-Version": version,
-                Authorization: `Bearer ${AGENT_TOKEN}`,
+                "X-Redoor-Agent-Nonce": nonce,
+                "X-Redoor-Agent-Proof": proof,
             },
         });
 

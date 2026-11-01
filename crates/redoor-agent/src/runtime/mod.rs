@@ -750,7 +750,8 @@ impl AgentRuntime {
 
     /// Opens a websocket connection and wires the connection tasks into the runtime channels.
     ///
-    /// A refusal that only an operator can fix (wrong token, incompatible protocol) ends a
+    /// A refusal that only an operator can fix (wrong token, a server that cannot prove the
+    /// token, incompatible protocol) ends a
     /// supervised agent, whose owner shows the error and keeps restarting it. A standalone
     /// agent logs the error and keeps retrying at the slowest pace instead, so it connects
     /// once the token or the server is fixed without anyone restarting it.
@@ -769,19 +770,21 @@ impl AgentRuntime {
                 .connect_authenticated(self.connection.server_url(), &self.profile.token),
         )
         .await;
-        let ws_stream = match connection_result {
+        let connected = match connection_result {
             Ok(Ok(connected)) => connected,
+            // The reason is in the message too: line logs omit error details, and an operator
+            // must see whether the token is wrong or the server is not the agent's own.
             Ok(Err(error)) if error.needs_operator() && self.is_supervised() => {
                 log_error!(
                     anyhow::Error::new(error),
-                    "Server refused the agent connection; leaving the retry to the supervisor"
+                    "Server refused the agent connection: {error}; leaving the retry to the supervisor"
                 );
                 return Some(AgentExit::Failure);
             }
             Ok(Err(error)) if error.needs_operator() => {
                 log_error!(
                     anyhow::Error::new(error),
-                    "Server refused the agent connection. Retrying in the background until it is fixed"
+                    "Server refused the agent connection: {error}. Retrying in the background until it is fixed"
                 );
                 self.backoff.saturate();
                 self.schedule_reconnect(handle, "Server refused the agent connection");
@@ -811,7 +814,7 @@ impl AgentRuntime {
             self.connection.server_url()
         );
 
-        let (write, read) = ws_stream.split();
+        let (write, read) = connected.socket.split();
         let (control_tx, control_rx) = mpsc::channel::<OutboundFrame>(CONTROL_QUEUE_CAPACITY);
         let (interactive_tx, interactive_rx) = mpsc::channel(INTERACTIVE_QUEUE_CAPACITY);
         let (bulk_tx, bulk_rx) = mpsc::channel(BULK_QUEUE_CAPACITY);
@@ -862,6 +865,7 @@ impl AgentRuntime {
         let hello = AgentToServer::Hello {
             agent_id: self.profile.agent_id.clone(),
             agent_name: self.profile.agent_name.clone(),
+            token_proof: connected.hello_proof.as_str().to_string(),
             identity: Box::new(AgentIdentity {
                 os: host.os,
                 arch: host.arch,

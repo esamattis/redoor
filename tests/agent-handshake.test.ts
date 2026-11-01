@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import { WebSocketServer } from "ws";
 import { z } from "zod";
 
 import type { ApiClient } from "#ui/api-client";
@@ -6,10 +7,13 @@ import {
     AGENT_PROTOCOL,
     FakeAgent,
     FakeAgentRejectedError,
+    helloFrame,
+    tokenProof,
     upgradeAgentSocket,
 } from "./fake-agent";
 import {
     generateDeviceId,
+    TEST_AGENT_TOKEN,
     ProcessManager,
     TempFileManager,
     startServerAndAgent,
@@ -18,6 +22,9 @@ import {
 } from "./test-utils";
 
 const AGENT_NAME = "handshake-agent";
+
+/** Port of a listening TCP server's address. */
+const tcpAddressSchema = z.object({ port: z.number().int().positive() });
 
 /** Body of a `426 Upgrade Required` answer. */
 const protocolMismatchSchema = z.object({
@@ -231,6 +238,105 @@ describe("agent websocket handshake", () => {
         // An unidentified socket must not stay open to retry other frames.
         await closed;
         await logged;
+    });
+
+    it("closes a socket whose hello does not prove this connection's nonces", async () => {
+        const agentsBefore = (await api.listAgents()).length;
+        // The fake agent checks the server's proof of the token while upgrading.
+        const outcome = await upgradeAgentSocket({ serverPort });
+
+        if (outcome.kind !== "open") {
+            throw new Error(`upgrade refused with ${outcome.status}`);
+        }
+
+        const closed = new Promise<void>((resolve) =>
+            outcome.socket.once("close", () => resolve()),
+        );
+
+        const logged = waitForLogMessage(
+            serverProcess(),
+            /Closing agent socket whose hello does not prove the token/,
+        );
+
+        // A replayed upgrade request only has the proof of the handshake it was captured from.
+        const otherHandshake = tokenProof(
+            TEST_AGENT_TOKEN,
+            "redoor agent hello",
+            ["ab".repeat(32), "cd".repeat(32)],
+        );
+
+        outcome.socket.send(
+            JSON.stringify(
+                helloFrame({ agentName: "handshake-replayed" }, otherHandshake),
+            ),
+        );
+
+        // Without the proof the socket cannot speak for any agent.
+        await closed;
+        await logged;
+        // The agent never registered.
+        expect((await api.listAgents()).length).toBe(agentsBefore);
+    });
+
+    it("keeps a standalone agent away from a server that cannot prove the token", async () => {
+        const upgradeHeaders: Record<string, string | string[] | undefined>[] =
+            [];
+
+        let framesReceived = 0;
+
+        // Accepts every upgrade without the token, like a wrong or fraudulent server would.
+        const fraudulent = new WebSocketServer({
+            host: "127.0.0.1",
+            port: 0,
+            handleProtocols: () => AGENT_PROTOCOL,
+        });
+
+        onTestFinished(
+            () =>
+                new Promise<void>((resolve) =>
+                    fraudulent.close(() => resolve()),
+                ),
+        );
+        fraudulent.on("connection", (socket, request) => {
+            upgradeHeaders.push(request.headers);
+            socket.on("message", () => {
+                framesReceived += 1;
+            });
+        });
+        await new Promise<void>((resolve) =>
+            fraudulent.once("listening", () => resolve()),
+        );
+        const { port } = tcpAddressSchema.parse(fraudulent.address());
+
+        const agentPid = processes.spawnAgent({
+            wsAddress: `ws://127.0.0.1:${port}/api/v1/agent/ws`,
+            name: "handshake-fraudulent-server",
+            cwd: tempFiles.tempDirectory({ suffix: "-fraudulent-server" }),
+        });
+
+        onTestFinished(() => processes.killAndWait(agentPid));
+
+        await waitForValue({
+            description: "the agent refusing the unproven server",
+            predicate: async () =>
+                processes
+                    .getStdout(agentPid)
+                    .includes("did not prove it knows the agent token")
+                    ? true
+                    : undefined,
+        });
+
+        // The agent did reach the server, so the refusal came from the missing proof.
+        expect(upgradeHeaders.length).toBeGreaterThan(0);
+        // The fraudulent server never learned the token.
+        expect(JSON.stringify(upgradeHeaders)).not.toContain(TEST_AGENT_TOKEN);
+        expect(upgradeHeaders[0]?.authorization).toBeUndefined();
+        // The agent sent no hello, so the server learned nothing and got no agent to command.
+        expect(framesReceived).toBe(0);
+        // A wrong server URL cannot fix itself, so the agent keeps retrying slowly.
+        expect(processes.getStdout(agentPid)).toContain(
+            "Retrying in the background until it is fixed",
+        );
     });
 
     it("lets a fake agent run commands over the authenticated connection", async () => {

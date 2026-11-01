@@ -1,25 +1,28 @@
 //! The agent websocket endpoint: authentication and protocol negotiation at upgrade time.
 //!
-//! Both checks happen before the upgrade is accepted, so a client with a wrong token or an
-//! incompatible protocol never gets a socket and the session actor only ever sees
-//! authenticated agents that speak [`PROTOCOL`].
+//! Both checks happen before the upgrade is accepted, so a client without the token or with an
+//! incompatible protocol never gets a socket and the session actor only ever sees agents that
+//! proved the token and speak [`PROTOCOL`]. The answer proves the token back to the agent, and
+//! the session finishes the proof with the `hello` (see [`redoor_protocol::wire::agent_auth`]).
 
 use crate::actors;
 use axum::{
     Json,
     extract::{ConnectInfo, State as AxumState, ws::WebSocketUpgrade},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use redoor_core::log;
 use redoor_protocol::ids::SocketId;
+use redoor_protocol::wire::agent_auth::{
+    AGENT_NONCE_HEADER, AGENT_PROOF_HEADER, AgentTokenKey, HandshakeNonce, HandshakeNonces,
+    SERVER_NONCE_HEADER, SERVER_PROOF_HEADER,
+};
 use redoor_protocol::wire::handshake::{
     AGENT_VERSION_HEADER, PROTOCOL, ProtocolMismatchResponse, offered_protocols,
 };
 use redoor_protocol::wire::log::Level;
-use sha2::{Digest, Sha256};
 use std::net::SocketAddr;
-use subtle::ConstantTimeEq;
 
 use super::state::ServerState;
 
@@ -28,21 +31,17 @@ use super::state::ServerState;
 /// as JSON) or a large listing; anything beyond this is refused before it is buffered, so one
 /// misbehaving agent cannot make the server hold an arbitrarily large message.
 const MAX_AGENT_MESSAGE_SIZE: usize = 32 * 1024 * 1024;
-/// Constant-time string equality so invalid tokens do not leak length via timing.
-fn constant_time_eq(left: &str, right: &str) -> bool {
-    let left_digest = Sha256::digest(left.as_bytes());
-    let right_digest = Sha256::digest(right.as_bytes());
-    bool::from(left_digest.ct_eq(&right_digest))
+
+/// One header of the upgrade request as text.
+fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name)?.to_str().ok()
 }
 
-/// Extracts the `Authorization: Bearer` credential of an upgrade request.
-pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(header::AUTHORIZATION)?
-        .to_str()
-        .ok()?
-        .strip_prefix("Bearer ")
-        .map(str::to_string)
+/// The agent's nonce, when the upgrade request proves the token over it.
+fn proven_agent_nonce(headers: &HeaderMap, key: &AgentTokenKey) -> Option<HandshakeNonce> {
+    let nonce = HandshakeNonce::parse(header_text(headers, AGENT_NONCE_HEADER)?)?;
+    let proof = header_text(headers, AGENT_PROOF_HEADER)?;
+    key.upgrade_proof(&nonce).matches(proof).then_some(nonce)
 }
 
 /// The subprotocols an upgrade request offers.
@@ -101,33 +100,38 @@ fn protocol_mismatch(state: &ServerState, remote: SocketAddr, headers: &HeaderMa
 
 /// Route: `GET /api/v1/agent/ws`
 ///
-/// `401` for a missing or wrong token (checked first, so unauthenticated clients cannot fill
-/// the mismatch list), `426` for a missing or unknown protocol, otherwise the upgrade echoing
-/// [`PROTOCOL`].
+/// `401` when the request does not prove the token (checked first, so unauthenticated clients
+/// cannot fill the mismatch list), `426` for a missing or unknown protocol, otherwise the
+/// upgrade echoing [`PROTOCOL`] with the server's nonce and its proof of the token.
 pub(crate) async fn agent_websocket_handler(
     ws: WebSocketUpgrade,
     ConnectInfo(remote): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     AxumState(state): AxumState<ServerState>,
 ) -> Response {
-    let authenticated = bearer_token(&headers)
-        .is_some_and(|token| constant_time_eq(&token, state.auth.agent_token()));
-    if !authenticated {
+    let key = AgentTokenKey::new(state.auth.agent_token());
+    let Some(agent_nonce) = proven_agent_nonce(&headers, &key) else {
         log!(
             Level::Warning,
-            "Rejecting agent with a missing or invalid token: remote={}, agent_version={}",
+            "Rejecting agent with a missing or invalid token proof: remote={}, agent_version={}",
             remote,
             agent_version(&headers).as_deref().unwrap_or("unknown")
         );
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     if !offers_protocol(&headers) {
         return protocol_mismatch(&state, remote, &headers);
     }
+    let nonces = HandshakeNonces {
+        agent: agent_nonce,
+        server: HandshakeNonce::generate(),
+    };
+    let hello_proof = key.hello_proof(&nonces);
     let router_ref = state.router_ref;
     let watchdog_registry = state.watchdog_registry;
     let timeouts = state.runtime.ws_timeouts;
-    ws.protocols([PROTOCOL])
+    let mut response = ws
+        .protocols([PROTOCOL])
         .max_message_size(MAX_AGENT_MESSAGE_SIZE)
         .max_frame_size(MAX_AGENT_MESSAGE_SIZE)
         .on_upgrade(move |socket| {
@@ -137,9 +141,22 @@ pub(crate) async fn agent_websocket_handler(
                 router_ref,
                 watchdog_registry,
                 timeouts,
+                hello_proof,
             )
         })
-        .into_response()
+        .into_response();
+    let answer = response.headers_mut();
+    answer.insert(SERVER_NONCE_HEADER, hex_header(nonces.server.as_str()));
+    answer.insert(
+        SERVER_PROOF_HEADER,
+        hex_header(key.server_proof(&nonces).as_str()),
+    );
+    response
+}
+
+/// Converts a nonce or proof, which the handshake always encodes as hex, into a header value.
+fn hex_header(hex: &str) -> HeaderValue {
+    HeaderValue::from_str(hex).expect("hex is a valid header value")
 }
 
 #[cfg(test)]
@@ -147,16 +164,31 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    /// Verifies only a well-formed bearer credential is extracted.
+    /// Verifies the upgrade is accepted only with a proof over the agent's own nonce.
     #[test]
-    fn bearer_token_requires_the_bearer_scheme() {
+    fn upgrade_requires_a_proof_of_the_token() {
+        let key = AgentTokenKey::new("token");
+        let nonce = HandshakeNonce::generate();
         let mut headers = HeaderMap::new();
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Bearer t"));
-        // The agent sends exactly this form.
-        assert_eq!(bearer_token(&headers).as_deref(), Some("t"));
-        headers.insert(header::AUTHORIZATION, HeaderValue::from_static("Basic t"));
-        // Other schemes must not be mistaken for an agent token.
-        assert_eq!(bearer_token(&headers), None);
+        headers.insert(AGENT_NONCE_HEADER, hex_header(nonce.as_str()));
+        headers.insert(
+            AGENT_PROOF_HEADER,
+            hex_header(key.upgrade_proof(&nonce).as_str()),
+        );
+        // A proof made with the server's token is accepted and yields the agent's nonce.
+        assert_eq!(proven_agent_nonce(&headers, &key), Some(nonce.clone()));
+        // A proof made with another token is refused.
+        assert_eq!(
+            proven_agent_nonce(&headers, &AgentTokenKey::new("other")),
+            None
+        );
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer token"),
+        );
+        headers.remove(AGENT_PROOF_HEADER);
+        // The plain bearer token of older agents no longer authenticates.
+        assert_eq!(proven_agent_nonce(&headers, &key), None);
     }
 
     /// Verifies negotiation accepts the server's protocol among several offers.
@@ -165,13 +197,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v2, redoor.v3"),
+            HeaderValue::from_static("redoor.v3, redoor.v4"),
         );
         // An agent may offer older protocols too; the server picks its own.
         assert!(offers_protocol(&headers));
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v4"),
+            HeaderValue::from_static("redoor.v5"),
         );
         // A different version alone must be refused.
         assert!(!offers_protocol(&headers));

@@ -4,6 +4,7 @@
 //! first frame (`hello`) names the agent, and every later frame is attributed to whoever owns the
 //! socket. Request ids are scoped to one connection and allocated by the server.
 
+pub mod agent_auth;
 pub mod command;
 pub mod exec;
 pub mod handshake;
@@ -133,6 +134,10 @@ pub enum AgentToServer {
     Hello {
         agent_id: AgentId,
         agent_name: String,
+        /// The agent's proof of the token over both handshake nonces (see
+        /// [`agent_auth`](crate::wire::agent_auth)). The upgrade proof alone is replayable, so
+        /// the session is only accepted once this one matches.
+        token_proof: String,
         /// Platform, account and binary; flattened so the JSON keeps its flat field names, and
         /// boxed because it dwarfs every other frame.
         #[serde(flatten)]
@@ -318,7 +323,7 @@ mod tests {
     /// Verifies flattening keeps the flat hello JSON that agents and fixtures send.
     #[test]
     fn hello_round_trips_its_flat_json() {
-        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false,"supports_upload_preconditions":true}"#;
+        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","token_proof":"p","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false,"supports_upload_preconditions":true}"#;
         let hello: AgentToServer = serde_json::from_str(json).unwrap();
         let AgentToServer::Hello {
             identity,

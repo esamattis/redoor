@@ -1,8 +1,9 @@
 //! Websocket upgrade contract between agents and the server.
 //!
 //! Authentication and protocol negotiation happen during the HTTP upgrade instead of in a first
-//! JSON frame, so an unauthenticated or incompatible client never gets a websocket at all and
-//! the server never has to hold state for one.
+//! JSON frame, so a client without the token or with an incompatible protocol never gets a
+//! websocket at all and the server never has to hold state for one. The `hello` only finishes
+//! the mutual token proof (see [`agent_auth`](super::agent_auth)).
 
 use crate::ids::UnixTimestampMillis;
 use serde::{Deserialize, Serialize};
@@ -10,7 +11,7 @@ use ts_rs::TS;
 
 /// Websocket subprotocol both sides must agree on; bumped whenever the frame contract changes
 /// incompatibly, so mismatched builds fail the upgrade instead of misreading each other.
-pub const PROTOCOL: &str = "redoor.v3";
+pub const PROTOCOL: &str = "redoor.v4";
 /// The single endpoint agents connect to.
 pub const AGENT_WS_PATH: &str = "/api/v1/agent/ws";
 /// Agent binary version sent with the upgrade, only for diagnosing rejected connections.

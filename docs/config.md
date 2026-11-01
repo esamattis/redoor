@@ -37,7 +37,7 @@ Unknown keys anywhere in the file (top level, `[server]`, `[agent]`, `[[agents]]
 
 | Key           | Type   | Required | Description                                                                                    |
 | ------------- | ------ | -------- | ---------------------------------------------------------------------------------------------- |
-| `agent_token` | string | yes      | Shared agent secret. Agents present it as a bearer token when they open their websocket (`/api/v1/agent/ws`). Must be non-empty. |
+| `agent_token` | string | yes      | Shared agent secret. When an agent opens its websocket (`/api/v1/agent/ws`), the agent and the server each prove they know it with an HMAC over fresh nonces; the token itself is never sent, and an agent refuses a server that cannot prove it. Use a long random value, since a short one can be guessed offline from captured proofs. Must be non-empty. |
 
 ```toml
 agent_token = "long-private-secret"

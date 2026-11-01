@@ -65,8 +65,11 @@ alignment drops below 64 again.
 The contract between all parties, with no runtime dependencies (no tokio).
 
 - `wire/`: the agent websocket protocol.
-  - `handshake` holds the upgrade contract: the `redoor.v3` subprotocol, the agent endpoint
+  - `handshake` holds the upgrade contract: the `redoor.v4` subprotocol, the agent endpoint
     path, the `426` body and the protocol-mismatch types the UI lists.
+  - `agent_auth` holds the mutual proof of the agent token (see "Mutual token proof"): the
+    nonces, the HMAC proofs of each step and their headers, shared by the agent and the
+    server so both compute them the same way.
   - `ServerToAgent` and `AgentToServer` are the JSON control envelopes, one per direction,
     so each side's `match` is exhaustive. No frame except `hello` carries an agent id: the
     authenticated connection is the identity.
@@ -409,7 +412,9 @@ fresh install only listens on loopback.
   `--insecure-tls` (`LocalServerEndpoint`). That loses nothing over the plain
   `ws://localhost` they use without TLS, because their traffic is on loopback or inside the
   SSH tunnel until it reaches the server. Insecure mode still verifies the handshake
-  signature, only the certificate's trust, name and dates are skipped.
+  signature, only the certificate's trust, name and dates are skipped. A server reached in
+  insecure mode still has to prove the agent token before the agent says `hello`, and never
+  learns the token itself (see "Mutual token proof").
 
 ## One connection per agent
 
@@ -559,16 +564,17 @@ sequenceDiagram
     participant S as Session actor
     participant R as Router
 
-    A->>H: GET /api/v1/agent/ws<br/>Authorization: Bearer token<br/>Sec-WebSocket-Protocol: redoor.v3
-    alt wrong or missing token
+    A->>H: GET /api/v1/agent/ws<br/>X-Redoor-Agent-Nonce: a, X-Redoor-Agent-Proof: HMAC(token, a)<br/>Sec-WebSocket-Protocol: redoor.v4
+    alt proof missing or made with another token
         H-->>A: 401 (no socket)
     else protocol not offered
         H-->>A: 426 + {server_protocol, server_version, message}
         Note over H: attempt kept in the mismatch list
     else accepted
-        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v3
-        A->>S: hello {agent_id, agent_name, identity, capabilities}
-        Note over S: any other first frame closes the socket
+        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v4<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
+        Note over A: a wrong or missing server proof drops the socket before hello
+        A->>S: hello {agent_id, agent_name, token_proof: HMAC(token, a, s), identity, capabilities}
+        Note over S: any other first frame, or a wrong token_proof, closes the socket
         alt managed agent the server has stopped
             S->>A: rejected {stopped, message}
             Note over S: the session flushes the frame and closes
@@ -588,12 +594,13 @@ sequenceDiagram
     end
 ```
 
-- **Authentication and negotiation happen during the HTTP upgrade.** An unauthenticated or
-  incompatible client never gets a socket, so no session state exists for it. The agent
-  treats `401` (wrong token) and `426` (other protocol version) as needing an operator: a
-  standalone agent logs a clear error and keeps retrying at the slowest backoff step, so it
-  connects once the token or the server is fixed; a supervised agent exits and leaves the
-  retry to its owner (see "Connection recovery").
+- **Authentication and negotiation happen during the HTTP upgrade.** A client without the
+  token or with an incompatible protocol never gets a socket, so no session state exists for
+  it. The `hello` only finishes the mutual token proof (see "Mutual token proof"). The agent
+  treats `401` (wrong token), a server that cannot prove the token and `426` (other protocol
+  version) as needing an operator: a standalone agent logs a clear error and keeps retrying
+  at the slowest backoff step, so it connects once the token or the server is fixed; a
+  supervised agent exits and leaves the retry to its owner (see "Connection recovery").
 - A refused protocol mismatch is remembered, so a standalone agent of another release shows
   up in the Devices view instead of only in its own logs. Managed local and SSH agents are
   always provisioned with the server's own binary, so they never mismatch. There is no
@@ -615,6 +622,47 @@ sequenceDiagram
   capability flag and no uncredited fallback.
 - On the agent side, each link has a **generation** number. Timers and tasks from a replaced
   connection carry the old generation and are ignored.
+
+### Mutual token proof
+
+The agent token never crosses the network. Each side proves it knows the token with an
+HMAC-SHA256 keyed with it, over a domain-separation label per step and fresh random nonces
+(`redoor-protocol::wire::agent_auth`):
+
+1. The upgrade request carries the agent's nonce `a` and `HMAC(token, "redoor agent upgrade", a)`.
+   The server answers `401` without it.
+2. The `101` answer carries the server's nonce `s` and `HMAC(token, "redoor server", a, s)`.
+   The agent checks it before it sends anything, and drops the socket otherwise.
+3. The `hello` carries `token_proof = HMAC(token, "redoor agent hello", a, s)`. The session
+   closes the socket before registering anything otherwise.
+
+Why it works this way:
+
+- **Agents refuse servers that do not know the token.** Before, the agent sent the token
+  as a bearer header, so any server it was pointed at (a typo, stale DNS, a spoofed address,
+  or anyone on a plain-HTTP or `insecure_tls` path) learned the token and could command the
+  agent. Now such a server gets neither the token nor a `hello`, and its commands are never
+  read. This works the same over plain HTTP, built-in HTTPS and behind a TLS reverse proxy,
+  because it does not depend on TLS reaching the redoor server.
+- **The agent proves itself first, in the upgrade.** That keeps the `401` before any socket
+  exists and keeps unauthenticated clients out of the mismatch list, and it means the server
+  never hands its proof to someone who does not hold the token. The first proof covers only
+  the agent's nonce, so a captured request can be replayed to get a socket; the `hello` proof
+  over the server's fresh nonce is what makes the replay useless, and the hello timeout bounds
+  how long such a socket lives.
+- **Each step has its own label,** so no proof can be reflected back as another step's.
+- **Limits.** The frames after the handshake are not bound to it, so without TLS an active
+  man in the middle can relay the proofs to the real server and then read and inject frames;
+  only end-to-end TLS with certificate checks stops that. The token is shared by every agent,
+  so whoever holds an agent's token can also pass as the server to other agents. A weak,
+  hand-picked token can be guessed offline from captured proofs; generated tokens are 256
+  random bits.
+- **Older agents** send the token as a bearer header and no proof, so this server answers
+  them `401`: a standalone one logs that the token was rejected and retries at the slowest
+  pace, and a supervised one exits to its owner. They do not show up in the mismatch list,
+  because authentication comes before protocol negotiation. Managed agents are provisioned
+  with the server's binary and are unaffected. A new agent pointed at an older server also
+  gets `401`, since that server still expects the bearer token.
 
 ## Device identity
 
@@ -2593,7 +2641,7 @@ own endpoints:
 |---|---|---|
 | Browser UI | `redoor_session` cookie from `POST /api/v1/login` or OIDC sign-in | REST API and browser websockets, full access, including the session-only routes |
 | `redoor remote` CLI, MCP clients, scripts | `redoor_at_...` access token (`Authorization: Bearer`) | REST API and `/mcp`, limited by permissions and a device scope |
-| Agents | The shared `agent_token` bearer | `/api/v1/agent/ws` only |
+| Agents | Proof of the shared `agent_token` (see "Mutual token proof") | `/api/v1/agent/ws` only |
 | Plain download links | One-time token | One file on one agent, once |
 
 - **Login methods.** At least one must be configured or startup fails: `[[server.users]]`
@@ -2697,9 +2745,11 @@ own endpoints:
   for the next cycle's spawn, so that start's provisioning logs name the user.
   Background work with no requester (startup, watchdog reconnects, supervisor restarts)
   logs without a user, and agents never learn the user.
-- **The agent token** is one secret shared by all agents and checked during the websocket
-  upgrade. It proves "this is an agent of this server", not which agent: the agent id in
-  `hello` is self-reported. Agents are therefore only partly trusted.
+- **The agent token** is one secret shared by all agents and proven, never sent, during the
+  websocket upgrade, and the server proves it back (see "Mutual token proof"). It proves
+  "this is an agent of this server", not which agent: the agent id in `hello` is
+  self-reported. Agents are therefore only partly trusted, and an agent's token also lets
+  its holder pass as the server to other agents.
 - **SSH device credentials** live in two places, both readable by the server's OS user
   and root: an optional plaintext `password` in `config.toml`, or a managed key under
   `<data_dir>/ssh/<device-id>/`. When a vault exists, a key is encrypted with it, so a copy of the data dir alone does not log in; the server holds it

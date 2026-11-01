@@ -12,6 +12,7 @@ use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use redoor_core::log;
 use redoor_core::websocket::WebSocketTimeouts;
+use redoor_protocol::wire::agent_auth::TokenProof;
 use redoor_protocol::wire::handshake::RejectReason;
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::registration::{AgentCapabilities, AgentIdentity};
@@ -32,10 +33,11 @@ const CONTROL_PRIORITY_QUEUE_CAPACITY: usize = 16;
 /// How much of an unparsable agent frame is logged; results can be large and carry file
 /// contents, and the start of the frame is enough to diagnose it.
 const MALFORMED_FRAME_LOG_CHARS: usize = 512;
-/// How long an authenticated socket may stay silent before its `hello`.
+/// How long an upgraded socket may stay silent before its `hello`.
 ///
-/// The token was already checked during the upgrade, so this only bounds how long a stuck or
-/// buggy client can hold a socket that does not speak for any agent.
+/// The upgrade already required a proof of the token, so this only bounds how long a stuck or
+/// buggy client, or one replaying a captured upgrade request, can hold a socket that does not
+/// speak for any agent.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long a refused connection may take to flush its `rejected` frame before it is dropped.
 const REJECTION_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
@@ -119,6 +121,9 @@ struct SessionRuntime {
     agent_id: Option<AgentId>,
     /// Typed command and priority lanes this session's writer drains.
     lanes: ControlLanes,
+    /// The proof of the token over both handshake nonces the `hello` must carry. The upgrade
+    /// proof is replayable, so this is what shows the agent took part in this handshake.
+    hello_proof: TokenProof,
 
     /// Populated after `hello` if the agent id has a matching watchdog supervisor. The stale
     /// check uses this to signal the supervisor when the WebSocket goes silent. Stays `None`
@@ -146,10 +151,19 @@ impl SessionRuntime {
                 AgentToServer::Hello {
                     agent_id,
                     agent_name,
+                    token_proof,
                     identity,
                     capabilities,
                 },
             ) => {
+                if !self.hello_proof.matches(&token_proof) {
+                    log!(
+                        Level::Warning,
+                        "Closing agent socket whose hello does not prove the token: socket_id={}",
+                        self.socket_id
+                    );
+                    return SessionStep::Close;
+                }
                 self.register(
                     Hello {
                         agent_id,
@@ -561,14 +575,16 @@ async fn send_ping(sender: &mut SplitSink<WebSocket, WsMessage>, timeout: Durati
     )
 }
 
-/// Entry point for a new, already authenticated agent connection. Splits the socket into
-/// send/receive halves and wires them to the router using explicit Tokio channels.
+/// Entry point for a new agent connection whose upgrade proved the token. Splits the socket
+/// into send/receive halves and wires them to the router using explicit Tokio channels; the
+/// `hello` must carry `hello_proof` before the agent is registered.
 pub async fn handle_websocket(
     socket: WebSocket,
     socket_id: SocketId,
     router_ref: RouterHandle,
     watchdog_registry: WatchdogRegistry,
     timeouts: redoor_core::websocket::WebSocketTimeouts,
+    hello_proof: TokenProof,
 ) {
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     let (lanes, receivers) = ControlLanes::bounded(
@@ -587,6 +603,7 @@ pub async fn handle_websocket(
         router_ref,
         agent_id: None,
         lanes,
+        hello_proof,
         watchdog: None,
         streams: None,
         activity: ConnectionActivity::new(ConnectionActivity::healthy_window(&timeouts)),
@@ -726,6 +743,15 @@ mod tests {
         assert_eq!(text.as_str(), r#"{"type":"cancel","id":5}"#);
     }
 
+    /// The `hello` proof of a test handshake, for sessions whose tests do not involve it.
+    fn test_hello_proof() -> TokenProof {
+        use redoor_protocol::wire::agent_auth::{AgentTokenKey, HandshakeNonce, HandshakeNonces};
+        AgentTokenKey::new("token").hello_proof(&HandshakeNonces {
+            agent: HandshakeNonce::generate(),
+            server: HandshakeNonce::generate(),
+        })
+    }
+
     /// Builds a session runtime over a capturing router mailbox.
     fn capture_session(
         agent_id: Option<AgentId>,
@@ -740,6 +766,7 @@ mod tests {
             router_ref: RouterHandle::new(sender),
             agent_id,
             lanes,
+            hello_proof: test_hello_proof(),
             watchdog: None,
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),
@@ -836,13 +863,41 @@ mod tests {
         assert_eq!(response.socket_id, socket_id);
     }
 
+    /// A hello without this handshake's proof, as from a client that replayed a captured
+    /// upgrade request, closes the socket before the router ever sees the agent.
+    #[tokio::test]
+    async fn hello_without_the_handshake_proof_closes_the_socket() {
+        let (mut runtime, mut receiver) = capture_session(None);
+        let mut hello: serde_json::Value = serde_json::from_str(
+            r#"{"type":"hello","agent_id":"dev_abcdefghijklmnopqrstuvwxyz","agent_name":"replayed","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":false,"supports_move_to_trash":false}"#,
+        )
+        .unwrap();
+        // A proof of another handshake, such as the one in the captured request's own hello.
+        hello["token_proof"] = test_hello_proof().as_str().into();
+        let step = runtime
+            .handle_control_message(
+                serde_json::from_value(hello).unwrap(),
+                &WatchdogRegistry::new(),
+            )
+            .await;
+        // Without the proof the socket cannot speak for any agent.
+        assert_eq!(step, SessionStep::Close);
+        // The agent was never registered.
+        assert!(
+            receiver
+                .try_recv()
+                .map(|envelope| envelope.message)
+                .is_err()
+        );
+    }
+
     /// A second hello on an accepted connection is a protocol violation, not a re-register.
     #[tokio::test]
     async fn second_hello_closes_the_socket() {
         let (mut runtime, mut receiver) =
             capture_session(Some(redoor_core::test_support::test_agent_id("own")));
         let hello: AgentToServer = serde_json::from_str(
-            r#"{"type":"hello","agent_id":"other","agent_name":"other","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":false,"supports_move_to_trash":false}"#,
+            r#"{"type":"hello","agent_id":"other","agent_name":"other","token_proof":"p","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":false,"supports_move_to_trash":false}"#,
         )
         .unwrap();
         let step = runtime
@@ -874,6 +929,7 @@ mod tests {
             router_ref,
             agent_id: Some(agent_id.clone()),
             lanes,
+            hello_proof: test_hello_proof(),
             watchdog: None,
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),
@@ -923,6 +979,7 @@ mod tests {
             router_ref,
             agent_id: Some(redoor_core::test_support::test_agent_id("agent")),
             lanes,
+            hello_proof: test_hello_proof(),
             watchdog: None,
             streams: None,
             activity: ConnectionActivity::new(Duration::from_secs(20)),

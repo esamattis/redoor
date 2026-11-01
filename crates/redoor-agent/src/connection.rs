@@ -1,8 +1,13 @@
-//! Server address, TLS settings and the authenticated upgrade of the agent's one connection.
+//! Server address, TLS settings and the mutually authenticated upgrade of the agent's one
+//! connection.
 
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use redoor_protocol::wire::agent_auth::{
+    AGENT_NONCE_HEADER, AGENT_PROOF_HEADER, AgentTokenKey, HandshakeNonce, HandshakeNonces,
+    SERVER_NONCE_HEADER, SERVER_PROOF_HEADER, TokenProof,
+};
 use redoor_protocol::wire::handshake::{AGENT_VERSION_HEADER, PROTOCOL, ProtocolMismatchResponse};
 use rustls::{
     DigitallySignedStruct, SignatureScheme,
@@ -27,14 +32,23 @@ pub(crate) type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
 
 /// Why an authenticated upgrade failed.
 ///
-/// A wrong token or an incompatible protocol cannot fix itself by retrying soon, so the runtime
-/// tells these apart from transport errors: it retries them only at the slowest pace, and a
-/// supervised agent leaves them to its owner.
+/// A wrong token, a server that cannot prove the token or an incompatible protocol cannot fix
+/// itself by retrying soon, so the runtime tells these apart from transport errors: it retries
+/// them only at the slowest pace, and a supervised agent leaves them to its owner.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum ConnectError {
-    /// The server answered `401`: the agent token is wrong.
-    #[error("the server rejected the agent token (401 Unauthorized)")]
+    /// The server answered `401`: the agent token is wrong, or the server predates the token
+    /// proof and still expects the token itself.
+    #[error(
+        "the server rejected the agent's proof of the token (401 Unauthorized); check the agent token, or upgrade the server if it is older than the agent"
+    )]
     Unauthorized,
+    /// The server accepted the upgrade without proving it knows the token, so it may not be
+    /// the server the agent belongs to. The agent drops the socket before sending anything.
+    #[error(
+        "the server did not prove it knows the agent token; the server URL may point at a wrong or fraudulent server, or the server's agent token differs"
+    )]
+    ServerUnproven,
     /// The server answered `426`: it speaks a different protocol version.
     #[error(
         "the server speaks {server_protocol} (version {server_version}) but this agent speaks {agent_protocol}; upgrade the agent"
@@ -82,16 +96,21 @@ impl ConnectError {
     }
 }
 
-/// Builds an upgrade request that authenticates with `token` and offers [`PROTOCOL`].
-fn authenticated_request(url: &str, token: &str) -> Result<Request> {
+/// Builds an upgrade request that proves the token over `nonce`, without sending the token
+/// itself, and offers [`PROTOCOL`].
+fn authenticated_request(
+    url: &str,
+    key: &AgentTokenKey,
+    nonce: &HandshakeNonce,
+) -> Result<Request> {
     let mut request = url
         .into_client_request()
         .context("invalid agent websocket URL")?;
     let headers = request.headers_mut();
+    headers.insert(AGENT_NONCE_HEADER, hex_header(nonce.as_str()));
     headers.insert(
-        header::AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {token}"))
-            .context("agent token is not a valid HTTP header value")?,
+        AGENT_PROOF_HEADER,
+        hex_header(key.upgrade_proof(nonce).as_str()),
     );
     headers.insert(
         header::SEC_WEBSOCKET_PROTOCOL,
@@ -103,6 +122,38 @@ fn authenticated_request(url: &str, token: &str) -> Result<Request> {
             .context("agent version is not a valid HTTP header value")?,
     );
     Ok(request)
+}
+
+/// Converts a nonce or proof, which the handshake always encodes as hex, into a header value.
+fn hex_header(hex: &str) -> HeaderValue {
+    HeaderValue::from_str(hex).expect("hex is a valid header value")
+}
+
+/// The nonces of both sides, once the server's upgrade answer proved it knows the token.
+fn proven_server_nonces(
+    response: &Response,
+    key: &AgentTokenKey,
+    agent: HandshakeNonce,
+) -> Result<HandshakeNonces, ConnectError> {
+    let header = |name: &str| response.headers().get(name)?.to_str().ok();
+    let server = header(SERVER_NONCE_HEADER)
+        .and_then(HandshakeNonce::parse)
+        .ok_or(ConnectError::ServerUnproven)?;
+    let nonces = HandshakeNonces { agent, server };
+    let proven =
+        header(SERVER_PROOF_HEADER).is_some_and(|proof| key.server_proof(&nonces).matches(proof));
+    if !proven {
+        return Err(ConnectError::ServerUnproven);
+    }
+    Ok(nonces)
+}
+
+/// An upgraded connection to a server that proved the token, with the proof the agent's
+/// `hello` must carry to finish the handshake.
+#[derive(Debug)]
+pub(crate) struct AuthenticatedSocket {
+    pub(crate) socket: AgentSocket,
+    pub(crate) hello_proof: TokenProof,
 }
 
 /// Separates the logical WebSocket server identity from an optional tunnel TCP endpoint.
@@ -143,16 +194,23 @@ impl AgentConnection {
         &self.server_url
     }
 
-    /// Connects to an endpoint that authenticates during the upgrade with `token` and requires
-    /// the agent protocol, classifying rejections so the caller can stop retrying.
+    /// Connects to an endpoint that requires a proof of `token` and the agent protocol during
+    /// the upgrade, and accepts the socket only when the server proves the token back. Rejections
+    /// are classified so the caller can stop retrying.
     pub(crate) async fn connect_authenticated(
         &self,
         url: &str,
         token: &str,
-    ) -> Result<AgentSocket, ConnectError> {
-        let request = authenticated_request(url, token)?;
-        let (socket, _response) = self.upgrade(request).await?;
-        Ok(socket)
+    ) -> Result<AuthenticatedSocket, ConnectError> {
+        let key = AgentTokenKey::new(token);
+        let agent_nonce = HandshakeNonce::generate();
+        let request = authenticated_request(url, &key, &agent_nonce)?;
+        let (socket, response) = self.upgrade(request).await?;
+        let nonces = proven_server_nonces(&response, &key, agent_nonce)?;
+        Ok(AuthenticatedSocket {
+            socket,
+            hello_proof: key.hello_proof(&nonces),
+        })
     }
 
     /// Performs the upgrade directly or through the tunnel endpoint, retaining the URL's
@@ -246,20 +304,61 @@ mod tests {
     use super::AgentConnection;
     use futures_util::SinkExt;
     use rcgen::{CertifiedKey, generate_simple_self_signed};
+    use redoor_protocol::wire::agent_auth::{
+        AGENT_NONCE_HEADER, AgentTokenKey, HandshakeNonce, HandshakeNonces, SERVER_NONCE_HEADER,
+        SERVER_PROOF_HEADER,
+    };
     use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
     use tokio::net::TcpListener;
     use tokio_rustls::TlsAcceptor;
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        Request as ServerRequest, Response as ServerResponse,
+    };
     use tokio_tungstenite::{accept_hdr_async, tungstenite::Message};
 
+    /// Agent token the test servers know.
+    const TOKEN: &str = "token";
+
     /// Echoes the agent protocol, as the real server does when it accepts an upgrade.
-    fn with_agent_protocol(
-        mut response: tokio_tungstenite::tungstenite::handshake::server::Response,
-    ) -> tokio_tungstenite::tungstenite::handshake::server::Response {
+    fn with_agent_protocol(mut response: ServerResponse) -> ServerResponse {
         response.headers_mut().insert(
             "sec-websocket-protocol",
             redoor_protocol::wire::handshake::PROTOCOL.parse().unwrap(),
         );
         response
+    }
+
+    /// The nonces of one test handshake: the agent's from `request` and a fresh server nonce.
+    fn handshake_nonces(request: &ServerRequest) -> HandshakeNonces {
+        let agent = request.headers()[AGENT_NONCE_HEADER].to_str().unwrap();
+        HandshakeNonces {
+            agent: HandshakeNonce::parse(agent).unwrap(),
+            server: HandshakeNonce::generate(),
+        }
+    }
+
+    /// Accepts an upgrade like the real server: echoes the protocol and proves `token` over
+    /// the request's nonce. Returns the hello proof the server would then expect.
+    fn accept_proving(
+        request: &ServerRequest,
+        response: ServerResponse,
+        token: &str,
+    ) -> (ServerResponse, String) {
+        let key = AgentTokenKey::new(token);
+        let nonces = handshake_nonces(request);
+        let mut response = with_agent_protocol(response);
+        let headers = response.headers_mut();
+        headers.insert(SERVER_NONCE_HEADER, nonces.server.as_str().parse().unwrap());
+        headers.insert(
+            SERVER_PROOF_HEADER,
+            key.server_proof(&nonces).as_str().parse().unwrap(),
+        );
+        (response, key.hello_proof(&nonces).as_str().to_string())
+    }
+
+    /// Accepts an upgrade like the real server that knows [`TOKEN`].
+    fn accept_as_server(request: &ServerRequest, response: ServerResponse) -> ServerResponse {
+        accept_proving(request, response, TOKEN).0
     }
 
     /// Creates a private WSS endpoint so certificate behavior is deterministic and offline.
@@ -296,7 +395,7 @@ mod tests {
                         .unwrap_or_default()
                         .to_string();
                     let _ = authority_sender.send(authority);
-                    Ok(with_agent_protocol(response))
+                    Ok(accept_as_server(request, response))
                 },
             )
             .await
@@ -311,7 +410,7 @@ mod tests {
         .unwrap();
 
         let _socket = connection
-            .connect_authenticated("ws://redoor.example:8443/api/v1/agent/ws", "token")
+            .connect_authenticated("ws://redoor.example:8443/api/v1/agent/ws", TOKEN)
             .await
             .unwrap();
 
@@ -349,7 +448,7 @@ mod tests {
                         .unwrap_or_default()
                         .to_string();
                     let _ = identity_sender.send((sni, authority));
-                    Ok(with_agent_protocol(response))
+                    Ok(accept_as_server(request, response))
                 },
             )
             .await
@@ -364,7 +463,7 @@ mod tests {
         .unwrap();
 
         let _socket = connection
-            .connect_authenticated("wss://redoor.example:443/api/v1/agent/ws", "token")
+            .connect_authenticated("wss://redoor.example:443/api/v1/agent/ws", TOKEN)
             .await
             .unwrap();
 
@@ -394,7 +493,7 @@ mod tests {
         .unwrap();
 
         let result = connection
-            .connect_authenticated(connection.server_url(), "token")
+            .connect_authenticated(connection.server_url(), TOKEN)
             .await;
 
         // Trusted mode must never silently accept a self-signed routed endpoint.
@@ -422,9 +521,10 @@ mod tests {
         (url, server)
     }
 
-    /// Verifies a 401 is classified as a token error and the upgrade carried credentials.
+    /// Verifies a 401 is classified as a token error and the upgrade carried a proof of the
+    /// token but not the token itself.
     #[tokio::test]
-    async fn unauthorized_upgrade_needs_operator_and_carries_credentials() {
+    async fn unauthorized_upgrade_needs_operator_and_carries_only_a_proof() {
         let (url, server) =
             answer_upgrade("HTTP/1.1 401 Unauthorized\r\ncontent-length: 0\r\n\r\n".into()).await;
         let connection = AgentConnection::new(url.clone(), None, false).unwrap();
@@ -438,10 +538,14 @@ mod tests {
         assert!(matches!(error, super::ConnectError::Unauthorized));
         assert!(error.needs_operator());
         let request = server.await.unwrap();
-        // The token travels in the upgrade, never in a websocket frame.
-        assert!(request.contains("authorization: bearer secret-token"));
+        // A wrong or fraudulent server must never learn the token.
+        assert!(!request.contains("secret-token"));
+        assert!(!request.contains("authorization:"));
+        // The proof travels in the upgrade so the server refuses outsiders without a socket.
+        assert!(request.contains("x-redoor-agent-nonce: "));
+        assert!(request.contains("x-redoor-agent-proof: "));
         // The agent offers exactly the protocol it implements.
-        assert!(request.contains("sec-websocket-protocol: redoor.v3"));
+        assert!(request.contains("sec-websocket-protocol: redoor.v4"));
         // The version header lets the server log which build was rejected.
         assert!(request.contains("x-redoor-agent-version: "));
     }
@@ -449,7 +553,7 @@ mod tests {
     /// Verifies a 426 names both protocols so the operator knows which side to upgrade.
     #[tokio::test]
     async fn protocol_mismatch_needs_operator_and_names_both_versions() {
-        let body = r#"{"server_protocol":"redoor.v4","server_version":"9.9.9","message":"m"}"#;
+        let body = r#"{"server_protocol":"redoor.v5","server_version":"9.9.9","message":"m"}"#;
         let (url, _server) = answer_upgrade(format!(
             "HTTP/1.1 426 Upgrade Required\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\r\n{body}",
             body.len()
@@ -458,7 +562,7 @@ mod tests {
         let connection = AgentConnection::new(url.clone(), None, false).unwrap();
 
         let error = connection
-            .connect_authenticated(&url, "token")
+            .connect_authenticated(&url, TOKEN)
             .await
             .expect_err("426 must fail the upgrade");
 
@@ -466,8 +570,78 @@ mod tests {
         assert!(error.needs_operator());
         let message = error.to_string();
         // The log line explains which protocol each side speaks and what to do.
-        assert!(message.contains("redoor.v4") && message.contains("redoor.v3"));
+        assert!(message.contains("redoor.v5") && message.contains("redoor.v4"));
         assert!(message.contains("upgrade the agent"));
+    }
+
+    /// Accepts one upgrade on a plain socket with `accept`, then closes it, and returns the
+    /// URL to connect to.
+    // The tungstenite handshake callback signature fixes the large `ErrorResponse` error type.
+    #[allow(clippy::result_large_err)]
+    async fn serve_upgrade(
+        accept: impl FnOnce(&ServerRequest, ServerResponse) -> ServerResponse + Send + Unpin + 'static,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("ws://{}/api/v1/agent/ws", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.unwrap();
+            // The agent may drop the socket right after the upgrade, so the close may fail.
+            if let Ok(mut socket) = accept_hdr_async(stream, |request: &ServerRequest, response| {
+                Ok(accept(request, response))
+            })
+            .await
+            {
+                let _ = socket.send(Message::Close(None)).await;
+            }
+        });
+        (url, server)
+    }
+
+    /// Verifies a proving server yields the hello proof that server expects.
+    #[tokio::test]
+    async fn proving_server_yields_the_hello_proof_it_expects() {
+        let (expected_sender, expected_receiver) = tokio::sync::oneshot::channel();
+        let (url, server) = serve_upgrade(move |request, response| {
+            let (response, hello_proof) = accept_proving(request, response, TOKEN);
+            let _ = expected_sender.send(hello_proof);
+            response
+        })
+        .await;
+        let connection = AgentConnection::new(url.clone(), None, false).unwrap();
+
+        let connected = connection.connect_authenticated(&url, TOKEN).await.unwrap();
+
+        // The hello finishes the handshake only with the proof over this connection's nonces.
+        assert_eq!(
+            connected.hello_proof.as_str(),
+            expected_receiver.await.unwrap()
+        );
+        server.await.unwrap();
+    }
+
+    /// Verifies the agent refuses servers that accept the upgrade without proving the token:
+    /// one that sends no proof at all, and one that proves another token.
+    #[tokio::test]
+    async fn unproven_server_is_refused_and_needs_operator() {
+        let no_proof: fn(&ServerRequest, ServerResponse) -> ServerResponse =
+            |_request, response| with_agent_protocol(response);
+        let other_token: fn(&ServerRequest, ServerResponse) -> ServerResponse =
+            |request, response| accept_proving(request, response, "other-token").0;
+        for accept in [no_proof, other_token] {
+            let (url, server) = serve_upgrade(accept).await;
+            let connection = AgentConnection::new(url.clone(), None, false).unwrap();
+
+            let error = connection
+                .connect_authenticated(&url, TOKEN)
+                .await
+                .expect_err("an unproven server must be refused");
+
+            // A fraudulent server never gets a hello or a chance to send commands.
+            assert!(matches!(error, super::ConnectError::ServerUnproven));
+            // Retrying soon cannot fix a wrong server URL or token.
+            assert!(error.needs_operator());
+            server.await.unwrap();
+        }
     }
 
     /// Verifies ordinary failures stay retryable.
@@ -479,7 +653,7 @@ mod tests {
         let connection = AgentConnection::new(url.clone(), None, false).unwrap();
 
         let error = connection
-            .connect_authenticated(&url, "token")
+            .connect_authenticated(&url, TOKEN)
             .await
             .expect_err("503 must fail the upgrade");
 
@@ -516,11 +690,9 @@ mod tests {
         let server = tokio::spawn(async move {
             let (stream, _peer) = listener.accept().await.unwrap();
             let tls = acceptor.accept(stream).await.unwrap();
-            let mut socket = accept_hdr_async(
-                tls,
-                |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
-                 response| Ok(with_agent_protocol(response)),
-            )
+            let mut socket = accept_hdr_async(tls, |request: &ServerRequest, response| {
+                Ok(accept_as_server(request, response))
+            })
             .await
             .unwrap();
             socket.send(Message::Close(None)).await.unwrap();
@@ -529,10 +701,7 @@ mod tests {
         let connection = AgentConnection::new(url.clone(), None, true).unwrap();
 
         // Verification is skipped, so the untrusted certificate must not fail the upgrade.
-        connection
-            .connect_authenticated(&url, "token")
-            .await
-            .unwrap();
+        connection.connect_authenticated(&url, TOKEN).await.unwrap();
         server.await.unwrap();
     }
 }

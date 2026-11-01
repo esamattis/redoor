@@ -1,3 +1,6 @@
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import type { IncomingMessage } from "node:http";
+
 import WebSocket from "ws";
 import { z } from "zod";
 
@@ -9,7 +12,7 @@ import {
 } from "./test-utils";
 
 /** Subprotocol of the agent websocket that this helper speaks. */
-export const AGENT_PROTOCOL = "redoor.v3";
+export const AGENT_PROTOCOL = "redoor.v4";
 
 /** Path of the single agent websocket endpoint. */
 export const AGENT_WS_PATH = "/api/v1/agent/ws";
@@ -19,6 +22,54 @@ const STREAM_HEADER_SIZE = 9;
 
 /** Flag bit marking the final frame of a successful stream; failures are reported by the result. */
 const FLAG_FIN = 0x01;
+
+/**
+ * One HMAC of the mutual token proof, in the encoding of `redoor_protocol::wire::agent_auth`:
+ * the step label and then each nonce on its own line, keyed with the agent token.
+ */
+export function tokenProof(
+    token: string,
+    label: "redoor agent upgrade" | "redoor server" | "redoor agent hello",
+    nonces: string[],
+): string {
+    return createHmac("sha256", token)
+        .update([label, ...nonces].join("\n"))
+        .digest("hex");
+}
+
+/** Reads one single-valued header of the server's upgrade answer; empty when absent. */
+function responseHeader(response: IncomingMessage, name: string): string {
+    return z.string().catch("").parse(response.headers[name]);
+}
+
+/**
+ * Checks the server's proof of the token in its upgrade answer, like the real agent does, and
+ * returns the proof the `hello` must carry.
+ */
+function helloProofForAnswer(
+    response: IncomingMessage,
+    token: string,
+    agentNonce: string,
+): string {
+    const serverNonce = responseHeader(response, "x-redoor-server-nonce");
+
+    const expected = Buffer.from(
+        tokenProof(token, "redoor server", [agentNonce, serverNonce]),
+    );
+
+    const presented = Buffer.from(
+        responseHeader(response, "x-redoor-server-proof"),
+    );
+
+    if (
+        expected.length !== presented.length ||
+        !timingSafeEqual(expected, presented)
+    ) {
+        throw new Error("the server did not prove it knows the agent token");
+    }
+
+    return tokenProof(token, "redoor agent hello", [agentNonce, serverNonce]);
+}
 
 /** Every control frame is a JSON object tagged by `type`. */
 const controlFrameSchema = z.object({ type: z.string() }).catchall(z.unknown());
@@ -63,7 +114,7 @@ const rejectedSchema = z.object({
 /** Upgrade request settings; every field defaults to what a correct agent sends. */
 export type UpgradeOptions = {
     serverPort: number;
-    /** Bearer token; `null` sends no `Authorization` header at all. */
+    /** Agent token the upgrade proves; `null` sends no proof headers at all. */
     token?: string | null;
     /** Offered subprotocols; an empty list sends no `Sec-WebSocket-Protocol` header. */
     protocols?: string[];
@@ -75,12 +126,18 @@ export type UpgradeOptions = {
 
 /** What the server answered to an upgrade attempt. */
 export type UpgradeOutcome =
-    | { kind: "open"; socket: WebSocket }
+    | {
+          kind: "open";
+          socket: WebSocket;
+          /** Proof of the token over both nonces, which the `hello` must carry. */
+          helloProof: string;
+      }
     | { kind: "refused"; status: number; body: string };
 
 /**
  * Attempts one agent websocket upgrade and reports either the open socket or the HTTP answer
  * that refused it, so tests can assert on `401` and `426` without a socket ever existing.
+ * An accepted upgrade must prove the token back, as the real agent requires.
  */
 export async function upgradeAgentSocket(
     options: UpgradeOptions,
@@ -94,10 +151,20 @@ export async function upgradeAgentSocket(
         "X-Redoor-Agent-Version": options.version ?? "0.0.0-fake-agent",
     };
 
+    const agentNonce = randomBytes(32).toString("hex");
+
     const headers =
         token === null
             ? versionHeader
-            : { ...versionHeader, Authorization: `Bearer ${token}` };
+            : {
+                  ...versionHeader,
+                  "X-Redoor-Agent-Nonce": agentNonce,
+                  "X-Redoor-Agent-Proof": tokenProof(
+                      token,
+                      "redoor agent upgrade",
+                      [agentNonce],
+                  ),
+              };
 
     const socket = new WebSocket(url, options.protocols ?? [AGENT_PROTOCOL], {
         headers,
@@ -105,7 +172,23 @@ export async function upgradeAgentSocket(
     });
 
     return new Promise<UpgradeOutcome>((resolve, reject) => {
-        socket.once("open", () => resolve({ kind: "open", socket }));
+        let helloProof = "";
+
+        socket.once("upgrade", (response) => {
+            try {
+                helloProof = helloProofForAnswer(
+                    response,
+                    token ?? "",
+                    agentNonce,
+                );
+            } catch (error) {
+                socket.terminate();
+                reject(error);
+            }
+        });
+        socket.once("open", () =>
+            resolve({ kind: "open", socket, helloProof }),
+        );
         socket.once("unexpected-response", (_request, response) => {
             const chunks: Buffer[] = [];
             response.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -146,6 +229,7 @@ export type HelloFrame = {
     type: "hello";
     agent_id: string;
     agent_name: string;
+    token_proof: string;
     os: string;
     arch: string;
     hostname: string;
@@ -159,12 +243,19 @@ export type HelloFrame = {
     supports_move_to_trash: boolean;
 };
 
-/** Builds the `hello` frame for one fake agent identity. */
-export function helloFrame(options: HelloOptions): HelloFrame {
+/**
+ * Builds the `hello` frame for one fake agent identity, finishing the token proof with the
+ * `helloProof` of its upgrade.
+ */
+export function helloFrame(
+    options: HelloOptions,
+    helloProof: string,
+): HelloFrame {
     return {
         type: "hello",
         agent_id: options.agentId ?? generateDeviceId(),
         agent_name: options.agentName,
+        token_proof: helloProof,
         os: options.os ?? "linux",
         arch: options.arch ?? "x86_64",
         hostname: options.hostname ?? "fake-host",
@@ -265,7 +356,7 @@ export class FakeAgent {
 
         const agent = new FakeAgent(agentId, options.agentName, outcome.socket);
 
-        agent.send(helloFrame({ ...options, agentId }));
+        agent.send(helloFrame({ ...options, agentId }, outcome.helloProof));
 
         const answer = await agent.waitForFrame(
             (frame) => frame.type === "welcome" || frame.type === "rejected",
