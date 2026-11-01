@@ -18,6 +18,11 @@ agent_token: string,
  */
 config_path: string, 
 /**
+ * Whether the server serves HTTPS with its generated self-signed certificate, so the
+ * agent config the UI renders turns certificate verification off.
+ */
+self_signed_tls: boolean, 
+/**
  * Absolute path of the running server binary.
  */
 exe_path: string, 

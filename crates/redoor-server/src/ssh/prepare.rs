@@ -62,8 +62,10 @@ fn random_remote_port(previous: u16) -> u16 {
 }
 
 /// WSS-only launch settings that preserve server identity across the localhost tunnel.
+///
+/// Used by relays to `https://` servers and by managed agents of a server with built-in TLS.
 #[derive(Clone)]
-pub(super) struct SecureRelayServer {
+pub(super) struct SecureServer {
     /// Logical authority retained in the URL for TLS SNI and HTTP Host handling.
     pub(super) authority: String,
     /// Whether the remote agent should deliberately skip certificate verification.
@@ -84,8 +86,6 @@ pub(super) struct TunnelDestination {
 pub(super) struct RelayOptions<'a> {
     /// Pipes stderr so the relay can detect OpenSSH forwarding failures and retry.
     pub(super) monitor_forward_failure: bool,
-    /// Retains TLS server identity while transport connects through the tunnel.
-    pub(super) secure_server: Option<SecureRelayServer>,
     /// Forces an operator-selected local binary onto the remote host.
     pub(super) binary_source: Option<&'a Path>,
     /// Isolates a standalone relay's remote PID and application data namespace.
@@ -116,8 +116,8 @@ pub(super) struct PreparedSshBackedAgent {
     pub(super) options: SshRunOptions,
     /// Shares random-port selection between standalone and managed launches.
     pub(super) random_remote_port: RandomRemotePort,
-    /// Relay WSS identity; absent for plain and server-managed SSH-backed agents.
-    pub(super) secure_server: Option<SecureRelayServer>,
+    /// WSS identity of the server; absent when the tunnel ends at a plain HTTP listener.
+    pub(super) secure_server: Option<SecureServer>,
 }
 
 impl PreparedSshBackedAgent {
@@ -264,6 +264,9 @@ pub(super) struct Preparation<'a> {
     pub(super) destination: TunnelDestination,
     /// Secret handed to the remote agent through SSH stdin.
     pub(super) agent_token: &'a str,
+    /// Retains TLS server identity while transport connects through the tunnel; `None` when
+    /// the tunnel ends at a plain HTTP listener.
+    pub(super) secure_server: Option<SecureServer>,
     /// Relay-only behavior; defaults describe a managed agent.
     pub(super) relay: RelayOptions<'a>,
     /// Local namespace and release cache.
@@ -378,7 +381,7 @@ impl Preparation<'_> {
             home: self.config.home.clone(),
             destination: self.destination.clone(),
             random_remote_port: RandomRemotePort::default(),
-            secure_server: self.relay.secure_server.clone(),
+            secure_server: self.secure_server.clone(),
         })
     }
 
@@ -612,7 +615,7 @@ mod tests {
     }
 
     /// Builds prepared state without touching an SSH host so launch argv can be checked directly.
-    fn prepared_agent(secure_server: Option<SecureRelayServer>) -> PreparedSshBackedAgent {
+    fn prepared_agent(secure_server: Option<SecureServer>) -> PreparedSshBackedAgent {
         PreparedSshBackedAgent {
             host: SshHost::new("user@target".to_string()),
             agent_name: "target".to_string(),
@@ -650,7 +653,7 @@ mod tests {
     /// Keeps WSS server identity stable while retries change only the physical tunnel endpoint.
     #[test]
     fn secure_launch_separates_authority_from_tunnel() {
-        let prepared = prepared_agent(Some(SecureRelayServer {
+        let prepared = prepared_agent(Some(SecureServer {
             authority: "redoor.example:443".to_string(),
             insecure: true,
         }));

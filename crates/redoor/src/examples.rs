@@ -73,7 +73,10 @@ pub(crate) const AGENT: &str = "Examples:
   redoor agent --config ./config.toml --daemon
 
   # Open the UI in another directory and disable the desktop notification
-  redoor agent https://redoor.example.com --home /srv --notification off";
+  redoor agent https://redoor.example.com --home /srv --notification off
+
+  # Connect to a server that uses a self-signed certificate
+  redoor agent https://192.168.1.10:7666 --token secret --insecure-tls";
 
 /// Shown by `redoor agent stop --help`.
 pub(crate) const AGENT_STOP: &str = "Examples:

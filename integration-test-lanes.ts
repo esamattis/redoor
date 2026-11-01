@@ -20,6 +20,7 @@ export const SERIAL_INTEGRATION_TEST_FILES = [
     "tests/ssh-device-ids.test.ts",
     "tests/ssh-key-vault.test.ts",
     "tests/ssh-keys.test.ts",
+    "tests/ssh-tls.test.ts",
 ];
 
 /**

@@ -155,11 +155,17 @@ function Index() {
 
     const serverAddress = `${serverProtocol}//${window.location.host}`;
 
+    // A self-signed certificate cannot be verified, so a pasted config must opt out.
+    const insecureTls = serverInfo.self_signed_tls
+        ? `insecure_tls = true
+`
+        : "";
+
     const agentConfig = `agent_token = ${JSON.stringify(serverInfo.agent_token)}
 
 [agent]
 server = ${JSON.stringify(serverAddress)}
-`;
+${insecureTls}`;
 
     return (
         <div className="p-8">

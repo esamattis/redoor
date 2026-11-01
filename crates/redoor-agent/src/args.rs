@@ -21,8 +21,16 @@ pub struct AgentArgs {
     /// Physical TCP endpoint used by an SSH tunnel while the URL retains TLS and HTTP identity.
     #[arg(long, hide = true)]
     pub(crate) connect_address: Option<String>,
-    /// Disables TLS certificate verification for an explicitly tunneled WSS connection.
-    #[arg(long, hide = true, requires = "connect_address")]
+    /// Skip TLS certificate verification, for a server with a self-signed certificate.
+    /// Anyone able to intercept the connection could then impersonate the server.
+    /// Also set by `REDOOR_AGENT_INSECURE_TLS` and `[agent].insecure_tls`.
+    /// The falsey parser lets the environment use `1`/`0` and empty values, not only
+    /// `true`/`false`.
+    #[arg(
+        long,
+        env = "REDOOR_AGENT_INSECURE_TLS",
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
     pub(crate) insecure_tls: bool,
     /// Ties an SSH-launched agent to its relay session so a lost channel cannot orphan it.
     #[arg(long, hide = true)]

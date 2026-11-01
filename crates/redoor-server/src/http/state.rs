@@ -51,6 +51,9 @@ pub(crate) struct ServerState {
     /// Absolute path of the TOML config loaded at process start (for the server
     /// home UI and so restart can re-validate the same file).
     pub(crate) config_path: PathBuf,
+    /// Whether the server serves HTTPS with its generated self-signed certificate, so the UI
+    /// tells standalone agents to skip certificate verification.
+    pub(crate) self_signed_tls: bool,
     /// Serializes read-modify-write config edits so concurrent submissions cannot lose entries.
     pub(crate) config_edit_lock: Arc<tokio::sync::Mutex<()>>,
     /// Serializes editor buffer writes so a revision check and its write cannot interleave.

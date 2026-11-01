@@ -9,6 +9,7 @@ import {
 import { readFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:net";
+import tls from "node:tls";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { ApiClient, Agent } from "#ui/api-client";
@@ -689,6 +690,7 @@ export async function waitForAgentReady(
 export async function waitForPort(
     port: number,
     timeoutMs = 30_000,
+    protocol: "http" | "https" = "http",
 ): Promise<void> {
     await waitForValue({
         timeoutMs,
@@ -696,7 +698,7 @@ export async function waitForPort(
         description: `server API on port ${port}`,
         predicate: async () => {
             const response = await fetch(
-                `http://127.0.0.1:${port}/api/v1/agents`,
+                `${protocol}://127.0.0.1:${port}/api/v1/agents`,
             );
 
             // Readiness needs only the status; release its body instead of leaving an
@@ -706,6 +708,47 @@ export async function waitForPort(
             return response.ok || response.status === 401;
         },
     });
+}
+
+/** Where a server running with `HOME=home` keeps its `[server.tls] self_signed` certificate. */
+export function selfSignedCertificatePath(
+    home: string,
+    appName: string,
+): string {
+    return join(
+        home,
+        ".local",
+        "share",
+        appName,
+        "tls",
+        "self-signed-cert.pem",
+    );
+}
+
+/**
+ * Waits until a starting server has written its self-signed certificate and makes this
+ * worker's TLS clients, `fetch` included, trust it on top of the default roots, so HTTPS tests
+ * verify the certificate instead of turning verification off. Call `restore` when done so
+ * later test files in the worker see the default roots again.
+ */
+export async function trustSelfSignedCertificate(options: {
+    home: string;
+    appName: string;
+}): Promise<{ pem: string; restore: () => void }> {
+    const path = selfSignedCertificatePath(options.home, options.appName);
+
+    const pem = await waitForValue({
+        // A debug server can take well over ten seconds to start under the parallel suites.
+        timeoutMs: 30_000,
+        description: `self-signed certificate at ${path}`,
+        // Fails with ENOENT until the server has renamed the finished file into place.
+        predicate: () => readFile(path, "utf8"),
+    });
+
+    const previous = tls.getCACertificates("default");
+    tls.setDefaultCACertificates([...previous, pem]);
+
+    return { pem, restore: () => tls.setDefaultCACertificates(previous) };
 }
 
 /**

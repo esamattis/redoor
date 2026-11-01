@@ -13,6 +13,7 @@ use rustls::{
 use tokio::net::TcpStream;
 use tokio_tungstenite::{
     Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config, connect_async,
+    connect_async_tls_with_config,
     tungstenite::{
         self,
         client::IntoClientRequest,
@@ -111,7 +112,8 @@ pub(crate) struct AgentConnection {
     server_url: String,
     /// Physical endpoint used only to establish TCP before TLS and WebSocket negotiation.
     connect_address: Option<String>,
-    /// Explicit opt-out from certificate verification for private WSS deployments.
+    /// Explicit opt-out from certificate verification, for self-signed servers and for
+    /// managed agents whose `localhost` tunnel cannot match any server certificate.
     insecure_tls: bool,
 }
 
@@ -127,10 +129,7 @@ impl AgentConnection {
             bail!("agent websocket URL must use ws:// or wss://");
         }
         if insecure_tls && url.scheme() != "wss" {
-            bail!("insecure TLS requires a wss:// agent websocket URL");
-        }
-        if insecure_tls && connect_address.is_none() {
-            bail!("insecure TLS requires an explicit tunnel connection address");
+            bail!("insecure TLS requires an https:// or wss:// server URL");
         }
         Ok(Self {
             server_url,
@@ -159,13 +158,16 @@ impl AgentConnection {
     /// Performs the upgrade directly or through the tunnel endpoint, retaining the URL's
     /// authority for TLS and HTTP when TCP goes through a tunnel.
     async fn upgrade(&self, request: Request) -> Result<(AgentSocket, Response), ConnectError> {
-        let result = match &self.connect_address {
-            None => connect_async(request).await,
-            Some(connect_address) => {
+        let connector = self.insecure_tls.then(insecure_connector);
+        let result = match (&self.connect_address, connector) {
+            (None, None) => connect_async(request).await,
+            (None, connector @ Some(_)) => {
+                connect_async_tls_with_config(request, None, false, connector).await
+            }
+            (Some(connect_address), connector) => {
                 let tcp = TcpStream::connect(connect_address).await.with_context(|| {
                     format!("failed to reach routed server through {connect_address}")
                 })?;
-                let connector = self.insecure_tls.then(insecure_connector);
                 client_async_tls_with_config(request, tcp, None, connector).await
             }
         };
@@ -485,24 +487,52 @@ mod tests {
         assert!(!error.needs_operator());
     }
 
-    /// Rejects misuse of insecure mode before any reconnect loop starts.
+    /// Rejects insecure mode on plain WebSockets, where it would silently mean nothing.
     #[test]
-    fn insecure_policy_requires_tunneled_wss() {
-        let plain = AgentConnection::new(
-            "ws://redoor.example/ws".to_string(),
-            Some("localhost:50000".to_string()),
-            true,
-        );
+    fn insecure_policy_requires_wss() {
+        let plain = AgentConnection::new("ws://redoor.example/ws".to_string(), None, true);
         // Certificate policy has no meaning for a plain WebSocket and must fail clearly.
-        assert!(plain.unwrap_err().to_string().contains("requires a wss://"));
-
-        let direct = AgentConnection::new("wss://redoor.example/ws".to_string(), None, true);
-        // Hidden insecure mode must remain coupled to the explicit SSH tunnel endpoint.
         assert!(
-            direct
+            plain
                 .unwrap_err()
                 .to_string()
-                .contains("explicit tunnel connection address")
+                .contains("requires an https:// or wss://")
         );
+
+        let direct = AgentConnection::new("wss://redoor.example/ws".to_string(), None, true);
+        // Standalone agents of self-signed servers connect directly, without a tunnel.
+        assert!(direct.is_ok());
+    }
+
+    /// Confirms a standalone agent with insecure mode accepts a self-signed server it reaches
+    /// directly, as it does with a server using `[server.tls] self_signed = true`.
+    // The tungstenite handshake callback signature fixes the large `ErrorResponse` error type.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn insecure_wss_accepts_self_signed_server_without_tunnel() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let acceptor = self_signed_acceptor();
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.unwrap();
+            let tls = acceptor.accept(stream).await.unwrap();
+            let mut socket = accept_hdr_async(
+                tls,
+                |_request: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                 response| Ok(with_agent_protocol(response)),
+            )
+            .await
+            .unwrap();
+            socket.send(Message::Close(None)).await.unwrap();
+        });
+        let url = format!("wss://{address}/api/v1/agent/ws");
+        let connection = AgentConnection::new(url.clone(), None, true).unwrap();
+
+        // Verification is skipped, so the untrusted certificate must not fail the upgrade.
+        connection
+            .connect_authenticated(&url, "token")
+            .await
+            .unwrap();
+        server.await.unwrap();
     }
 }

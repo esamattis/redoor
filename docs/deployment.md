@@ -1,6 +1,6 @@
 # Deployment
 
-Run Redoor behind an HTTPS reverse proxy when exposing it outside a trusted network.
+Run Redoor behind an HTTPS reverse proxy when exposing it outside a trusted network, or let it serve HTTPS itself with [`[server.tls]`](config.md#servertls-built-in-https), using your own certificate or a self-signed one it creates.
 
 ## Streaming request bodies
 

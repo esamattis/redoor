@@ -10,5 +10,6 @@ mod protocol_mismatches;
 pub mod ssh;
 pub mod startup;
 pub(crate) mod terminals;
+mod tls;
 pub(crate) mod vault;
 mod watchdog;

@@ -14,6 +14,10 @@ pub(crate) enum RestartRefused {
     /// The restarted process would fail to start with the current file.
     #[error("Invalid config, not restarting: {0}")]
     InvalidConfig(redoor_core::config::ConfigError),
+    /// The configured TLS certificate files cannot be loaded, so the restarted process could
+    /// not listen.
+    #[error("Invalid TLS certificate, not restarting: {0:#}")]
+    InvalidTls(anyhow::Error),
     /// Another request already took the shutdown sender.
     #[error("Restart already in progress")]
     InProgress,
@@ -25,9 +29,13 @@ impl ServerState {
     /// Shared by the REST route and the `redoor upgrade` signal so both refuse a bad edit
     /// before any shutdown, instead of taking the running process down.
     pub(crate) async fn request_restart(&self) -> Result<(), RestartRefused> {
-        self.validate_restart_config()
+        let config = self
+            .validate_restart_config()
             .await
             .map_err(RestartRefused::InvalidConfig)?;
+        Self::validate_restart_tls(&config)
+            .await
+            .map_err(RestartRefused::InvalidTls)?;
 
         let mut guard = self.shutdown_tx.lock().await;
         let tx = guard.take().ok_or(RestartRefused::InProgress)?;
@@ -40,11 +48,31 @@ impl ServerState {
     /// Checks that a restarted process would start with the current config.toml.
     pub(crate) async fn validate_restart_config(
         &self,
-    ) -> Result<(), redoor_core::config::ConfigError> {
+    ) -> Result<redoor_core::config::RedoorConfig, redoor_core::config::ConfigError> {
         let config = parse_config_file(&self.config_path).await?;
         require_server_section(&config)?;
         // Startup would refuse colliding managed names, so refuse them before shutting down.
         config.validate_managed_agent_names(&self.config_path)?;
+        Ok(config)
+    }
+
+    /// Checks that operator-provided certificate files load, since a wrong path or a key that
+    /// does not fit would leave the restarted server unable to listen at all.
+    ///
+    /// A self-signed certificate is not checked: startup creates it whenever it is unusable.
+    async fn validate_restart_tls(
+        config: &redoor_core::config::RedoorConfig,
+    ) -> anyhow::Result<()> {
+        let Some(redoor_core::config::ServerTls::Files { cert, key }) = config
+            .server
+            .as_ref()
+            .and_then(|server| server.tls.as_ref())
+        else {
+            return Ok(());
+        };
+        crate::tls::ServerCertificate::files(cert, key)
+            .acceptor()
+            .await?;
         Ok(())
     }
 
@@ -77,7 +105,9 @@ pub(crate) async fn restart_server_handler(State(state): State<ServerState>) -> 
         Ok(()) => Json(RestartResponse { restarting: true }).into_response(),
         Err(error) => {
             let status = match error {
-                RestartRefused::InvalidConfig(_) => StatusCode::BAD_REQUEST,
+                RestartRefused::InvalidConfig(_) | RestartRefused::InvalidTls(_) => {
+                    StatusCode::BAD_REQUEST
+                }
                 RestartRefused::InProgress => StatusCode::CONFLICT,
             };
             (

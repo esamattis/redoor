@@ -14,6 +14,9 @@ pub struct ServerInfoResponse {
     pub agent_token: String,
     /// Absolute path of the TOML config file this process loaded.
     pub config_path: String,
+    /// Whether the server serves HTTPS with its generated self-signed certificate, so the
+    /// agent config the UI renders turns certificate verification off.
+    pub self_signed_tls: bool,
     /// Absolute path of the running server binary.
     pub exe_path: String,
     /// Primary non-loopback IP selected from the server's local routing table.

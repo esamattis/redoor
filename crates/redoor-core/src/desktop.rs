@@ -181,7 +181,7 @@ pub fn first_run_login_message() -> &'static str {
 }
 
 /// Builds the first-run login URL opened after starter config creation.
-pub fn first_run_login_url(bind: &str, port: u16) -> String {
+pub fn first_run_login_url(bind: &str, port: u16, tls: bool) -> String {
     // Prefer loopback in the browser even when the process listens on all interfaces.
     let host = if bind == "0.0.0.0" || bind == "::" {
         "127.0.0.1"
@@ -189,7 +189,8 @@ pub fn first_run_login_url(bind: &str, port: u16) -> String {
         bind
     };
     let message = percent_encode_component(first_run_login_message());
-    format!("http://{host}:{port}/login#message={message}")
+    let scheme = if tls { "https" } else { "http" };
+    format!("{scheme}://{host}:{port}/login#message={message}")
 }
 
 /// Percent-encodes a single URI component so login hints survive the URL fragment.
@@ -273,7 +274,7 @@ mod tests {
     /// First-run URLs keep the login hint in the fragment for the SPA to render.
     #[test]
     fn first_run_login_url_uses_loopback_and_fragment_message() {
-        let url = first_run_login_url("0.0.0.0", 3000);
+        let url = first_run_login_url("0.0.0.0", 3000, false);
         assert!(
             url.starts_with("http://127.0.0.1:3000/login#message="),
             "all-interfaces bind must open loopback: {url}"

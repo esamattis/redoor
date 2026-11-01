@@ -100,5 +100,7 @@ mountpoints = "0.2.1"
 libloading = "0.9.0"
 objc2 = "0.6.4"
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "FoundationErrors", "NSError", "NSFileManager", "NSObject", "NSString", "NSURL"] }
-rcgen = "0.14.5"
+# Generates the server's self-signed HTTPS certificate. aws-lc-rs, the provider rustls already
+# uses, instead of the default ring, so the binary carries one crypto library.
+rcgen = { version = "0.14.5", default-features = false, features = ["aws_lc_rs", "pem"] }
 tokio-rustls = "0.26.4"

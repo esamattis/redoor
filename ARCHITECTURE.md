@@ -261,6 +261,9 @@ The agent runtime and the implementation of every command.
 - `vault`: `VaultStore`, the shared `vault.json` with its proof checks and validation.
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
+- `tls`: built-in HTTPS, see "Built-in HTTPS". `ServerCertificate` loads the operator's PEM
+  files or creates the self-signed certificate, and `ServerListener` is the one listener type
+  `axum::serve` runs on, plain or with TLS.
 
 ### `redoor-cli`
 
@@ -277,6 +280,8 @@ keeps file content inline and capped at 64 KiB.
 - `credentials`: the token saved by `login` in `<data_dir>/remote-credentials.json` (0600,
   in a 0700 directory, never followed through symlinks). `REDOOR_REMOTE_SERVER` plus
   `REDOOR_REMOTE_TOKEN` override it, so CI jobs and AI agents need no saved login.
+  `login --insecure-tls` skips certificate verification for a self-signed server and is
+  saved with the token; `REDOOR_REMOTE_INSECURE_TLS` does the same for any credential source.
 - `login`: `LoginFlow` behind a `Prompter` trait (dialoguer on a terminal, scripted answers
   in tests). Every prompt also has a flag, so the same command works in scripts.
 - `progress`: the single redrawn stderr line of `cp`, shown only when stderr is a terminal so
@@ -360,13 +365,51 @@ behind NAT, on a phone (Termux) or on a host that is only reachable over SSH.
 - **SSH-backed agents** are also watchdog-managed. The server runs `ssh -R
   <random-port>:<server>` and starts the agent on the remote host pointing at
   `ws://localhost:<random-port>/api/v1/agent/ws`. What looks like a local connection on the remote host
-  reaches the server through the tunnel. The token is passed on SSH stdin and the password
+  reaches the server through the tunnel. With built-in HTTPS the agent instead gets
+  `wss://localhost:<server-port>/...` plus `--connect-address localhost:<random-port>`, the
+  relay mechanism for TLS servers (see "Built-in HTTPS"). The token is passed on SSH stdin and the password
   through askpass, so neither appears on a command line. A device can instead use a
   redoor-managed SSH key and a pinned host key (see "SSH device keys"). `redoor agent relay`
   runs the same mechanism without a server, for agents of a remote server.
 - **Browsers, the CLI and MCP clients** only use the REST API, the `/mcp` endpoint and browser
   websockets. They never talk to agents directly; the server translates each request into
   agent commands.
+
+## Built-in HTTPS
+
+`[server.tls]` makes the server terminate TLS itself, for private deployments without a
+reverse proxy or a domain name. Without the table it serves plain HTTP, the default, since a
+fresh install only listens on loopback.
+
+- **Certificate.** `cert` and `key` are the operator's PEM files (read on every start, so a
+  renewed certificate only needs a restart). `self_signed = true` instead makes the server
+  create a key and certificate in `<data_dir>/tls/` on the first start (key mode 0600,
+  written to temp files and renamed into place). The certificate names `localhost`, the
+  loopback addresses, the hostname, a specific bind address and the primary LAN address. It
+  is valid for 825 days and has the server-auth usage, because Apple platforms refuse server
+  certificates without them even after a user accepted the warning. Later starts reuse it, so
+  browsers keep the exception a user accepted; it is only replaced when a file is missing or
+  it expires within 30 days (checked by verifying it against itself with rustls, so no X.509
+  parser is needed). Startup logs the certificate's SHA-256 fingerprint so users can compare
+  it with the one the browser shows. The restart route loads operator files before shutting
+  down, so a wrong path cannot take the server down.
+- **Listener.** `ServerListener` owns the TCP socket and runs each handshake in a task of its
+  own (10 s timeout), so a client that connects and stays silent cannot stop the accept loop.
+  Dropping the listener on restart closes the port and aborts pending handshakes. TLS offers
+  only HTTP/1.1 through ALPN, like browsers use over plain HTTP: over HTTP/2 browsers would
+  open WebSockets with extended CONNECT, which the `get` WebSocket routes do not accept.
+- **Cookies** are always `Secure` with built-in TLS; `cookie_secure` is for proxies.
+- **Remote CLI.** `redoor remote` verifies the certificate unless `login --insecure-tls`
+  (saved with the token) or `REDOOR_REMOTE_INSECURE_TLS` turns it off.
+- **Agents.** A standalone agent verifies the server certificate unless `--insecure-tls`
+  (`REDOOR_AGENT_INSECURE_TLS`, `[agent] insecure_tls`) turns verification off, for
+  self-signed servers. The UI's agent config snippet adds `insecure_tls = true` when the
+  server uses its self-signed certificate. Managed agents (local and SSH) always connect to
+  `localhost`, so no certificate can match the name they use; the server starts them with
+  `--insecure-tls` (`LocalServerEndpoint`). That loses nothing over the plain
+  `ws://localhost` they use without TLS, because their traffic is on loopback or inside the
+  SSH tunnel until it reaches the server. Insecure mode still verifies the handshake
+  signature, only the certificate's trust, name and dates are skipped.
 
 ## One connection per agent
 

@@ -26,7 +26,7 @@ use uuid::Uuid;
 
 use super::{
     client::RemoteClient,
-    credentials::{CredentialStore, Credentials, LOGIN_REQUIRED},
+    credentials::{CredentialStore, Credentials, LOGIN_REQUIRED, insecure_tls_from_environment},
     format_agents,
     login::{Expiry, LoginFlow, Prompter, TokenRequestArgs, TokenRequestPlan},
 };
@@ -79,6 +79,7 @@ impl Fixture {
                 server_url: self.url.clone(),
                 token: token.to_owned(),
                 token_id: Uuid::new_v4(),
+                insecure_tls: false,
             })
             .await
             .unwrap();
@@ -355,6 +356,57 @@ fn environment_override_requires_both_variables() {
     // Only one set is a configuration mistake.
     assert!(Credentials::from_environment(Some("http://x".into()), None).is_err());
     assert!(Credentials::from_environment(None, Some(TOKEN.into())).is_err());
+}
+
+/// `REDOOR_REMOTE_INSECURE_TLS` reads like clap's flag env values, so every command agrees.
+#[test]
+fn insecure_tls_environment_uses_flag_values() {
+    // Unset and the usual "off" spellings keep certificate verification on.
+    for off in [
+        None,
+        Some(""),
+        Some("0"),
+        Some("false"),
+        Some("No"),
+        Some("off"),
+    ] {
+        assert!(
+            !insecure_tls_from_environment(off.map(str::to_owned)),
+            "{off:?}"
+        );
+    }
+    // Any other value turns it off, as `--insecure-tls` does.
+    for on in ["1", "true", "yes", "TRUE"] {
+        assert!(insecure_tls_from_environment(Some(on.to_owned())), "{on}");
+    }
+}
+
+/// Logins saved before `insecure_tls` existed must keep loading, with verification on.
+#[tokio::test]
+async fn credentials_without_insecure_tls_load_with_verification() {
+    let directory = redoor_core::test_support::TempDir::create();
+    let store = CredentialStore::new(directory.path().to_path_buf());
+    store
+        .save(&Credentials {
+            version: 1,
+            server_url: "https://redoor.example".to_owned(),
+            token: TOKEN.to_owned(),
+            token_id: Uuid::new_v4(),
+            insecure_tls: false,
+        })
+        .await
+        .unwrap();
+    let path = directory.path().join("remote-credentials.json");
+    let mut saved: serde_json::Value =
+        serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
+    saved.as_object_mut().unwrap().remove("insecure_tls");
+    tokio::fs::write(&path, serde_json::to_vec(&saved).unwrap())
+        .await
+        .unwrap();
+
+    let loaded = store.load().await.unwrap().unwrap();
+    // The missing field must default to verifying the server certificate.
+    assert!(!loaded.insecure_tls);
 }
 
 /// URL validation prevents accidental credential disclosure and preserves reverse-proxy prefixes.

@@ -143,7 +143,10 @@ pub(crate) const LOGIN: &str = r#"Examples:
     --devices all --expires 30d --yes
 
   # Limit the token to two devices
-  redoor remote login https://redoor.example.com --devices workstation,nas"#;
+  redoor remote login https://redoor.example.com --devices workstation,nas
+
+  # Log in to a server with a self-signed certificate; later commands remember it
+  redoor remote login https://192.168.1.10:7666 --insecure-tls"#;
 
 /// Shown by `redoor remote logout --help`.
 pub(crate) const LOGOUT: &str = "Examples:

@@ -14,7 +14,7 @@ use serde::Deserialize;
 
 use super::{
     AgentConfig, AgentSection, ConfiguredPassword, ConfiguredUser, LocalAgentConfig, OidcConfig,
-    RedoorConfig, RelayConfig, ServerSection, SshBackedAgentConfig, parse_relay_id,
+    RedoorConfig, RelayConfig, ServerSection, ServerTls, SshBackedAgentConfig, parse_relay_id,
     parse_server_username,
 };
 
@@ -51,6 +51,17 @@ struct RawServerSection {
     #[serde(default)]
     mcp_allowed_origins: Vec<String>,
     oidc: Option<RawOidcSection>,
+    tls: Option<RawTlsSection>,
+}
+
+/// `[server.tls]` as written; which keys may be combined is checked in `validate`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTlsSection {
+    #[serde(default)]
+    self_signed: bool,
+    cert: Option<String>,
+    key: Option<String>,
 }
 
 /// One `[[server.users]]` entry as written; both keys are checked in `validate` so a missing
@@ -98,6 +109,8 @@ const MAX_OIDC_SESSION_LIFETIME_DAYS: u64 = 400;
 struct RawAgentSection {
     partial_max_age_days: Option<u64>,
     server: Option<String>,
+    #[serde(default)]
+    insecure_tls: bool,
     name: Option<String>,
     home: Option<String>,
     log: Option<String>,
@@ -322,6 +335,7 @@ impl RawServerSection {
             ));
         }
         let oidc = self.oidc.map(RawOidcSection::validate).transpose()?;
+        let tls = self.tls.map(RawTlsSection::validate).transpose()?;
         if users.is_empty() && !pam && oidc.is_none() {
             // Older versions fell back to PAM when [server] had no credentials; say how to get
             // that back, since it is the likely cause after an upgrade.
@@ -348,6 +362,7 @@ impl RawServerSection {
             users,
             pam,
             cookie_secure: self.cookie_secure,
+            tls,
             mcp_allowed_origins: self.mcp_allowed_origins,
             oidc,
         })
@@ -531,6 +546,34 @@ fn parse_oidc_url(value: &str, key: &str) -> Result<url::Url, Invalid> {
     }
 }
 
+impl RawTlsSection {
+    /// Accepts exactly one certificate source, so it is never ambiguous which certificate the
+    /// server presents.
+    fn validate(self) -> Result<ServerTls, Invalid> {
+        let path = |value: Option<String>, key: &str| match value {
+            Some(value) if value.trim().is_empty() => Err(invalid(format!(
+                "server.tls.{key} must be a non-empty path when set"
+            ))),
+            other => Ok(other.map(PathBuf::from)),
+        };
+        let cert = path(self.cert, "cert")?;
+        let key = path(self.key, "key")?;
+        match (self.self_signed, cert, key) {
+            (true, None, None) => Ok(ServerTls::SelfSigned),
+            (true, _, _) => Err(invalid(
+                "server.tls.self_signed cannot be combined with cert or key; the self-signed certificate is kept in the data directory",
+            )),
+            (false, Some(cert), Some(key)) => Ok(ServerTls::Files { cert, key }),
+            (false, None, None) => Err(invalid(
+                "[server.tls] needs either self_signed = true or both cert and key; remove the table to serve plain HTTP",
+            )),
+            (false, _, _) => Err(invalid(
+                "server.tls.cert and server.tls.key must be set together",
+            )),
+        }
+    }
+}
+
 impl RawAgentSection {
     /// Rejects empty overrides and parses the enum-like settings.
     fn validate(self) -> Result<AgentSection, Invalid> {
@@ -543,6 +586,7 @@ impl RawAgentSection {
         Ok(AgentSection {
             partial_max_age_days: self.partial_max_age_days,
             server: non_empty(self.server, "server")?,
+            insecure_tls: self.insecure_tls,
             name: non_empty(self.name, "name")?,
             home: non_empty(self.home, "home")?,
             log: non_empty(self.log, "log")?,

@@ -30,7 +30,9 @@ jiff.workspace = true
 libc.workspace = true
 libghostty-vt.workspace = true
 nix.workspace = true
+rcgen.workspace = true
 reqwest.workspace = true
+rustls.workspace = true
 url.workspace = true
 rust-embed.workspace = true
 semver.workspace = true
@@ -41,6 +43,7 @@ similar.workspace = true
 subtle.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
+tokio-rustls.workspace = true
 tokio-util.workspace = true
 tower-http.workspace = true
 uuid.workspace = true

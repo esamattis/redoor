@@ -43,6 +43,19 @@ Tokens are listed, edited and revoked under **Access tokens** in the web UI. Ear
 versions saved a browser session in `remote-session.json`; that file is no longer used and
 can be deleted.
 
+## Servers with a self-signed certificate
+
+When the server uses [`[server.tls] self_signed = true`](config.md#servertls-built-in-https),
+add `--insecure-tls` to `login` (or `create-token`) to skip certificate verification.
+`login` saves the choice with the token, so later commands need no flag, and
+`redoor remote status` shows `Certificate: not verified`. With the environment override,
+set `REDOOR_REMOTE_INSECURE_TLS=true`. Anyone able to intercept the connection could then
+read your password and token, so only use it on networks you trust.
+
+```sh
+redoor remote login https://192.168.1.10:7666 --insecure-tls
+```
+
 ## CI jobs and AI agents
 
 Skip the login and pass a token through the environment:

@@ -24,7 +24,7 @@ pub use edit::{
     assign_missing_device_ids, edit_local_agent, edit_ssh_agent, set_server_password,
 };
 pub use import::import_agent_config_from_stdin;
-pub use local_agent::spawn_local_agent;
+pub use local_agent::{LocalServerEndpoint, spawn_local_agent};
 
 use crate::logging::LogFormat;
 use redoor_protocol::ids::AgentId;
@@ -317,12 +317,36 @@ pub struct ServerSection {
     /// `[server.pam] enabled`: whether the server process's own OS user may sign in with its
     /// system password. Only ever true on Linux.
     pub pam: bool,
-    /// When true, session cookies are marked `Secure` for HTTPS deployments.
+    /// When true, session cookies are marked `Secure` for HTTPS deployments behind a proxy.
+    /// Built-in TLS ([`ServerSection::tls`]) marks them `Secure` regardless.
     pub cookie_secure: bool,
+    /// `[server.tls]`: serve HTTPS directly instead of plain HTTP; `None` serves plain HTTP,
+    /// which stays the default because a fresh install only listens on loopback.
+    pub tls: Option<ServerTls>,
     /// Browser origins allowed to call MCP; origin-less native clients do not need an entry.
     pub mcp_allowed_origins: Vec<String>,
     /// Optional OpenID Connect sign-in offered next to the password login.
     pub oidc: Option<OidcConfig>,
+}
+
+/// Where the server's HTTPS certificate comes from.
+///
+/// Both forms keep the private key in a file rather than in the config, so the config can be
+/// shared or shown in the UI without leaking it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ServerTls {
+    /// `self_signed = true`: the server creates a certificate in its data directory on the
+    /// first start and reuses it afterwards. For private deployments without a domain name,
+    /// where browsers and agents are told to accept it explicitly.
+    SelfSigned,
+    /// `cert` and `key`: operator-provided PEM files, such as a Let's Encrypt chain, read on
+    /// every start so a renewed certificate only needs a restart.
+    Files {
+        /// PEM certificate chain, leaf first.
+        cert: PathBuf,
+        /// PEM private key of the leaf certificate.
+        key: PathBuf,
+    },
 }
 
 /// Parsed `[server.oidc]` table enabling browser sign-in through an OpenID Connect provider.
@@ -401,6 +425,8 @@ pub struct AgentSection {
     pub partial_max_age_days: Option<u64>,
     /// Redoor server URL (`http(s)://` or `ws(s)://`); path optional and forced to the agent endpoint.
     pub server: Option<String>,
+    /// Skips server certificate verification, for servers using a self-signed certificate.
+    pub insecure_tls: bool,
     /// Registration name; defaults to the hostname.
     pub name: Option<String>,
     /// Directory the UI opens first.
@@ -1971,5 +1997,104 @@ password = {}
             .to_string();
         // Unknown keys are reported like everywhere else in the file.
         assert!(error.contains("client_secrett"), "{error}");
+    }
+
+    /// Parses a `[server]` section with a password login plus the given `[server.tls]` body.
+    fn parse_tls(tls: &str) -> Result<RedoorConfig, ConfigError> {
+        parse_config_str(
+            Path::new("config.toml"),
+            &format!(
+                r#"agent_token = "t"
+[server]
+username = "admin"
+password = "secret"
+[server.tls]
+{tls}
+"#
+            ),
+        )
+    }
+
+    /// Both certificate sources parse into the form startup acts on.
+    #[test]
+    fn server_tls_accepts_one_certificate_source() {
+        let tls = |body: &str| {
+            parse_tls(body)
+                .expect("valid TLS settings should parse")
+                .server
+                .and_then(|server| server.tls)
+        };
+        // The self-signed switch alone selects the generated certificate.
+        assert_eq!(tls("self_signed = true"), Some(ServerTls::SelfSigned));
+        // Operator files are kept as given; startup reads them.
+        assert_eq!(
+            tls(r#"cert = "/etc/redoor/cert.pem"
+key = "/etc/redoor/key.pem""#),
+            Some(ServerTls::Files {
+                cert: PathBuf::from("/etc/redoor/cert.pem"),
+                key: PathBuf::from("/etc/redoor/key.pem"),
+            })
+        );
+    }
+
+    /// Plain HTTP stays the default so existing configs and fresh installs behave as before.
+    #[test]
+    fn server_tls_defaults_to_plain_http() {
+        let config = parse_config_str(
+            Path::new("config.toml"),
+            r#"agent_token = "t"
+[server]
+username = "admin"
+password = "secret"
+"#,
+        )
+        .expect("config without TLS should parse");
+        // No table means no TLS listener.
+        assert_eq!(config.server.and_then(|server| server.tls), None);
+    }
+
+    /// Ambiguous or incomplete certificate settings fail at startup instead of silently
+    /// serving a different certificate than the operator expects.
+    #[test]
+    fn server_tls_rejects_ambiguous_or_incomplete_settings() {
+        for (body, expected) in [
+            (
+                r#"self_signed = true
+cert = "/c.pem"
+key = "/k.pem""#,
+                "cannot be combined",
+            ),
+            (r#"cert = "/c.pem""#, "must be set together"),
+            (r#"key = "/k.pem""#, "must be set together"),
+            ("", "needs either self_signed = true"),
+            ("self_signed = false", "needs either self_signed = true"),
+            (
+                r#"cert = ""
+key = "/k.pem""#,
+                "server.tls.cert must be a non-empty path",
+            ),
+        ] {
+            let error = parse_tls(body)
+                .expect_err("invalid TLS settings must be rejected")
+                .to_string();
+            // Each message names what to change.
+            assert!(error.contains(expected), "{body:?}: {error}");
+        }
+    }
+
+    /// Standalone agents read `insecure_tls` so a pasted config works with self-signed servers.
+    #[test]
+    fn agent_section_reads_insecure_tls() {
+        let config = parse_config_str(
+            Path::new("config.toml"),
+            r#"agent_token = "t"
+[agent]
+server = "https://redoor.example.com"
+insecure_tls = true
+"#,
+        )
+        .expect("agent config should parse");
+        // The flag must reach the agent settings; it defaults to verifying certificates.
+        assert!(config.agent.is_some_and(|agent| agent.insecure_tls));
     }
 }

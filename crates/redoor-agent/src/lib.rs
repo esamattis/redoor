@@ -49,6 +49,7 @@ pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
     let default_directory = settings.default_directory().await?;
     let (agent_id, id_source) = settings.device_id(&runtime.paths).await?;
 
+    let insecure_tls = settings.insecure_tls;
     let connection = connection::AgentConnection::new(
         settings.ws_address,
         settings.connect_address,
@@ -78,6 +79,13 @@ pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
                 "No agent config file loaded; using CLI/env settings"
             );
         }
+    }
+    // Managed agents always skip verification on their localhost tunnel, which is no risk.
+    if insecure_tls && std::env::var_os(redoor_core::process::MANAGED_AGENT_ENV).is_none() {
+        log!(
+            Level::Warning,
+            "TLS certificate verification is disabled; anyone able to intercept the connection could impersonate the server"
+        );
     }
     log!(
         Level::Info,
@@ -180,7 +188,7 @@ struct AgentSettings {
     ws_address: String,
     /// Optional physical TCP endpoint used when a tunnel differs from the logical server URL.
     connect_address: Option<String>,
-    /// Disables certificate verification only for explicitly tunneled WSS connections.
+    /// Skips server certificate verification, for self-signed servers.
     insecure_tls: bool,
     /// Registration name; the hostname when nothing else is configured.
     name: String,
@@ -266,7 +274,8 @@ impl AgentSettings {
         Ok(Self {
             ws_address,
             connect_address: args.connect_address,
-            insecure_tls: args.insecure_tls,
+            // A bool flag cannot say "false", so either source turning it on wins.
+            insecure_tls: args.insecure_tls || agent_section.insecure_tls,
             name,
             agent_id,
             token,

@@ -26,6 +26,7 @@ pub(crate) async fn server_info_handler(
             app_name: state.runtime.paths.app_name().to_string(),
             agent_token: state.auth.agent_token().to_string(),
             config_path: state.config_path.display().to_string(),
+            self_signed_tls: state.self_signed_tls,
             exe_path,
             external_ip,
             hostname,

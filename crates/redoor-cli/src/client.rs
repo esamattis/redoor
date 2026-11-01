@@ -5,7 +5,9 @@ use redoor_protocol::api::transfers::CopyEndpoint;
 use reqwest::{Method, RequestBuilder, Response, StatusCode, Url, header};
 use serde::{Serialize, de::DeserializeOwned};
 
-use super::credentials::{CredentialStore, Credentials, LOGIN_REQUIRED};
+use super::credentials::{
+    CredentialStore, Credentials, INSECURE_TLS_ENV, LOGIN_REQUIRED, insecure_tls_from_environment,
+};
 
 /// Retains HTTP status so callers can tell missing paths from permission failures.
 #[derive(Debug, thiserror::Error)]
@@ -21,6 +23,8 @@ pub struct RemoteClient {
     http: reqwest::Client,
     server: Url,
     token: String,
+    /// Whether the server certificate is not verified, so `status` can say so.
+    insecure_tls: bool,
 }
 
 impl RemoteClient {
@@ -46,10 +50,14 @@ impl RemoteClient {
     }
 
     /// Disables redirects so credentials never follow an API redirect to a different origin.
-    pub(crate) fn transport() -> Result<reqwest::Client> {
+    ///
+    /// `insecure_tls` skips certificate verification for servers with a self-signed
+    /// certificate; anyone able to intercept the connection could then read the token.
+    pub(crate) fn transport(insecure_tls: bool) -> Result<reqwest::Client> {
         Ok(reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(15))
+            .danger_accept_invalid_certs(insecure_tls)
             .build()?)
     }
 
@@ -62,16 +70,28 @@ impl RemoteClient {
             Some(credentials) => credentials,
             None => store.load().await?.context(LOGIN_REQUIRED)?,
         };
-        Self::with_token(&credentials.server_url, credentials.token)
+        Self::from_credentials(credentials)
     }
 
-    /// Builds a client for an explicit server and token, e.g. to revoke a replaced login.
-    pub(crate) fn with_token(server: &str, token: String) -> Result<Self> {
+    /// Builds a client for saved or explicit credentials, e.g. to revoke a replaced login.
+    ///
+    /// `REDOOR_REMOTE_INSECURE_TLS` applies to every credential source, so the environment
+    /// override works too and a saved login to a server that has since switched to a
+    /// self-signed certificate keeps working without logging in again.
+    pub(crate) fn from_credentials(credentials: Credentials) -> Result<Self> {
+        let insecure_tls = credentials.insecure_tls
+            || insecure_tls_from_environment(std::env::var(INSECURE_TLS_ENV).ok());
         Ok(Self {
-            http: Self::transport()?,
-            server: Self::parse_server(server)?,
-            token,
+            http: Self::transport(insecure_tls)?,
+            server: Self::parse_server(&credentials.server_url)?,
+            token: credentials.token,
+            insecure_tls,
         })
+    }
+
+    /// Whether the server certificate is not verified.
+    pub(crate) fn insecure_tls(&self) -> bool {
+        self.insecure_tls
     }
 
     /// The validated server base URL, which prefixes every endpoint.

@@ -25,8 +25,8 @@ use redoor_core::config::{AgentConfig, LocalAgentConfig, spawn_local_agent};
 /// register supervisors exactly like startup does.
 #[derive(Clone)]
 pub(crate) struct ManagedLauncher {
-    /// Listener port spawned agents connect back to.
-    redoor_port: u16,
+    /// This server's listener, which spawned agents connect back to.
+    server: redoor_core::config::LocalServerEndpoint,
     /// Registration secret handed to spawned agents.
     agent_token: String,
     /// Namespace and release cache used by local and SSH spawns.
@@ -36,12 +36,12 @@ pub(crate) struct ManagedLauncher {
 impl ManagedLauncher {
     /// Captures the listener, secret and provisioning context shared by every managed agent.
     pub(crate) fn new(
-        redoor_port: u16,
+        server: redoor_core::config::LocalServerEndpoint,
         agent_token: String,
         provision: crate::ssh::ProvisionContext,
     ) -> Self {
         Self {
-            redoor_port,
+            server,
             agent_token,
             provision,
         }
@@ -135,7 +135,7 @@ impl ManagedLauncher {
                 spawn_local_agent(
                     &config,
                     &launcher.provision.app_name,
-                    launcher.redoor_port,
+                    launcher.server,
                     &launcher.agent_token,
                 )
                 .await
@@ -195,7 +195,7 @@ impl ManagedLauncher {
         // ExitOnForwardFailure makes an occupied random remote port terminate the
         // child; the supervisor's next cycle calls this again with a new port.
         self.provision
-            .start_managed(config, self.redoor_port, &self.agent_token, &status)
+            .start_managed(config, self.server, &self.agent_token, &status)
             .await
             .map_err(SpawnError::Provision)
     }

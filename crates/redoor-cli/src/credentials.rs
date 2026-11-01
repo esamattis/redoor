@@ -19,6 +19,10 @@ pub const LOGIN_REQUIRED: &str =
 
 /// Only file layout this build understands; anything else asks the user to log in again.
 const CREDENTIALS_VERSION: u32 = 1;
+/// Environment variable that turns off server certificate verification, for servers with a
+/// self-signed certificate. Read by clap for `login`/`create-token` and by
+/// [`insecure_tls_from_environment`] for every other command.
+pub const INSECURE_TLS_ENV: &str = "REDOOR_REMOTE_INSECURE_TLS";
 /// Name of the file in the application data directory.
 const CREDENTIALS_FILE: &str = "remote-credentials.json";
 /// A credentials file is tiny; refusing large files bounds memory for corrupt or hostile state.
@@ -32,6 +36,22 @@ pub struct Credentials {
     pub server_url: String,
     pub token: String,
     pub token_id: Uuid,
+    /// Saved from `login --insecure-tls`, so later commands reach the same self-signed server
+    /// without repeating the flag. Defaults to off for files written before it existed.
+    #[serde(default)]
+    pub insecure_tls: bool,
+}
+
+/// Reads [`INSECURE_TLS_ENV`] like clap's `FalseyValueParser` reads it for the login flags, so
+/// one value means the same thing for every command: unset, empty, `0`, `false`, `no`, `off`,
+/// `n` and `f` are off, anything else is on.
+pub fn insecure_tls_from_environment(value: Option<String>) -> bool {
+    value.is_some_and(|value| {
+        !matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "" | "0" | "false" | "no" | "off" | "n" | "f"
+        )
+    })
 }
 
 impl Credentials {
@@ -47,6 +67,8 @@ impl Credentials {
                 server_url,
                 token,
                 token_id: Uuid::nil(),
+                // `RemoteClient::from_credentials` applies `REDOOR_REMOTE_INSECURE_TLS`.
+                insecure_tls: false,
             })),
             (None, None) => Ok(None),
             _ => bail!("Set both REDOOR_REMOTE_SERVER and REDOOR_REMOTE_TOKEN, or neither"),

@@ -26,7 +26,7 @@ use redoor_protocol::wire::log::Level;
 
 use super::ProvisionContext;
 use super::prepare::{
-    Preparation, PreparedSshBackedAgent, RelayOptions, SecureRelayServer, TunnelDestination,
+    Preparation, PreparedSshBackedAgent, RelayOptions, SecureServer, TunnelDestination,
 };
 use crate::watchdog::ProvisioningStatusSink;
 
@@ -79,7 +79,7 @@ pub async fn run_relay(
     let mut reexec_requests = redoor_core::process::listen_for_reexec()
         .context("Failed to listen for the upgrade re-exec signal")?;
     let relay = Relay {
-        secure_server: server.is_secure().then(|| SecureRelayServer {
+        secure_server: server.is_secure().then(|| SecureServer {
             authority: server.authority(),
             insecure: relay.insecure,
         }),
@@ -111,7 +111,7 @@ struct Relay {
     /// Where the reverse tunnel ends, as reached from this machine.
     destination: TunnelDestination,
     /// TLS identity kept in the agent URL for `wss://` servers.
-    secure_server: Option<SecureRelayServer>,
+    secure_server: Option<SecureServer>,
     /// Local binary uploaded before the first launch, when configured.
     binary_source: Option<PathBuf>,
     /// Remote namespace isolating this relay's agent state.
@@ -222,9 +222,9 @@ impl Relay {
             config: &self.config,
             destination: self.destination.clone(),
             agent_token: &self.token,
+            secure_server: self.secure_server.clone(),
             relay: RelayOptions {
                 monitor_forward_failure: true,
-                secure_server: self.secure_server.clone(),
                 binary_source: self.binary_source.as_deref(),
                 agent_app_name: Some(self.agent_app_name.clone()),
             },

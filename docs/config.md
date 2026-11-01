@@ -59,9 +59,34 @@ Required when running `redoor server`. Optional in agent-only configs.
 | `log_format`    | string        | `line`             | Process stdout/file format: `line` or newline-delimited `json`. Override with `--log-format` or `REDOOR_SERVER_LOG_FORMAT`. Browser streams are always structured.            |
 | `username`      | string        | see auth below     | Shorthand for one `[[server.users]]` entry: its login name. Set together with `password`.                                                                                     |
 | `password`      | string        | see auth below     | Shorthand for one `[[server.users]]` entry: its password, in plaintext or as an Argon2 PHC hash (`$argon2id$...`). Non-empty when set.                                       |
-| `cookie_secure` | bool          | `false`            | When `true`, session cookies are marked `Secure` (use behind HTTPS).                                                                                                          |
+| `cookie_secure` | bool          | `false`            | When `true`, session cookies are marked `Secure` (use behind an HTTPS reverse proxy). Always on with [`[server.tls]`](#servertls-built-in-https).                             |
 
 \*Default log path: `~/.local/share/redoor/server.log` (non-root) or `/var/log/redoor/server.log` (root).
+
+### `[server.tls]` (built-in HTTPS)
+
+Without this table the server serves plain HTTP. With it, the server serves HTTPS on the same `port` and no longer answers plain HTTP. Use either a self-signed certificate or your own files:
+
+| Key           | Type   | Default | Description                                                                                                                              |
+| ------------- | ------ | ------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `self_signed` | bool   | `false` | Create a self-signed certificate on the first start and reuse it afterwards. Cannot be combined with `cert`/`key`.                     |
+| `cert`        | string | none    | PEM certificate chain, leaf first (for example Let's Encrypt `fullchain.pem`). Set together with `key`.                                 |
+| `key`         | string | none    | PEM private key of the certificate. Set together with `cert`.                                                                            |
+
+```toml
+[server.tls]
+self_signed = true
+
+# or your own certificate, read on every start (restart after renewing it):
+# cert = "/etc/redoor/fullchain.pem"
+# key = "/etc/redoor/privkey.pem"
+```
+
+The self-signed certificate and its key are stored in `~/.local/share/redoor/tls/` (`self-signed-cert.pem`, `self-signed-key.pem`). It is valid for `localhost`, `127.0.0.1`, `::1`, the hostname, a specific `bind` address and the primary LAN address, for 825 days, and is replaced automatically when it expires within 30 days or a file is missing. Delete both files and restart to create a new one, for example after changing the hostname. The server log shows its SHA-256 fingerprint, so you can check it against the one your browser shows before accepting the warning.
+
+Browsers warn about a self-signed certificate until you accept it. The [remote CLI](remote-cli.md#servers-with-a-self-signed-certificate) logs in with `redoor remote login --insecure-tls`. Standalone agents must be told to skip verification with `insecure_tls = true` in `[agent]` (or `--insecure-tls`); the agent config shown on the UI home page already includes it. Server-managed local and SSH agents need nothing: they connect through `localhost` and the SSH tunnel and skip verification automatically, as no certificate can match `localhost` through a tunnel.
+
+Session cookies are always marked `Secure` with built-in HTTPS.
 
 ### Browser authentication
 
@@ -149,7 +174,7 @@ Adds "Sign in with …" to the login page using any OpenID Connect provider (Poc
 | `provider_name`         | string           | `single sign-on`                 | Button label: "Sign in with {provider_name}".                                                                                       |
 | `session_lifetime_days` | integer          | `30`                             | Idle lifetime of sessions created by OIDC sign-in (1–400). Every use extends it, so it only expires after this long without use.     |
 
-The provider must support the authorization code flow with PKCE (S256), and its discovered authorization and token endpoints must follow the same `https://` rule as `issuer`. The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups` (including adding or removing it), or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS.
+The provider must support the authorization code flow with PKCE (S256), and its discovered authorization and token endpoints must follow the same `https://` rule as `issuer`. The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups` (including adding or removing it), or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS through a reverse proxy; built-in [`[server.tls]`](#servertls-built-in-https) does it automatically.
 
 ```toml
 [server.oidc]
@@ -169,6 +194,7 @@ Used by a standalone `redoor agent` process (and by systemd/launchd agent units)
 | Key          | Type   | Default                     | Description                                                                                                                                  |
 | ------------ | ------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | `server`     | string | none (required to connect)  | Redoor server URL (`http(s)://` or `ws(s)://`). Path is optional and forced to the agent endpoint `/api/v1/agent/ws`. Override with positional `SERVER` / `REDOOR_AGENT_WS`. |
+| `insecure_tls` | bool | `false`                     | Skip TLS certificate verification, for a server with a [self-signed certificate](#servertls-built-in-https). Anyone able to intercept the connection could then impersonate the server. Also `--insecure-tls` / `REDOOR_AGENT_INSECURE_TLS`. |
 | `name`       | string | computer hostname           | Device name shown in the UI and remote CLI. Override with `--name` / `REDOOR_AGENT_NAME`.                                                    |
 | `home`       | string | process user home directory | Home directory opened in the UI; does not limit filesystem access. Override with `--home` / `REDOOR_AGENT_HOME`.                             |
 | `log`        | string | platform default\*          | Agent log file path. Override with `--log` / `REDOOR_AGENT_LOG`.                                                                             |
@@ -360,6 +386,7 @@ These override matching config keys when set (CLI still wins):
 | `REDOOR_AGENT_NAME`         | `[agent].name`                                            |
 | `REDOOR_AGENT_HOME`         | `[agent].home`                                            |
 | `REDOOR_AGENT_LOG`          | `[agent].log`                                             |
+| `REDOOR_AGENT_INSECURE_TLS` | `[agent].insecure_tls` (`true` to skip verification)      |
 | `REDOOR_AGENT_NOTIFICATION` | desktop notification delay after connect (`off` disables) |
 
 ## MCP browser origins

@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use axum::serve::ListenerExt;
 
 use crate::actors::router::spawn_router;
 use crate::http::auth::AuthState;
@@ -20,7 +21,9 @@ use crate::http::state::{CoordinatorArgs, ServerState};
 use crate::http::watchdog::ManagedLauncher;
 use crate::one_time_token_registry::OneTimeTokenRegistry;
 use crate::watchdog::WatchdogRegistry;
-use redoor_core::config::{AgentConfig, ConfiguredUser, RedoorConfig};
+use redoor_core::config::{
+    AgentConfig, ConfiguredUser, LocalServerEndpoint, RedoorConfig, ServerTls,
+};
 use redoor_core::log;
 use redoor_core::logging::LogFormat;
 use redoor_core::paths::AppPaths;
@@ -204,8 +207,10 @@ struct ServerConfig {
     users: Vec<ConfiguredUser>,
     /// Whether the process user may sign in with its system password.
     pam: bool,
-    /// Whether session cookies require HTTPS.
+    /// Whether session cookies require HTTPS; always true with built-in TLS.
     cookie_secure: bool,
+    /// Built-in HTTPS certificate source; `None` serves plain HTTP.
+    tls: Option<ServerTls>,
     /// Optional OpenID Connect sign-in.
     oidc: Option<redoor_core::config::OidcConfig>,
     /// Browser origins allowed to call MCP.
@@ -259,7 +264,9 @@ impl ServerConfig {
             log_format,
             users: server.users,
             pam: server.pam,
-            cookie_secure: server.cookie_secure,
+            // Browsers only reach a TLS listener over HTTPS, so the cookie never needs plain HTTP.
+            cookie_secure: server.cookie_secure || server.tls.is_some(),
+            tls: server.tls,
             oidc: server.oidc,
             mcp_allowed_origins: server.mcp_allowed_origins,
             agent_token: file.agent_token,
@@ -278,7 +285,7 @@ struct ServerRuntime {
     /// Router of the HTTP application.
     app: axum::Router,
     /// Bound listener; held so the port is ours before managed agents are told about it.
-    listener: tokio::net::TcpListener,
+    listener: crate::tls::ServerListener,
     /// Fired by the restart route to stop serving before re-exec.
     shutdown: tokio::sync::oneshot::Receiver<()>,
     /// Supervisors that must stop their children before the process image is replaced.
@@ -287,6 +294,8 @@ struct ServerRuntime {
     bind: String,
     /// Listener port, also used for the first-run login URL.
     port: u16,
+    /// Whether the listener serves HTTPS, for the first-run login URL.
+    tls: bool,
 }
 
 impl ServerRuntime {
@@ -309,6 +318,16 @@ impl ServerRuntime {
 
         let address = config.listen_address();
         let data_dir = runtime.paths.data_dir()?;
+        // Loaded before anything else listens or spawns, so a bad certificate fails startup
+        // instead of leaving a server agents cannot reach.
+        let tls_acceptor = match &config.tls {
+            Some(tls) => Some(Self::tls_acceptor(tls, &data_dir, &config.bind).await?),
+            None => None,
+        };
+        let server_endpoint = LocalServerEndpoint {
+            port: config.port,
+            tls: tls_acceptor.is_some(),
+        };
         let pam = Self::pam_login(config.pam).await?;
         let auth = AuthState::new(
             config.users,
@@ -348,7 +367,7 @@ impl ServerRuntime {
         let ssh_keys = crate::ssh::keys::SshKeyStore::for_data_dir(&data_dir);
         let held_ssh_keys = crate::ssh::held_keys::HeldSshKeys::default();
         let launcher = ManagedLauncher::new(
-            config.port,
+            server_endpoint,
             config.agent_token,
             crate::ssh::ProvisionContext {
                 app_name: runtime.paths.app_name().to_string(),
@@ -391,6 +410,7 @@ impl ServerRuntime {
             tokens,
             mcp,
             config_path: config.config_path,
+            self_signed_tls: matches!(config.tls, Some(ServerTls::SelfSigned)),
             config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),
             editor_buffer_lock: Arc::default(),
             ssh_keys,
@@ -402,16 +422,18 @@ impl ServerRuntime {
         state.clone().restart_on_reexec_signal(reexec_requests);
         let app = build_app(state);
 
-        let listener = tokio::net::TcpListener::bind(&address)
+        let tcp = tokio::net::TcpListener::bind(&address)
             .await
             .with_context(|| format!("Failed to bind to address {address}"))?;
+        let listener = crate::tls::ServerListener::new(tcp, tls_acceptor);
         if let Err(error) = redoor_core::systemd_notify::ready().await {
             log!(
                 Level::Warning,
                 "Failed to notify systemd readiness: {error}"
             );
         }
-        println!("Server running on http://{address}");
+        let scheme = if server_endpoint.tls { "https" } else { "http" };
+        println!("Server running on {scheme}://{address}");
 
         // Registered after binding so later lazy starts connect to a resolved port.
         // Registration creates dormant supervisors only; nothing starts until a tab,
@@ -428,7 +450,31 @@ impl ServerRuntime {
             watchdogs,
             bind: config.bind,
             port: config.port,
+            tls: server_endpoint.tls,
         })
+    }
+
+    /// Loads the configured certificate, creating the self-signed one when needed, and logs
+    /// its fingerprint so users can compare it with the one their browser shows.
+    async fn tls_acceptor(
+        tls: &ServerTls,
+        data_dir: &std::path::Path,
+        bind: &str,
+    ) -> Result<tokio_rustls::TlsAcceptor> {
+        let certificate = crate::tls::ServerCertificate::prepare(tls, data_dir, bind)
+            .await
+            .context("Failed to prepare the TLS certificate")?;
+        let acceptor = certificate
+            .acceptor()
+            .await
+            .context("Failed to load the TLS certificate")?;
+        log!(
+            Level::Info,
+            "Serving HTTPS: cert={}, sha256={}",
+            certificate.cert_path().display(),
+            certificate.fingerprint().await?
+        );
+        Ok(acceptor)
     }
 
     /// Loads PAM when `[server.pam] enabled = true`. Config validation already refused PAM
@@ -456,7 +502,7 @@ impl ServerRuntime {
         if !redoor_core::desktop::first_run_should_open_browser() {
             return;
         }
-        let login_url = redoor_core::desktop::first_run_login_url(&self.bind, self.port);
+        let login_url = redoor_core::desktop::first_run_login_url(&self.bind, self.port, self.tls);
         println!("Opening {login_url}");
         tokio::spawn(async move {
             if let Err(error) = redoor_core::desktop::open_with_desktop(&login_url).await {
@@ -475,8 +521,10 @@ impl ServerRuntime {
     /// serve stops them too, so an erroring server never leaves SSH agents orphaned.
     async fn serve_until_restart(self) -> Result<()> {
         let shutdown = self.shutdown;
+        // The no-op tap is how axum offers `ConnectInfo<SocketAddr>` for a custom listener;
+        // it only implements it directly for its own `TcpListener`.
         let served = axum::serve(
-            self.listener,
+            self.listener.tap_io(|_| {}),
             self.app.into_make_service_with_connect_info::<SocketAddr>(),
         )
         .with_graceful_shutdown(async {

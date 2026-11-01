@@ -276,6 +276,16 @@ pub struct TokenRequestArgs {
     /// Create the token without the final confirmation.
     #[arg(long)]
     yes: bool,
+    /// Skip TLS certificate verification, for a server with a self-signed certificate.
+    /// `login` saves this for later commands. Anyone able to intercept the connection could
+    /// then read the password and the token.
+    /// The falsey parser reads the environment like `insecure_tls_from_environment` does.
+    #[arg(
+        long,
+        env = super::credentials::INSECURE_TLS_ENV,
+        value_parser = clap::builder::FalseyValueParser::new()
+    )]
+    insecure_tls: bool,
 }
 
 impl TokenRequestArgs {
@@ -330,6 +340,9 @@ impl<P: Prompter> LoginFlow<P> {
         self.require_flags()?;
         let terminal = TerminalState::capture(self.interactive);
         let username = interruptible(&terminal, self.username()).await?;
+        if self.args.insecure_tls {
+            eprintln!("Warning: TLS certificate verification is disabled for {server}");
+        }
         let session = interruptible(&terminal, self.open_session(&server, &username)).await?;
         let result = interruptible(&terminal, async {
             let agents = session.agents().await?;
@@ -415,7 +428,9 @@ impl<P: Prompter> LoginFlow<P> {
         };
         for attempt in 1..=attempts {
             let password = self.password().await?;
-            if let Some(session) = TransientSession::open(server, username, password).await? {
+            if let Some(session) =
+                TransientSession::open(server, username, password, self.args.insecure_tls).await?
+            {
                 return Ok(session);
             }
             if attempt < attempts {
@@ -609,8 +624,13 @@ struct TransientSession {
 
 impl TransientSession {
     /// Logs in; `None` means the server rejected the username or password.
-    async fn open(server: &Url, username: &str, password: String) -> Result<Option<Self>> {
-        let http = RemoteClient::transport()?;
+    async fn open(
+        server: &Url,
+        username: &str,
+        password: String,
+        insecure_tls: bool,
+    ) -> Result<Option<Self>> {
+        let http = RemoteClient::transport(insecure_tls)?;
         let response = http
             .post(server.join("api/v1/login")?)
             .timeout(std::time::Duration::from_secs(30))
@@ -691,12 +711,17 @@ impl TransientSession {
 /// the same server so re-logins do not leave orphan tokens behind.
 pub(crate) async fn login(store: CredentialStore, args: TokenRequestArgs) -> Result<()> {
     let interactive = args.interactive();
+    let insecure_tls = args.insecure_tls;
     let (server, issued) = LoginFlow::new(DialoguerPrompter, interactive, args)
         .issue()
         .await?;
     if let Ok(Some(previous)) = store.load().await
         && RemoteClient::parse_server(&previous.server_url).is_ok_and(|url| url == server)
-        && let Ok(client) = RemoteClient::with_token(&previous.server_url, previous.token)
+        // The same server just answered with these TLS settings, so revoke with them too.
+        && let Ok(client) = RemoteClient::from_credentials(Credentials {
+            insecure_tls: previous.insecure_tls || insecure_tls,
+            ..previous
+        })
         && let Ok(request) = client.request(Method::DELETE, "api/v1/tokens/current")
     {
         let _ = client
@@ -713,6 +738,7 @@ pub(crate) async fn login(store: CredentialStore, args: TokenRequestArgs) -> Res
                 .id
                 .parse()
                 .context("Server returned an invalid token id")?,
+            insecure_tls,
         })
         .await?;
     eprintln!(

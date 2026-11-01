@@ -95,7 +95,7 @@ agent_token = "secret"
 [server]
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
-# cookie_secure = false # set true behind HTTPS
+# cookie_secure = false # set true behind an HTTPS reverse proxy
 
 # Web UI login: list people with passwords, enable PAM (Linux), or both.
 [[server.users]]
@@ -105,6 +105,11 @@ password = "long-private-password"
 # Sign in with the system password of the user running the server.
 # [server.pam]
 # enabled = true
+
+# Serve HTTPS with a self-signed certificate created on the first start
+# (or set cert = "..." and key = "..." to use your own).
+# [server.tls]
+# self_signed = true
 
 ## Automatically spawn agents via SSH
 [[agents]]

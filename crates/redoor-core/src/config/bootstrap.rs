@@ -56,10 +56,15 @@ agent_token = {agent_token}
 {credentials}
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
-# cookie_secure = false # set true behind HTTPS
+# cookie_secure = false # set true behind an HTTPS reverse proxy
 # mcp_allowed_origins = ["https://client.example"] # browser MCP clients only
 # log_format = "line" # use "json" for newline-delimited JSON output
 {pam}
+# Serve HTTPS with a self-signed certificate created on the first start
+# (or set cert = "..." and key = "..." to use your own).
+# [server.tls]
+# self_signed = true
+
 [[agents]]
 # local agent that runs on the same computer as the server
 id = "{local_agent_id}"

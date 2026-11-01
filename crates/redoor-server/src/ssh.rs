@@ -68,7 +68,7 @@ mod transport;
 use redoor_core::config::SshBackedAgentConfig;
 
 use crate::watchdog::ProvisioningStatusSink;
-use prepare::{Preparation, RelayOptions, TunnelDestination};
+use prepare::{Preparation, RelayOptions, SecureServer, TunnelDestination};
 
 /// Why preparing an SSH target failed; every variant's text is shown to operators as is.
 #[derive(Debug, thiserror::Error)]
@@ -130,11 +130,14 @@ impl ProvisionContext {
     /// Starts a server-managed agent whose tunnel ends at this server's own listener,
     /// installing its binary first when needed.
     ///
+    /// With built-in TLS the agent speaks `wss://` through the tunnel and skips certificate
+    /// verification, see [`redoor_core::config::LocalServerEndpoint`].
+    ///
     /// Called on every watchdog cycle so the starting UI always reflects a fresh probe.
     pub(crate) async fn start_managed(
         &self,
         config: &SshBackedAgentConfig,
-        redoor_port: u16,
+        server: redoor_core::config::LocalServerEndpoint,
         agent_token: &str,
         status: &ProvisioningStatusSink,
     ) -> Result<tokio::process::Child, ProvisionError> {
@@ -142,9 +145,13 @@ impl ProvisionContext {
             config,
             destination: TunnelDestination {
                 host: "localhost".to_string(),
-                port: redoor_port,
+                port: server.port,
             },
             agent_token,
+            secure_server: server.tls.then(|| SecureServer {
+                authority: server.authority(),
+                insecure: true,
+            }),
             relay: RelayOptions::default(),
             provision: self,
             status,

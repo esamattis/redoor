@@ -27,6 +27,9 @@ pub(crate) async fn status(store: CredentialStore, json: bool) -> Result<()> {
         .collect::<Vec<_>>()
         .join(", ");
     println!("Server:      {}", client.server());
+    if client.insecure_tls() {
+        println!("Certificate: not verified (--insecure-tls)");
+    }
     println!(
         "Token:       {} ({})",
         token.name.escape_debug(),
@@ -53,7 +56,7 @@ pub(crate) async fn logout(store: CredentialStore) -> Result<()> {
         return Ok(());
     };
     let revoked = async {
-        let client = RemoteClient::with_token(&credentials.server_url, credentials.token)?;
+        let client = RemoteClient::from_credentials(credentials)?;
         client
             .send(
                 client
