@@ -2738,3 +2738,12 @@ can never mint another one.
   subprotocol instead of carrying compatibility fallbacks; mismatched builds fail the upgrade
   with `426`. The integration tests speak the protocol through one shared fake agent
   (`tests/fake-agent.ts`), so a protocol change is made in one place on the test side.
+
+## Integration test process lifetimes
+
+Vitest runs isolated server processes on worker-specific ports, reusing each worker's port
+between test files and during restart scenarios. Fixture HTTP requests to that worker's
+loopback port send `Connection: close`, so Node's shared fetch pool cannot retain sockets
+belonging to a killed server. Readiness probes release their response bodies before returning.
+The transport preserves request authentication and bodies; unrelated HTTP endpoints keep their
+normal connection behavior.

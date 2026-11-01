@@ -699,6 +699,10 @@ export async function waitForPort(
                 `http://127.0.0.1:${port}/api/v1/agents`,
             );
 
+            // Readiness needs only the status; release its body instead of leaving an
+            // unread response holding a pooled connection across fixture restarts.
+            await response.body?.cancel();
+
             return response.ok || response.status === 401;
         },
     });
