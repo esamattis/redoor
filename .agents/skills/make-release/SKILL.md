@@ -24,7 +24,7 @@ Every release needs notes in `CHANGELOG.md`; the script refuses to release witho
 1. Find the latest tag with `mise exec -- git describe --tags --abbrev=0 --match 'v*'` and read every change since it with `mise exec -- git log --no-merges --format='%h %s%n%b' <latest-tag>..HEAD`. Open a commit with `git show` when its message does not make the user-facing effect clear.
 2. Write the notes under a `## Unreleased` heading directly below the `# Changelog` title, above the newest release. If the section already exists, merge the new changes into it instead of replacing what is there.
 3. Keep only what users and operators notice: features, fixes, config, CLI, API and upgrade steps. Leave out tests, CI, refactors, docs-only and agent-instruction changes.
-4. Group bullets under `### Breaking changes`, `### Features` and `### Fixes`, in that order, and omit empty groups. Merge commits that make up one change into one bullet. Write each bullet from the user's point of view and say what they must do for every breaking change.
+4. Group bullets under `### Breaking changes`, `### Features` and `### Fixes`, in that order, and omit empty groups. Every commit whose title starts with `BREAKING: ` must appear under `### Breaking changes`, but also look for unflagged breaking changes in the other commits. Merge commits that make up one change into one bullet. Write each bullet from the user's point of view and say what they must do for every breaking change.
 5. Do not write the version or date yourself, and do not commit `CHANGELOG.md`. The script renames `## Unreleased` to `## v<version>` with the date and commits it together with the version bump.
 
 ## Release
