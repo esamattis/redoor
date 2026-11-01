@@ -66,7 +66,7 @@ describe("resumable transfers", () => {
     let sourcePid: number;
     let sourceWsUrl: string;
     let destWsUrl: string;
-    let proxy: Proxy;
+    let destinationProxy: Proxy | undefined;
     let serverPort: number;
 
     beforeAll(async () => {
@@ -107,7 +107,8 @@ describe("resumable transfers", () => {
             proxyNamePrefix: "resumable-destination",
         });
 
-        proxy = proxied.proxy;
+        const proxy = proxied.proxy;
+        destinationProxy = proxy;
         destWsUrl = `ws://${proxy.listen}/ws`;
         destPid = processes.spawnAgent({
             wsAddress: destWsUrl,
@@ -125,11 +126,13 @@ describe("resumable transfers", () => {
                         agent.status === "connected",
                 ),
         });
-    });
+        // This starts a server, two agents and a proxy; the server readiness helper alone
+        // allows 30 s under parallel suite load, so its enclosing hook must allow that too.
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
-        await proxy.remove();
+        await destinationProxy?.remove();
         files.cleanup();
     });
 
@@ -346,6 +349,11 @@ describe("resumable transfers", () => {
     }
 
     it("pauses, probes, and resumes a cross-agent copy", async () => {
+        const proxy = destinationProxy;
+
+        if (proxy === undefined)
+            throw new Error("Destination proxy was not started");
+
         // Keep the copy active across the busy-admission and inventory round trips.
         // Otherwise a fast CI runner can publish the file before pause reaches the router.
         const bandwidth = await proxy.addToxic({
@@ -391,6 +399,11 @@ describe("resumable transfers", () => {
     }, 30000);
 
     it("resumes after toxiproxy interrupts the destination connection", async () => {
+        const proxy = destinationProxy;
+
+        if (proxy === undefined)
+            throw new Error("Destination proxy was not started");
+
         const run = await paused(false, false, {
             stop: async (id) => {
                 await proxy.update({
