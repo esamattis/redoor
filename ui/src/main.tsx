@@ -27,6 +27,22 @@ export const api = new ApiClient(window.location.origin);
 
 export const queryClient = new QueryClient();
 
+/** Session key of the last reload for a chunk that failed to load. */
+const PRELOAD_RELOAD_KEY = "redoor:preload-error-reload";
+
+// A chunk of this page's build is gone once the server was updated, so loading it fails
+// until the page loads the new build. Reloading at most once a minute keeps a chunk that is
+// missing for another reason from reloading the page forever.
+window.addEventListener("vite:preloadError", (event) => {
+    const lastReload = Number(sessionStorage.getItem(PRELOAD_RELOAD_KEY) ?? 0);
+
+    if (Date.now() - lastReload < 60_000) return;
+
+    event.preventDefault();
+    sessionStorage.setItem(PRELOAD_RELOAD_KEY, String(Date.now()));
+    window.location.reload();
+});
+
 // The store is created here, rather than by the Provider, so the terminal owner can read the
 // drawer atoms and reveal the drawer without going through a component.
 const store = createStore();

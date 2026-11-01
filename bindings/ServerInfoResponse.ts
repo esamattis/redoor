@@ -65,4 +65,11 @@ build_mode: ServerBuildMode,
 /**
  * UTC compile timestamp (`YYYY-MM-DDTHH:MM:SSZ`) or `unknown`.
  */
-build_date: string, };
+build_date: string, 
+/**
+ * Random id of this server process image, new after every restart and re-exec.
+ *
+ * A restart keeps the PID and can be back within milliseconds, so a client waiting for
+ * it cannot rely on seeing the server go down; a changed boot id proves the new process.
+ */
+boot_id: string, };

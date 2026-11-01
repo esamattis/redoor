@@ -17,12 +17,77 @@ pub enum UpgradeAgentRequest {
     RunningServer,
 }
 
-/// Confirms the agent acknowledged execution of the newly installed target version.
+/// Confirms the server started an agent upgrade, which then runs in the background.
+///
+/// Installing streams a whole binary to the agent, which can take minutes on a slow link, so
+/// the request returns at once and `GET /api/v1/agents/{agent}/upgrade` reports progress.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct UpgradeAgentResponse {
     pub upgrading: bool,
     pub target_version: String,
+}
+
+/// Which server-side executable an agent upgrade installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(rename_all = "snake_case")]
+#[ts(rename_all = "snake_case")]
+pub enum AgentUpgradeSource {
+    /// A published release for the agent's platform.
+    PublishedRelease,
+    /// The executable running the server.
+    RunningServer,
+}
+
+/// Where a background agent upgrade is, so the UI can show it after a reload or remount.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+#[ts(tag = "phase", rename_all = "snake_case")]
+pub enum AgentUpgradePhase {
+    /// Fetching the release into the server's cache, or locating the running binary.
+    Preparing,
+    /// Streaming the binary to the agent; the sizes let the UI show progress.
+    Uploading {
+        #[ts(type = "number")]
+        sent_bytes: u64,
+        #[ts(type = "number")]
+        total_bytes: u64,
+    },
+    /// The agent accepted the self-exec; the upgrade waits for it to reconnect.
+    Restarting,
+    /// The agent reconnected running the expected binary.
+    Completed,
+    /// The upgrade stopped, or the agent came back running another binary.
+    Failed { error: String },
+}
+
+impl AgentUpgradePhase {
+    /// Whether the server is still working on the upgrade, which blocks starting another.
+    pub fn is_running(&self) -> bool {
+        matches!(self, Self::Preparing | Self::Uploading { .. })
+    }
+}
+
+/// One agent upgrade, kept by the server until it is dismissed or replaced.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentUpgradeJob {
+    /// Unique per upgrade, so a client can tell a new upgrade from one it already saw end.
+    pub id: String,
+    /// Version the agent should report once it is back.
+    pub target_version: String,
+    pub source: AgentUpgradeSource,
+    pub phase: AgentUpgradePhase,
+    pub started_at: UnixTimestampMillis,
+}
+
+/// Body of `GET /api/v1/agents/{agent}/upgrade`; `job` is absent when there is nothing to show.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct AgentUpgradeStatusResponse {
+    pub job: Option<AgentUpgradeJob>,
 }
 
 /// Confirms that the agent's graphical desktop accepted a path-open request.

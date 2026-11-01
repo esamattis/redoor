@@ -901,6 +901,18 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
 - **Server restart** (`POST /api/v1/server/restart`, or the `redoor upgrade` signal) validates
   the config first. It then stops every managed child before re-executing, because `exec`
   would otherwise leave them orphaned. Standalone agents simply reconnect.
+- **A restart waits at most a few seconds for open requests.** Graceful shutdown stops
+  accepting at once and then waits for every open request, so a long download or a slow
+  agent command would keep the server unreachable for its whole duration. After
+  `SHUTDOWN_GRACE` (5 s) the server re-executes anyway, which ends what is left.
+- **Every server process has a boot id.** `GET /api/v1/server` reports a random `boot_id`
+  made at startup. A re-exec keeps the PID and is back within milliseconds, too fast for a
+  client to see the server down, so the UI's restart and update dialogs wait for the boot id
+  to change instead.
+- **A failed exec falls back to the running image.** When the path to re-execute cannot run
+  (another CPU, a corrupt download, a `noexec` mount), Linux and Android exec
+  `/proc/self/exe`, which still names the old image after its file was replaced. An
+  unsupervised agent or server therefore stays up on its old version instead of exiting.
 
 ## Upgrading in place
 
@@ -956,12 +968,52 @@ half-written file.
   signals, and that helper finishes the restarts.
 - **The server updates itself in-process.** `POST /api/v1/server/upgrade` (session only,
   like restart) validates the config, finds the processes of its binary and runs the
-  installer. A failed install is answered with the script's output while the old server keeps
-  serving. After a successful one the server starts its own validated restart, which stops
-  accepting at once, then signals the other processes without waiting for them, since it
-  cannot outlive the wait, and answers with each process's outcome; graceful shutdown
-  delivers that answer before the re-exec. The home page's Update button then waits for the
-  replacement server like the restart dialog does.
+  installer. It refuses a binary not named `redoor` (or a `REDOOR_INSTALL_DIR` elsewhere),
+  because the release would land beside it and the restart would re-execute the old file. A
+  failed install is answered with the script's output while the old server keeps serving.
+  After a successful one the server starts its own validated restart, which stops accepting
+  at once, then signals the other processes without waiting for them, since it cannot
+  outlive the wait, and answers with each process's outcome; graceful shutdown delivers that
+  answer before the re-exec. If its own restart is refused, the request fails and the other
+  processes are left alone: they would move to a binary this server may not speak to. The
+  home page's Update button then waits for the replacement server like the restart dialog
+  does, and the new build reloads the page (see "Browser server state").
+- **Downloads give up on a stalled connection.** `install.sh` passes curl a connect timeout
+  and aborts a download that stays below 1 KiB/s for a minute. Without that a stalled
+  download would hang the update request and the release cache, which agent upgrades and SSH
+  provisioning wait on, forever; a speed floor instead of a total time limit still lets a
+  large binary finish over a slow link.
+
+### Agent upgrades from the server
+
+`POST /api/v1/agents/{agent}/upgrade` installs a published release, or force-installs the
+server's own executable, on a connected agent. Streaming a 50 MB binary to a phone takes
+minutes, so the work runs in a background task (`AgentUpgrades` in `ServerState`), not in the
+request.
+
+- **The request validates, the task does the work.** The handler checks the inventory row,
+  the agent's executable path, the release version and platform or the CPU of the running
+  binary, answers those failures itself, then starts the task and answers at once. A page
+  reload, a phone suspending the tab or a proxy timeout therefore no longer cancels an upload.
+- **One upgrade per agent.** A second one is refused with `409` while the first still
+  prepares or uploads, since both would write the same executable.
+- **Phases.** `preparing` (release download into `BinaryCache`), `uploading` with bytes sent,
+  `restarting` once the agent accepted `SelfExec`, then `completed` or `failed`.
+  `GET /api/v1/agents/{agent}/upgrade` reports the agent's running or last upgrade.
+- **The server notices the agent's return when the status is read.** A `restarting` job
+  completes when the inventory lists the agent on a connection other than the one that ran the
+  old binary, reporting the target version (or, for a force install, the server's exact
+  build). Another build means the new binary could not start and the agent fell back to its
+  old one, so the job fails with both versions.
+- **Finished jobs stay until dismissed** (`DELETE`), so an outcome is not missed. They live in
+  memory only; a server restart ends every upgrade task anyway.
+- **The binary replaces the executable with one rename.** The upload publishes with the merge
+  mode, a single rename over the old file, so the path never goes missing; the agent keeps
+  its mode bits.
+- **The UI follows the server's record.** `AgentUpgradeStatus` polls the status while the job
+  runs or restarts and is shown on the device page both above the details and on the
+  lifecycle view, which replaces the details while the agent is disconnected, so progress
+  stays visible across the restart and a reload.
 
 ## Server-side lanes to an agent
 
@@ -1437,11 +1489,13 @@ sequenceDiagram
   `transfers_changed` and `terminals_changed`. The UI's `RefreshListener` turns them into
   TanStack Query invalidations and nothing else. REST stays the single source of truth, so
   there are no deltas to keep consistent, and a missed event only means a view refreshes
-  later. When the socket reconnects, the listener also invalidates the agent inventory,
-  transfers, partials, terminal sessions and agent data, because events may have been missed
-  meanwhile.
+  later. When the socket reconnects, the listener also invalidates the server info, the agent
+  inventory, transfers, partials, terminal sessions and agent data, because events may have
+  been missed meanwhile.
   - `agents_changed` refetches the inventory, then refreshes the cached data of every agent
-    whose status or connection id changed. Lifecycle chatter, such as provisioning steps,
+    whose status or connection id changed, or that was not listed before. A restarted server
+    lists a standalone agent only once it reconnects, and views refetched while it was
+    missing would otherwise keep their errors. Lifecycle chatter, such as provisioning steps,
     does not refetch open file views.
   - `routes_changed` (an upload, edit or copy finished) refreshes the cached data of every
     agent: listings, metadata, git state and trash.
@@ -1505,6 +1559,18 @@ invalidating query keys, so a view never needs a separate reload signal.
   view also refetches the worktree diffs it already has cached, in batches and without
   waiting, so coming back to a list shows the cached patches at once and then the edits
   made while away.
+- **A new server build reloads the page.** The shell watches the cached server info and
+  reloads once it reports another build than the page started with, after an update from the
+  UI or `redoor upgrade` on the command line. The old page's lazily loaded chunks no longer
+  exist on the new server and its requests may not match the new API. The update dialog
+  keeps its result in session storage, so the reloaded page still shows it. A failed chunk
+  load (`vite:preloadError`) also reloads, at most once a minute, and the terminal renderer
+  forgets a failed module load so the next terminal tries again.
+- **Restart waits are bounded per attempt.** `waitForRestart` polls for 30 s, and each probe
+  request is cancelled after 5 s, because TanStack Query hands every later fetch of a key
+  the promise still in flight, so one hung request would otherwise answer every attempt.
+  Refreshing the agents' data after a restart is not awaited, so a slow refetch cannot keep a
+  dialog spinning.
 - **What still reloads the route.** A loader also decides which kind of entry lives at a URL
   and applies redirects, which the cache cannot express. The route is therefore reloaded
   (`router.invalidate`) only when that can have changed: the window-focus refresh, creating

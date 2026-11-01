@@ -116,6 +116,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         ("DELETE", "/api/v1/upload-requests/{token}") => Access::AnyPrincipal,
 
         ("GET", "/api/v1/agents/{agent}") => Access::Device(&[]),
+        // Upgrade progress is part of managing the agent, like starting the upgrade.
+        ("GET" | "DELETE", "/api/v1/agents/{agent}/upgrade") => Access::Device(&[AgentsManage]),
         (
             "POST",
             "/api/v1/agents/{agent}/start"

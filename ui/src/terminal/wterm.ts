@@ -23,9 +23,16 @@ export type CreateWTermOptions = {
     onClipboardWrite: (text: string) => void;
 };
 
-/** Loads the renderer modules once without sharing mutable terminal state across tabs. */
+/**
+ * Loads the renderer modules once without sharing mutable terminal state across tabs.
+ *
+ * A failed load is forgotten so the next terminal tries again, instead of every terminal
+ * failing until the page is reloaded by hand.
+ */
 function loadWTermModules(): Promise<WTermModules> {
-    moduleLoad ??= Promise.all([
+    if (moduleLoad) return moduleLoad;
+
+    const load = Promise.all([
         import("@wterm/dom"),
         import("@wterm/ghostty"),
     ]).then(([dom, ghostty]) => ({
@@ -33,7 +40,13 @@ function loadWTermModules(): Promise<WTermModules> {
         GhosttyCore: ghostty.GhosttyCore,
     }));
 
-    return moduleLoad;
+    moduleLoad = load;
+    // The caller still sees the rejection; this only clears the cache for the next one.
+    load.catch(() => {
+        if (moduleLoad === load) moduleLoad = null;
+    });
+
+    return load;
 }
 
 /**

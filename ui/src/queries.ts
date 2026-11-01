@@ -94,6 +94,9 @@ export const queryKeys = {
     agent: (agentId: string) => [...queryKeys.allAgentData(), agentId] as const,
     agentDetails: (agentId: string) =>
         [...queryKeys.agent(agentId), "details"] as const,
+    /** The agent's running or last upgrade, tracked by the server. */
+    agentUpgrade: (agentId: string) =>
+        [...queryKeys.agent(agentId), "upgrade"] as const,
     /** Editable TOML settings of a managed agent. */
     agentConfiguration: (agentId: string) =>
         [...queryKeys.agent(agentId), "configuration"] as const,
@@ -372,6 +375,30 @@ export function agentDetailsQueryOptions(agent: Agent) {
         queryKey: queryKeys.agentDetails(agent.id),
         queryFn: () => agent.getDetails(),
         staleTime: AGENT_DETAILS_STALE_MS,
+    });
+}
+
+/** How often a running upgrade is polled; it pushes no events while it streams the binary. */
+const AGENT_UPGRADE_POLL_MS = 1000;
+
+/**
+ * Follows an agent upgrade the server runs in the background. It is polled while the server
+ * works on it and while the agent restarts, since the server notices the agent's return
+ * only when the status is read.
+ */
+export function agentUpgradeQueryOptions(agent: Agent) {
+    return queryOptions({
+        queryKey: queryKeys.agentUpgrade(agent.id),
+        queryFn: () => agent.getUpgradeStatus(),
+        refetchInterval: (query) => {
+            const phase = query.state.data?.job?.phase.phase;
+
+            return phase === "preparing" ||
+                phase === "uploading" ||
+                phase === "restarting"
+                ? AGENT_UPGRADE_POLL_MS
+                : false;
+        },
     });
 }
 

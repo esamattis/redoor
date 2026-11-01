@@ -327,7 +327,7 @@ test("refetching an unchanged inventory keeps agent identities stable", async ()
     expect(changed[1]).not.toBe(before[1]);
 });
 
-test("only a replaced or ended connection counts as a connection change", () => {
+test("only a replaced, ended or new connection counts as a connection change", () => {
     const previous = [
         agentInfo("same"),
         agentInfo("reconnected"),
@@ -343,10 +343,12 @@ test("only a replaced or ended connection counts as a connection change", () => 
         agentInfo("added"),
     ];
 
-    // Lifecycle chatter and brand-new agents hold no stale cached data to refresh.
+    // Lifecycle chatter holds no stale cached data to refresh. An agent that appeared may
+    // hold data refetched while a restarted server did not list it yet.
     expect(agentsWithReplacedConnection(previous, next)).toEqual([
         "reconnected",
         "dropped",
+        "added",
     ]);
 });
 

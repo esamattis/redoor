@@ -28,6 +28,12 @@ BINARY_NAME="redoor"
 # local mirror (curl also accepts file:// URLs) so `redoor upgrade` can be tested offline.
 RELEASE_BASE_URL="${REDOOR_RELEASE_BASE_URL:-https://github.com/${REPO}/releases/download}"
 
+# A stalled connection would otherwise hang the install forever, and with it the server's
+# update request and the release cache that agent upgrades and SSH provisioning wait on.
+# Downloads give up when they fall below 1 KiB/s for a minute rather than after a fixed
+# time, so a large binary still finishes over a slow but working link.
+CURL_TIMEOUTS=(--connect-timeout 20 --speed-limit 1024 --speed-time 60)
+
 # Declared at the top level so the EXIT trap (which runs in the global scope,
 # not inside main) can see it. Without this, set -u would error inside the
 # trap when it tries to reference the temp directory.
@@ -57,7 +63,7 @@ resolve_tag() {
     # Read the entire response even after finding the tag: exiting early can
     # break curl's output pipe and fail the install under pipefail. Splitting
     # on quotes works with both BSD and GNU awk without requiring a JSON tool.
-    if ! tag=$(curl -fsSL "$api_url" | awk -F'"' '/"tag_name"/ && !found { print $4; found = 1 }'); then
+    if ! tag=$(curl -fsSL "${CURL_TIMEOUTS[@]}" --max-time 60 "$api_url" | awk -F'"' '/"tag_name"/ && !found { print $4; found = 1 }'); then
         err "failed to fetch latest release from $api_url"
         return 1
     fi
@@ -159,7 +165,7 @@ main() {
     trap 'rm -rf "$TMP_DIR"' EXIT
 
     local archive_path="${TMP_DIR}/${archive}"
-    if ! curl -fsSL "$download_url" -o "$archive_path"; then
+    if ! curl -fsSL "${CURL_TIMEOUTS[@]}" "$download_url" -o "$archive_path"; then
         err "download failed for ${download_url}"
         exit 1
     fi

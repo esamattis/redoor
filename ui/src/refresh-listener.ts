@@ -21,9 +21,13 @@ const uiEventSchema: z.ZodType<UiEvent> = z.object({
 });
 
 /**
- * Finds agents whose connection was replaced or ended between two inventory snapshots.
- * Everything cached from the old connection (details, listings, git state) may no longer
- * match what the new one reports, so those agents' data must be refreshed.
+ * Finds agents whose connection was replaced, ended or appeared between two inventory
+ * snapshots. Everything cached from an old connection (details, listings, git state) may no
+ * longer match what the new one reports, so those agents' data must be refreshed.
+ *
+ * An agent missing from the previous snapshot counts too: a restarted server lists a
+ * standalone agent only once it reconnects, and views refetched while it was missing hold
+ * errors until something refreshes them again.
  */
 export function agentsWithReplacedConnection(
     previous: AgentInfoResponse[],
@@ -32,9 +36,9 @@ export function agentsWithReplacedConnection(
     return next.flatMap((agent) => {
         const before = previous.find((entry) => entry.id === agent.id);
 
-        return before !== undefined &&
-            (before.status !== agent.status ||
-                before.connection_id !== agent.connection_id)
+        return before === undefined ||
+            before.status !== agent.status ||
+            before.connection_id !== agent.connection_id
             ? [agent.id]
             : [];
     });
@@ -145,6 +149,9 @@ export class RefreshListener {
      */
     private refreshAfterReconnect() {
         for (const queryKey of [
+            // A server restarted from the command line may run another build, which the
+            // shell notices through the refreshed server info and reloads for.
+            queryKeys.serverInfo(),
             queryKeys.agents(),
             queryKeys.partials(),
             queryKeys.transfers(),

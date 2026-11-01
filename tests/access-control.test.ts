@@ -535,6 +535,8 @@ describe("Route access table", () => {
             route("POST", `${base}/retry-start`, "agents:manage"),
             route("POST", `${base}/restart`, "agents:manage"),
             route("POST", `${base}/upgrade`, "agents:manage"),
+            route("GET", `${base}/upgrade`, "agents:manage"),
+            route("DELETE", `${base}/upgrade`, "agents:manage"),
             route("GET", base),
         ];
     }

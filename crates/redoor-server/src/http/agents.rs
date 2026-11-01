@@ -25,7 +25,7 @@ mod content_grep;
 mod directory_size;
 mod files;
 mod open_path;
-mod upgrade;
+pub(crate) mod upgrade;
 
 pub(crate) use accounts::accounts_handler;
 pub(crate) use chmod::chmod_path_handler;
@@ -36,7 +36,9 @@ pub(crate) use files::{
     echo_agent_handler, file_search_agent_handler, ls_agent_handler, metadata_agent_handler,
 };
 pub(crate) use open_path::open_path_agent_handler;
-pub(crate) use upgrade::upgrade_agent_handler;
+pub(crate) use upgrade::{
+    agent_upgrade_status_handler, dismiss_agent_upgrade_handler, upgrade_agent_handler,
+};
 
 /// Loads and sorts retained inventory so every client receives stable ordering.
 pub(super) async fn list_agent_snapshots(

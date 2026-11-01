@@ -31,15 +31,35 @@ pub fn reexec_current_process() -> ! {
 }
 
 /// Replaces this process from an explicit installed path after an atomic binary upgrade.
+///
+/// When the installed file cannot be executed (another CPU, a corrupt download, a `noexec`
+/// mount), exiting would leave an unsupervised agent or server down for good. On Linux and
+/// Android the running image stays reachable through `/proc/self/exe` even after its file was
+/// replaced, so the process restarts on its old binary instead and stays reachable, where
+/// the upgrade reports the wrong version.
 pub fn reexec_process(exe: &Path) -> ! {
-    use std::os::unix::process::CommandExt;
-
     // Command supplies argv[0], so only the original arguments are forwarded.
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
-    let error = std::process::Command::new(exe).args(&args).exec();
+    let error = exec_with_args(exe, exe, &args);
     eprintln!("restart: exec failed for {}: {error}", exe.display());
+    if cfg!(any(target_os = "linux", target_os = "android")) {
+        let running = Path::new("/proc/self/exe");
+        // argv[0] keeps naming the installed path, which process discovery reads.
+        let fallback_error = exec_with_args(running, exe, &args);
+        eprintln!("restart: exec of the running image failed too: {fallback_error}");
+    }
     std::process::exit(1);
+}
+
+/// Execs `program` with `args`, presenting it as `arg0`; returns only on failure.
+fn exec_with_args(program: &Path, arg0: &Path, args: &[OsString]) -> std::io::Error {
+    use std::os::unix::process::CommandExt;
+
+    std::process::Command::new(program)
+        .arg0(arg0)
+        .args(args)
+        .exec()
 }
 
 /// Internal marker used by the server because managed agents have their own watchdog lifecycle.

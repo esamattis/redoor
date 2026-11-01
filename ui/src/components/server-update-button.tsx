@@ -2,10 +2,12 @@ import * as React from "react";
 import { getRouteApi } from "@tanstack/react-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpCircle } from "lucide-react";
+import { z } from "zod";
 
 import type { UpgradeProcessReport } from "#bindings/UpgradeProcessReport";
 import { serverInfoQueryOptions } from "#ui/queries";
-import { useWaitForServerRestart } from "#ui/use-server-restart";
+import { isReloadingForNewBuild } from "#ui/use-reload-on-server-build-change";
+import { useBeginServerRestart } from "#ui/use-server-restart";
 import { getErrorMessage } from "#ui/utils/error";
 import { Button } from "./button";
 import { ConfirmationDialog } from "./confirmation-dialog";
@@ -15,11 +17,26 @@ import { Toast } from "./toast";
 const rootRouteApi = getRouteApi("__root__");
 
 /** A local process still running the old binary, and why the update could not restart it. */
-type ManualRestart = {
-    pid: number;
-    command: string;
-    reason: string;
-};
+const manualRestartSchema = z.object({
+    pid: z.number(),
+    command: z.string(),
+    reason: z.string(),
+});
+
+type ManualRestart = z.infer<typeof manualRestartSchema>;
+
+/**
+ * What `updateResult` needs from the update request, kept until the new server answered.
+ * It is parsed when read back, since session storage may hold what another build wrote.
+ */
+const pendingUpdateSchema = z.object({
+    previousVersion: z.string(),
+    /** Release tag the operator picked, or null for the latest release. */
+    requestedTag: z.string().nullable(),
+    manualRestarts: z.array(manualRestartSchema),
+});
+
+type PendingUpdate = z.infer<typeof pendingUpdateSchema>;
 
 /** What the toast reports after the replacement server answered. */
 type UpdateResult = {
@@ -74,13 +91,9 @@ function releaseTag(version: string): string | null {
  * Says what the update did, including the local processes it could not restart, since those
  * keep running the old version until the operator restarts them.
  */
-function updateResult(update: {
-    previousVersion: string;
-    version: string | undefined;
-    /** Release tag the operator picked, or null for the latest release. */
-    requestedTag: string | null;
-    processes: UpgradeProcessReport[];
-}): UpdateResult {
+function updateResult(
+    update: PendingUpdate & { version: string | undefined },
+): UpdateResult {
     const reinstalled =
         update.version === undefined ||
         update.version === update.previousVersion;
@@ -91,7 +104,7 @@ function updateResult(update: {
           ? `Reinstalled ${update.previousVersion}, which is already the latest release`
           : `Reinstalled ${update.previousVersion}`;
 
-    const restarts = manualRestarts(update.processes);
+    const restarts = update.manualRestarts;
 
     if (restarts.length === 0) {
         return { summary, manualRestarts: restarts };
@@ -103,6 +116,46 @@ function updateResult(update: {
         summary: `${summary}. Restart PID ${pids} manually to run the new version.`,
         manualRestarts: restarts,
     };
+}
+
+/** Session key holding the update whose result is not shown yet. */
+const PENDING_UPDATE_KEY = "redoor:pending-server-update";
+
+/**
+ * Keeps the update's outcome across the reload the shell does once the server runs another
+ * build, which happens while the dialog still waits for the new server.
+ */
+function storePendingUpdate(update: PendingUpdate) {
+    sessionStorage.setItem(PENDING_UPDATE_KEY, JSON.stringify(update));
+}
+
+/** Returns and forgets the update a previous page of this tab started, if any. */
+function takePendingUpdate(): PendingUpdate | null {
+    const stored = sessionStorage.getItem(PENDING_UPDATE_KEY);
+    sessionStorage.removeItem(PENDING_UPDATE_KEY);
+
+    if (stored === null) return null;
+
+    try {
+        const parsed = pendingUpdateSchema.safeParse(JSON.parse(stored));
+
+        return parsed.success ? parsed.data : null;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * The update a previous page of this tab started, read once per page load so a double
+ * render in development cannot consume it before the toast shows it.
+ */
+let updateFromPreviousPage: PendingUpdate | null | undefined;
+
+/** Reads the previous page's update without forgetting it until it was shown. */
+function peekUpdateFromPreviousPage(): PendingUpdate | null {
+    updateFromPreviousPage ??= takePendingUpdate();
+
+    return updateFromPreviousPage;
 }
 
 /**
@@ -119,34 +172,63 @@ export function ServerUpdateButton(props: {
 }) {
     const { api } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
-    const waitForServerRestart = useWaitForServerRestart();
+    const beginServerRestart = useBeginServerRestart();
     const [isOpen, setIsOpen] = React.useState(false);
     const [version, setVersion] = React.useState("");
-    const [result, setResult] = React.useState<UpdateResult | null>(null);
+
+    // An update to another build reloads the page before the wait ends, so its result
+    // arrives here, in the page the reload opened, which already runs the new version.
+    const [result, setResult] = React.useState<UpdateResult | null>(() => {
+        const pending = peekUpdateFromPreviousPage();
+
+        return pending
+            ? updateResult({ ...pending, version: props.currentVersion })
+            : null;
+    });
+
+    // Shown once: coming back to this page later must not repeat the toast.
+    React.useEffect(() => {
+        updateFromPreviousPage = null;
+    }, []);
 
     const updateMutation = useMutation({
         mutationFn: async (requestedTag: string | null) => {
             // Read before the update: the refreshed server info re-renders this component
             // with the new version before the summary is built.
             const previousVersion = props.currentVersion;
+            const waitForReplacement = beginServerRestart();
             const response = await api.upgradeServer(requestedTag);
-            await waitForServerRestart();
+
+            const pending: PendingUpdate = {
+                previousVersion,
+                requestedTag,
+                manualRestarts: manualRestarts(response.processes),
+            };
+
+            storePendingUpdate(pending);
+            await waitForReplacement();
+
+            // The new build is reloading the page, which shows the stored result; the dialog
+            // stays busy until then.
+            if (isReloadingForNewBuild()) {
+                return new Promise<never>(() => {});
+            }
+
+            // This page survived the wait, so it shows the result itself.
+            takePendingUpdate();
 
             const version = queryClient.getQueryData(
                 serverInfoQueryOptions(api).queryKey,
             )?.version;
 
-            return {
-                previousVersion,
-                version,
-                requestedTag,
-                processes: response.processes,
-            };
+            return { ...pending, version };
         },
         onSuccess: (update) => {
             setIsOpen(false);
             setResult(updateResult(update));
         },
+        // A wait that gave up must not show its result on a later page load.
+        onError: () => takePendingUpdate(),
     });
 
     /** Keeps the dialog up while the update runs, and drops a stale error for the next open. */

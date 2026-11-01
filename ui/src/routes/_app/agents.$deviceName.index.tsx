@@ -1,5 +1,9 @@
 import * as React from "react";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import {
+    useQuery,
+    useQueryClient,
+    useSuspenseQuery,
+} from "@tanstack/react-query";
 import {
     createFileRoute,
     Link,
@@ -41,10 +45,18 @@ import { DuplicateIdWarning } from "#ui/components/duplicate-id-warning";
 import { LinkButton } from "#ui/components/link-button";
 import { AgentRestartButton } from "#ui/components/agent-restart-button";
 import { UpgradeButton } from "#ui/components/upgrade-button";
+import {
+    AgentUpgradeStatus,
+    isUpgradeInProgress,
+} from "#ui/components/agent-upgrade-status";
 import { provisioningStatusStoreAtom } from "#ui/provisioning-status";
 import { RouteError } from "#ui/components/route-error";
-import { agentDetailsQueryOptions, serverInfoQueryOptions } from "#ui/queries";
-import { useAgentReconnect } from "#ui/use-agent-reconnect";
+import {
+    agentDetailsQueryOptions,
+    agentUpgradeQueryOptions,
+    queryKeys,
+    serverInfoQueryOptions,
+} from "#ui/queries";
 import { useRouteAgent } from "#ui/use-active-agent";
 import { formatAgentRecency, useNow } from "#ui/utils/agent-time";
 import { formatSize } from "#ui/utils/path";
@@ -83,6 +95,12 @@ function AgentBoundary() {
 
     return (
         <>
+            {/* The agent drops its connection while an upgrade restarts it, which swaps the
+                details for this view, so the upgrade's progress is shown here too. */}
+            <AgentUpgradeStatus
+                agent={agent}
+                className="mx-auto max-w-4xl px-8 pt-8"
+            />
             {agent.duplicateId ? (
                 <div className="mx-auto max-w-4xl px-8 pt-8">
                     <DuplicateIdWarning warning={agent.duplicateId} />
@@ -202,6 +220,7 @@ function AgentDetailsContent(props: {
     return (
         <div className="p-8">
             <div className="mx-auto max-w-4xl">
+                <AgentUpgradeStatus agent={props.agent} className="mb-6" />
                 <AgentDetailsHeader
                     agent={props.agent}
                     details={props.details}
@@ -324,14 +343,15 @@ function AgentDetailsContent(props: {
     );
 }
 
-/** Keeps upgrade waiting out of the details grid so the home page stays under the line limit. */
+/** Keeps the upgrade controls out of the details grid so the page stays under the line limit. */
 function AgentUpgradeControls(props: {
     agent: Agent;
     details: AgentDetailsResponse;
 }) {
     const { api } = Route.useRouteContext();
+    const queryClient = useQueryClient();
     const { data: serverInfo } = useSuspenseQuery(serverInfoQueryOptions(api));
-    const { waitForAgentUpgrade } = useAgentReconnect(props.agent);
+    const upgradeQuery = useQuery(agentUpgradeQueryOptions(props.agent));
 
     return (
         <div className="@2xl:col-span-2">
@@ -341,15 +361,15 @@ function AgentUpgradeControls(props: {
                 agentArch={props.details.arch}
                 agentExePath={props.details.exe_path}
                 serverInfo={serverInfo}
+                isUpgrading={isUpgradeInProgress(upgradeQuery.data?.job)}
                 upgrade={(targetVersion) => props.agent.upgrade(targetVersion)}
                 forceInstallRunningBinary={() =>
                     props.agent.forceInstallRunningBinary()
                 }
-                waitUntilReady={(targetVersion, requireServerIdentity) =>
-                    waitForAgentUpgrade(
-                        targetVersion,
-                        requireServerIdentity ? serverInfo : null,
-                    )
+                onStarted={() =>
+                    void queryClient.invalidateQueries({
+                        queryKey: queryKeys.agentUpgrade(props.agent.id),
+                    })
                 }
             />
         </div>

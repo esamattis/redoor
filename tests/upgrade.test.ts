@@ -112,11 +112,14 @@ describe.runIf(process.platform === "linux")("redoor upgrade", () => {
         rmSync(releaseRoot, { recursive: true, force: true });
     });
 
-    /** An isolated install of the binary plus a server config and a local release mirror. */
-    async function fixture() {
+    /**
+     * An isolated install of the binary plus a server config and a local release mirror.
+     * `binaryName` renames the installed binary, which the release would not replace.
+     */
+    async function fixture(binaryName = "redoor") {
         const root = mkdtempSync(join(tmpdir(), "redoor-upgrade-"));
         const home = join(root, "home");
-        const binary = join(root, "bin", "redoor");
+        const binary = join(root, "bin", binaryName);
         const appName = `redoor-upgrade-${process.pid}-${Date.now()}`;
         const port = await getAvailablePort();
         mkdirSync(join(root, "bin"));
@@ -191,6 +194,7 @@ port = ${port}
 
         return {
             binary,
+            binDirectory: join(root, "bin"),
             port,
             pidFile: (role: "server" | "agent") =>
                 join(dataDirectory, `${role}.pid`),
@@ -310,9 +314,18 @@ port = ${port}
         });
     }
 
+    /** The id the server process at `port` reports, which changes with every restart. */
+    async function bootId(port: number): Promise<string> {
+        const client = new ApiClient(`http://127.0.0.1:${port}`);
+        await client.login(USERNAME, PASSWORD);
+
+        return (await client.getServerInfo()).boot_id;
+    }
+
     test("upgrades the server and its agent through the REST API", async () => {
         const setup = await fixture();
         const { serverPid, agentPid } = await setup.startServerAndAgent();
+        const bootBefore = await bootId(setup.port);
 
         const response = await postUpgrade(setup.port, RELEASE_TAG);
         const body: ServerUpgradeResponse = await response.json();
@@ -342,8 +355,27 @@ port = ${port}
         );
         // The re-exec kept the server's PID.
         expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
+        // The same PID answers as a new process, which is how the UI recognises the restart.
+        expect(await bootId(setup.port)).not.toBe(bootBefore);
         // The agent reconnects to the restarted server.
         await setup.waitForConnectedAgent();
+    }, 90_000);
+
+    test("refuses to update a server binary the release would not replace", async () => {
+        const setup = await fixture("redoor-renamed");
+        const { serverPid } = await setup.startServerAndAgent();
+
+        const response = await postUpgrade(setup.port, RELEASE_TAG);
+        const error: ErrorResponse = await response.json();
+
+        // The release installs as `redoor`, so the restart would re-execute the old file.
+        expect(response.status).toBe(500);
+        expect(error.error).toContain("would keep the old version");
+        // The refusal comes before the install, so no second copy appears beside it.
+        expect(() => statSync(join(setup.binDirectory, "redoor"))).toThrow();
+        // The server keeps serving from its own binary.
+        expect(await serverExecutable(setup.port)).toBe(setup.binary);
+        expect(await waitForPid(setup.pidFile("server"))).toBe(serverPid);
     }, 90_000);
 
     test("reports a failed install and keeps the server running", async () => {

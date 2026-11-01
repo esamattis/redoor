@@ -56,6 +56,7 @@ import type { RestartResponse } from "#bindings/RestartResponse";
 import type { ServerUpgradeRequest } from "#bindings/ServerUpgradeRequest";
 import type { ServerUpgradeResponse } from "#bindings/ServerUpgradeResponse";
 import type { UpgradeAgentResponse } from "#bindings/UpgradeAgentResponse";
+import type { AgentUpgradeStatusResponse } from "#bindings/AgentUpgradeStatusResponse";
 import type { UpgradeAgentRequest } from "#bindings/UpgradeAgentRequest";
 import type { RenamePathRequest } from "#bindings/RenamePathRequest";
 import type { RenamePathResponse } from "#bindings/RenamePathResponse";
@@ -432,7 +433,10 @@ export class Agent {
         );
     }
 
-    /** Atomically installs a selected release and asks the agent to execute it in place. */
+    /**
+     * Starts installing a selected release, which the server then streams to the agent and
+     * execs in place in the background; `getUpgradeStatus` follows it.
+     */
     async upgrade(targetVersion: string): Promise<UpgradeAgentResponse> {
         const request: UpgradeAgentRequest = {
             source: "published_release",
@@ -452,7 +456,7 @@ export class Agent {
         );
     }
 
-    /** Force-installs the exact running server executable on a matching architecture. */
+    /** Starts force-installing the exact running server executable, like `upgrade`. */
     async forceInstallRunningBinary(): Promise<UpgradeAgentResponse> {
         const request: UpgradeAgentRequest = { source: "running_server" };
 
@@ -467,6 +471,25 @@ export class Agent {
             },
             this.requestContext,
         );
+    }
+
+    /** The agent's running or last upgrade, which the server keeps until it is dismissed. */
+    async getUpgradeStatus(): Promise<AgentUpgradeStatusResponse> {
+        return apiRequest(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
+            undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Forgets the agent's finished upgrade once its outcome was seen. */
+    async dismissUpgrade(): Promise<void> {
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/upgrade`,
+            withAuthentication({ method: "DELETE" }, this.requestContext),
+        );
+
+        await requireSuccessfulResponse(response, this.requestContext);
     }
 
     async getDetails(): Promise<AgentDetailsResponse> {

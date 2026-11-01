@@ -8,12 +8,12 @@ const SERVER_INFO_URL = `${WEB_BASE_URL}/api/v1/server`;
 
 /**
  * Stands in for a real upgrade, which would replace the shared test binary: the endpoint
- * answers like a finished install, one server info request fails like the restarting server,
- * and later ones report `version` like the replacement process.
+ * answers like a finished install, and later server info requests report `version` and a
+ * new boot id like the replacement process. The server is never seen down in between, like
+ * a real re-exec that is back within milliseconds.
  */
 async function simulateUpgrade(page: Page, version: string) {
     let upgraded = false;
-    let restartObserved = false;
 
     await page.route(UPGRADE_URL, async (route) => {
         upgraded = true;
@@ -41,17 +41,14 @@ async function simulateUpgrade(page: Page, version: string) {
             return;
         }
 
-        if (!restartObserved) {
-            restartObserved = true;
-            await route.abort("connectionrefused");
-
-            return;
-        }
-
         const response = await route.fetch();
         await route.fulfill({
             response,
-            json: { ...(await response.json()), version },
+            json: {
+                ...(await response.json()),
+                version,
+                boot_id: "replacement-server",
+            },
         });
     });
 }
@@ -82,7 +79,8 @@ test.describe("Server update", () => {
         expect((await upgradeRequest).postDataJSON()).toEqual({
             target_version: null,
         });
-        // The dialog only closes after the replacement server answered again.
+        // The dialog only closes after the replacement server answered again; the new
+        // build also reloads the page, which must keep the update's result.
         await expect(dialog).toBeHidden({ timeout: 30_000 });
         // The toast names the new version, which proves the cache was refreshed.
         await expect(page.getByText(/to 99\.0\.0\./)).toBeVisible();

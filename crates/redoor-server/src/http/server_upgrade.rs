@@ -63,6 +63,15 @@ impl ServerState {
     /// a newer protocol. Graceful shutdown still delivers this response first.
     async fn upgrade(&self, tag: Option<String>) -> anyhow::Result<ServerUpgradeResponse> {
         let target = SelfInstall::resolve().await?;
+        // A restart re-executes the running path, so a release installed anywhere else would
+        // leave this server on the old version while reporting a successful update.
+        if target.installed != target.current {
+            anyhow::bail!(
+                "The server runs '{}', but the release would be installed as '{}', so the restarted server would keep the old version. Rename the binary to 'redoor' or use `redoor upgrade` from a terminal.",
+                target.current.display(),
+                target.installed.display()
+            );
+        }
         let restarter = Restarter::discover(&target.installed).await?;
         log!(
             Level::Info,
@@ -85,8 +94,14 @@ impl ServerState {
             }
         };
         log!(Level::Info, "Server release installed; restarting");
+        // Without its own restart, signalling the other processes would move them to a binary
+        // that may speak a protocol this server refuses, and the UI would wait for a restart
+        // that never comes, so the caller learns that the install needs a manual restart.
         if let Err(error) = self.request_restart().await {
             log!(Level::Warning, "Upgraded server did not restart: {error}");
+            anyhow::bail!(
+                "The release was installed, but the server did not restart onto it: {error}. Restart the server to run the new version."
+            );
         }
         let processes = restarter.restart(false, |_| {}).await;
         Ok(ServerUpgradeResponse { output, processes })

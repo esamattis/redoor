@@ -83,7 +83,7 @@ pub(crate) enum UpgradeBinaryError {
 }
 
 /// Accepts semantic versions because release tags and cache directories use this value verbatim.
-fn validate_release_version(version: &str) -> Result<(), UpgradeBinaryError> {
+pub(crate) fn validate_release_version(version: &str) -> Result<(), UpgradeBinaryError> {
     semver::Version::parse(version)
         .map(|_| ())
         .map_err(|_| UpgradeBinaryError::InvalidVersion {
@@ -92,7 +92,7 @@ fn validate_release_version(version: &str) -> Result<(), UpgradeBinaryError> {
 }
 
 /// Validates a platform before any artifact URL can be constructed.
-fn validate_release_platform(os: &str, arch: &str) -> Result<(), UpgradeBinaryError> {
+pub(crate) fn validate_release_platform(os: &str, arch: &str) -> Result<(), UpgradeBinaryError> {
     if matches!(
         (os, arch),
         ("linux", "x86_64") | ("linux", "aarch64") | ("macos", "aarch64") | ("android", "aarch64")

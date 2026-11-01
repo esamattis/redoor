@@ -39,6 +39,11 @@ pub struct ServerInfoResponse {
     pub build_mode: ServerBuildMode,
     /// UTC compile timestamp (`YYYY-MM-DDTHH:MM:SSZ`) or `unknown`.
     pub build_date: String,
+    /// Random id of this server process image, new after every restart and re-exec.
+    ///
+    /// A restart keeps the PID and can be back within milliseconds, so a client waiting for
+    /// it cannot rely on seeing the server go down; a changed boot id proves the new process.
+    pub boot_id: String,
 }
 
 /// Confirms a server or agent accepted a restart request before its connection closes.

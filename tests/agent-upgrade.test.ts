@@ -25,6 +25,25 @@ import {
 
 const AGENT_NAME = "upgrade-external-agent";
 
+/**
+ * Waits until the agent's background upgrade ends, which the server notices once the agent
+ * is back on a new connection, and returns the finished job.
+ */
+async function waitForFinishedUpgrade(target: Agent, description: string) {
+    return waitForValue({
+        timeoutMs: 30000,
+        description,
+        predicate: async () => {
+            const { job } = await target.getUpgradeStatus();
+
+            return job?.phase.phase === "completed" ||
+                job?.phase.phase === "failed"
+                ? job
+                : undefined;
+        },
+    });
+}
+
 describe("connected external agent upgrade", () => {
     const processes = new ProcessManager();
     const tempFiles = new TempFileManager();
@@ -97,6 +116,8 @@ describe("connected external agent upgrade", () => {
         expect((await agent.echo("upgrade-not-started")).message).toBe(
             "upgrade-not-started",
         );
+        // A refused request starts no background upgrade.
+        expect((await agent.getUpgradeStatus()).job).toBeNull();
     });
 
     it("atomically replaces and self-execs the connected external agent", async () => {
@@ -104,10 +125,19 @@ describe("connected external agent upgrade", () => {
         expect(originalConnectionId).not.toBeNull();
 
         const response = await agent.upgrade(targetVersion);
-        // The endpoint acknowledges only after replacement and self-exec setup succeed.
+        // The request only starts the upgrade, which then runs in the background.
         expect(response).toEqual({
             upgrading: true,
             target_version: targetVersion,
+        });
+
+        const job = await waitForFinishedUpgrade(agent, "release upgrade end");
+        // The server reports success only once the agent is back on the target version.
+        expect(job.phase).toEqual({ phase: "completed" });
+        // The job names what was installed, so the UI can say so after a reload.
+        expect(job).toMatchObject({
+            target_version: targetVersion,
+            source: "published_release",
         });
 
         const upgraded = await waitForValue({
@@ -137,6 +167,10 @@ describe("connected external agent upgrade", () => {
         expect((await upgraded.echo("upgrade-ready")).message).toBe(
             "upgrade-ready",
         );
+
+        await upgraded.dismissUpgrade();
+        // A dismissed result is forgotten, so the UI stops showing it.
+        expect((await upgraded.getUpgradeStatus()).job).toBeNull();
     }, 60000);
 
     it("force-installs the exact running server binary", async () => {
@@ -157,6 +191,11 @@ describe("connected external agent upgrade", () => {
             upgrading: true,
             target_version: serverInfo.version,
         });
+
+        const job = await waitForFinishedUpgrade(agent, "force install end");
+        // Completion requires the exact server build, which the agent reconnected with.
+        expect(job.phase).toEqual({ phase: "completed" });
+        expect(job.source).toBe("running_server");
 
         const upgraded = await waitForValue({
             timeoutMs: 30000,
@@ -187,7 +226,7 @@ describe("connected external agent upgrade", () => {
         expect(details.pid).toBe(agentPid);
     }, 60000);
 
-    it("refuses to self-exec when the upgrade upload completes before any byte", async () => {
+    it("runs one upgrade at a time and fails it when the upload completes before any byte", async () => {
         const earlyAgentName = "upgrade-early-completion-agent";
         const serverInfo = await api.getServerInfo();
         const arch = process.arch === "arm64" ? "aarch64" : "x86_64";
@@ -251,33 +290,67 @@ describe("connected external agent upgrade", () => {
                 };
 
                 earlyAgent.respond(id, details);
-            } else if (command.type === "RawUpload") {
-                // Finishing before granting upload credit means the agent never received the
-                // binary.
-                earlyAgent.respond(id, null);
             }
         });
 
-        let error: unknown;
+        await listed.forceInstallRunningBinary();
+
+        const upload = await earlyAgent.nextCommand("RawUpload");
+
+        // While the upload is held, the upgrade is running and owns the agent's executable.
+        expect((await listed.getUpgradeStatus()).job?.phase.phase).toBe(
+            "uploading",
+        );
+
+        let secondError: unknown;
 
         try {
             await listed.forceInstallRunningBinary();
         } catch (caught) {
-            error = caught;
+            secondError = caught;
         }
+
+        // A second upgrade would write the same executable at the same time.
+        expect(secondError).toMatchObject({
+            status: 409,
+            message: "An upgrade of this agent is already running",
+        });
+
+        let dismissError: unknown;
+
+        try {
+            await listed.dismissUpgrade();
+        } catch (caught) {
+            dismissError = caught;
+        }
+
+        // A running upgrade cannot be dismissed, or its outcome would be lost.
+        expect(dismissError).toBeInstanceOf(ApiError);
+        expect(dismissError).toMatchObject({ status: 409 });
+
+        // Finishing before granting upload credit means the agent never received the binary.
+        earlyAgent.respond(upload.id, null);
+
+        const job = await waitForFinishedUpgrade(
+            listed,
+            "early-completion upgrade end",
+        );
 
         const receivedCommandTypes = earlyAgent.commands.map(
             ({ command }) => command.type,
         );
 
-        // An upload that stored no bytes must fail instead of reporting a started upgrade.
-        expect(error).toBeInstanceOf(ApiError);
-        expect(error).toMatchObject({
-            status: 500,
-            message: "Unexpected early upgrade upload completion",
+        // An upload that stored no bytes must fail instead of restarting the agent.
+        expect(job.phase).toEqual({
+            phase: "failed",
+            error: "Unexpected early upgrade upload completion",
         });
         // The upload was attempted, but self-exec must never follow it.
         expect(receivedCommandTypes).toContain("RawUpload");
         expect(receivedCommandTypes).not.toContain("SelfExec");
+
+        await listed.dismissUpgrade();
+        // A finished failure can be dismissed once it was seen.
+        expect((await listed.getUpgradeStatus()).job).toBeNull();
     });
 });

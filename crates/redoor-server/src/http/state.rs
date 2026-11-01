@@ -71,6 +71,11 @@ pub(crate) struct ServerState {
     pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     /// Held while `redoor upgrade` installs, so two installs never race over the binary.
     pub(crate) upgrade_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Random id of this process image, reported by `GET /api/v1/server` so the UI can tell
+    /// a restarted server from the one it asked to restart.
+    pub(crate) boot_id: Arc<str>,
+    /// Agent upgrades running in the background, and the last outcome of each.
+    pub(crate) agent_upgrades: super::agents::upgrade::AgentUpgrades,
 }
 
 /// Arguments for `redoor server`.

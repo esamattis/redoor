@@ -14,6 +14,7 @@ import { ThemeManager } from "#ui/components/theme-toggle";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
 import { VaultDialog } from "#ui/components/vault-dialog";
 import { useRefreshListener } from "#ui/refresh-listener";
+import { useReloadOnServerBuildChange } from "#ui/use-reload-on-server-build-change";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
 import { useTerminalSessionSync } from "#ui/use-terminals";
@@ -33,6 +34,7 @@ export function AppShell() {
         React.useState(false);
 
     useRefreshListener(api);
+    useReloadOnServerBuildChange();
     useTerminalSessionSync();
     useRememberAgentTabLocation();
     useEscapeBlursTextControls();

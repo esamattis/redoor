@@ -6,6 +6,7 @@
 //! storage, actors, listener, managed inventory), and [`ServerRuntime::serve_until_restart`]
 //! runs until the restart route or the `redoor upgrade` signal asks for a re-exec.
 
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -59,6 +60,9 @@ fn deny_same_user_memory_access() {
         }
     }
 }
+
+/// How long a restart waits for open requests before it re-executes regardless.
+const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Starts the long-lived server using the established flat startup arguments.
 ///
@@ -399,6 +403,8 @@ impl ServerRuntime {
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
             upgrade_lock: Arc::default(),
+            boot_id: uuid::Uuid::new_v4().to_string().into(),
+            agent_upgrades: Default::default(),
         };
         state.clone().restart_on_reexec_signal(reexec_requests);
         let app = build_app(state);
@@ -481,20 +487,46 @@ impl ServerRuntime {
     /// Exec preserves process memory rather than dropping Rust values, so children are
     /// stopped and reaped here; the new process recreates the inventory dormant. A failed
     /// serve stops them too, so an erroring server never leaves SSH agents orphaned.
+    ///
+    /// Graceful shutdown stops accepting at once but then waits for every open request. A
+    /// long download or a slow agent command would keep the server unreachable for its whole
+    /// duration, so the wait is capped at [`SHUTDOWN_GRACE`]; the re-exec ends what is left.
     async fn serve_until_restart(self) -> Result<()> {
         let shutdown = self.shutdown;
+        let (stopping_tx, mut stopping) = tokio::sync::watch::channel(false);
         // The no-op tap is how axum offers `ConnectInfo<SocketAddr>` for a custom listener;
         // it only implements it directly for its own `TcpListener`.
-        let served = axum::serve(
+        let serve = axum::serve(
             self.listener.tap_io(|_| {}),
             self.app.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(async {
+        .with_graceful_shutdown(async move {
             shutdown.await.ok();
-        })
-        .await;
+            let _ = stopping_tx.send(true);
+        });
+        let grace_expired = async move {
+            if stopping.wait_for(|stopping| *stopping).await.is_err() {
+                // The sender is gone only when serving ended, which the other branch reports.
+                std::future::pending::<()>().await;
+            }
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+        };
+        let served = tokio::select! {
+            served = serve.into_future() => served,
+            () = grace_expired => Self::abandon_open_requests(),
+        };
         self.watchdogs.shutdown_all().await;
         served.context("HTTP server failed")
+    }
+
+    /// Gives up on the requests still open after the grace period; the restart drops them.
+    fn abandon_open_requests() -> std::io::Result<()> {
+        log!(
+            Level::Warning,
+            "Requests still open {}s after the restart began; restarting without them",
+            SHUTDOWN_GRACE.as_secs()
+        );
+        Ok(())
     }
 }
 

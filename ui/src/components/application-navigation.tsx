@@ -37,7 +37,7 @@ import { Tooltip } from "#ui/components/tooltip";
 import { useCloseSideMenu } from "#ui/side-menu-state";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
-import { useWaitForServerRestart } from "#ui/use-server-restart";
+import { useBeginServerRestart } from "#ui/use-server-restart";
 import { cn } from "#ui/utils/cn";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 import { useCloseOpenFiles } from "#ui/components/browser/open-file-actions";
@@ -469,7 +469,8 @@ function Logo(props: { className: string }) {
  */
 function ServerRestartDialog(props: { isOpen: boolean; onClose: () => void }) {
     const { api } = rootRouteApi.useRouteContext();
-    const waitForServerRestart = useWaitForServerRestart();
+    const beginServerRestart = useBeginServerRestart();
+    const waitForReplacement = React.useRef<() => Promise<void>>(null);
 
     return (
         <RestartDialog
@@ -477,8 +478,14 @@ function ServerRestartDialog(props: { isOpen: boolean; onClose: () => void }) {
             onClose={props.onClose}
             target="server"
             description="The server will restart and re-read its configuration. Connected agents reconnect automatically. In-flight transfers and terminals are interrupted."
-            restart={() => api.restartServer()}
-            waitUntilReady={waitForServerRestart}
+            restart={() => {
+                waitForReplacement.current = beginServerRestart();
+
+                return api.restartServer();
+            }}
+            waitUntilReady={async () => {
+                await waitForReplacement.current?.();
+            }}
         />
     );
 }

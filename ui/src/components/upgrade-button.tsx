@@ -18,15 +18,15 @@ type UpgradeButtonProps = {
     agentArch: string;
     agentExePath: string;
     serverInfo: ServerInfoResponse;
+    /** Whether an upgrade of this agent is still running, which blocks starting another. */
+    isUpgrading: boolean;
     upgrade: (targetVersion: string) => Promise<UpgradeAgentResponse>;
     forceInstallRunningBinary: () => Promise<UpgradeAgentResponse>;
-    waitUntilReady: (
-        targetVersion: string,
-        requireServerIdentity: boolean,
-    ) => Promise<void>;
+    /** Called once the server accepted the upgrade, so its progress can be followed. */
+    onStarted: () => void;
 };
 
-/** Converts request and reconnection failures into dialog feedback. */
+/** Converts a refused upgrade request into dialog feedback. */
 function upgradeErrorMessage(cause: unknown): string {
     return getErrorMessage(cause, "Upgrade failed");
 }
@@ -53,7 +53,12 @@ function UpgradeConfirmationDescription(props: { targetDescription: string }) {
     );
 }
 
-/** Presents upgrade identity and availability before confirming the disruptive action. */
+/**
+ * Presents upgrade identity and availability before confirming the disruptive action. The
+ * dialog only starts the upgrade: the server runs it in the background, and
+ * `AgentUpgradeStatus` shows its progress, which survives the page switching to the
+ * lifecycle view while the agent restarts, and a reload.
+ */
 export function UpgradeButton(props: UpgradeButtonProps) {
     const [action, setAction] = React.useState<UpgradeAction | null>(null);
 
@@ -79,18 +84,14 @@ export function UpgradeButton(props: UpgradeButtonProps) {
             : `Download and install Redoor ${normalizedTargetVersion} for ${props.agentOs}/${props.agentArch}.`;
 
     const upgradeMutation = useMutation({
-        mutationFn: async (selectedAction: UpgradeAction) => {
-            if (selectedAction === "running_server") {
-                await props.forceInstallRunningBinary();
-                await props.waitUntilReady(props.serverInfo.version, true);
-
-                return;
-            }
-
-            await props.upgrade(normalizedTargetVersion);
-            await props.waitUntilReady(normalizedTargetVersion, false);
+        mutationFn: (selectedAction: UpgradeAction) =>
+            selectedAction === "running_server"
+                ? props.forceInstallRunningBinary()
+                : props.upgrade(normalizedTargetVersion),
+        onSuccess: () => {
+            setAction(null);
+            props.onStarted();
         },
-        onSuccess: () => setAction(null),
     });
 
     const close = () => {
@@ -167,6 +168,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         disabled={
                             unavailableReason !== null ||
                             upgradeMutation.isPending ||
+                            props.isUpgrading ||
                             normalizedTargetVersion.length === 0
                         }
                         aria-describedby={
@@ -188,7 +190,8 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                         variant="warning"
                         disabled={
                             runningBinaryUnavailableReason !== null ||
-                            upgradeMutation.isPending
+                            upgradeMutation.isPending ||
+                            props.isUpgrading
                         }
                         aria-describedby={
                             runningBinaryUnavailableReason
@@ -232,7 +235,7 @@ export function UpgradeButton(props: UpgradeButtonProps) {
                 confirmLabel={
                     action === "running_server" ? "Force install" : "Upgrade"
                 }
-                busyLabel="Installing..."
+                busyLabel="Starting..."
                 isBusy={upgradeMutation.isPending}
                 errorMessage={
                     upgradeMutation.isError

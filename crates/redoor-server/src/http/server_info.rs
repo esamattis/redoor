@@ -38,6 +38,7 @@ pub(crate) async fn server_info_handler(
             version_dirty: binary.version_dirty,
             build_mode: binary.build_mode,
             build_date: binary.build_date,
+            boot_id: state.boot_id.to_string(),
         }),
     )
         .into_response()
