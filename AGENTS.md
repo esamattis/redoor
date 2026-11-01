@@ -20,10 +20,10 @@
 - Always use async apis from tokio instead of sync apis instead
 - Recursive directory deletion must always use `safe_rm_all`, never `remove_dir_all`
 - Always comments to functions, structs, enums and methods
-    - The comments should try to answer the "why" question
+    - The comments should aim to answer the "why" question
 - When creating a function always consider first if it should be a method on a struct instead
 - Do not add one-line passthrough wrappers that only call another function or re-export a type. Call the real module directly.
-- When adding a retust api always create a dedicated struct for it's reponse with `#[ts(export)]` derive macro which genertes the related typescript interface.
+- When adding a rest api always create a dedicated struct for it's reponse with `#[ts(export)]` derive macro which genertes the related typescript interface.
 - Put behaviorally distinct REST endpoints in dedicated modules instead of adding them to an unrelated resource module. Group handlers only when they operate on the same domain and share a clear responsibility.
 - After every architectural change (new or changed crates, actors, flows, wire protocol, lifecycles, trust boundaries, or the reasons behind them) update `ARCHITECTURE.md` in the same change so it never describes a design that no longer exists
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
@@ -36,7 +36,7 @@
 - Add comments to test assertions why they are there
 - Add integration tests for all rest api features
 - Run `pn test` only after real code changes, including changes to executable scripts, tests, or configuration that affects application or build behavior. Use a timeout of at least 1200 seconds so cargo, integration, and Playwright can finish without the runner aborting mid-suite.
-- Do not run tests or builds for changes limited to documentation, plans, or code comments. If those edits accompany real code changes, run the checks required for the code changes.
+- Do not run tests or builds for changes limited to documentation, plans, or code comments.
 - If the changes are purely visual, running `pn build-and-restart` is enough instead of `pn test`; it builds the UI and server binary and restarts the `redoor-dev` systemd unit
 - Purely visual changes (layout, spacing, wrapping, responsive breakpoints, colors) must not have tests. Do not assert element positions, sizes or styles in Playwright or unit tests
 - Do all work and commits directly on the `main` branch; do not create feature branches
