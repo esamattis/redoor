@@ -151,12 +151,9 @@ test.describe("Authentication", () => {
         await expect(page.getByRole("alert")).toHaveText(
             "Your account is not allowed to sign in to Redoor.",
         );
-        // The password form is a fallback and stays folded away at first.
-        await expect(page.getByLabel("Password")).toHaveCount(0);
+        // The password form is offered alongside the provider without an extra click.
+        await expect(page.getByLabel("Password")).toBeVisible();
 
-        await page
-            .getByRole("button", { name: "Use username and password instead" })
-            .click();
         await page.getByLabel("Username").fill("test-user");
         await page.getByLabel("Password").fill("test-password");
         await page

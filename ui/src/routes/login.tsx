@@ -72,11 +72,6 @@ function LoginPage() {
     const [username, setUsername] = React.useState("");
     const [password, setPassword] = React.useState("");
 
-    // With OIDC configured the password form is a fallback that stays folded away.
-    const [showPasswordForm, setShowPasswordForm] = React.useState(
-        methods.oidc === null,
-    );
-
     const oidcError = oidcErrorMessage(search.oidc_error);
 
     // The hint lives in the URL fragment, which the router does not parse and which never
@@ -168,71 +163,60 @@ function LoginPage() {
                                 <KeyRound className="h-4 w-4" />
                                 Sign in with {methods.oidc.provider_name}
                             </Button>
-                            {showPasswordForm ? null : (
-                                <Button
-                                    variant="subtle"
-                                    size="sm"
-                                    onClick={() => setShowPasswordForm(true)}
-                                    className="w-full text-slate-400 hover:text-slate-200"
-                                >
-                                    Use username and password instead
-                                </Button>
-                            )}
                         </div>
                     ) : null}
-                    {showPasswordForm ? (
-                        <form
-                            onSubmit={submit}
-                            className={
-                                methods.oidc
-                                    ? "mt-6 space-y-5 border-t border-slate-800 pt-6"
-                                    : "space-y-5"
-                            }
-                        >
-                            <TextField
-                                label="Username"
-                                value={username}
-                                placeholder="Username"
-                                description="Your Redoor account username."
-                                required
-                                autoFocus
-                                autoComplete="username"
-                                disabled={isSubmitting}
-                                onChange={setUsername}
-                            />
-                            <Password
-                                label="Password"
-                                autoComplete="current-password"
-                                value={password}
-                                disabled={isSubmitting}
-                                onChange={setPassword}
-                            />
-                            {error ? (
-                                <p
-                                    role="alert"
-                                    className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
-                                >
-                                    {error}
-                                </p>
-                            ) : null}
-                            <Button
-                                type="submit"
-                                size="lg"
-                                disabled={
-                                    isSubmitting || !username || !password
-                                }
-                                isLoading={isSubmitting}
-                                className="w-full rounded-md disabled:opacity-60"
+                    <form
+                        onSubmit={submit}
+                        className={
+                            methods.oidc
+                                ? "mt-6 space-y-5 border-t border-slate-800 pt-6"
+                                : "space-y-5"
+                        }
+                    >
+                        <TextField
+                            label="Username"
+                            value={username}
+                            placeholder="Username"
+                            description="Your Redoor account username."
+                            required
+                            // Focusing the field would pop the phone keyboard over
+                            // the provider button that leads the page.
+                            autoFocus={methods.oidc === null}
+                            autoComplete="username"
+                            disabled={isSubmitting}
+                            onChange={setUsername}
+                        />
+                        <Password
+                            label="Password"
+                            placeholder="Password"
+                            autoComplete="current-password"
+                            value={password}
+                            disabled={isSubmitting}
+                            onChange={setPassword}
+                        />
+                        {error ? (
+                            <p
+                                role="alert"
+                                className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-300"
                             >
-                                {isSubmitting ? (
-                                    <LoaderCircle className="h-4 w-4 animate-spin" />
-                                ) : (
-                                    <LogIn className="h-4 w-4" />
-                                )}
-                                {isSubmitting ? "Signing in…" : "Sign in"}
-                            </Button>
-                        </form>
-                    ) : null}
+                                {error}
+                            </p>
+                        ) : null}
+                        <Button
+                            type="submit"
+                            size="lg"
+                            disabled={isSubmitting || !username || !password}
+                            isLoading={isSubmitting}
+                            className="w-full rounded-md disabled:opacity-60"
+                        >
+                            {isSubmitting ? (
+                                <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                                <LogIn className="h-4 w-4" />
+                            )}
+                            {isSubmitting ? "Signing in…" : "Sign in"}
+                        </Button>
+                    </form>
                 </div>
             </div>
         </main>
