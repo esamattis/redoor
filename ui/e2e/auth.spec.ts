@@ -3,6 +3,15 @@ import { expect, test } from "@playwright/test";
 import { WEB_BASE_URL } from "./helpers";
 
 test.describe("Authentication", () => {
+    let releaseLogout: (() => void) | undefined;
+
+    test.afterEach(async ({ page }) => {
+        // A failed assertion must release the held response before route teardown drains it.
+        releaseLogout?.();
+        releaseLogout = undefined;
+        await page.unrouteAll({ behavior: "wait" });
+    });
+
     test("returns to the original path and query after login", async ({
         page,
     }) => {
@@ -112,10 +121,38 @@ test.describe("Authentication", () => {
             applicationNavigation.getByRole("link", { name: "Server home" }),
         ).toBeVisible();
 
+        let notifyLogout: (() => void) | undefined;
+
+        const logoutRequested = new Promise<void>((resolve) => {
+            notifyLogout = resolve;
+        });
+
+        const finishLogout = new Promise<void>((resolve) => {
+            releaseLogout = resolve;
+        });
+
+        await page.route("**/api/v1/logout", async (route) => {
+            const response = await route.fetch();
+            // Expose the cleared session while deliberately delaying logout's success callback.
+            await page.context().clearCookies();
+            notifyLogout?.();
+            await finishLogout;
+            await route.fulfill({ response });
+        });
+
         await applicationNavigation
             .getByRole("button", { name: "Log out" })
             .click();
-        // Logout must leave protected chrome and display the dedicated form.
+        await logoutRequested;
+        // A protected request can finish after session deletion but before logout navigates.
+        await applicationNavigation
+            .getByRole("link", { name: "Server logs" })
+            .click();
+        await expect(
+            page.getByRole("heading", { name: "Authentication required" }),
+        ).toBeVisible({ timeout: 15_000 });
+        releaseLogout?.();
+        // Logout must own navigation even when another request received an intervening 401.
         await expect(page).toHaveURL(`${WEB_BASE_URL}/login`);
         await expect(
             page.getByRole("heading", { name: "Sign in to Redoor" }),

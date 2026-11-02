@@ -1633,9 +1633,11 @@ The route tree separates the authenticated application from the public login for
 - **`_app`** is a pathless layout route that holds the whole authenticated application.
   Its loader primes the inventory, transfers, server info and user state, and its component
   is `AppShell`: the menus, the top bar, the shared bottom drawer and the global handlers.
-  `/login` is a sibling of `_app`, so it loads nothing and renders no chrome. A 401 from any
-  request reloads into `/login?redirect=...` (`main.tsx`); the shell never mounts without a
-  valid session.
+  `/login` is a sibling of `_app`, so it loads nothing and renders no chrome. Outside a
+  deliberate logout, a 401 reloads into `/login?redirect=...` (`main.tsx`). Once logout starts,
+  the API client suppresses background expiry redirects so the logout caller owns the reload
+  into `/login`. A failed logout or a new login restores normal expiry handling; logout itself
+  still reports an already expired session. The shell never mounts without a valid session.
 - **Session-scoped work lives in the shell's lifecycle.** `AppShell` starts the
   `RefreshListener` (the UI event socket) in an effect and stops it on unmount, and also
   hosts the clipboard and drag-and-drop import handler and the Escape-to-blur shortcut.

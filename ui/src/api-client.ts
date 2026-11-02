@@ -147,6 +147,7 @@ import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
 import type { RewrapVaultFileRequest } from "#bindings/RewrapVaultFileRequest";
 import type { ReencryptVaultFileRequest } from "#bindings/ReencryptVaultFileRequest";
 import {
+    ApiError,
     apiRequest,
     authenticationHeaders,
     requireSuccessfulResponse,
@@ -1269,6 +1270,8 @@ export class ApiClient {
     private sessionCookie: string | null = null;
     private accessToken: string | null = null;
     private unauthorizedHandler: (() => void) | undefined;
+    /** A deliberate logout owns navigation until a new session is established. */
+    private logoutStarted = false;
     private agentClients = new WeakMap<AgentInfoResponse, Agent>();
 
     constructor(baseUrl: string) {
@@ -1298,7 +1301,9 @@ export class ApiClient {
         return {
             getSessionCookie: () => this.sessionCookie,
             getAccessToken: () => this.accessToken,
-            onUnauthorized: () => this.unauthorizedHandler?.(),
+            onUnauthorized: () => {
+                if (!this.logoutStarted) this.unauthorizedHandler?.();
+            },
         };
     }
 
@@ -1319,6 +1324,7 @@ export class ApiClient {
         );
 
         await requireSuccessfulResponse(response, {});
+        this.logoutStarted = false;
         const setCookie = response.headers.get("set-cookie");
 
         if (setCookie) {
@@ -1391,17 +1397,31 @@ export class ApiClient {
         return `${this.baseUrl}/api/v1/auth/oidc/login?${params.toString()}`;
     }
 
-    /** Deletes the server-side session and forgets any Node-managed cookie. */
+    /** Ends the session while preventing background 401s from racing the caller's logout navigation. */
     async logout(): Promise<LogoutResponse> {
-        const response = await apiRequest<LogoutResponse>(
-            `${this.baseUrl}/api/v1/logout`,
-            { method: "POST" },
-            this.requestContext(),
-        );
+        this.logoutStarted = true;
 
-        this.sessionCookie = null;
+        try {
+            const response = await apiRequest<LogoutResponse>(
+                `${this.baseUrl}/api/v1/logout`,
+                { method: "POST" },
+                this.requestContext(),
+            );
 
-        return response;
+            this.sessionCookie = null;
+
+            return response;
+        } catch (error) {
+            // A failed logout leaves normal expiry handling active; an already expired
+            // session must still reach login when logout itself answers 401.
+            this.logoutStarted = false;
+
+            if (error instanceof ApiError && error.status === 401) {
+                this.unauthorizedHandler?.();
+            }
+
+            throw error;
+        }
     }
 
     /**
