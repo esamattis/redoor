@@ -62,7 +62,17 @@ fn exec_with_args(program: &Path, arg0: &Path, args: &[OsString]) -> std::io::Er
         .exec()
 }
 
-/// Internal marker used by the server because managed agents have their own watchdog lifecycle.
+/// Environment variable a standalone or relayed agent may read its token from.
+///
+/// Shells and commands the agent starts must not inherit it: anything running in a terminal
+/// could otherwise read the token and impersonate the server to every agent.
+pub const AGENT_TOKEN_ENV: &str = "REDOOR_AGENT_TOKEN";
+
+/// Marks the processes of a server-managed agent (`redoor agent managed` and its daemon).
+///
+/// Their owner is the server, which replaces them on every start with a different binary,
+/// so they do not catch the upgrade re-exec signal and `redoor upgrade` skips them instead
+/// of listing them for a manual restart.
 pub const MANAGED_AGENT_ENV: &str = "REDOOR_MANAGED_AGENT";
 
 /// Marks a detached child so it does not die with the short-lived CLI that spawned it.
@@ -95,10 +105,5 @@ impl ProcessSlot {
             Self::Agent => "agent",
             Self::Server => "server",
         }
-    }
-
-    /// Managed local agents skip PID files so they do not fight the standalone agent lock.
-    pub fn skips_pid_when_managed(self) -> bool {
-        matches!(self, Self::Agent) && std::env::var_os(MANAGED_AGENT_ENV).is_some()
     }
 }

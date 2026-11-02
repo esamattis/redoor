@@ -480,6 +480,14 @@ fn render_unit(
         (true, ServiceRole::Server) => "User=redoor\nGroup=redoor\n",
         _ => "",
     };
+    // Managed agent daemons must survive a restart of the server. They leave its cgroup
+    // through a transient scope when the manager allows it, which a system service running
+    // as `redoor` is not allowed to create; stopping only the main process keeps them either
+    // way. The server's own session processes end with it, because their stdin closes.
+    let kill_mode = match role {
+        ServiceRole::Server => "KillMode=process\n",
+        _ => "",
+    };
     let wanted_by = if system {
         "multi-user.target"
     } else {
@@ -494,7 +502,7 @@ After=network-online.target
 
 [Service]
 Type={service_type}
-{service_identity}Environment={app_environment}
+{service_identity}{kill_mode}Environment={app_environment}
 ExecStart={command}
 Restart=on-failure
 RestartSec=5s
@@ -710,6 +718,9 @@ MainPID=0"
             unit.contains("User=redoor\nGroup=redoor\n"),
             "system server must not stay root: {unit}"
         );
+        // Without a scope of their own, managed daemons share the server's cgroup, and a
+        // restart must not kill them with the server.
+        assert!(unit.contains("KillMode=process\n"), "{unit}");
         assert!(
             unit.contains(
                 "ExecStart=\"/usr/local/bin/redoor\" server --config \"/etc/redoor/config.toml\""

@@ -160,7 +160,6 @@ password = "${TEST_PASSWORD}"
 local = true
 name = "${managedAgent}"
 home = "${managedRoot}"
-log = "${join(directory, "managed.log")}"
 `,
     );
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();

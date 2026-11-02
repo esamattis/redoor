@@ -123,7 +123,6 @@ struct RawAgentEntry {
     name: Option<String>,
     remote_bin: Option<String>,
     home: Option<String>,
-    log: Option<String>,
     password: Option<String>,
     managed_ssh_key: Option<bool>,
 }
@@ -617,7 +616,6 @@ impl RawAgentEntry {
             id: parse_optional_id(self.id, &format!("agents entry #{index} 'id'"))?,
             name: self.name,
             home,
-            log: self.log,
         }))
     }
 
@@ -656,7 +654,7 @@ impl RawAgentEntry {
             remote_bin: self.remote_bin,
             home,
             target,
-            log: self.log,
+            log: None,
             password: self.password,
             managed_ssh_key,
         }))

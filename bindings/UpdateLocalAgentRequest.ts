@@ -3,4 +3,4 @@
 /**
  * Describes replacement local-agent settings separately from the create contract.
  */
-export type UpdateLocalAgentRequest = { name: string | null, home: string | null, log: string | null, };
+export type UpdateLocalAgentRequest = { name: string | null, home: string | null, };

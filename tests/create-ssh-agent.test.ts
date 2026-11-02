@@ -42,7 +42,6 @@ function sshRequest(
         name: null,
         remote_bin: null,
         home: null,
-        log: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -60,7 +59,6 @@ function sshUpdateRequest(
         name: null,
         remote_bin: null,
         home: null,
-        log: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -116,7 +114,6 @@ describe("SSH agent configuration API", () => {
             name: AGENT_NAME,
             remote_bin: "/opt/redoor",
             home: "/srv/app",
-            log: "/tmp/created-ssh-agent.log",
             password: "ssh-secret",
             clear_password: null,
         });
@@ -190,7 +187,6 @@ describe("SSH agent configuration API", () => {
                 name: null,
                 remote_bin: null,
                 home: null,
-                log: null,
                 password: null,
                 clear_password: null,
             }),
@@ -206,7 +202,6 @@ describe("SSH agent configuration API", () => {
                 name: AGENT_NAME,
                 remote_bin: null,
                 home: null,
-                log: null,
                 password: null,
                 clear_password: null,
             }),
@@ -245,7 +240,6 @@ describe("SSH agent configuration API", () => {
             name: renamed,
             remote_bin: null,
             home: "/srv/updated",
-            log: null,
             password: "updated-secret",
             clear_password: false,
         };
@@ -271,7 +265,6 @@ describe("SSH agent configuration API", () => {
         const afterUpdate = await apiClient.getSshAgentConfiguration(renamed);
         // Clearing optional paths on PUT must persist as omitted settings, not leftover values.
         expect(afterUpdate.remote_bin).toBeNull();
-        expect(afterUpdate.log).toBeNull();
         // GET must keep omitting the secret after an update that replaces it.
         expect(afterUpdate.password).toBeNull();
         expect(afterUpdate.has_password).toBe(true);
@@ -638,8 +631,10 @@ describe("SSH agent configuration API", () => {
                     (entry) => entry.name === name,
                 );
 
+                // The first SSH round trip of a managed device resolves its socket
+                // directory, so that step is what shows while ssh waits.
                 return agent?.provisioningStatus.some((step) =>
-                    step.message.includes("Sniffing the SSH target"),
+                    step.message.includes("on the SSH target"),
                 )
                     ? agent
                     : undefined;
@@ -649,7 +644,7 @@ describe("SSH agent configuration API", () => {
         // Progress must appear on inventory while the SSH connection is still pending.
         expect(
             sniffing.provisioningStatus.map((step) => step.message),
-        ).toContain("Sniffing the SSH target");
+        ).toContain("Finding the agent socket directory on the SSH target");
         // No connection issue yet: the sniff is still waiting for the target to answer.
         expect(sniffing.connectionIssue).toBeFalsy();
 
@@ -667,7 +662,7 @@ describe("SSH agent configuration API", () => {
                 );
 
                 const hasSniff = agent?.provisioningStatus.some((step) =>
-                    step.message.includes("Sniffing the SSH target"),
+                    step.message.includes("on the SSH target"),
                 );
 
                 return agent?.connectionIssue && hasSniff ? agent : undefined;

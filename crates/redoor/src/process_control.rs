@@ -229,7 +229,7 @@ impl ProcessPidMetadata {
 
     /// Parses a JSON record, falling back to the bare PID older binaries wrote so a process
     /// started before an upgrade can still be inspected and stopped.
-    fn parse(content: &str) -> Option<Self> {
+    pub(crate) fn parse(content: &str) -> Option<Self> {
         if let Ok(metadata) = serde_json::from_str(content) {
             return Some(metadata);
         }
@@ -308,6 +308,18 @@ pub(crate) struct RelayPidMetadata {
     pub(crate) log: String,
 }
 
+impl PidFile {
+    /// Wraps a PID file this process has just locked and written, so dropping it releases
+    /// the claim like any other role's.
+    pub(crate) fn claimed(path: PathBuf, pid: u32, lock: fs::File) -> Self {
+        Self {
+            path,
+            pid,
+            _lock: lock,
+        }
+    }
+}
+
 impl Drop for PidFile {
     /// Removes only this process's claim, avoiding deletion after a concurrent replacement.
     ///
@@ -325,11 +337,7 @@ impl Drop for PidFile {
 }
 
 /// Atomically claims the role PID file, rejecting a process that is still alive.
-pub(crate) async fn acquire(slot: ProcessSlot, paths: &AppPaths) -> Result<Option<PidFile>> {
-    if slot.skips_pid_when_managed() {
-        return Ok(None);
-    }
-
+pub(crate) async fn acquire(slot: ProcessSlot, paths: &AppPaths) -> Result<PidFile> {
     let path = pid_path(slot, paths)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -337,7 +345,7 @@ pub(crate) async fn acquire(slot: ProcessSlot, paths: &AppPaths) -> Result<Optio
             .with_context(|| format!("Failed to create PID directory '{}'", parent.display()))?;
     }
 
-    claim_pid_file(slot, path).await.map(Some)
+    claim_pid_file(slot, path).await
 }
 
 /// Claims one named relay runtime file and writes its JSON launch metadata.
@@ -391,7 +399,7 @@ async fn claim_pid_file(slot: ProcessSlot, path: PathBuf) -> Result<PidFile> {
 
 /// Replaces the locked file's contents with one pretty JSON record so both tools and humans
 /// can read it; called only while holding the lock, so no reader sees a competing writer.
-async fn write_pid_record(file: &mut fs::File, record: &impl Serialize) -> Result<()> {
+pub(crate) async fn write_pid_record(file: &mut fs::File, record: &impl Serialize) -> Result<()> {
     let json = serde_json::to_vec_pretty(record).context("Failed to encode PID file")?;
     file.set_len(0).await?;
     file.write_all(&json).await?;
@@ -501,9 +509,6 @@ pub(crate) async fn spawn_relay_daemon(id: &str, paths: &AppPaths) -> Result<()>
 
 /// Rejects daemon launch before detaching so duplicate-start guidance reaches the caller.
 async fn ensure_not_running(slot: ProcessSlot, paths: &AppPaths) -> Result<()> {
-    if slot.skips_pid_when_managed() {
-        return Ok(());
-    }
     let path = pid_path(slot, paths)?;
     if !fs::try_exists(&path).await? {
         return Ok(());
@@ -577,7 +582,7 @@ async fn spawn_daemon_process(description: &str) -> Result<()> {
 }
 
 /// Resolves a role PID file inside the selected application's persistent data directory.
-fn pid_path(slot: ProcessSlot, paths: &AppPaths) -> Result<PathBuf> {
+pub(crate) fn pid_path(slot: ProcessSlot, paths: &AppPaths) -> Result<PathBuf> {
     Ok(paths.data_dir()?.join(format!("{}.pid", slot.file_stem())))
 }
 
@@ -627,7 +632,7 @@ async fn wait_for_unlock(file: &fs::File, description: &str, pid: u32) -> Result
 }
 
 /// Opens or creates a PID file without using its mere existence as process state.
-async fn open_pid_file(path: &PathBuf) -> Result<fs::File> {
+pub(crate) async fn open_pid_file(path: &PathBuf) -> Result<fs::File> {
     fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -639,7 +644,7 @@ async fn open_pid_file(path: &PathBuf) -> Result<fs::File> {
 }
 
 /// Attempts to own the process-lifetime lock without blocking the async runtime.
-fn try_lock(file: &fs::File) -> Result<bool> {
+pub(crate) fn try_lock(file: &fs::File) -> Result<bool> {
     use std::os::fd::AsRawFd;
 
     // SAFETY: `file` owns a valid descriptor for the duration of this non-blocking syscall.

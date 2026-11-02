@@ -30,10 +30,6 @@ remote_bin: string | null,
  */
 home: string | null, 
 /**
- * Optional local path receiving SSH subprocess diagnostics.
- */
-log: string | null, 
-/**
  * New password to persist; omit or send empty on update to keep the existing secret.
  */
 password: string | null, 

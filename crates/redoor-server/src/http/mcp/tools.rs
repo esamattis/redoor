@@ -1245,9 +1245,8 @@ async fn managed_agent(
             .map_err(|error| op(error.to_string(), id))?;
         Ok(json!({"device_id":agent_id,"accepted":true,"poll_device":true}))
     } else {
-        tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown())
+        crate::http::agents::stop_managed_device(state, &agent_id, &watchdog)
             .await
-            .map_err(|_| op("Timed out stopping managed agent", id))?
             .map_err(|error| op(error.to_string(), id))?;
         crate::http::agents::apply_managed_snapshot(state, agent_id.clone(), watchdog.snapshot())
             .await

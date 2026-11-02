@@ -1,7 +1,17 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+    mkdtempSync,
+    readFileSync,
+    readdirSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "zx";
+import { z } from "zod";
+import type { Agent, ApiClient } from "#ui/api-client";
+import { waitForValue } from "./test-utils";
+import { TEST_TERMINAL_SIZE, TerminalViewer } from "./terminal-test-utils";
 
 // Every SSH test file shares the one remote test host and its `authorized_keys`, so they must
 // run one at a time. Failing here makes a new SSH test file that was not added to
@@ -102,6 +112,105 @@ export async function cleanupSshTest(options: {
 }): Promise<void> {
     const run = options.sshCommand ?? sshTestCommand;
     const appNames = options.agentAppNames.map(shellQuote).join(" ");
-    const command = `for app in ${appNames}; do pid_file="$HOME/.local/share/$app/agent.pid"; if [ -f "$pid_file" ]; then pid=$(sed -n 's/^ *"pid": *\\([0-9][0-9]*\\).*/\\1/p' "$pid_file"); case "$pid" in *[!0-9]*|'') ;; *) kill "$pid" 2>/dev/null || true ;; esac; fi; rm -rf "$HOME/.local/share/$app"; done; rm -rf ${shellQuote(options.remoteRoot)}`;
+    // Managed agent daemons live in `<app>-<agent id>` namespaces next to the app's own and
+    // outlive the SSH session, so they and their forward sockets are cleaned up too.
+    const command = `for app in ${appNames}; do for dir in "$HOME/.local/share/$app" "$HOME/.local/share/$app"-dev_*; do pid_file="$dir/agent.pid"; if [ -f "$pid_file" ]; then pid=$(sed -n 's/^ *"pid": *\\([0-9][0-9]*\\).*/\\1/p' "$pid_file"); case "$pid" in *[!0-9]*|'') ;; *) kill -9 "$pid" 2>/dev/null || true ;; esac; fi; rm -rf "$dir"; done; rm -f "\${XDG_RUNTIME_DIR:-/tmp}/$app"-dev_*.sock "/tmp/$app"-dev_*.sock; done; rm -rf ${shellQuote(options.remoteRoot)}`;
     await run(command);
+}
+
+/** The PID the managed daemon of `namespace` on the SSH test host recorded. */
+export async function remoteDaemonPid(namespace: string): Promise<number> {
+    const record = await sshTestCommand(
+        `cat "$HOME/.local/share/"${shellQuote(namespace)}/agent.pid`,
+    );
+
+    return z.object({ pid: z.number() }).parse(JSON.parse(record)).pid;
+}
+
+/** Whether a process with `pid` runs on the SSH test host. */
+export async function remoteProcessAlive(pid: number): Promise<boolean> {
+    const answer = await sshTestCommand(
+        `kill -0 ${pid} 2>/dev/null && echo alive || echo gone`,
+    );
+
+    return answer.trim() === "alive";
+}
+
+/** Kills the local `ssh` client of the managed session whose forward names `namespace`. */
+export async function killLocalSshSession(namespace: string): Promise<void> {
+    const pids: number[] = [];
+
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+
+        let argv: string[];
+
+        try {
+            argv = readFileSync(join("/proc", entry, "cmdline"), "utf8")
+                .split("\0")
+                .filter((arg) => arg !== "");
+        } catch {
+            continue;
+        }
+
+        // Only the session's ssh client names the device's namespace in its forward.
+        if (argv[0] === "ssh" && argv.some((arg) => arg.includes(`${namespace}-`))) {
+            pids.push(Number(entry));
+        }
+    }
+
+    if (pids.length === 0) {
+        throw new Error(`No ssh session of ${namespace} found`);
+    }
+
+    for (const pid of pids) {
+        process.kill(pid, "SIGKILL");
+    }
+}
+
+/** Waits until `name` is connected on a connection other than `previous`. */
+export async function waitForReconnect(
+    api: ApiClient,
+    name: string,
+    previous: string | null,
+): Promise<Agent> {
+    return waitForValue({
+        predicate: async () =>
+            (await api.listAgents()).find(
+                (agent) =>
+                    agent.name === name &&
+                    agent.status === "connected" &&
+                    agent.connectionId !== previous,
+            ),
+        timeoutMs: 60_000,
+        description: `${name} to reconnect`,
+    });
+}
+
+/** Attaches a new viewer to an existing terminal session. */
+export async function reattach(
+    api: ApiClient,
+    sessionId: string,
+): Promise<TerminalViewer> {
+    const viewer = new TerminalViewer(api, sessionId, TEST_TERMINAL_SIZE);
+    await viewer.waitForReady();
+
+    return viewer;
+}
+
+/** Asks the shell for its PID, which tells whether a reattached tab reached the same shell. */
+export async function terminalShellPid(
+    viewer: TerminalViewer,
+    marker: string,
+): Promise<string> {
+    viewer.type(`printf '${marker}-%s\\n' $$\n`);
+    const pattern = new RegExp(`${marker}-(\\d+)`);
+    const output = await viewer.waitForOutputMatching(pattern);
+    const pid = pattern.exec(output)?.[1];
+
+    if (pid === undefined) {
+        throw new Error(`No shell PID in ${output}`);
+    }
+
+    return pid;
 }

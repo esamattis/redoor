@@ -219,7 +219,7 @@ impl ManagedKeyDevice {
             StoredKey::Plaintext(key) => key,
             StoredKey::Encrypted(_) => self.held_key().ok_or_else(|| {
                 ProvisionError::SshKeyLocked(
-                    "The SSH key is locked. Start the device from the browser to unlock it."
+                    "The SSH key is locked: the server does not hold it after a restart. Unlock the vault in the browser to hand it over."
                         .to_string(),
                 )
             })?,

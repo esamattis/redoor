@@ -73,6 +73,10 @@ pub enum RejectReason {
     /// Several machines keep replacing each other's healthy connections with the same id
     /// (a cloned data dir); the agent retries with backoff so a fixed clone gets through.
     DuplicateId,
+    /// A managed daemon whose build or launch settings differ from the daemon the server's
+    /// latest ensure step reported. The daemon exits, and the next ensure step starts the
+    /// expected one.
+    Superseded,
 }
 
 /// Parses the offered subprotocols of one upgrade request (a comma-separated header value).

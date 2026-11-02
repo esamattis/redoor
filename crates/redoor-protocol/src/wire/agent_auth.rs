@@ -34,7 +34,7 @@ pub const SERVER_PROOF_HEADER: &str = "x-redoor-server-proof";
 const NONCE_BYTES: usize = 32;
 
 /// Encodes bytes as lowercase hex, the form nonces and proofs take in headers and JSON.
-fn to_hex(bytes: &[u8]) -> String {
+pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

@@ -386,6 +386,14 @@ pub(crate) async fn upgrade_agent_handler(
     let entry = inventory_entry(&state, &agent_id)
         .await?
         .ok_or_else(|| ApiError::not_found(format!("Agent not found: {agent_id}")))?;
+    // The next ensure step would replace a managed daemon running another binary than the
+    // server's, and the upgrade's re-exec releases the daemon's lock, which its session
+    // would read as a dead daemon.
+    if entry.managed {
+        return Err(ApiError::conflict(format!(
+            "Managed agents are upgraded by the server, which runs its own binary on them at every start: {agent_id}"
+        )));
+    }
     if entry.status != AgentConnectionStatus::Connected {
         return Err(ApiError::conflict(format!(
             "Agent is not connected: {agent_id}"
@@ -526,6 +534,7 @@ mod tests {
             connection_id: Some(connection),
             last_seen_at: None,
             connection_issue: None,
+            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             identity: Some(registration.identity),
             capabilities: registration.capabilities,

@@ -122,8 +122,6 @@ pub struct CreateSshAgentRequest {
     pub remote_bin: Option<String>,
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
-    /// Optional local path receiving SSH subprocess diagnostics.
-    pub log: Option<String>,
     /// New password to persist; omit or send empty on update to keep the existing secret.
     pub password: Option<String>,
     /// When true, drop any stored password so key or ssh-agent auth is used.
@@ -141,7 +139,6 @@ pub struct UpdateSshAgentRequest {
     pub name: Option<String>,
     pub remote_bin: Option<String>,
     pub home: Option<String>,
-    pub log: Option<String>,
     pub password: Option<String>,
     /// Distinguishes keeping an omitted password from deleting the stored secret.
     pub clear_password: Option<bool>,
@@ -171,8 +168,6 @@ pub struct ManagedSshAgentConfigurationResponse {
     pub remote_bin: Option<String>,
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
-    /// Optional local path receiving SSH subprocess diagnostics.
-    pub log: Option<String>,
     /// Always null on GET so the stored SSH password is never sent to the browser.
     pub password: Option<String>,
     /// Reports whether a password is stored so the edit form can choose the matching auth radio.
@@ -201,8 +196,6 @@ pub struct CreateLocalAgentRequest {
     pub name: Option<String>,
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
-    /// Optional local path receiving the spawned agent process diagnostics.
-    pub log: Option<String>,
 }
 
 /// Describes replacement local-agent settings separately from the create contract.
@@ -211,7 +204,6 @@ pub struct CreateLocalAgentRequest {
 pub struct UpdateLocalAgentRequest {
     pub name: Option<String>,
     pub home: Option<String>,
-    pub log: Option<String>,
 }
 
 /// Returns the newly visible dormant inventory record after local persistence succeeds.
@@ -230,8 +222,6 @@ pub struct ManagedLocalAgentConfigurationResponse {
     pub name: Option<String>,
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
-    /// Optional local path receiving the spawned agent process diagnostics.
-    pub log: Option<String>,
 }
 
 /// Returns the replacement dormant inventory record after a local configuration edit.
@@ -254,6 +244,9 @@ pub struct DeleteManagedAgentResponse {
 #[serde(rename_all = "snake_case")]
 pub enum AgentConnectionStatus {
     Stopped,
+    /// A managed device was stopped and its daemon is being stopped on the device; the
+    /// connection issue says why it takes longer.
+    Stopping,
     Starting,
     Connected,
     Disconnected,
@@ -287,6 +280,11 @@ pub struct AgentInfoResponse {
     pub connection_id: Option<SocketId>,
     pub last_seen_at: Option<UnixTimestampSeconds>,
     pub connection_issue: Option<String>,
+    /// Whether the managed device waits for its vault-encrypted SSH key, which the server
+    /// no longer holds (after a server restart), so a browser with an unlocked vault can
+    /// hand it over without a click. Absent from older servers, which the CLI may talk to.
+    #[serde(default)]
+    pub waiting_for_ssh_key: bool,
     /// Ordered SSH start steps for the current attempt; empty for local or dormant agents.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Binary identity from the latest registration; absent until first connect.

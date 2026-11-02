@@ -3,4 +3,4 @@
 /**
  * Identifies the user-visible connection lifecycle independently from ownership.
  */
-export type AgentConnectionStatus = "stopped" | "starting" | "connected" | "disconnected";
+export type AgentConnectionStatus = "stopped" | "stopping" | "starting" | "connected" | "disconnected";

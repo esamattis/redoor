@@ -372,6 +372,10 @@ impl RouterState {
             RouterMsg::RegisterManagedAgent(request) => self.register_managed(request),
             RouterMsg::UnregisterManagedAgent(request) => self.unregister_managed(request),
             RouterMsg::ApplyManagedLifecycle(request) => self.apply_managed_lifecycle(request),
+            RouterMsg::SupersedeManagedConnection {
+                agent_id,
+                socket_id,
+            } => self.supersede_managed_connection(agent_id, socket_id),
             RouterMsg::UnregisterAgent {
                 agent_id,
                 socket_id,
@@ -670,6 +674,7 @@ mod tests {
                 connection_id: list_agents[0].connection_id.clone(),
                 last_seen_at: None,
                 connection_issue: None,
+                waiting_for_ssh_key: false,
                 provisioning_status: Vec::new(),
                 identity: list_agents[0].identity.clone(),
                 capabilities: redoor_protocol::wire::registration::AgentCapabilities {

@@ -18,7 +18,6 @@ type FormState = Record<
     | "name"
     | "remoteBin"
     | "home"
-    | "log"
     | "password",
     string
 >;
@@ -96,7 +95,6 @@ function initialForm(configuration?: ManagedAgentFormConfiguration): FormState {
             name: configuration.value.name ?? "",
             remoteBin: "",
             home: configuration.value.home ?? "",
-            log: configuration.value.log ?? "",
             password: "",
         };
     }
@@ -108,7 +106,6 @@ function initialForm(configuration?: ManagedAgentFormConfiguration): FormState {
         name: configuration?.value.name ?? "",
         remoteBin: configuration?.value.remote_bin ?? "",
         home: configuration?.value.home ?? "",
-        log: configuration?.value.log ?? "",
         password: "",
     };
 }
@@ -169,7 +166,6 @@ function localSubmitRequest(form: FormState): ManagedAgentSubmitRequest {
         request: {
             name: optional(form.name),
             home: optional(form.home),
-            log: optional(form.log),
         },
     };
 }
@@ -212,7 +208,6 @@ function sshSubmitRequest(
             name: optional(form.name),
             remote_bin: optional(form.remoteBin),
             home: optional(form.home),
-            log: optional(form.log),
             password: authMode === "password" ? form.password || null : null,
             clear_password: authMode === "key",
         },
@@ -619,14 +614,6 @@ function LocalFields(props: {
                     disabled={props.disabled}
                     onChange={(value) => props.onChange("home", value)}
                 />
-                <TextField
-                    label="Diagnostic log"
-                    value={props.form.log}
-                    placeholder="Optional local log path"
-                    description="Local file for agent stdout and stderr. Leave empty to inherit the server terminal."
-                    disabled={props.disabled}
-                    onChange={(value) => props.onChange("log", value)}
-                />
             </div>
         </section>
     );
@@ -947,14 +934,6 @@ function AdvancedFields(props: {
                     description="Directory opened in the UI. Leave empty to use the remote user's home."
                     disabled={props.disabled}
                     onChange={(value) => props.onChange("home", value)}
-                />
-                <TextField
-                    label="Diagnostic log"
-                    value={props.form.log}
-                    placeholder="Optional local log path"
-                    description="Local file for SSH stdout and stderr. Leave empty to inherit the server terminal."
-                    disabled={props.disabled}
-                    onChange={(value) => props.onChange("log", value)}
                 />
             </div>
         </section>

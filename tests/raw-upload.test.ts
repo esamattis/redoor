@@ -608,6 +608,7 @@ describe("Raw Upload API", () => {
                 connection_id: null,
                 last_seen_at: null,
                 connection_issue: null,
+                waiting_for_ssh_key: false,
                 provisioning_status: [],
                 binary: null,
                 supports_native_open: false,

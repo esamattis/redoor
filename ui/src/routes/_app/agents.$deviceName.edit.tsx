@@ -67,7 +67,7 @@ function EditManagedAgentPage() {
         null,
     );
 
-    const isRunning = agent.status !== "stopped";
+    const isRunning = agent.status !== "stopped" && agent.status !== "stopping";
 
     /**
      * The file key of the device's encrypted SSH key, so the server can log in with it to

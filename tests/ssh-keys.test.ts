@@ -1008,7 +1008,6 @@ describe("managed SSH key access", () => {
             name: `ssh-keys-options-${fixture.suffix}`,
             remote_bin: null,
             home: null,
-            log: null,
             password: null,
             clear_password: null,
         });
@@ -1033,7 +1032,6 @@ describe("managed SSH key access", () => {
             name: `ssh-keys-token-${fixture.suffix}`,
             remote_bin: null,
             home: null,
-            log: null,
             password: null,
             clear_password: null,
         });

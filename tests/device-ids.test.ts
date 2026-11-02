@@ -148,7 +148,7 @@ async function createConnectedLocalAgent(
     name: string,
     home: string,
 ): Promise<Agent> {
-    const created = await api.createLocalAgent({ name, home, log: null });
+    const created = await api.createLocalAgent({ name, home });
 
     onTestFinished(async () => {
         try {
@@ -397,7 +397,6 @@ describe("Renames, names and token scopes", () => {
         const update = await api.updateLocalAgent("ids-rename-before", {
             name: "ids-rename-after",
             home: root,
-            log: null,
         });
 
         // Renaming changes only the name.
@@ -456,7 +455,6 @@ describe("Renames, names and token scopes", () => {
         await api.updateLocalAgent("ids-pi", {
             name: "ids-pi-old",
             home: oldRoot,
-            log: null,
         });
 
         const renamed = (await api.listAgents()).find(
@@ -521,7 +519,7 @@ describe("Renames, names and token scopes", () => {
         for (const name of [AGENT_A, HAND_WRITTEN_NAME]) {
             // A live standalone device and a configured device both own their names.
             await expect(
-                api.createLocalAgent({ name, home: null, log: null }),
+                api.createLocalAgent({ name, home: null }),
                 name,
             ).rejects.toMatchObject({
                 status: 409,
@@ -534,7 +532,6 @@ describe("Renames, names and token scopes", () => {
                     name,
                     remote_bin: null,
                     home: null,
-                    log: null,
                     password: null,
                     clear_password: null,
                 }),
@@ -550,7 +547,6 @@ describe("Renames, names and token scopes", () => {
         const created = await api.createLocalAgent({
             name: "ids-rename-conflict",
             home: null,
-            log: null,
         });
 
         onTestFinished(async () => {
@@ -563,7 +559,6 @@ describe("Renames, names and token scopes", () => {
                 api.updateLocalAgent(created.agent.id, {
                     name,
                     home: null,
-                    log: null,
                 }),
                 name,
             ).rejects.toMatchObject({
@@ -587,7 +582,7 @@ describe("Renames, names and token scopes", () => {
         ]) {
             // `:` splits CLI `device:path`, `/` splits URLs and an id-shaped name is ambiguous.
             await expect(
-                api.createLocalAgent({ name, home: null, log: null }),
+                api.createLocalAgent({ name, home: null }),
                 name,
             ).rejects.toMatchObject({
                 status: 400,

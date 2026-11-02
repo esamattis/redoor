@@ -40,23 +40,10 @@ let serverPid: number;
 
 let agentDir: string;
 
-let agentLogPath: string;
-
 let secondAgentDir: string;
 
-let secondAgentLogPath: string;
-
-function writeValidConfig(options?: { includeSecondAgent?: boolean }) {
-    const secondAgent = options?.includeSecondAgent
-        ? `
-[[agents]]
-local = true
-name = "${SECOND_AGENT_NAME}"
-home = "${secondAgentDir}"
-log = "${secondAgentLogPath}"
-`
-        : "";
-
+/** Writes the config with the one managed agent the suite starts with. */
+function writeValidConfig() {
     writeFileSync(
         configPath,
         `agent_token = "${TEST_AGENT_TOKEN}"
@@ -69,8 +56,7 @@ password = "${TEST_PASSWORD}"
 local = true
 name = "${AGENT_NAME}"
 home = "${agentDir}"
-log = "${agentLogPath}"
-${secondAgent}`,
+`,
     );
 }
 
@@ -83,10 +69,6 @@ beforeAll(async () => {
         suffix: "-restart-agent-two-cwd",
     });
     configPath = tempFiles.tempFile({ suffix: ".toml" });
-    agentLogPath = tempFiles.tempFile({ suffix: ".log" });
-    secondAgentLogPath = tempFiles.tempFile({ suffix: ".log" });
-    rmSync(agentLogPath, { force: true });
-    rmSync(secondAgentLogPath, { force: true });
     writeValidConfig();
 
     serverLogPath = tempFiles.tempFile({ suffix: ".log" });
@@ -110,9 +92,12 @@ afterAll(async () => {
 
 describe("process restart APIs", () => {
     it("rejects invalid config without restarting the process", async () => {
+        // The server wrote the assigned device ids into the file; restoring it unchanged
+        // keeps them, so the devices stay the same across later restarts.
+        const valid = readFileSync(configPath, "utf8");
         onTestFinished(() => {
             // Restore a valid config so later tests and teardown see a healthy server.
-            writeValidConfig();
+            writeFileSync(configPath, valid);
         });
 
         writeFileSync(configPath, "this is not valid toml [[[");
@@ -143,7 +128,7 @@ describe("process restart APIs", () => {
         expect(() => process.kill(serverPid, 0)).not.toThrow();
     });
 
-    it("restarts an agent in place", async () => {
+    it("replaces a managed agent's daemon on restart", async () => {
         let agent = (await apiClient.listAgents()).find(
             (entry) => entry.name === AGENT_NAME,
         );
@@ -165,43 +150,45 @@ describe("process restart APIs", () => {
         }
 
         const detailsBefore = await agent.getDetails();
-
-        const loadedBefore = (
-            readFileSync(agentLogPath, "utf8").match(/Starting agent/g) ?? []
-        ).length;
-
+        const previousConnection = agent.connectionId;
         const response = await agent.restart();
-        // The control response must be flushed before the agent replaces itself.
+        // The control response confirms the restart before the daemon is replaced.
         expect(response.restarting).toBe(true);
 
-        await waitForValue({
+        const detailsAfter = await waitForValue({
             timeoutMs: 30000,
-            description: "agent startup log after restart",
+            description: "managed agent to reconnect with a new daemon",
             predicate: async () => {
-                const loadedAfter = (
-                    readFileSync(agentLogPath, "utf8").match(
-                        /Starting agent/g,
-                    ) ?? []
-                ).length;
+                const restarted = (await apiClient.listAgents()).find(
+                    (entry) =>
+                        entry.name === AGENT_NAME &&
+                        entry.status === "connected" &&
+                        entry.connectionId !== previousConnection,
+                );
 
-                return loadedAfter > loadedBefore || undefined;
+                if (!restarted) return undefined;
+                const details = await restarted.getDetails();
+
+                return details.pid !== detailsBefore.pid ? details : undefined;
             },
         });
 
-        const restartedAgent = (await apiClient.listAgents()).find(
-            (entry) => entry.name === AGENT_NAME,
-        );
-
-        expect(restartedAgent).toBeDefined();
-
-        if (!restartedAgent) return;
-        const detailsAfter = await restartedAgent.getDetails();
-        // Self-exec deliberately preserves the PID for watchdog and SSH ownership.
-        expect(detailsAfter.pid).toBe(detailsBefore.pid);
+        // A managed daemon cannot re-exec itself, so the server replaces it instead.
+        expect(detailsAfter.pid).not.toBe(detailsBefore.pid);
     }, 60000);
 
     it("restarts the server in place and applies a mutated config.toml", async () => {
-        writeValidConfig({ includeSecondAgent: true });
+        // Appended rather than rewritten, so the running device keeps the id the server
+        // assigned to it; a device with a new id would be another device.
+        writeFileSync(
+            configPath,
+            `${readFileSync(configPath, "utf8")}
+[[agents]]
+local = true
+name = "${SECOND_AGENT_NAME}"
+home = "${secondAgentDir}"
+`,
+        );
 
         const response = await apiClient.restartServer();
         // Handler acknowledges before graceful shutdown + self-exec.
@@ -229,10 +216,16 @@ describe("process restart APIs", () => {
 
         const agents = await apiClient.listAgents();
         const names = agents.map((agent) => agent.name).sort();
-        // Both dormant inventory records prove the mutated config was applied via full startup.
+        // Both inventory records prove the mutated config was applied via full startup.
         expect(names).toEqual([AGENT_NAME, SECOND_AGENT_NAME].sort());
-        // Restart intentionally resets configured supervisors instead of eagerly launching them.
-        expect(agents.every((agent) => agent.status === "stopped")).toBe(true);
+        // The device that was running before the restart is started again on its own ...
+        await apiClient.waitForConnectedAgentNames([AGENT_NAME], 30000);
+        // ... while the newly added one stays stopped until someone starts it.
+        expect(
+            (await apiClient.listAgents()).find(
+                (agent) => agent.name === SECOND_AGENT_NAME,
+            )?.status,
+        ).toBe("stopped");
 
         // exec keeps the same PID so ProcessManager.kill still works at teardown.
         expect(() => process.kill(serverPid, 0)).not.toThrow();

@@ -73,6 +73,8 @@ async function prepareFixtures(): Promise<number> {
         await $({ cwd: PROJECT_ROOT, stdio: "inherit" })`pnpm run build`;
     }
 
+    // Daemons of an aborted earlier run would otherwise keep reconnecting to the new server.
+    await stopManagedDaemons();
     await rm(HOME_DIRECTORY, { recursive: true, force: true });
     await mkdir(join(HOME_DIRECTORY, "lazy-agent"), { recursive: true });
     await mkdir(join(PROJECT_ROOT, "dev_agents/agent2"), { recursive: true });
@@ -105,13 +107,11 @@ password = "test-password"
 local = true
 name = "lazy_managed"
 home = ".test-playwright-home/lazy-agent"
-log = "log/playwright-lazy-managed.log"
 
 [[agents]]
 local = true
 name = "failing_managed"
 home = ".test-playwright-home/missing-agent-directory"
-log = "log/playwright-failing-managed.log"
 `,
     );
 
@@ -175,6 +175,31 @@ async function stopChildren(children: Child[]): Promise<void> {
             ),
         );
         await gracefulExit;
+    }
+}
+
+/**
+ * Kills the managed agent daemons the server started under the fixture home. They run in
+ * their own session and outlive the server by design, so stopping the server leaves them.
+ */
+async function stopManagedDaemons(): Promise<void> {
+    const share = join(HOME_DIRECTORY, ".local", "share");
+
+    for await (const pidFile of glob("*-dev_*/agent.pid", { cwd: share })) {
+        try {
+            const record = z
+                .object({ pid: z.number().int().positive() })
+                .parse(JSON.parse(await readFile(join(share, pidFile), "utf8")));
+
+            const cmdline = await readFile(`/proc/${record.pid}/cmdline`, "utf8");
+
+            // Only a daemon of this namespace; the PID may have been reused.
+            if (cmdline.includes(pidFile.split("/")[0] ?? "")) {
+                process.kill(record.pid, "SIGKILL");
+            }
+        } catch {
+            // No record, no process, or not a daemon anymore.
+        }
     }
 }
 
@@ -273,6 +298,7 @@ async function supervise(): Promise<void> {
         process.removeListener("SIGINT", handleSignal);
         process.removeListener("SIGTERM", handleSignal);
         await stopChildren(children);
+        await stopManagedDaemons();
     }
 }
 

@@ -111,7 +111,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
 home = "${remoteRoot}"
-log = "${join(home, "managed-agent.log")}"
 `,
     );
 
@@ -190,8 +189,9 @@ log = "${join(home, "managed-agent.log")}"
         }
 
         const shutdown = await connected.shutdown();
-        // The next start must begin from a stopped agent, not race the old session.
-        expect(shutdown.agent.status).toBe("stopped");
+        // The session is gone at once; the daemon on the device is stopped right after, and
+        // the next start waits for the stopped state.
+        expect(["stopping", "stopped"]).toContain(shutdown.agent.status);
 
         return [...seen];
     }

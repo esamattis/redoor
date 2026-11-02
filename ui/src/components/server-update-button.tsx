@@ -1,11 +1,17 @@
 import * as React from "react";
 import { getRouteApi } from "@tanstack/react-router";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpCircle } from "lucide-react";
 import { z } from "zod";
 
 import type { UpgradeProcessReport } from "#bindings/UpgradeProcessReport";
-import { serverInfoQueryOptions } from "#ui/queries";
+import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
+import type { TerminalSessionInfo } from "#bindings/TerminalSessionInfo";
+import {
+    agentsQueryOptions,
+    serverInfoQueryOptions,
+    terminalSessionsQueryOptions,
+} from "#ui/queries";
 import { isReloadingForNewBuild } from "#ui/use-reload-on-server-build-change";
 import { useBeginServerRestart } from "#ui/use-server-restart";
 import { getErrorMessage } from "#ui/utils/error";
@@ -118,6 +124,77 @@ function updateResult(
     };
 }
 
+/** Terminal sessions an update ends, counted from the server's terminal index. */
+type ManagedShellImpact = {
+    /** Running shells on managed devices, which the server replaces with the new binary. */
+    shells: number;
+    /** Of those, the shells on devices that are not connected now. */
+    unreachableShells: number;
+};
+
+/**
+ * Counts the running shells on managed devices. The server replaces every managed daemon
+ * whose binary changed when it restarts, which ends its shells; a device that is unreachable
+ * now is replaced, and its shells end, when it reconnects.
+ */
+function managedShellImpact(
+    agents: AgentInfoResponse[],
+    sessions: TerminalSessionInfo[],
+): ManagedShellImpact {
+    const managed = new Map(
+        agents.flatMap((agent) =>
+            agent.managed
+                ? [[agent.id, agent.status === "connected"] as const]
+                : [],
+        ),
+    );
+
+    let shells = 0;
+    let unreachableShells = 0;
+
+    for (const session of sessions) {
+        const connected = managed.get(session.agent_id);
+
+        if (connected === undefined || session.status.type !== "running") {
+            continue;
+        }
+
+        shells += 1;
+
+        if (!connected) {
+            unreachableShells += 1;
+        }
+    }
+
+    return { shells, unreachableShells };
+}
+
+/** Says which terminal sessions the update ends, so nobody loses a shell by surprise. */
+function ManagedShellNotice(props: { impact: ManagedShellImpact | null }) {
+    if (props.impact === null) {
+        return null;
+    }
+
+    const { shells, unreachableShells } = props.impact;
+
+    if (shells === 0) {
+        return <p>No terminal sessions on managed devices will end.</p>;
+    }
+
+    return (
+        <p>
+            {shells === 1
+                ? "1 terminal session on a managed device will end"
+                : `${shells} terminal sessions on managed devices will end`}
+            , because the server replaces its managed agents with the new
+            binary.
+            {unreachableShells > 0
+                ? ` ${unreachableShells} of them ${unreachableShells === 1 ? "is" : "are"} on devices that are not connected now and end${unreachableShells === 1 ? "s" : ""} when ${unreachableShells === 1 ? "its device reconnects" : "their devices reconnect"}.`
+                : ""}
+        </p>
+    );
+}
+
 /** Session key holding the update whose result is not shown yet. */
 const PENDING_UPDATE_KEY = "redoor:pending-server-update";
 
@@ -175,6 +252,22 @@ export function ServerUpdateButton(props: {
     const beginServerRestart = useBeginServerRestart();
     const [isOpen, setIsOpen] = React.useState(false);
     const [version, setVersion] = React.useState("");
+
+    // Read only while the dialog is open, where the count is shown.
+    const agentsQuery = useQuery({
+        ...agentsQueryOptions(api),
+        enabled: isOpen,
+    });
+
+    const sessionsQuery = useQuery({
+        ...terminalSessionsQueryOptions(api),
+        enabled: isOpen,
+    });
+
+    const shellImpact =
+        agentsQuery.data && sessionsQuery.data
+            ? managedShellImpact(agentsQuery.data, sessionsQuery.data.sessions)
+            : null;
 
     // An update to another build reloads the page before the wait ends, so its result
     // arrives here, in the page the reload opened, which already runs the new version.
@@ -262,11 +355,13 @@ export function ServerUpdateButton(props: {
                                 {props.exePath}
                             </code>
                             . The server and the local agents and relays running
-                            that binary then restart in place.
+                            that binary then restart in place, and the server
+                            replaces its managed agents with the new binary.
                         </p>
+                        <ManagedShellNotice impact={shellImpact} />
                         <p>
-                            In-flight transfers and terminals are interrupted.
-                            The server needs write access to that directory.
+                            In-flight transfers are interrupted. The server
+                            needs write access to that directory.
                         </p>
                     </div>
                 }

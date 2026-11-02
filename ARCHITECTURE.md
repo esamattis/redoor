@@ -199,8 +199,14 @@ The agent runtime and the implementation of every command.
     `pending_tail`, which keeps the bytes of an unfinished escape sequence for snapshots.
   - The module itself bridges one attach stream of the connection to a session.
 - `logs`: live log streaming on one stream of the connection.
-- `device_id`: the `<data_dir>/agent-id` file a standalone agent keeps its id in. Agents
-  started with `--agent-id` (managed agents and relays) never read or write it.
+- `device_id`: the `<data_dir>/agent-id` file a standalone agent keeps its id in. Relayed
+  agents (`--agent-id`) and managed daemons (id in their payload) never read or write it.
+- `runtime::AgentRole` tells the three owners apart: a standalone agent never gives up, a
+  relayed agent leaves recovery to its relay, and a managed daemon reconnects on its own
+  and keeps an orphan clock (see "Managed agent lifecycle").
+- `ManagedDaemon` prepares a managed agent's daemon from its launch payload; the `redoor`
+  binary's `managed` module runs `redoor agent managed` around it (ensure step, report,
+  session holder, `--stop`, `--remove`).
 
 ### `redoor-server`
 
@@ -253,8 +259,10 @@ The agent runtime and the implementation of every command.
   - `http/terminal_sessions` (list, create, delete) is a thin handler over the registry.
     `http/terminals` is the attach websocket: it takes the session's viewer slot and
     relays between the browser and an attach stream on the agent.
-- `watchdog`: one dormant-until-started supervisor per managed agent, with restart backoff,
-  a reconnect deadline and generation counters.
+- `watchdog`: one supervisor per managed agent, which owns the session to its daemon, with
+  restart backoff, a reconnect deadline, generation counters, the ensure report a `hello`
+  must match and the pending stop of the daemon. `managed_running` persists which devices
+  are desired-running, and `managed_session` reads a session's ensure report.
 - `ssh/`: preparing remote hosts (OS and architecture probe, binary install), launching
   agents through SSH reverse forwards, and the standalone `relay`.
   - `transport`: `SshHost` with a `HostKeyPolicy` and an `AuthPolicy`. `build_ssh_command`
@@ -346,12 +354,13 @@ flowchart LR
 
     subgraph serverhost["Server host"]
         server["redoor server"]
-        local["Managed local agent<br/>(child process)"]
+        local["Managed local agent daemon<br/>(own session or systemd scope)"]
+        holder["agent managed session<br/>(child process)"]
         ssh["ssh -R client<br/>(child process)"]
     end
 
     subgraph remote["Remote host"]
-        sshagent["SSH-launched agent"]
+        sshagent["SSH agent daemon"]
     end
 
     external["Standalone agent<br/>(systemd / launchd / manual)"]
@@ -361,13 +370,14 @@ flowchart LR
     cli -->|"REST"| server
     mcp -->|"MCP over HTTP"| server
 
-    server -.->|"watchdog spawns"| local
-    server -.->|"watchdog spawns"| ssh
-    ssh -.->|"starts over SSH"| sshagent
+    server -.->|"watchdog runs"| holder
+    holder -.->|"keeps running"| local
+    server -.->|"watchdog runs"| ssh
+    ssh -.->|"agent managed keeps running"| sshagent
 
     local ==>|"one multiplexed websocket"| server
     external ==>|"one multiplexed websocket"| server
-    sshagent ==>|"websocket through<br/>the reverse tunnel"| ssh
+    sshagent ==>|"websocket through the<br/>Unix socket forward"| ssh
     ssh ==> server
 ```
 
@@ -376,17 +386,19 @@ behind NAT, on a phone (Termux) or on a host that is only reachable over SSH.
 
 - **Standalone agents** are started by the user or a service manager, and connect to the
   server's `/api/v1/agent/ws` endpoint with the agent token.
-- **Managed local agents** are `[[agents]]` entries in the server config. The server's
-  watchdog spawns them as child processes and restarts them with backoff.
-- **SSH-backed agents** are also watchdog-managed. The server runs `ssh -R
-  <random-port>:<server>` and starts the agent on the remote host pointing at
-  `ws://localhost:<random-port>/api/v1/agent/ws`. What looks like a local connection on the remote host
-  reaches the server through the tunnel. With built-in HTTPS the agent instead gets
-  `wss://localhost:<server-port>/...` plus `--connect-address localhost:<random-port>`, the
-  relay mechanism for TLS servers (see "Built-in HTTPS"). The token is passed on SSH stdin and the password
-  through askpass, so neither appears on a command line. A device can instead use a
-  redoor-managed SSH key and a pinned host key (see "SSH device keys"). `redoor agent relay`
-  runs the same mechanism without a server, for agents of a remote server.
+- **Managed local agents** are `[[agents]]` entries in the server config. Each runs as a
+  daemon that outlives the server; the watchdog runs a session (`redoor agent managed`) that
+  keeps the daemon running and connects to the listener directly (see "Managed agent
+  lifecycle").
+- **SSH-backed agents** are also watchdog-managed daemons. The server's session is `ssh -R
+  <socket>:localhost:<server-port>` running `redoor agent managed` on the device, and the
+  daemon connects through that Unix socket. What looks like a local connection on the
+  device reaches the server through the tunnel; the URL keeps `localhost:<server-port>` as
+  its authority, `wss://` with built-in HTTPS (see "Built-in HTTPS"). The token travels in
+  the launch payload on stdin and the password through askpass, so neither appears on a
+  command line. A device can instead use a redoor-managed SSH key and a pinned host key
+  (see "SSH device keys"). `redoor agent relay` starts a plain agent the older way, with a
+  random TCP port forward, for agents of a remote server.
 - **Browsers, the CLI and MCP clients** only use the REST API, the `/mcp` endpoint and browser
   websockets. They never talk to agents directly; the server translates each request into
   agent commands.
@@ -586,10 +598,13 @@ sequenceDiagram
     else accepted
         H-->>A: 101, Sec-WebSocket-Protocol: redoor.v5<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
         Note over A: a wrong or missing server proof drops the socket before hello
-        A->>S: hello {agent_id, agent_name, token_proof: HMAC(token, a, s), identity, capabilities}
+        A->>S: hello {agent_id, agent_name, token_proof: HMAC(token, a, s), identity, capabilities, spec_hash?}
         Note over S: any other first frame, or a wrong token_proof, closes the socket
-        alt managed agent the server has stopped
+        alt managed agent the server has stopped, or a daemon of no configured device
             S->>A: rejected {stopped, message}
+            Note over S: the session flushes the frame and closes
+        else daemon whose build or spec hash differs from the latest ensure report
+            S->>A: rejected {superseded, message}
             Note over S: the session flushes the frame and closes
         else
             S->>R: register (with socket id)
@@ -612,11 +627,17 @@ sequenceDiagram
   it. The `hello` only finishes the mutual token proof (see "Mutual token proof"). The agent
   treats `401` (wrong token), a server that cannot prove the token and `426` (other protocol
   version) as needing an operator: a standalone agent logs a clear error and keeps retrying
-  at the slowest backoff step, so it connects once the token or the server is fixed; a
-  supervised agent exits and leaves the retry to its owner (see "Connection recovery").
+  at the slowest backoff step, so it connects once the token or the server is fixed, and a
+  managed daemon does the same while its orphan clock runs; a relayed agent exits and leaves
+  the retry to its relay (see "Connection recovery").
 - A refused protocol mismatch is remembered, so a standalone agent of another release shows
-  up in the Devices view instead of only in its own logs. Managed local and SSH agents are
-  always provisioned with the server's own binary, so they never mismatch. There is no
+  up in the Devices view instead of only in its own logs. Managed daemons are replaced with
+  the server's own binary before they talk to it, so they only mismatch in the moment
+  between a server upgrade and the ensure step (see "Upgrading in place").
+- **A daemon is never an external device.** A `hello` with a spec hash is a managed daemon's;
+  without a supervisor for its id (a deleted device whose cleanup missed it, another server
+  sharing the token) it is rejected as `stopped`, which ends it, instead of being listed as
+  a standalone agent. There is no
   compatibility with earlier protocols: an agent and a server must speak the same
   `redoor.vN`.
 - **Identity is the connection.** `hello` is the only frame that names the agent; every later
@@ -780,10 +801,11 @@ from reconnects (clones usually keep them), so the router detects the eviction l
 - A rejected agent logs how to fix it (delete `<data_dir>/agent-id` on one machine, or check
   for duplicate config ids when it was started with `--agent-id`) and retries with its normal
   backoff, so a fixed clone, or a real reconnect after the current connection died, gets
-  through. Other rejections make a supervised agent exit, so its owner shows the problem
-  and restarts it; a standalone agent retries them at the slowest backoff step.
-- On `evicted`, managed agents and relays exit as before, so an SSH-launched process that
-  outlived its tunnel does not linger. A standalone agent holds the single-instance lock on
+  through. Other rejections make a relayed agent exit, so its relay shows the problem and
+  restarts it; a managed daemon exits only on `stopped` and `superseded`; a standalone agent
+  retries them at the slowest backoff step.
+- On `evicted`, managed daemons and relayed agents exit as before, so a process the server
+  replaced or stopped does not linger. A standalone agent holds the single-instance lock on
   its data dir, so being replaced means another machine has its id; it reconnects with
   backoff instead, otherwise the loop would end before the router could detect it.
 - The agent still handles a `rejected` or `evicted` frame that arrived just before the
@@ -811,15 +833,28 @@ so a peer that accepts and drops at once is not retried at the shortest delay fo
   It never exits on its own: refusals that only an operator can fix (`401`, `426`, a
   `rejected` hello) are logged and retried at the cap, because a standalone agent has
   nobody to restart it.
-- **Supervised agents leave recovery to their owner.** An agent started with `--agent-id`
-  (by the watchdog or a relay) reconnects through its tunnel only for `stale_timeout`, then
-  exits; it also exits on a refusal or eviction. The tunnel may be dead in a way only a new
-  SSH session fixes, and the exit ends that session, which the owner notices at once.
-- **The watchdog owns managed agents.** Server-side, the session pings the agent and asks
-  the watchdog to replace it after `stale_timeout` of silence. The watchdog also replaces
-  a child that has no connection 60 s after its start or after its socket closed, because
-  a running process (an `ssh` whose remote side hangs) is no proof the agent comes back.
-  Every restart waits on the backoff.
+- **Relayed agents leave recovery to their relay.** An agent started with `--agent-id` by a
+  relay reconnects through its tunnel only for `stale_timeout`, then exits; it also exits on
+  a refusal, an eviction or the end of its stdin (`--exit-on-stdin-eof`). The tunnel may be
+  dead in a way only a new SSH session fixes, and the exit ends that session, which the
+  relay notices at once.
+- **Managed daemons reconnect on their own** like standalone agents, because they outlive
+  SSH sessions and server restarts: the next session's forward appears at the same socket
+  path, and a local daemon reaches the listener directly. `SIGUSR1` from the ensure step
+  makes a daemon drop whatever connection it still believes in and connect at once with
+  the backoff reset; the ensure step sends it only when the server has no socket from the
+  daemon, so a healthy connection is never disturbed. A daemon exits on `stopped`,
+  `superseded`, an eviction, or after its orphan limit (24 h, `orphan_timeout` in its
+  payload) without an accepted connection. The orphan clock runs only while the daemon has
+  no accepted connection and uses wall-clock time, because the monotonic clock stops while a
+  phone or laptop sleeps.
+- **The watchdog owns the session to a managed daemon.** Server-side, the session actor
+  pings the daemon and asks the watchdog to drop the tunnel after `stale_timeout` of
+  silence; the daemon is kept. A session whose daemon stays without a connection 60 s after
+  the session started or after its socket closed is dropped, and the next cycle replaces
+  the daemon (`replace` in the payload), because a running process (a wedged daemon, an
+  `ssh` whose remote side hangs) is no proof the daemon comes back. Every new cycle waits on
+  the backoff.
 - **Relays own their SSH session** and relaunch it on the backoff whenever it exits. They
   cannot see the agent's socket, so liveness comes from both ends of the session: ssh runs
   with `ServerAliveInterval=10` unless the user's config sets one, which ends a session over
@@ -833,42 +868,150 @@ so a peer that accepts and drops at once is not retried at the shortest delay fo
 
 ## Managed agent lifecycle
 
-Managed agents are the `[[agents]]` entries in the server config: local child processes and
-SSH-backed agents. The server's watchdog runs them. Standalone agents manage themselves.
+Managed agents are the `[[agents]]` entries in the server config: local agents and
+SSH-backed agents. Each runs as a daemon on its device, which outlives SSH sessions and
+server restarts (in-place re-exec, `systemctl restart`, a crash), so its shells do too. The
+server's watchdog only runs the *session* to it. Standalone agents manage themselves.
 
-- **States** are `AgentConnectionStatus`. A managed agent moves between `Stopped`, `Starting`
-  and `Connected`. `Disconnected` is only used for standalone agents. A managed agent whose
-  socket drops goes back to `Starting`, because the watchdog is already bringing it back.
-- **Dormant until started.** At startup every managed agent gets a supervisor in `Stopped`,
-  and nothing is spawned until the user starts it. So a server restart never launches local
-  or remote processes on its own.
+```mermaid
+sequenceDiagram
+    participant W as Watchdog
+    participant M as agent managed (session)
+    participant D as Daemon
+    participant S as Server listener
+
+    W->>M: start (local child, or ssh -R socket running it)
+    W->>M: ManagedLaunch payload (one JSON line on stdin)
+    M->>M: read the namespace's PID file under its lock
+    alt same binary file, build and spec hash, no replace
+        M->>D: SIGUSR1 (only when the server has no socket from it)
+    else other daemon or replace
+        M->>D: SIGTERM, then SIGKILL after 10 s, wait for the lock
+        M->>D: start (setsid or a systemd scope), payload on its stdin
+        D->>D: lock, write identity, then stderr to agent.log (ready)
+    end
+    M->>W: report {outcome, pid, binary, spec_hash}
+    D->>S: hello {..., spec_hash} (accepted only if it matches the report)
+    Note over M: holds the session until stdin ends or the daemon's lock is released
+    M->>W: {ended: daemon_exited, log_tail} or {ended: stdin_eof}
+```
+
+- **One namespace per device.** A daemon runs with `--app-name <server app name>-<agent id>`
+  (for example `redoor-dev_k3j…`). Keying by id instead of by server keeps several entries on
+  one `user@host` apart, and gives every daemon its own PID lock, identity, `agent.log`,
+  config dir (no accidental pickup of a standalone `config.toml`) and partial uploads, plus
+  a stop command for free (`redoor --app-name <ns> agent stop`). Binaries stay shared under
+  the server's own app name.
+- **`redoor agent managed`** reads the payload (`ManagedLaunch`: token, id, name, server URL,
+  TLS setting, home, connect address, orphan limit, `replace`, `server_connected`; at most
+  16 KiB), runs the ensure step, prints one report line and holds the session. It keeps a
+  daemon only when the daemon's recorded `BinaryIdentity`, install path, executable file
+  identity (device, inode, size, modification time of the file it started from) and spec
+  hash equal its own: it was just executed from the expected binary, so its own identity is
+  the expected one. The build identity alone misses debug rebuilds, which keep the identity
+  and date at the same path; every cargo build and every `install.sh` rename produces a new
+  file. The spec hash covers every daemon setting, with the token only as a SHA-256
+  fingerprint, so a changed name, home or token restarts the daemon; the token is never
+  written to disk.
+- **The PID lock is the only liveness proof.** A PID is trusted only while its lock is held,
+  because the kernel releases an `flock` when its holder dies; the lock descriptor is
+  `O_CLOEXEC`, so a shell can never inherit it and make a dead daemon look alive. Waiting
+  for a stopped daemon is a blocking `flock` on a dedicated thread: it cannot be cancelled,
+  but it always returns, since `SIGKILL` makes the kernel release the lock, and the thread
+  closes its descriptor before the next daemon starts. The holder ends with
+  `std::process::exit`, so that thread never keeps it alive.
+- **Starting a daemon.** The daemon is the same binary with `--serve`. It gets the payload on
+  its stdin pipe (closed after writing), and its stderr stays piped to the session until it
+  holds the lock and wrote its identity; it then points stderr at its `agent.log`, so end of
+  file means ready, and an early exit leaves its error for the report. It keeps nothing of
+  the SSH channel: its stdin, stdout and stderr are `/dev/null`, `/dev/null` and the log. It
+  starts in a new session (`setsid`). A local daemon of a server running as a systemd
+  service starts in its own transient scope instead (`systemd-run --scope [--user]
+  --unit=<ns>-<random> --collect -p KillMode=process`), because a scope leaves the server's
+  cgroup, so `systemctl restart` of the server does not kill it. A scope runs the command as
+  a child of `systemd-run` itself, so it keeps the pipes and the environment. `KillMode=process`
+  and stopping daemons by PID (never `systemctl stop`) keep processes a user started from a
+  shell (`tmux`, `nohup`, the `redoor upgrade --restart-pids` helper) alive when a daemon is
+  replaced, and the unique unit name keeps such leftovers from blocking the next start. The
+  manager is read from the server's cgroup, not `INVOCATION_ID`, which every descendant of a
+  service inherits; without a service, or when the scope cannot be created, `setsid` is used.
+  A system service running as `redoor` may not create system scopes, so the server units
+  `redoor server systemd install` writes use `KillMode=process`: a restart stops only the
+  server, and its session processes end with it because their stdin closes. The server
+  cannot rewrite an older system unit, so with managed agents configured it warns at startup
+  when its unit still uses `KillMode=control-group`.
+- **Logs live on the device**, in the namespace's `agent.log`; live logs still come over
+  `log_stream_open`. The PTY shells and exec commands never inherit `REDOOR_AGENT_TOKEN`.
+- **States** are `AgentConnectionStatus`. A managed agent moves between `Stopped`, `Starting`,
+  `Connected` and `Stopping`. `Disconnected` is only used for standalone agents. A managed
+  agent whose socket drops goes back to `Starting`, because the watchdog is already bringing
+  it back. A local daemon may stay connected while its session is replaced, and the device
+  then stays `Connected`.
+- **Desired-running survives server restarts.** Start and Retry start record the device in
+  `<data_dir>/managed-running.json` (written with a rename); Stop, delete and configuration
+  changes remove it. At startup every supervisor is registered and the listed devices are
+  started **before the listener accepts connections**, so a local daemon that reconnects at
+  once finds its device desired-running instead of being rejected as `stopped`, which would
+  end it and its shells. A device that is not listed (its stop never reached the daemon) gets
+  `stopped` and its daemon exits. A device with an encrypted SSH key stays desired-running
+  and waits for its key (`waiting_for_ssh_key` in the inventory), while its daemon keeps
+  running; a browser tab whose vault is unlocked hands the key over (see "SSH device keys").
 - **Actions**:
 
   | Action | Endpoint | Effect |
   |---|---|---|
-  | Start | `POST /api/v1/agents/{agent}/start` | Marks the agent desired-running; the supervisor spawns it. A vault-encrypted SSH key's file key may come with it (see "SSH device keys") |
-  | Disconnect | `POST /api/v1/agents/{agent}/shutdown` | Cancels provisioning or backoff, kills and reaps the child, evicts its socket |
+  | Start | `POST /api/v1/agents/{agent}/start` | Marks the agent desired-running; the supervisor runs its session. A vault-encrypted SSH key's file key may come with it (see "SSH device keys") |
+  | Disconnect | `POST /api/v1/agents/{agent}/shutdown` | Drops the session and acknowledges at once, then stops the daemon on the device (`Stopping`, retried on the backoff with the issue shown) |
   | Retry start | `POST /api/v1/agents/{agent}/retry-start` | Abandons the current attempt and starts a fresh one with the backoff reset. Takes the same optional SSH key file key as Start |
-  | Restart | `POST /api/v1/agents/{agent}/restart` | Not a watchdog action: the agent re-executes itself, so it works for any connected agent |
+  | Restart | `POST /api/v1/agents/{agent}/restart` | For a managed device, a new cycle with `replace`; a daemon started from a payload cannot re-exec itself, since its stdin is closed and exec would release its lock. A standalone agent re-executes itself |
 
-- **Agent log files are forwarded, not inherited.** When a managed agent has a `log`, its
-  child (the local `redoor agent` or `ssh`) gets piped stdout and stderr, and the watchdog
-  forwards them line by line into a `RotatingLogFile` limited by `[server].log_max_size`.
-  A descriptor inherited straight into the file could never be kept under a limit. The
-  forwarder also returns the attempt's output tail, which explains a failed exit without
-  rereading a file that may have been truncated meanwhile. The SSH launch script's
-  report is read one byte at a time, so the output after it stays in the pipe for the
-  watchdog. Relays forward their SSH output the same way into the relay log.
-- **Supervision.** While an agent is desired-running, the watchdog restarts it when spawning or
-  provisioning fails, when the child exits, when its heartbeat goes stale and when the child
-  has had no connection for 60 s after its start or after its socket closed. Restarts wait
-  on the shared backoff (see "Connection recovery"). The watchdog never gives up. When an
-  SSH key is encrypted and not held by the server, retrying cannot unlock it, so the agent
-  stays desired-running and `Starting` and waits for the next Start or Retry instead of a
-  timer. The latest error is shown as the agent's `connection_issue` while it stays
-  `Starting`.
+- **Session events.**
+
+  | Event | Result |
+  |---|---|
+  | Session ends | Tunnel lost. The issue comes from the end line (daemon died: its log tail), else from SSH's stderr. New cycle on the backoff. |
+  | No connection 60 s into a session or after a disconnect | The session is dropped and the next cycle replaces the daemon. |
+  | `Stale(socket)` | Drops the session only. A repeat failure reaches the deadline above. |
+  | Stop | Drops the session, acknowledges, then stops the daemon (`agent managed --stop`). The pending stop lives in memory only; after a server restart the orphan limit ends a daemon it missed. A device that was not running at startup and to which no session of this process sent a payload stops at once. |
+  | Delete | Stops the session; a background task then runs `agent managed --remove` once (stop, then `safe_rm_all` of the namespace's data, cache, config and root log dirs), so an unreachable device cannot block the delete. |
+  | `hello` that differs from the latest report | `rejected { superseded }`; the daemon exits, its session sees the lock released, and the next cycle starts the expected one. |
+  | Server restart or shutdown | Drops the sessions only (`detach_all`). The server never stops daemons on its own shutdown. |
+
+- **Registration before the report.** A daemon can connect before the current cycle has a
+  report: a local daemon reconnects on its own, and an SSH forward exists before the remote
+  command prints anything. Such a `hello` is accepted provisionally. When the report
+  arrives, the supervisor compares it with the connected daemon's build and spec hash and
+  ends a mismatching connection with `superseded`. A `hello` after the report is checked at
+  once. The check compares with the latest report, not with the server's own identity:
+  otherwise `redoor upgrade --no-restart`, which leaves the old server running while the
+  path holds the new binary, would reject every daemon started from that path and start it
+  again forever.
+- **Credentials for the stop.** Stop, configuration changes and delete release the device's
+  held SSH key. The stop (and the delete task) is prepared first and captures the
+  connection, key included, which it drops when it finishes or gives up. A configuration
+  change keeps the id and with it the namespace, so the new entry's first ensure step
+  replaces the daemon through the spec hash; only a change of target, user or SSH port, which
+  may reach another device or account, stops the old daemon with the old settings, in the
+  background once the old supervisor is gone (removing the supervisor would cancel a stop
+  it ran itself).
+- **SSH sessions.** One session per cycle: the launch script probes and installs as below,
+  then `exec`s `<bin> --app-name <ns> agent managed --session-socket <socket>` with
+  `-R <socket>:localhost:<server port> -o StreamLocalBindUnlink=yes -o ExitOnForwardFailure=yes`.
+  sshd keeps a forward's socket file after the session ends (its own `StreamLocalBindUnlink`
+  is off by default), so the next session could not bind the same path: every SSH session
+  listens on a path of its own, `<dir>/<ns>-<random>.sock`, and its `agent managed` points
+  the stable `<dir>/<ns>.sock` symlink at it (with a rename) and removes the sockets earlier
+  sessions left. The daemon only knows the stable path, so its spec hash never changes
+  between sessions. OpenSSH sends the `-R` path to sshd literally, before the remote command
+  runs, so remote variables cannot be used in it: the directory (`$XDG_RUNTIME_DIR`, else
+  `$TMPDIR`, else `/tmp`) is resolved once with a short session and kept in memory, and
+  `/tmp` is used when a path would exceed the ~104-byte socket limit. A failed forward
+  forgets the cached directory and shows an issue naming sshd's `AllowStreamLocalForwarding`
+  and `DisableForwarding`. There is no TCP fallback.
+- **Caveats.** `KillUserProcesses=yes` in the device's `logind.conf` ends daemons at logout,
+  and sshd configurations that forbid stream-local forwarding are not supported.
 - **SSH provisioning runs on every attempt**, so the UI always shows current results. The
-  agent is started by a launch script that first reports the OS, architecture and version
+  session is started by a launch script that first reports the OS, architecture and version
   of the binary at the default install path, and `exec`s it only when the version matches
   this server. A device with a current binary therefore starts in one SSH session.
   Otherwise the script exits without starting anything, the server uploads the matching
@@ -901,27 +1044,28 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
   debug upload verifies or is rejected this way, a
   background task removes the other `debug-*` directories and the legacy `debug/`
   directory; an agent still running an old build keeps its deleted file open. Each step is
-  published as `provisioning_status`, which the UI lists while the agent starts. The ssh
-  child holds the remote agent's stdin, so killing ssh makes the remote agent exit
-  (`--exit-on-stdin-eof`). Relays probe and install once before their first start instead,
+  published as `provisioning_status`, which the UI lists while the agent starts. Killing
+  ssh only ends the session; the daemon keeps running. Relays probe and install once before
+  their first start instead,
   because they restart the agent many times from the prepared state; they prepare again
   only when the remote shell reports the binary missing (exit 127), which happens after
   another provision's cleanup removed their `debug-<hash>` directory.
 - **A stop wins every race.** Every start, shutdown and retry bumps an attempt generation, and
   the router commits a registration only if its generation is still current. An agent that
   connects while its entry is not desired-running gets `rejected` with `stopped` and exits.
-  Without this, a `hello` that was already in flight, or a remote process that outlived its
-  ssh client, would reconnect and silently undo the user's stop. Socket ids likewise filter
+  Without this, a `hello` that was already in flight, or a daemon whose stop has not reached
+  it yet, would reconnect and silently undo the user's stop. Socket ids likewise filter
   out late disconnect and stale events from replaced sockets.
 - **Config edits apply at runtime.** Adding an agent generates its id and creates a new
-  dormant supervisor. Editing or deleting one stops the agent, rewrites the config file
+  stopped supervisor. Editing or deleting one stops the agent, rewrites the config file
   (preserving its formatting, finding the entry by its id) and replaces the supervisor, so an
   edited agent comes back as `Stopped` with the same id. Supervisors are keyed by id, so the
   session finds its supervisor through the id in `hello` even after a rename. Changes made to
   `config.toml` by hand take effect on the next server restart.
 - **Server restart** (`POST /api/v1/server/restart`, or the `redoor upgrade` signal) validates
-  the config first. It then stops every managed child before re-executing, because `exec`
-  would otherwise leave them orphaned. Standalone agents simply reconnect.
+  the config first. It then drops every managed session before re-executing, because `exec`
+  would otherwise leave them orphaned. The daemons keep running and reconnect, like
+  standalone agents.
 - **A restart waits at most a few seconds for open requests.** Graceful shutdown stops
   accepting at once and then waits for every open request, so a long download or a slow
   agent command would keep the server unreachable for its whole duration. After
@@ -964,7 +1108,8 @@ half-written file.
   terminal and supervisor, so the upgrade never has to rebuild a command line. The server
   goes through the same validated restart as the REST route. A relay drops its SSH session
   first (`kill_on_drop`). Agents launched by a server or relay do not catch it; their owner
-  restarts them. SIGHUP was not used because a foreground process gets it when its terminal
+  restarts them. Managed daemons and their sessions carry `REDOOR_MANAGED_AGENT`, so the
+  process scan skips them instead of listing them for a manual restart. SIGHUP was not used because a foreground process gets it when its terminal
   closes.
 - **Processes are found by executable path, before the install.** The process table is
   scanned for the canonical path being replaced; macOS can no longer name a replaced file
@@ -1005,11 +1150,26 @@ half-written file.
   download would hang the update request and the release cache, which agent upgrades and SSH
   provisioning wait on, forever; a speed floor instead of a total time limit still lets a
   large binary finish over a slow link.
+- **Every server start upgrades its managed daemons.** Every start of a desired-running
+  device runs the ensure step, which replaces every daemon whose binary differs from the
+  expected one (local: the file at the server's path; SSH: the release or debug build,
+  installed first), whatever brought the server up: the UI's Update or `redoor upgrade`
+  (the server re-execs and the new watchdogs run the ensure step), `systemctl restart` after
+  a package install, a crash, a reboot (no daemons survive it, so they just start), or a
+  downgrade. An unreachable SSH device is upgraded on its first successful tunnel. An old
+  local daemon that reconnects before its ensure step is accepted provisionally with the same
+  protocol and gets `426` after a protocol change, until the ensure step replaces it; the
+  lock rules out two daemons at once. The update dialog counts, from the server's terminal
+  index, the terminal sessions on managed devices this will end, and says that shells on
+  devices that are not connected end when those devices reconnect.
 
 ### Agent upgrades from the server
 
 `POST /api/v1/agents/{agent}/upgrade` installs a published release, or force-installs the
-server's own executable, on a connected agent. Streaming a 50 MB binary to a phone takes
+server's own executable, on a connected standalone agent. Managed agents are refused, and
+the device page hides the controls: the next ensure step would undo such an upgrade, and
+its `SelfExec` releases the daemon's lock during the exec, which the session would read as
+a dead daemon. Streaming a 50 MB binary to a phone takes
 minutes, so the work runs in a background task (`AgentUpgrades` in `ServerState`), not in the
 request.
 
@@ -1500,15 +1660,16 @@ sequenceDiagram
   | Shell exits | `exited { message }`. The mirror stays, so a reload shows the last screen and why it ended. |
   | Agent disconnects | The shell keeps running and stays listed; viewers' sockets close and they attach again. |
   | Server restart | The shells keep running; the saved index keeps the tabs listed until the agents report again. |
-  | Agent restart or upgrade | Its shells are gone; after its first report they are listed as exited, and their viewers get `closed`. |
+  | Agent restart or upgrade | Its shells are gone; after its first report they are listed as exited, and their viewers get `closed`. A managed daemon is restarted when its device is restarted and when a server with another binary starts. |
 
   An exited session keeps only its mirror. Sessions live until their tab is closed, without
   a timeout: every window restores every session as a tab, so a forgotten shell is always
   visible there. An agent runs at most 8 shells and keeps at most 64 sessions.
-- **Managed agents restart with the server.** Managed local agents and the `ssh -R` clients
-  of SSH agents are children of the server, so a server restart restarts those agents and
-  their shells end. Only standalone agents and agents behind a relay keep their shells
-  across a server restart.
+- **Managed agents keep their shells across server restarts.** Managed agents are daemons
+  that outlive the server and their SSH sessions, so a server restart or a dropped SSH
+  connection only interrupts the viewers, which attach again once the daemon is back. A
+  server start with another binary replaces the daemons, and their shells end. Standalone
+  agents and agents behind a relay keep their shells across a server restart too.
 - The session routes are session-only, so API tokens and MCP cannot list, open or take over
   interactive shells. Creating, deleting and a shell exiting publish `terminals_changed` on
   the UI socket, so other windows update their tabs.
@@ -2626,9 +2787,14 @@ devices.
     with the process (including self-restarts; nothing is handed to the re-exec'd server).
     The browser's "Lock now" does not drop held keys, because that must not break the
     reconnects of running devices. Restarting a running agent keeps its key.
-  - A spawn that finds an encrypted key not held (a race with Stop) shows "The SSH key is
-    locked" and waits, desired-running, for the next Start or Retry instead of retrying on
-    a timer. `POST …/retry-start` takes the same optional body as Start and refuses with
+  - A spawn that finds an encrypted key not held (after a server restart, which started the
+    device again, or a race with Stop) shows "The SSH key is locked" and waits,
+    desired-running, for the next Start or Retry instead of retrying on a timer. The
+    inventory marks such a device `waiting_for_ssh_key`, and every browser tab whose vault
+    is unlocked starts it with the key's file key on its own, once per wait
+    (`useHandOverWaitingSshKeys`), so a restart does not need a click per device. A locked
+    vault never asks for its passphrase for this; the device keeps waiting for a manual
+    start. `POST …/retry-start` takes the same optional body as Start and refuses with
     `ssh_key_locked` when the key is neither held nor given, so the device page's Retry
     unlocks the vault like a Start. A Start of an already desired-running agent still
     reaches the waiting watchdog.
@@ -3023,6 +3189,13 @@ can never mint another one.
   (`tests/fake-agent.ts`), so a protocol change is made in one place on the test side.
 
 ## Integration test process lifetimes
+
+Managed agent daemons outlive their server by design and run in their own session, outside
+the process group the test harness kills. `ProcessManager.killAll` therefore also kills the
+daemons recorded under each test server's home and forgets which devices were running, and
+test servers pass daemons a 10 minute orphan limit, so a daemon a crashed run leaves behind
+ends on its own; one that reconnects to a later server is rejected, because that server
+manages no device with its id. The Playwright fixture kills its daemons the same way.
 
 Vitest runs isolated server processes on worker-specific ports, reusing each worker's port
 between test files and during restart scenarios. Fixture HTTP requests to that worker's

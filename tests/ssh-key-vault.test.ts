@@ -27,6 +27,7 @@ import {
     VITEST_SERVER_PORT,
     createAccessToken,
     restartServerAndWait,
+    waitForValue,
 } from "./test-utils";
 import { SSH_TEST_USER } from "./ssh-test-utils";
 import {
@@ -318,10 +319,17 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
                     (await findAgent(fixture, deviceId)).retryStart(),
                     "ssh_key_locked",
                 );
-                // The refusal came before the watchdog, so the device stays stopped.
-                expect((await findAgent(fixture, deviceId)).status).toBe(
-                    "stopped",
-                );
+                // The refusal came before the watchdog, so the device settles stopped once
+                // the stop, which kept its own copy of the key, ended the daemon.
+                await waitForValue({
+                    predicate: async () =>
+                        (await findAgent(fixture, deviceId)).status ===
+                        "stopped"
+                            ? true
+                            : undefined,
+                    timeoutMs: 30_000,
+                    description: "encrypted-key device to settle stopped",
+                });
 
                 // With the file key, Retry Start unlocks the key and starts the device,
                 // which is how the device page resumes a device waiting for its key.
@@ -605,7 +613,6 @@ describe("managed SSH key vault access", () => {
             name: `ssh-vault-token-${fixture.suffix}`,
             remote_bin: null,
             home: null,
-            log: null,
             password: null,
             clear_password: null,
         });

@@ -171,7 +171,6 @@ mcp_allowed_origins = ["${allowedOrigin}"]
 local = true
 name = "${managedDeviceName}"
 home = "${agentRoot}"
-log = "${join(temporaryDirectory, "managed-agent.log")}"
 `,
     );
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();

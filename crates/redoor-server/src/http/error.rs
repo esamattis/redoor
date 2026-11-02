@@ -140,7 +140,8 @@ impl From<crate::watchdog::WatchdogError> for ApiError {
     /// means the supervisor is gone, which is a server-side fault.
     fn from(error: crate::watchdog::WatchdogError) -> Self {
         let status = match error {
-            crate::watchdog::WatchdogError::StillRunning => StatusCode::CONFLICT,
+            crate::watchdog::WatchdogError::StillRunning
+            | crate::watchdog::WatchdogError::NotRunning => StatusCode::CONFLICT,
             crate::watchdog::WatchdogError::Busy { .. } => StatusCode::SERVICE_UNAVAILABLE,
             crate::watchdog::WatchdogError::SupervisorStopped { .. }
             | crate::watchdog::WatchdogError::AcknowledgementDropped { .. }

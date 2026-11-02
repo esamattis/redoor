@@ -206,8 +206,10 @@ struct ServerConfig {
     mcp_allowed_origins: Vec<String>,
     /// Shared agent registration secret.
     agent_token: String,
-    /// Managed agents registered dormant at startup.
+    /// Managed agents registered at startup.
     agents: Vec<AgentConfig>,
+    /// Orphan limit passed to managed daemons.
+    managed_orphan_timeout: std::time::Duration,
 }
 
 impl ServerConfig {
@@ -258,12 +260,49 @@ impl ServerConfig {
             mcp_allowed_origins: server.mcp_allowed_origins,
             agent_token: file.agent_token,
             agents: file.agents,
+            managed_orphan_timeout: args
+                .managed_orphan_timeout
+                .unwrap_or(crate::http::watchdog::DEFAULT_ORPHAN_TIMEOUT),
         })
     }
 
     /// `bind:port` as passed to the listener and printed for operators.
     fn listen_address(&self) -> String {
         format!("{}:{}", self.bind, self.port)
+    }
+}
+
+/// Warns when the server runs as a system service whose restart would kill managed agent
+/// daemons.
+///
+/// A system service running as `redoor` may not create the transient scopes that take local
+/// daemons out of its cgroup, so only `KillMode=process` keeps them alive across a restart.
+/// Units installed before managed daemons existed lack it, and the server cannot rewrite a
+/// system unit itself.
+async fn warn_if_restart_kills_managed_daemons() {
+    let Ok(cgroups) = tokio::fs::read_to_string("/proc/self/cgroup").await else {
+        return;
+    };
+    let Some(path) = cgroups.lines().find_map(|line| line.strip_prefix("0::")) else {
+        return;
+    };
+    let unit = path.trim().rsplit('/').next().unwrap_or_default();
+    // User services can create scopes of their own manager, so they need nothing.
+    if !unit.ends_with(".service") || path.contains("/user@") {
+        return;
+    }
+    let Ok(output) = tokio::process::Command::new("systemctl")
+        .args(["show", "--property=KillMode", "--value", unit])
+        .output()
+        .await
+    else {
+        return;
+    };
+    if String::from_utf8_lossy(&output.stdout).trim() == "control-group" {
+        log!(
+            Level::Warning,
+            "The {unit} unit stops every process of its cgroup, so restarting it ends the local managed agents and their terminals; run `redoor server systemd install` again to update the unit"
+        );
     }
 }
 
@@ -347,7 +386,9 @@ impl ServerRuntime {
 
         let (router, _router_task) = spawn_router();
         // Built before the listener so the registry exists when the first WebSocket connects.
-        let watchdogs = WatchdogRegistry::new();
+        let watchdogs = WatchdogRegistry::with_desired_running(
+            crate::managed_running::DesiredRunningStore::load(&data_dir).await,
+        );
         let binaries = crate::binaries::BinaryCache::new(runtime.paths.clone());
         let ssh_keys = crate::ssh::keys::SshKeyStore::for_data_dir(&data_dir);
         let held_ssh_keys = crate::ssh::held_keys::HeldSshKeys::default();
@@ -364,6 +405,7 @@ impl ServerRuntime {
                 // device never hash the debug build.
                 local_build: Default::default(),
             },
+            config.managed_orphan_timeout,
         );
 
         // Oneshot so restart can drop the axum listener before self-exec; keeping
@@ -429,10 +471,13 @@ impl ServerRuntime {
         }
         let scheme = if server_endpoint.tls { "https" } else { "http" };
         println!("Server running on {scheme}://{address}");
+        if !config.agents.is_empty() {
+            tokio::spawn(warn_if_restart_kills_managed_daemons());
+        }
 
-        // Registered after binding so later lazy starts connect to a resolved port.
-        // Registration creates dormant supervisors only; nothing starts until a tab,
-        // direct status route, or management action requests it.
+        // Registered after binding so sessions point daemons at a resolved port, and before
+        // serving, so a daemon that reconnects at once finds its device desired-running. Only
+        // the devices that were running before the server started are started again.
         launcher
             .register_all(&config.agents, &watchdogs, &router)
             .await
@@ -490,11 +535,11 @@ impl ServerRuntime {
         });
     }
 
-    /// Serves HTTP until the restart route fires, then stops every managed child.
+    /// Serves HTTP until the restart route fires, then drops every managed session.
     ///
-    /// Exec preserves process memory rather than dropping Rust values, so children are
-    /// stopped and reaped here; the new process recreates the inventory dormant. A failed
-    /// serve stops them too, so an erroring server never leaves SSH agents orphaned.
+    /// Exec preserves process memory rather than dropping Rust values, so the sessions are
+    /// ended here. Their daemons keep running with their shells, and the new process starts
+    /// a session to every device that was running. A failed serve drops them too.
     ///
     /// Graceful shutdown stops accepting at once but then waits for every open request. A
     /// long download or a slow agent command would keep the server unreachable for its whole
@@ -523,7 +568,7 @@ impl ServerRuntime {
             served = serve.into_future() => served,
             () = grace_expired => Self::abandon_open_requests(),
         };
-        self.watchdogs.shutdown_all().await;
+        self.watchdogs.detach_all().await;
         served.context("HTTP server failed")
     }
 

@@ -116,4 +116,13 @@ pub struct CoordinatorArgs {
     /// or local (`local = true`) and start lazily from the UI or management API.
     #[arg(long)]
     pub(crate) config: Option<String>,
+    /// How long a managed agent's daemon may stay without a server before it exits. Hidden:
+    /// it exists so tests can use a short limit instead of the 24 hour default.
+    #[arg(
+        long,
+        env = "REDOOR_MANAGED_ORPHAN_TIMEOUT",
+        value_parser = redoor_core::websocket::parse_duration_millis,
+        hide = true
+    )]
+    pub(crate) managed_orphan_timeout: Option<std::time::Duration>,
 }

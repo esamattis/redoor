@@ -105,6 +105,9 @@ impl ExecWorker {
         let mut command = tokio::process::Command::new(&request.argv[0]);
         command
             .args(&request.argv[1..])
+            // The token would let the command pass as the server; a request can still set
+            // the variable explicitly.
+            .env_remove(redoor_core::process::AGENT_TOKEN_ENV)
             .envs(request.env)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())

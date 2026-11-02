@@ -26,8 +26,9 @@ use redoor_core::config::RedoorConfig;
 use redoor_core::log;
 use redoor_core::paths::AppPaths;
 use redoor_core::runtime::RuntimeContext;
+use redoor_protocol::wire::managed::{ManagedConnect, ManagedLaunch};
 use redoor_protocol::{ids::AgentId, wire::log::Level};
-use runtime::{AgentExit, AgentHandle, AgentProfile, AgentRuntime};
+use runtime::{AgentExit, AgentHandle, AgentProfile, AgentRole, AgentRuntime};
 use sysinfo::System;
 
 /// Bounded runtime mailbox; awaited sends backpressure websocket ingress instead of dropping.
@@ -35,9 +36,9 @@ const AGENT_MAILBOX_CAPACITY: usize = 256;
 
 /// Runs an agent after resolving settings with CLI > env > config file > default.
 ///
-/// Returns a failure exit code when a supervised agent is refused or loses its server for
-/// too long, so its watchdog or relay restarts it, without a `process::exit`. Standalone
-/// agents never end on their own.
+/// Returns a failure exit code when a relayed agent is refused or loses its server for
+/// too long, so its relay restarts it, without a `process::exit`. Standalone agents never
+/// end on their own.
 pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
     let exit_on_stdin_eof = args.exit_on_stdin_eof;
     let loaded_config_path = locate_config(&args, &runtime.paths).await?;
@@ -46,96 +47,165 @@ pub async fn run(args: AgentArgs, runtime: RuntimeContext) -> Result<ExitCode> {
         None => None,
     };
     let settings = AgentSettings::resolve(args, file_config.as_ref(), &runtime.paths)?;
-    let default_directory = settings.default_directory().await?;
-    let (agent_id, id_source) = settings.device_id(&runtime.paths).await?;
-
-    let insecure_tls = settings.insecure_tls;
-    let connection = connection::AgentConnection::new(
-        settings.ws_address,
-        settings.connect_address,
-        settings.insecure_tls,
-    )?;
-    let trash = trash::Trash::select(settings.trash_directory.map(PathBuf::from))
-        .await
-        .map_err(|error| anyhow::anyhow!("Failed to initialize trash: {error}"))?;
+    // Only relays start agents with `--agent-id`; the server's managed agents are daemons.
+    let role = match settings.agent_id {
+        Some(_) => AgentRole::Relayed { exit_on_stdin_eof },
+        None => AgentRole::Standalone,
+    };
     let loaded_config_path = match loaded_config_path {
         Some(path) => Some(tokio::fs::canonicalize(&path).await.unwrap_or(path)),
         None => None,
     };
+    let agent = PreparedAgent::prepare(settings, role, loaded_config_path, &runtime).await?;
+    Ok(agent.run().await)
+}
 
-    redoor_core::logging::init_with_options(
-        Some(settings.log),
-        settings.log_level,
-        settings.log_format,
-    )
-    .await?;
-    match &loaded_config_path {
-        Some(path) => {
-            log!(Level::Info, "Loaded agent config: path={}", path.display());
+/// A managed agent's daemon, prepared up to the point where it starts connecting.
+///
+/// Preparing and running are separate so `redoor agent managed` can report every startup
+/// failure (an unusable home, an unwritable log) to the ensure step while the daemon's
+/// stderr is still the pipe to it, and only then redirect stderr into the log.
+pub struct ManagedDaemon(PreparedAgent);
+
+impl ManagedDaemon {
+    /// Resolves the daemon's settings from its launch payload and initializes logging into
+    /// the namespace's `agent.log`.
+    ///
+    /// No config file is read: the namespace belongs to the server, and a daemon must not
+    /// pick up settings meant for a standalone agent of the same account.
+    pub async fn prepare(launch: ManagedLaunch, runtime: &RuntimeContext) -> Result<Self> {
+        let role = AgentRole::ManagedDaemon {
+            orphan_timeout: std::time::Duration::from_secs(launch.orphan_timeout),
+            spec_hash: launch.spec_hash(),
+        };
+        let settings = AgentSettings::from_launch(launch, &runtime.paths)?;
+        Ok(Self(
+            PreparedAgent::prepare(settings, role, None, runtime).await?,
+        ))
+    }
+
+    /// Runs the daemon until the server stops, evicts or supersedes it, or its orphan limit
+    /// ends it.
+    pub async fn run(self) -> ExitCode {
+        self.0.run().await
+    }
+}
+
+/// An agent whose settings, logging and services are ready, before its first connection.
+struct PreparedAgent {
+    agent: AgentRuntime,
+    handle: AgentHandle,
+    receiver: tokio::sync::mpsc::Receiver<runtime::AgentMsg>,
+    lifecycle_receiver: tokio::sync::mpsc::UnboundedReceiver<runtime::AgentLifecycleMsg>,
+}
+
+impl PreparedAgent {
+    /// Builds the runtime from resolved settings: home, id, connection, trash, logging and
+    /// services, which every role needs alike.
+    async fn prepare(
+        settings: AgentSettings,
+        role: AgentRole,
+        loaded_config_path: Option<PathBuf>,
+        runtime: &RuntimeContext,
+    ) -> Result<Self> {
+        let default_directory = settings.default_directory().await?;
+        let (agent_id, id_source) = settings.device_id(&runtime.paths).await?;
+
+        let insecure_tls = settings.insecure_tls;
+        let connection = connection::AgentConnection::new(
+            settings.ws_address,
+            settings.connect_address,
+            settings.insecure_tls,
+        )?;
+        let trash = trash::Trash::select(settings.trash_directory.map(PathBuf::from))
+            .await
+            .map_err(|error| anyhow::anyhow!("Failed to initialize trash: {error}"))?;
+
+        redoor_core::logging::init_with_options(
+            Some(settings.log),
+            settings.log_level,
+            settings.log_format,
+        )
+        .await?;
+        match &loaded_config_path {
+            Some(path) => {
+                log!(Level::Info, "Loaded agent config: path={}", path.display());
+            }
+            None => {
+                log!(
+                    Level::Info,
+                    "No agent config file loaded; using CLI/env settings"
+                );
+            }
         }
-        None => {
+        // Managed agents always skip verification on their localhost tunnel, which is no risk.
+        if insecure_tls && std::env::var_os(redoor_core::process::MANAGED_AGENT_ENV).is_none() {
             log!(
-                Level::Info,
-                "No agent config file loaded; using CLI/env settings"
+                Level::Warning,
+                "TLS certificate verification is disabled; anyone able to intercept the connection could impersonate the server"
             );
         }
-    }
-    // Managed agents always skip verification on their localhost tunnel, which is no risk.
-    if insecure_tls && std::env::var_os(redoor_core::process::MANAGED_AGENT_ENV).is_none() {
         log!(
-            Level::Warning,
-            "TLS certificate verification is disabled; anyone able to intercept the connection could impersonate the server"
-        );
-    }
-    log!(
-        Level::Info,
-        "Starting agent '{}': agent_id={}, ws={}, home={}",
-        settings.name,
-        agent_id,
-        connection.server_url(),
-        default_directory
-    );
-
-    // Server- and relay-launched agents are restarted by their owner, which also keeps
-    // their binary in step with that owner's version.
-    if std::env::var_os(redoor_core::process::MANAGED_AGENT_ENV).is_none() {
-        let requests = redoor_core::process::listen_for_reexec()
-            .context("Failed to listen for the upgrade re-exec signal")?;
-        tokio::spawn(reexec_on_signal(requests));
-    }
-
-    let (handle, receiver, lifecycle_receiver) = AgentHandle::channel(AGENT_MAILBOX_CAPACITY);
-    let services = AgentServices::new(
-        trash,
-        redoor_core::partials::PartialStore::new(runtime.paths.data_dir()?),
-        loaded_config_path.as_deref(),
-    );
-    services
-        .start_partial_cleanup(settings.partial_max_age_days.saturating_mul(24 * 60 * 60))
-        .await;
-    let agent = AgentRuntime::new(
-        AgentProfile {
+            Level::Info,
+            "Starting agent '{}': agent_id={}, ws={}, home={}",
+            settings.name,
             agent_id,
-            id_source,
-            agent_name: settings.name,
-            default_directory,
-            token: settings.token,
-            ws_timeouts: runtime.ws_timeouts,
-        },
-        connection,
-        services,
-        settings
-            .notification_delay_seconds
-            .map(tokio::time::Duration::from_secs),
-    );
+            connection.server_url(),
+            default_directory
+        );
 
-    let exit = agent
-        .run(receiver, lifecycle_receiver, handle, exit_on_stdin_eof)
-        .await;
-    Ok(match exit {
-        AgentExit::Shutdown => ExitCode::SUCCESS,
-        AgentExit::Failure => ExitCode::FAILURE,
-    })
+        // Server- and relay-launched agents are restarted by their owner, which also keeps
+        // their binary in step with that owner's version.
+        if std::env::var_os(redoor_core::process::MANAGED_AGENT_ENV).is_none() {
+            let requests = redoor_core::process::listen_for_reexec()
+                .context("Failed to listen for the upgrade re-exec signal")?;
+            tokio::spawn(reexec_on_signal(requests));
+        }
+
+        let (handle, receiver, lifecycle_receiver) = AgentHandle::channel(AGENT_MAILBOX_CAPACITY);
+        let services = AgentServices::new(
+            trash,
+            redoor_core::partials::PartialStore::new(runtime.paths.data_dir()?),
+            loaded_config_path.as_deref(),
+        );
+        services
+            .start_partial_cleanup(settings.partial_max_age_days.saturating_mul(24 * 60 * 60))
+            .await;
+        let agent = AgentRuntime::new(
+            AgentProfile {
+                agent_id,
+                id_source,
+                agent_name: settings.name,
+                default_directory,
+                token: settings.token,
+                ws_timeouts: runtime.ws_timeouts,
+                role,
+            },
+            connection,
+            services,
+            settings
+                .notification_delay_seconds
+                .map(tokio::time::Duration::from_secs),
+        );
+        Ok(Self {
+            agent,
+            handle,
+            receiver,
+            lifecycle_receiver,
+        })
+    }
+
+    /// Runs the event loop and maps how it ended to the process exit status.
+    async fn run(self) -> ExitCode {
+        let exit = self
+            .agent
+            .run(self.receiver, self.lifecycle_receiver, self.handle)
+            .await;
+        match exit {
+            AgentExit::Shutdown => ExitCode::SUCCESS,
+            AgentExit::Failure => ExitCode::FAILURE,
+        }
+    }
 }
 
 /// Replaces a standalone agent with its launch binary when `redoor upgrade` asks for it.
@@ -186,8 +256,8 @@ pub async fn locate_config(args: &AgentArgs, paths: &AppPaths) -> Result<Option<
 struct AgentSettings {
     /// Canonical agent endpoint URL after normalizing the operator-supplied server address.
     ws_address: String,
-    /// Optional physical TCP endpoint used when a tunnel differs from the logical server URL.
-    connect_address: Option<String>,
+    /// Optional physical endpoint used when a tunnel differs from the logical server URL.
+    connect_address: Option<connection::ConnectAddress>,
     /// Skips server certificate verification, for self-signed servers.
     insecure_tls: bool,
     /// Registration name; the hostname when nothing else is configured.
@@ -273,7 +343,7 @@ impl AgentSettings {
 
         Ok(Self {
             ws_address,
-            connect_address: args.connect_address,
+            connect_address: args.connect_address.map(connection::ConnectAddress::Tcp),
             // A bool flag cannot say "false", so either source turning it on wins.
             insecure_tls: args.insecure_tls || agent_section.insecure_tls,
             name,
@@ -286,6 +356,48 @@ impl AgentSettings {
             log_format,
             notification_delay_seconds,
             partial_max_age_days: agent_section.partial_max_age_days.unwrap_or(7),
+        })
+    }
+
+    /// Takes every setting of a managed daemon from its launch payload.
+    ///
+    /// The log is the namespace's `agent.log`, the level and format the defaults (the
+    /// level's environment variable still applies, for debugging a device by hand).
+    fn from_launch(launch: ManagedLaunch, paths: &AppPaths) -> Result<Self> {
+        // The server would reject the `hello` anyway; failing here explains it at the source.
+        redoor_protocol::ids::validate_device_name(&launch.name)?;
+        let agent_id = AgentId::parse(launch.agent_id.as_str()).context("invalid agent id")?;
+        let connect_address = match launch.connect {
+            ManagedConnect::Unix(path) => connection::ConnectAddress::Unix(PathBuf::from(path)),
+            ManagedConnect::Tcp(address) => connection::ConnectAddress::Tcp(address),
+        };
+        Ok(Self {
+            ws_address: launch.server_url,
+            connect_address: Some(connect_address),
+            insecure_tls: launch.insecure_tls,
+            name: launch.name,
+            agent_id: Some(agent_id),
+            token: launch.token,
+            home: launch
+                .home
+                .map(|home| expand_home_prefix(&home, redoor_core::paths::home().ok())),
+            trash_directory: None,
+            log: redoor_core::rotating_log::LogFileSpec::new(
+                paths.process_log_path(redoor_core::process::ProcessSlot::Agent)?,
+                None,
+            ),
+            log_level: redoor_core::logging::resolve_initial_level(
+                None,
+                "REDOOR_AGENT_LOG_LEVEL",
+                None,
+            )?,
+            log_format: redoor_core::logging::resolve_initial_format(
+                None,
+                "REDOOR_AGENT_LOG_FORMAT",
+                None,
+            )?,
+            notification_delay_seconds: Some(5),
+            partial_max_age_days: 7,
         })
     }
 
@@ -329,6 +441,38 @@ impl AgentSettings {
         }
         path_to_utf8(&canonical)
     }
+}
+
+/// Expands the home-relative prefixes operators use in a managed agent's `home`
+/// (`~`, `$HOME`, `${HOME}`, `${XDG_DATA_HOME:-$HOME/.local/share}`) against this device's
+/// home, as the SSH launch script used to do in the remote shell. Everything else stays
+/// literal, so a configured path can never run a command.
+fn expand_home_prefix(path: &str, home: Option<PathBuf>) -> String {
+    let Some(home) = home else {
+        return path.to_string();
+    };
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".local/share"));
+    let prefixes = [
+        ("${XDG_DATA_HOME:-$HOME/.local/share}", data_home),
+        ("${HOME}", home.clone()),
+        ("$HOME", home.clone()),
+        ("~", home),
+    ];
+    for (prefix, expanded) in prefixes {
+        let Some(rest) = path.strip_prefix(prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return expanded.display().to_string();
+        }
+        if let Some(rest) = rest.strip_prefix('/') {
+            return expanded.join(rest).display().to_string();
+        }
+    }
+    path.to_string()
 }
 
 /// Converts a path for the wire protocol, which carries directories as UTF-8 strings.
@@ -417,6 +561,35 @@ log = "/tmp/file.log"
             error.contains("REDOOR_AGENT_WS") && error.contains("[agent].server"),
             "{error}"
         );
+    }
+
+    /// A managed agent's configured home may be relative to the device's home, which only
+    /// the daemon knows.
+    #[test]
+    fn managed_home_expands_home_prefixes_only() {
+        let home = Some(PathBuf::from("/home/user"));
+        // The prefixes operators already use keep working without a remote shell.
+        assert_eq!(expand_home_prefix("~", home.clone()), "/home/user");
+        assert_eq!(
+            expand_home_prefix("~/code", home.clone()),
+            "/home/user/code"
+        );
+        assert_eq!(
+            expand_home_prefix("$HOME/code", home.clone()),
+            "/home/user/code"
+        );
+        assert_eq!(
+            expand_home_prefix("${HOME}/code", home.clone()),
+            "/home/user/code"
+        );
+        // `~user` and `$HOMEDIR` are not the prefix and stay literal.
+        assert_eq!(
+            expand_home_prefix("~other/code", home.clone()),
+            "~other/code"
+        );
+        assert_eq!(expand_home_prefix("$HOMEDIR", home.clone()), "$HOMEDIR");
+        // Absolute paths are used as they are.
+        assert_eq!(expand_home_prefix("/srv/data", home), "/srv/data");
     }
 
     /// Without a configured log the agent writes to the namespace's default agent log.

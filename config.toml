@@ -8,7 +8,7 @@ agent_token = "dev-agent-token" # required; shared registration secret
 # bind = "0.0.0.0"     # optional; default 127.0.0.1
 # cookie_secure = false # set true when serving over HTTPS
 # log = "log/server.log" # optional; also settable via --log
-# log_max_size = "10MB"  # default; also limits the [[agents]] log files
+# log_max_size = "10MB"  # default
 # log_level = "info"    # trace, debug, info, warning, or error
 
 # One entry per person; plaintext or an Argon2 PHC string. `username`/`password` under
@@ -31,14 +31,12 @@ id = "dev_yodi2scru76alla7zonb"
 target = "devbox"
 #remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
 #home = "/home"
-log = "redoor-agent.log"   # optional; redirects the agent's stdout/stderr to this local file
 
 [[agents]]
 id = "dev_4i73pjgczdvbsek7nysw"
 name = "local"
 local = true
 home = "/home/esamatti"
-log = "/home/esamatti/redoor-agent.log"    # optional; redirects the agent's stdout/stderr to this file
 
 # Named standalone relays are started explicitly with `redoor agent relay start ID`.
 # [[relays]]

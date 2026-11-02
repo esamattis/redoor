@@ -95,6 +95,7 @@ function agentInfo(id: string, name: string): AgentInfoResponse {
         connection_id: `socket-${id}`,
         last_seen_at: 1,
         connection_issue: null,
+        waiting_for_ssh_key: false,
         provisioning_status: [],
         binary: null,
         supports_native_open: false,

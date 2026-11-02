@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
@@ -35,7 +35,6 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const agentName = `managed-ssh-tls-${suffix}`;
             const remoteRoot = `/tmp/redoor-managed-ssh-tls-${suffix}`;
             const configPath = join(home, "config.toml");
-            const agentLogPath = join(home, "managed-agent.log");
 
             writeFileSync(
                 configPath,
@@ -54,7 +53,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
 home = "${remoteRoot}"
-log = "${agentLogPath}"
 `,
             );
 
@@ -126,9 +124,15 @@ log = "${agentLogPath}"
 
             // A working command proves the TLS connection through the tunnel carries traffic.
             expect(echo.message).toBe("managed-tls");
-            // The remote agent must speak wss:// to the TLS listener, keeping the server's
-            // port as its logical address while TCP goes through the random tunnel port.
-            expect(readFileSync(agentLogPath, "utf8")).toContain(
+
+            // The remote daemon must speak wss:// to the TLS listener, keeping the server's
+            // port as its logical address while its stream goes through the tunnel socket.
+            // It logs into its own namespace on the device.
+            const daemonLog = await sshTestCommand(
+                `cat "$HOME/.local/share/${appName}-${connected.id}/agent.log"`,
+            );
+
+            expect(daemonLog).toContain(
                 `ws=wss://localhost:${VITEST_SERVER_PORT}/api/v1/agent/ws`,
             );
         }, 120_000);

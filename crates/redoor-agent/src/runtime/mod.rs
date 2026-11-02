@@ -125,6 +125,29 @@ impl AgentHandle {
     }
 }
 
+/// Who owns this agent process, which decides how it reacts to refusals and outages.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum AgentRole {
+    /// Started by the user or a service manager. Nobody restarts it, so it never gives up.
+    Standalone,
+    /// Started by a relay over SSH with `--agent-id`. The relay owns recovery: the agent exits
+    /// on refusals, evictions and after its stale timeout without a connection, so the relay
+    /// rebuilds the SSH session, which the agent cannot repair from inside.
+    Relayed {
+        /// Exits when stdin ends, because that is the relay's SSH session going away.
+        exit_on_stdin_eof: bool,
+    },
+    /// The daemon of a server-managed agent (`redoor agent managed`). It outlives SSH sessions
+    /// and server restarts, so it reconnects on its own and only exits when the server stops,
+    /// evicts or supersedes it, or after `orphan_timeout` without an accepted connection.
+    ManagedDaemon {
+        /// How long the daemon may stay without an accepted connection.
+        orphan_timeout: std::time::Duration,
+        /// Spec hash of its launch settings, sent in `hello`.
+        spec_hash: String,
+    },
+}
+
 /// Startup identity that stays stable across reconnects.
 pub(crate) struct AgentProfile {
     pub(crate) agent_id: AgentId,
@@ -138,6 +161,8 @@ pub(crate) struct AgentProfile {
     pub(crate) token: String,
     /// Keepalive and stale-detection timings chosen at process start.
     pub(crate) ws_timeouts: redoor_core::websocket::WebSocketTimeouts,
+    /// Who owns the process and therefore its recovery.
+    pub(crate) role: AgentRole,
 }
 
 /// One-shot desktop notification shown after the first fully connected session.
@@ -176,9 +201,56 @@ pub(crate) struct AgentRuntime {
     /// When the current connection was established; decides whether its loss restarts the
     /// fast retries or keeps backing off from a server that keeps dropping the agent.
     connected_at: Option<Instant>,
-    /// Since when the agent has had no connection. A supervised agent gives up after its
-    /// window so its owner rebuilds the tunnel, which the agent cannot repair from inside.
+    /// Since when the agent has had no connection. A relayed agent gives up after its
+    /// window so its relay rebuilds the tunnel, which the agent cannot repair from inside.
     disconnected_since: Instant,
+    /// Since when a managed daemon has had no accepted connection, in wall-clock time,
+    /// because the monotonic clock stops while a phone or laptop sleeps and would stretch
+    /// the orphan limit. `None` while the server has accepted the daemon.
+    orphaned_since: Option<std::time::SystemTime>,
+}
+
+/// What a managed daemon's own timers and signals ask of the event loop.
+enum DaemonEvent {
+    /// The server has no socket from this daemon (`SIGUSR1` from the ensure step): reconnect
+    /// now instead of waiting for the backoff.
+    Wake,
+    /// Time to compare the orphan clock with the limit.
+    OrphanCheck,
+}
+
+/// The wake signal and orphan check of a managed daemon; absent for every other role.
+struct DaemonControls {
+    /// `SIGUSR1`, sent by `redoor agent managed` when it keeps this daemon.
+    wake: tokio::signal::unix::Signal,
+    /// Checks the orphan clock often enough that the limit is overshot by little.
+    orphan_check: tokio::time::Interval,
+}
+
+impl DaemonControls {
+    /// Installs the controls of a managed daemon with the given orphan limit.
+    fn new(orphan_timeout: std::time::Duration) -> std::io::Result<Self> {
+        let wake = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined1())?;
+        let period = (orphan_timeout / 4).clamp(
+            std::time::Duration::from_millis(100),
+            std::time::Duration::from_secs(60),
+        );
+        let mut orphan_check = tokio::time::interval(period);
+        orphan_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        Ok(Self { wake, orphan_check })
+    }
+
+    /// Waits for the next event, or forever without controls, so the event loop can select
+    /// on it for every role.
+    async fn next(controls: &mut Option<Self>) -> DaemonEvent {
+        let Some(controls) = controls else {
+            return std::future::pending().await;
+        };
+        tokio::select! {
+            _ = controls.wake.recv() => DaemonEvent::Wake,
+            _ = controls.orphan_check.tick() => DaemonEvent::OrphanCheck,
+        }
+    }
 }
 
 impl AgentRuntime {
@@ -204,6 +276,7 @@ impl AgentRuntime {
             backoff: Backoff::default(),
             connected_at: None,
             disconnected_since: Instant::now(),
+            orphaned_since: Some(std::time::SystemTime::now()),
         }
     }
 
@@ -213,9 +286,30 @@ impl AgentRuntime {
         mut receiver: mpsc::Receiver<AgentMsg>,
         mut lifecycle_receiver: mpsc::UnboundedReceiver<AgentLifecycleMsg>,
         handle: AgentHandle,
-        exit_on_stdin_eof: bool,
     ) -> AgentExit {
-        spawn_stdin_task(handle.clone(), exit_on_stdin_eof).await;
+        let mut daemon = match &self.profile.role {
+            AgentRole::ManagedDaemon { orphan_timeout, .. } => {
+                match DaemonControls::new(*orphan_timeout) {
+                    Ok(controls) => Some(controls),
+                    Err(error) => {
+                        log_error!(
+                            anyhow::Error::new(error),
+                            "Failed to listen for the reconnect signal"
+                        );
+                        return AgentExit::Failure;
+                    }
+                }
+            }
+            // A daemon's stdin is closed, and its operator never types into it.
+            AgentRole::Standalone => {
+                spawn_stdin_task(handle.clone(), false).await;
+                None
+            }
+            AgentRole::Relayed { exit_on_stdin_eof } => {
+                spawn_stdin_task(handle.clone(), *exit_on_stdin_eof).await;
+                None
+            }
+        };
         let _ = handle.try_send(AgentMsg::Connect);
 
         log!(
@@ -240,6 +334,11 @@ impl AgentRuntime {
                     }
                     None => break AgentExit::Shutdown,
                 },
+                event = DaemonControls::next(&mut daemon) => {
+                    if let Some(exit) = self.handle_daemon_event(handle.clone(), event).await {
+                        break exit;
+                    }
+                }
             }
         };
 
@@ -250,6 +349,59 @@ impl AgentRuntime {
             self.profile.agent_id
         );
         exit
+    }
+
+    /// Applies a managed daemon's wake signal or orphan check, returning how the event loop
+    /// ends, if it should.
+    async fn handle_daemon_event(
+        &mut self,
+        handle: AgentHandle,
+        event: DaemonEvent,
+    ) -> Option<AgentExit> {
+        match event {
+            DaemonEvent::Wake => {
+                self.reconnect_now(handle).await;
+                None
+            }
+            DaemonEvent::OrphanCheck => self.orphan_limit_reached().then(|| {
+                log_error!(
+                    anyhow::anyhow!("no accepted connection"),
+                    "Managed daemon had no server connection for its orphan limit; exiting"
+                );
+                AgentExit::Failure
+            }),
+        }
+    }
+
+    /// Drops whatever connection the daemon still believes in and connects at once with the
+    /// backoff reset.
+    ///
+    /// The ensure step only sends the signal when the server has no socket from this daemon,
+    /// so a connection the daemon still has is half-open, and the new SSH tunnel is up now.
+    async fn reconnect_now(&mut self, handle: AgentHandle) {
+        log!(
+            Level::Info,
+            "Reconnect requested by the server's ensure step"
+        );
+        if self.control.sender().is_some() {
+            self.drop_connection().await;
+        }
+        self.backoff.reset();
+        // A later scheduled reconnect finds the connection up and is ignored.
+        let _ = handle.try_send(AgentMsg::Connect);
+    }
+
+    /// Whether a managed daemon has been without an accepted connection for its orphan limit.
+    fn orphan_limit_reached(&self) -> bool {
+        let AgentRole::ManagedDaemon { orphan_timeout, .. } = &self.profile.role else {
+            return false;
+        };
+        self.orphaned_since.is_some_and(|since| {
+            std::time::SystemTime::now()
+                .duration_since(since)
+                .unwrap_or_default()
+                >= *orphan_timeout
+        })
     }
 
     /// Stops the socket, cancels all connection-owned work and joins command tasks.
@@ -348,14 +500,16 @@ impl AgentRuntime {
             self.backoff.reset_if_stable(connected_at.elapsed());
         }
         self.disconnected_since = Instant::now();
+        self.orphaned_since
+            .get_or_insert_with(std::time::SystemTime::now);
     }
 
-    /// Whether the process was started by a watchdog or relay (`--agent-id`).
+    /// Whether the process was started by a relay, which owns its recovery.
     ///
-    /// Such an agent leaves recovery to its owner: it exits instead of retrying refusals,
-    /// and gives up reconnecting after its window so the owner can rebuild the SSH tunnel.
-    fn is_supervised(&self) -> bool {
-        matches!(self.profile.id_source, DeviceIdSource::Assigned)
+    /// Such an agent exits instead of retrying refusals, and gives up reconnecting after its
+    /// window so the relay can rebuild the SSH tunnel.
+    fn leaves_recovery_to_relay(&self) -> bool {
+        matches!(self.profile.role, AgentRole::Relayed { .. })
     }
 
     /// Handles a frame of the current connection that was read before its loss was
@@ -423,6 +577,9 @@ impl AgentRuntime {
                     self.profile.agent_id,
                     connection_id
                 );
+                // Only an accepted connection stops the orphan clock; a socket the server
+                // then refuses does not.
+                self.orphaned_since = None;
                 self.schedule_startup_notification(handle);
             }
             ServerToAgent::Rejected {
@@ -537,17 +694,21 @@ impl AgentRuntime {
 
     /// Reacts to a refused `hello` other than `duplicate_id`.
     ///
-    /// A supervised agent exits: `stopped` means its owner was told to stop it, and for the
-    /// other reasons the owner restarts it with its own backoff and shows the problem. A
-    /// standalone agent has nobody to restart it, so it keeps retrying at the slowest pace
-    /// and connects as soon as an operator fixes the name or the server.
+    /// A relayed agent exits: its relay restarts it with its own backoff and shows the
+    /// problem. A managed daemon exits when it is `stopped` or `superseded`, which is the
+    /// server ending it on purpose; for the other reasons it keeps retrying like a standalone
+    /// agent while its orphan clock runs. A standalone agent has nobody to restart it, so it
+    /// keeps retrying at the slowest pace and connects as soon as an operator fixes the name
+    /// or the server.
     async fn handle_rejection(
         &mut self,
         handle: AgentHandle,
         reason: RejectReason,
         message: String,
     ) {
-        if self.is_supervised() {
+        let ends_daemon = matches!(self.profile.role, AgentRole::ManagedDaemon { .. })
+            && matches!(reason, RejectReason::Stopped | RejectReason::Superseded);
+        if self.leaves_recovery_to_relay() || ends_daemon {
             log_error!(
                 anyhow::anyhow!("{message} ({reason:?})"),
                 "Server rejected the agent"
@@ -684,10 +845,11 @@ impl AgentRuntime {
 
     /// Schedules the next connection attempt on the shared backoff schedule.
     ///
-    /// A supervised agent that has been without a connection for its window exits instead:
-    /// its tunnel may be dead in a way only a new SSH session fixes, and its watchdog or
-    /// relay notices the exit at once and builds that session with the same schedule. It
-    /// also exits when the next wait would end past the window, rather than sleeping over it.
+    /// A relayed agent that has been without a connection for its window exits instead:
+    /// its tunnel may be dead in a way only a new SSH session fixes, and its relay notices
+    /// the exit at once and builds that session with the same schedule. It also exits when
+    /// the next wait would end past the window, rather than sleeping over it. A managed
+    /// daemon keeps retrying: the server rebuilds its tunnel on its own and wakes it.
     fn schedule_reconnect(&mut self, handle: AgentHandle, reason: &str) {
         let delay = self
             .profile
@@ -696,7 +858,7 @@ impl AgentRuntime {
             .unwrap_or_else(|| self.backoff.next_delay());
         let window = self.profile.ws_timeouts.stale_timeout;
         let disconnected_for = self.disconnected_since.elapsed();
-        if self.is_supervised() && disconnected_for + delay >= window {
+        if self.leaves_recovery_to_relay() && disconnected_for + delay >= window {
             log_error!(
                 anyhow::anyhow!("{reason}"),
                 "No server connection for {:?}; exiting so the supervisor can start a fresh agent",
@@ -786,7 +948,7 @@ impl AgentRuntime {
             Ok(Ok(connected)) => connected,
             // The reason is in the message too: line logs omit error details, and an operator
             // must see whether the token is wrong or the server is not the agent's own.
-            Ok(Err(error)) if error.needs_operator() && self.is_supervised() => {
+            Ok(Err(error)) if error.needs_operator() && self.leaves_recovery_to_relay() => {
                 log_error!(
                     anyhow::Error::new(error),
                     "Server refused the agent connection: {error}; leaving the retry to the supervisor"
@@ -899,6 +1061,10 @@ impl AgentRuntime {
                 // Vault writes depend on the publication check in `RawFileSink`.
                 supports_upload_preconditions: true,
             },
+            spec_hash: match &self.profile.role {
+                AgentRole::ManagedDaemon { spec_hash, .. } => Some(spec_hash.clone()),
+                AgentRole::Standalone | AgentRole::Relayed { .. } => None,
+            },
         };
         log!(
             Level::Info,
@@ -962,9 +1128,31 @@ mod tests {
         runtime_with_source(DeviceIdSource::Assigned)
     }
 
-    /// Builds a runtime whose id came from `id_source`, which decides how it reacts to
-    /// id conflicts.
+    /// Builds a runtime whose id came from `id_source`: an id file makes a standalone agent,
+    /// an assigned id a relayed one.
     fn runtime_with_source(id_source: DeviceIdSource) -> AgentRuntime {
+        let role = match id_source {
+            DeviceIdSource::File(_) => AgentRole::Standalone,
+            DeviceIdSource::Assigned => AgentRole::Relayed {
+                exit_on_stdin_eof: true,
+            },
+        };
+        runtime_with_role(id_source, role)
+    }
+
+    /// Builds a managed daemon's runtime with `orphan_timeout`.
+    fn daemon(orphan_timeout: std::time::Duration) -> AgentRuntime {
+        runtime_with_role(
+            DeviceIdSource::Assigned,
+            AgentRole::ManagedDaemon {
+                orphan_timeout,
+                spec_hash: "spec".to_string(),
+            },
+        )
+    }
+
+    /// Builds a runtime with an explicit id source and role.
+    fn runtime_with_role(id_source: DeviceIdSource, role: AgentRole) -> AgentRuntime {
         AgentRuntime::new(
             AgentProfile {
                 agent_id: AgentId::generate(),
@@ -973,6 +1161,7 @@ mod tests {
                 default_directory: "/tmp".to_string(),
                 token: "test-token".to_string(),
                 ws_timeouts: redoor_core::websocket::WebSocketTimeouts::production(),
+                role,
             },
             AgentConnection::new("ws://localhost".to_string(), None, false).unwrap(),
             AgentServices::new(
@@ -1316,5 +1505,122 @@ mod tests {
             receiver.recv().await,
             Some(AgentMsg::ExitWithError)
         ));
+    }
+
+    /// A managed daemon exits when the server stopped or superseded it, but keeps retrying
+    /// refusals an operator can fix, like a standalone agent, while its orphan clock runs.
+    #[tokio::test(start_paused = true)]
+    async fn daemon_exits_only_on_stop_or_supersede() {
+        let cases = [
+            (RejectReason::Stopped, true),
+            (RejectReason::Superseded, true),
+            (RejectReason::DuplicateName, false),
+            (RejectReason::InvalidIdentity, false),
+        ];
+        for (reason, exits) in cases {
+            let mut runtime = daemon(std::time::Duration::from_secs(3600));
+            let (_control_rx, _bulk_rx) = attach_links(&mut runtime);
+            let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+
+            runtime
+                .handle_server_frame(
+                    handle,
+                    ServerToAgent::Rejected {
+                        reason,
+                        message: "m".to_string(),
+                    },
+                )
+                .await;
+
+            let next = receiver.recv().await;
+            if exits {
+                // The server ended the daemon on purpose; staying would undo a Stop.
+                assert!(matches!(next, Some(AgentMsg::ExitWithError)), "{reason:?}");
+            } else {
+                // A misconfiguration is retried, so a fixed server takes the daemon back.
+                assert!(matches!(next, Some(AgentMsg::Connect)), "{reason:?}");
+            }
+        }
+    }
+
+    /// A managed daemon outlives SSH sessions, so it never gives up reconnecting after its
+    /// stale window the way a relayed agent does.
+    #[tokio::test(start_paused = true)]
+    async fn daemon_keeps_reconnecting_past_the_stale_window() {
+        let mut runtime = daemon(std::time::Duration::from_secs(3600));
+        let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+
+        tokio::time::advance(runtime.profile.ws_timeouts.stale_timeout * 2).await;
+        runtime.schedule_reconnect(handle, "still unreachable");
+
+        // The next server tunnel finds the daemon still trying.
+        assert!(matches!(receiver.recv().await, Some(AgentMsg::Connect)));
+    }
+
+    /// The orphan clock starts without a connection, stops at an accepted `hello` and starts
+    /// again when that connection ends, so only time without a server counts.
+    #[tokio::test]
+    async fn orphan_clock_runs_only_without_an_accepted_connection() {
+        let limit = std::time::Duration::from_secs(60);
+        let mut runtime = daemon(limit);
+        let (handle, _receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+        let long_ago = std::time::SystemTime::now() - limit * 2;
+
+        runtime.orphaned_since = Some(long_ago);
+        // Without an accepted connection for longer than the limit the daemon must go.
+        assert!(runtime.orphan_limit_reached());
+
+        let (_control_rx, _bulk_rx) = attach_links(&mut runtime);
+        runtime
+            .handle_server_frame(
+                handle.clone(),
+                ServerToAgent::Welcome {
+                    connection_id: redoor_protocol::ids::SocketId::new(),
+                },
+            )
+            .await;
+        // An accepted connection stops the clock, however long the daemon was alone before.
+        assert!(runtime.orphaned_since.is_none());
+        assert!(!runtime.orphan_limit_reached());
+
+        runtime.drop_connection().await;
+        // A lost connection restarts the clock from now, not from the old start.
+        assert!(!runtime.orphan_limit_reached());
+        assert!(runtime.orphaned_since.is_some());
+
+        let (exit_handle, _exit_receiver, _exit_lifecycle) = AgentHandle::channel(4);
+        runtime.orphaned_since = Some(long_ago);
+        // The periodic check turns an expired clock into an exit.
+        assert_eq!(
+            runtime
+                .handle_daemon_event(exit_handle, DaemonEvent::OrphanCheck)
+                .await,
+            Some(AgentExit::Failure)
+        );
+        // Other roles have no orphan limit at all.
+        let mut standalone = runtime_with_source(standalone());
+        standalone.orphaned_since = Some(long_ago);
+        assert!(!standalone.orphan_limit_reached());
+    }
+
+    /// The wake signal drops a connection the daemon still believes in and asks for a new
+    /// one at once with the backoff reset.
+    #[tokio::test(start_paused = true)]
+    async fn wake_signal_reconnects_now() {
+        let mut runtime = daemon(std::time::Duration::from_secs(3600));
+        let (_control_rx, _bulk_rx) = attach_links(&mut runtime);
+        runtime.backoff.saturate();
+        let (handle, mut receiver, _lifecycle_receiver) = AgentHandle::channel(4);
+
+        let exit = runtime.handle_daemon_event(handle, DaemonEvent::Wake).await;
+
+        // Waking never ends the daemon.
+        assert_eq!(exit, None);
+        // The half-open connection is gone, so the connect attempt is not ignored.
+        assert!(runtime.control.sender().is_none());
+        // The attempt is queued at once rather than after the remaining backoff.
+        assert!(matches!(receiver.try_recv(), Ok(AgentMsg::Connect)));
+        // The next failure retries quickly again, since the tunnel was just rebuilt.
+        assert!(runtime.backoff.clone().next_delay() < redoor_core::backoff::MAX_BACKOFF / 2);
     }
 }

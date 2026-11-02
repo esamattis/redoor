@@ -237,13 +237,14 @@ const AGENT_DETAILS_STALE_MS = 10_000;
 /** Trash changes only through user actions or other tools, so a short window is enough. */
 const TRASH_STALE_MS = 5_000;
 
-/** How often the inventory refreshes while a managed agent starts, which pushes no event. */
+/** How often the inventory refreshes while a managed agent starts or stops, which pushes no event. */
 const MANAGED_STARTUP_POLL_MS = 1000;
 
 /**
  * Shares the retained agent inventory between navigation and status refreshes.
  * While a managed agent is starting, its provisioning steps change without a server
- * event, so the list polls until startup settles.
+ * event, and while its daemon is being stopped its issue does too, so the list polls until
+ * the lifecycle settles.
  */
 export function agentsQueryOptions(api: ApiClient) {
     return queryOptions({
@@ -252,7 +253,10 @@ export function agentsQueryOptions(api: ApiClient) {
         staleTime: AGENTS_STALE_MS,
         refetchInterval: (query) =>
             query.state.data?.some(
-                (agent) => agent.managed && agent.status === "starting",
+                (agent) =>
+                    agent.managed &&
+                    (agent.status === "starting" ||
+                        agent.status === "stopping"),
             )
                 ? MANAGED_STARTUP_POLL_MS
                 : false,

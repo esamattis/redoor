@@ -109,6 +109,8 @@ fn error_details(error: &anyhow::Error) -> LogErrorDetails {
 enum LogRecord {
     /// Carries one accepted application record without waiting for output.
     Message(LogEntry),
+    /// Answers once every record queued before it was written.
+    Flush(tokio::sync::oneshot::Sender<()>),
 }
 
 /// Owns the replay/live boundary separately from potentially slow output I/O.
@@ -274,6 +276,9 @@ impl Logger {
     async fn process_record(&mut self, record: LogRecord) {
         match record {
             LogRecord::Message(entry) => self.write_entry(entry).await,
+            LogRecord::Flush(done) => {
+                let _ = done.send(());
+            }
         }
     }
 
@@ -283,6 +288,23 @@ impl Logger {
             self.process_record(record).await;
         }
     }
+}
+
+/// Waits, at most `timeout`, until every record logged so far was written.
+///
+/// Output is asynchronous, so a process that is about to exit would otherwise lose its last
+/// records, which are usually the ones explaining why it exits.
+pub async fn flush(timeout: std::time::Duration) {
+    let Some(logger) = current() else {
+        return;
+    };
+    let (done, written) = tokio::sync::oneshot::channel();
+    let flushed = async {
+        if logger.records.send(LogRecord::Flush(done)).await.is_ok() {
+            let _ = written.await;
+        }
+    };
+    let _ = tokio::time::timeout(timeout, flushed).await;
 }
 
 /// Initializes the process-global logger with the info threshold and line output.

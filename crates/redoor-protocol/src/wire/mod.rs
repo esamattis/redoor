@@ -9,6 +9,7 @@ pub mod command;
 pub mod exec;
 pub mod handshake;
 pub mod log;
+pub mod managed;
 pub mod partials;
 pub mod policy;
 pub mod registration;
@@ -149,6 +150,11 @@ pub enum AgentToServer {
         /// Optional features; flattened, and each flag defaults to off.
         #[serde(flatten)]
         capabilities: AgentCapabilities,
+        /// Spec hash of a managed daemon's launch settings (see
+        /// [`managed`](crate::wire::managed)), so the server only accepts the daemon its latest
+        /// ensure step reported. Absent for standalone agents and relays.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        spec_hash: Option<String>,
     },
 
     /// The one final result of a request: `ok` with the request's response, or `error`. For

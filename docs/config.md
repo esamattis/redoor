@@ -54,7 +54,7 @@ Required when running `redoor server`. Optional in agent-only configs.
 | `port`          | integer (u16) | `7666`             | HTTP listen port. Override with `--port` / `REDOOR_PORT`.                                                                                                                     |
 | `bind`          | string        | `127.0.0.1`        | Listen address. Use `0.0.0.0` only when intentionally exposing beyond localhost. Override with `--bind`.                                                                      |
 | `log`           | string        | platform default\* | Server log file path. Override with `--log` / `REDOOR_SERVER_LOG`.                                                                                                            |
-| `log_max_size`  | integer or string | `"10MB"`       | Size limit of the log file: bytes, or a size with `KB`, `MB` or `GB` (binary multiples), such as `"10MB"`. Also limits the `log` files of server-managed `[[agents]]`. See [Log rotation](#log-rotation). |
+| `log_max_size`  | integer or string | `"10MB"`       | Size limit of the log file: bytes, or a size with `KB`, `MB` or `GB` (binary multiples), such as `"10MB"`. See [Log rotation](#log-rotation). |
 | `log_level`     | string        | `info`             | Initial threshold: `trace`, `debug`, `info`, `warning`, or `error`. Override with `--log-level` or `REDOOR_SERVER_LOG_LEVEL`. Runtime UI/API changes last only until restart. |
 | `log_format`    | string        | `line`             | Process stdout/file format: `line` or newline-delimited `json`. Override with `--log-format` or `REDOOR_SERVER_LOG_FORMAT`. Browser streams are always structured.            |
 | `username`      | string        | see auth below     | Shorthand for one `[[server.users]]` entry: its login name. Set together with `password`.                                                                                     |
@@ -199,11 +199,11 @@ log_level = "info"
 log_format = "line"
 ```
 
-CLI values take precedence over role-specific environment variables, which take precedence over TOML. Server-managed local and SSH agents are explicitly launched with `line` output. Log format does not change the structured WebSocket records shown in the browser.
+CLI values take precedence over role-specific environment variables, which take precedence over TOML. Server-managed agent daemons use the defaults (and `REDOOR_AGENT_LOG_LEVEL` / `REDOOR_AGENT_LOG_FORMAT` of their own environment). Log format does not change the structured WebSocket records shown in the browser.
 
 ## `[[agents]]`
 
-Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start lazily when you connect a device from the UI or management API. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent and removes its configuration, without deleting files on the device.
+Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start when you start a device from the UI or management API, and devices that were running start again when the server restarts. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent daemon, deletes the daemon's own namespace directories on the device and removes its configuration, without touching any other files on the device.
 
 ### Device ids and names
 
@@ -216,7 +216,7 @@ Every device has a stable **id** (`dev_` followed by 20 lowercase letters and di
 
 ### SSH-backed agent
 
-Default when `local` is omitted or `false`. The server SSHes to the host, ensures a matching binary, and starts `redoor agent` with reverse port forwarding.
+Default when `local` is omitted or `false`. The server SSHes to the host, ensures a matching binary, and keeps the device's agent daemon running behind a Unix socket reverse forward (see [Managed agent daemons](#managed-agent-daemons)). The device's sshd must allow stream-local forwarding (`AllowStreamLocalForwarding`, `DisableForwarding`).
 
 | Key          | Type          | Required | Description                                                                                                                                                                  |
 | ------------ | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -228,7 +228,6 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `name`       | string        | no       | Device name. Defaults to the host portion of `target`.                                                                                                                       |
 | `remote_bin` | string        | no       | Path to the redoor binary on the remote host. When omitted, uses the versioned install layout under `${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/<version>/redoor`. |
 | `home`       | string        | no       | Home directory opened on the remote device. When omitted, the remote process user's home directory is published.                                                             |
-| `log`        | string        | no       | Local file that captures the SSH process stdout/stderr (appended, limited by `[server].log_max_size`).                                                                        |
 | `password`   | string        | no       | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible.                                              |
 
 `remote_bin` and `home` are used literally on the device, except that a leading `~/`, `$HOME/` or `${HOME}/` is expanded to the remote user's home directory. Other shell syntax such as variables or `$(...)` is not interpreted.
@@ -241,13 +240,12 @@ target = "user@example.com"
 # name = "prod-server"
 # remote_bin = "/home/deploy/.local/share/redoor/binaries/<version>/redoor"
 # home = "/srv/app"
-# log = "/var/log/redoor/prod-agent.log"
 # password = "plaintext-ssh-password"
 ```
 
 ### Local agent
 
-Runs on the same machine as the server. The server reuses its own binary (`std::env::current_exe`); no `remote_bin` is needed.
+Runs on the same machine as the server. The server reuses its own binary (`std::env::current_exe`); no `remote_bin` is needed. Like an SSH-backed agent it runs as a daemon (see [Managed agent daemons](#managed-agent-daemons)).
 
 | Key     | Type   | Required | Description                                                                                          |
 | ------- | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
@@ -255,7 +253,6 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | `id`    | string | no       | Stable device id. Written by the server; see [Device ids and names](#device-ids-and-names).          |
 | `name`  | string | no       | Device name. Defaults to the system hostname.                                                        |
 | `home`  | string | no       | Home directory opened in the UI. Defaults to the spawned process user's home directory.              |
-| `log`   | string | no       | File for the spawned agent stdout/stderr (appended, limited by `[server].log_max_size`). When omitted, stdio is inherited from the server. |
 
 SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`, `password`) are rejected on local entries.
 
@@ -264,8 +261,20 @@ SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`, `password`) are r
 local = true
 name = "local"
 home = "/home/me/projects"
-log = "~/.local/share/redoor/log/local.log"
 ```
+
+### Managed agent daemons
+
+A managed agent (local or SSH-backed) runs as a daemon on its device, in its own namespace `<server app name>-<agent id>` (for example `redoor-dev_k3j…`). It keeps running, with its terminals, when the server restarts or an SSH connection drops; the server only rebuilds the connection. Devices that were running before a server restart are started again automatically.
+
+- The daemon logs to `agent.log` in its namespace's data directory on the device, for example `~/.local/share/redoor-dev_k3j…/agent.log`. Live logs are also available in the UI.
+- A daemon without a server connection for 24 hours exits on its own.
+- Stop it by hand with `redoor --app-name <namespace> agent managed --stop`; `--remove` also deletes the namespace's directories.
+- Every server start with a different binary replaces the daemons, which ends their terminal sessions.
+- With `KillUserProcesses=yes` in the device's `logind.conf`, logging out of the device ends the daemon.
+- A server installed as a systemd service before managed daemons existed must reinstall its unit (`redoor server systemd install`), which adds `KillMode=process`; otherwise restarting the service ends the local daemons. The server logs a warning while the old unit is in place.
+
+`[[agents]]` entries no longer accept `log`; remove it from older configs.
 
 ## `[[relays]]`
 
@@ -301,11 +310,11 @@ See [SSH relays](relays.md) for commands and runtime-file behavior.
 
 ## Log rotation
 
-Every log file Redoor writes is kept under its `log_max_size` (default `"10MB"`): the server log, standalone agent and relay logs, and the `log` files of server-managed agents. The size is checked when the process opens the file and again after every 100 log lines. When the file is over the limit, its older half of lines is dropped and the newer half kept, in place, so there are no rotated `.1` files to clean up.
+Every log file Redoor writes is kept under its `log_max_size` (default `"10MB"`): the server log, standalone agent and relay logs, and the logs of managed agent daemons (with the default limit). The size is checked when the process opens the file and again after every 100 log lines. When the file is over the limit, its older half of lines is dropped and the newer half kept, in place, so there are no rotated `.1` files to clean up.
 
 | Section       | Limits                                               |
 | ------------- | ---------------------------------------------------- |
-| `[server]`    | The server log and every `[[agents]]` entry's `log`. |
+| `[server]`    | The server log.                                      |
 | `[agent]`     | The standalone agent log.                            |
 | `[[relays]]`  | That relay's log.                                    |
 
@@ -338,13 +347,11 @@ home = "/home/me/projects"
 local = true
 name = "local"
 home = "/home/me/projects"
-log = "~/.local/share/redoor/log/local.log"
 
 [[agents]]
 target = "user@example.com"
 name = "prod-server"
 home = "/srv/app"
-log = "/var/log/redoor/prod-agent.log"
 
 [[relays]]
 id = "production"

@@ -196,7 +196,6 @@ fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
     insert_optional_string(&mut table, "name", &config.name);
     insert_optional_string(&mut table, "remote_bin", &config.remote_bin);
     insert_optional_string(&mut table, "home", &config.home);
-    insert_optional_string(&mut table, "log", &config.log);
     insert_optional_string(&mut table, "password", &config.password);
     // Omitted when false, so devices without a managed key keep their entry unchanged.
     if config.managed_ssh_key {
@@ -212,7 +211,6 @@ fn local_agent_table(config: &LocalAgentConfig) -> Table {
     table.insert("local", value(true));
     insert_optional_string(&mut table, "name", &config.name);
     insert_optional_string(&mut table, "home", &config.home);
-    insert_optional_string(&mut table, "log", &config.log);
     table
 }
 

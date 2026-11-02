@@ -2,6 +2,7 @@
 // the test account's vault, which encrypts SSH keys.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import {
     expect,
     test,
@@ -133,6 +134,16 @@ async function unlockVault(page: Page): Promise<void> {
     await unlock.getByRole("button", { name: "Unlock", exact: true }).click();
     // Argon2id takes a moment; the dialog closes once the vault is unlocked.
     await expect(unlock).toBeHidden({ timeout: 30_000 });
+}
+
+/** The boot id of the running server, which changes with every restart. */
+async function serverBootId(request: APIRequestContext): Promise<string> {
+    const response = await request.get(`${WEB_BASE_URL}/api/v1/server`);
+
+    expect(response.ok()).toBe(true);
+
+    return z.object({ boot_id: z.string() }).parse(await response.json())
+        .boot_id;
 }
 
 /** Reads how the device's key is stored: encrypted with the vault or not. */
@@ -290,7 +301,6 @@ test.describe.serial("Dedicated SSH device keys", () => {
                     name: UPGRADED_DEVICE,
                     remote_bin: null,
                     home: null,
-                    log: null,
                     password,
                     clear_password: false,
                 },
@@ -426,7 +436,6 @@ test.describe.serial("Dedicated SSH device keys", () => {
                     name: ENCRYPTED_DEVICE,
                     remote_bin: null,
                     home: null,
-                    log: null,
                     password,
                     clear_password: false,
                 },
@@ -516,6 +525,33 @@ test.describe.serial("Dedicated SSH device keys", () => {
         ).toHaveAttribute("aria-current", "page", { timeout: 90_000 });
         // The server holds the key while the device runs.
         expect((await getKeyStatus(page.request, agent.id)).held).toBe(true);
+
+        const bootId = await serverBootId(page.request);
+
+        const restart = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/server/restart`,
+        );
+
+        expect(restart.ok()).toBe(true);
+        await expect
+            .poll(() => serverBootId(page.request).catch(() => bootId), {
+                timeout: 30_000,
+            })
+            .not.toBe(bootId);
+        // The restarted server starts the device again but no longer holds its key. This
+        // tab's vault is still unlocked, so it hands the key over without a click ...
+        await expect
+            .poll(
+                async () => (await getKeyStatus(page.request, agent.id)).held,
+                {
+                    timeout: 90_000,
+                },
+            )
+            .toBe(true);
+        // ... and the device connects again.
+        await expect(
+            page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, connected` }),
+        ).toBeVisible({ timeout: 90_000 });
 
         await page
             .getByRole("link", { name: `Edit ${ENCRYPTED_DEVICE}` })

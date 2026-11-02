@@ -45,8 +45,6 @@ beforeAll(async () => {
     // anything surprising on the test host.
     const agentDir = tempFiles.tempDirectory({ suffix: "-watchdog-agent-cwd" });
     configPath = tempFiles.tempFile({ suffix: ".toml" });
-    const agentLogPath = tempFiles.tempFile({ suffix: ".log" });
-    rmSync(agentLogPath, { force: true });
     writeFileSync(
         configPath,
         `agent_token = "${TEST_AGENT_TOKEN}"
@@ -59,13 +57,11 @@ password = "${TEST_PASSWORD}"
 local = true
 name = "${AGENT_NAME}"
 home = "${agentDir}"
-log = "${agentLogPath}"
 
 [[agents]]
 local = true
 name = "${FAILING_AGENT_NAME}"
 home = "${agentDir}/does-not-exist"
-log = "${agentLogPath}.failing"
 `,
     );
 
@@ -134,7 +130,7 @@ async function getWatchdogAgent(): Promise<Agent> {
 }
 
 describe("Watchdog supervisor", () => {
-    it("restarts the subprocess when the agent process is killed", async () => {
+    it("starts a new daemon when the daemon process is killed", async () => {
         const firstAgent = await getWatchdogAgent();
         const firstConnectionId = firstAgent.connectionId;
 
@@ -153,8 +149,8 @@ describe("Watchdog supervisor", () => {
         // actually ran a subprocess and reported it back to the server.
         expect(firstPid).toBeGreaterThan(0);
 
-        // SIGKILL the agent subprocess. The supervisor watches
-        // `child.wait()` and should react by starting a new cycle.
+        // SIGKILL the daemon. Its session sees the lock released and ends, and the
+        // supervisor's next cycle starts a new daemon.
         process.kill(firstPid, "SIGKILL");
 
         // Wait for the new agent to be listed with a different PID.
@@ -197,10 +193,9 @@ describe("Watchdog supervisor", () => {
         expect(replacementDetails.pid).toBe(replacement.pid);
     }, 30000);
 
-    it("restarts the subprocess when the WebSocket goes stale", async () => {
-        // Stale detection uses the suite's shortened REDOOR_WEBSOCKET_*
-        // timers, so the supervisor should replace the frozen child in
-        // about a second instead of the production 30s silence budget.
+    it("keeps the daemon when its WebSocket goes stale and reconnects it", async () => {
+        // Stale detection uses the suite's shortened REDOOR_WEBSOCKET_* timers, so the
+        // server notices the frozen daemon in about a second.
         const firstAgent = await getWatchdogAgent();
         const firstConnectionId = firstAgent.connectionId;
 
@@ -208,98 +203,51 @@ describe("Watchdog supervisor", () => {
             throw new Error("Watchdog agent has no control connection id");
         }
 
-        const firstDetails = await waitForValue({
-            timeoutMs: 15000,
-            description: "watchdog agent to be responsive after restart",
-            predicate: async () => firstAgent.getDetails(),
-        });
-
-        const firstPid = firstDetails.pid;
+        const firstPid = (await firstAgent.getDetails()).pid;
         expect(firstPid).toBeGreaterThan(0);
 
-        // SIGSTOP freezes the agent without killing it. The
-        // kernel still has a live process, so the supervisor's
-        // `child.wait()` does not fire; the WebSocket session,
-        // however, sees zero frames and the stale check fires
-        // after 30s of silence. The supervisor then SIGKILLs
-        // the frozen process (SIGKILL works on a stopped
-        // process) and respawns a fresh agent.
+        // SIGSTOP freezes the daemon without killing it, so its socket goes silent.
         process.kill(firstPid, "SIGSTOP");
-
-        // Register cleanup at the top of the test so it is
-        // visible and runs even if the test times out (vitest
-        // skips the body of a timed-out test, so a
-        // `try/finally` here would not always fire).
-        onTestFinished(async () => {
-            // Kill a process that is still frozen after a failed wait so the
-            // supervisor can recover before the next serial test starts.
-            const currentAgent = (await apiClient.listAgents()).find(
-                (entry) => entry.name === AGENT_NAME,
-            );
-
-            if (currentAgent?.connectionId === firstConnectionId) {
-                try {
-                    process.kill(firstPid, "SIGKILL");
-                } catch {
-                    // The supervisor already replaced the process.
-                }
+        onTestFinished(() => {
+            try {
+                process.kill(firstPid, "SIGCONT");
+            } catch {
+                // The daemon is already gone.
             }
+        });
 
-            await waitForValue({
-                timeoutMs: 15000,
-                description: "watchdog cleanup to leave a responsive agent",
-                predicate: async () => {
-                    const agents = await apiClient.listAgents();
+        await waitForValue({
+            timeoutMs: 15000,
+            description: "stale daemon connection to be dropped",
+            predicate: async () => {
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.name === AGENT_NAME,
+                );
 
-                    const agent = agents.find(
-                        (entry) =>
-                            entry.name === AGENT_NAME &&
-                            entry.status === "connected" &&
-                            entry.connectionId !== firstConnectionId,
-                    );
-
-                    if (!agent) return undefined;
-                    const details = await agent.getDetails();
-
-                    return details;
-                },
-            });
-        }, 20_000);
+                return agent?.connectionId !== firstConnectionId || undefined;
+            },
+        });
+        process.kill(firstPid, "SIGCONT");
 
         const replacement = await waitForValue({
             timeoutMs: 15000,
-            description:
-                "watchdog agent to be restarted after WebSocket went stale",
+            description: "the same daemon to reconnect after its connection went stale",
             predicate: async () => {
-                const agents = await apiClient.listAgents();
-
-                const a = agents.find(
+                const agent = (await apiClient.listAgents()).find(
                     (entry) =>
                         entry.name === AGENT_NAME &&
                         entry.status === "connected" &&
                         entry.connectionId !== firstConnectionId,
                 );
 
-                if (!a) {
-                    return undefined;
-                }
-
-                const details = await a.getDetails();
-
-                return details;
+                return agent ? agent.getDetails() : undefined;
             },
         });
 
-        // A new, different PID proves the supervisor
-        // actually killed the frozen process and respawned
-        // a fresh one in response to the stale signal.
-        expect(replacement.pid).not.toBe(firstPid);
-        expect(replacement.pid).toBeGreaterThan(0);
-
-        // The replacement should be responsive via the REST
-        // API, confirming the new WebSocket is live.
-        const replacementAgent = await getWatchdogAgent();
-        const echo = await replacementAgent.echo("alive");
+        // A stale socket only drops the tunnel; the daemon and its shells keep running.
+        expect(replacement.pid).toBe(firstPid);
+        const echo = await (await getWatchdogAgent()).echo("alive");
+        // The new connection carries commands.
         expect(echo.message).toBe("alive");
     }, 30000);
 
@@ -309,12 +257,18 @@ describe("Watchdog supervisor", () => {
         const oldPid = details.pid;
         const response = await agent.shutdown();
 
-        // Shutdown acknowledgement guarantees the public inventory has settled stopped.
-        expect(response.agent.status).toBe("stopped");
+        // The session is gone at once; the daemon is stopped right after.
+        expect(["stopping", "stopped"]).toContain(response.agent.status);
 
-        const stopped = (await apiClient.listAgents()).find(
-            (entry) => entry.name === AGENT_NAME,
-        );
+        const stopped = await waitForValue({
+            timeoutMs: 15000,
+            description: "managed agent to settle stopped",
+            predicate: async () =>
+                (await apiClient.listAgents()).find(
+                    (entry) =>
+                        entry.name === AGENT_NAME && entry.status === "stopped",
+                ),
+        });
 
         // Intentional shutdown retains the managed row rather than removing it.
         expect(stopped?.status).toBe("stopped");
@@ -333,7 +287,7 @@ describe("Watchdog supervisor", () => {
                 ),
         });
         const restartedDetails = await (await getWatchdogAgent()).getDetails();
-        // A different connected process proves shutdown and restart crossed generations.
+        // Stop ended the daemon, so the start runs a new one.
         expect(restartedDetails.pid).not.toBe(oldPid);
     }, 30000);
 

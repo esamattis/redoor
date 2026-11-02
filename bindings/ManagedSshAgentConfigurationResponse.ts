@@ -30,10 +30,6 @@ remote_bin: string | null,
  */
 home: string | null, 
 /**
- * Optional local path receiving SSH subprocess diagnostics.
- */
-log: string | null, 
-/**
  * Always null on GET so the stored SSH password is never sent to the browser.
  */
 password: string | null, 

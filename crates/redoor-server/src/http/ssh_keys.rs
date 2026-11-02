@@ -578,7 +578,7 @@ async fn commit_key(
         }
         // Once persistence succeeds, this key must survive even if the runtime cannot
         // register it. Return that error separately so callers finish cleanup without rollback.
-        Ok(replace_runtime_agent(state, agent_id, agent_config)
+        Ok(replace_runtime_agent(state, agent_id, agent_config, None)
             .await
             .err())
     })

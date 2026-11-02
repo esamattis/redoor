@@ -161,7 +161,6 @@ export function updateRequest(
         ssh_port: null,
         remote_bin: null,
         home: null,
-        log: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -195,7 +194,6 @@ export async function createDevice(
         name: options.name,
         remote_bin: null,
         home: null,
-        log: join(fixture.home, `${options.name}.log`),
         password: options.password ?? null,
         clear_password: null,
     });

@@ -24,7 +24,7 @@ pub use edit::{
     assign_missing_device_ids, edit_local_agent, edit_ssh_agent, set_server_password,
 };
 pub use import::import_agent_config_from_stdin;
-pub use local_agent::{LocalServerEndpoint, spawn_local_agent};
+pub use local_agent::LocalServerEndpoint;
 
 use crate::logging::LogFormat;
 use redoor_protocol::ids::AgentId;
@@ -101,11 +101,9 @@ pub struct SshBackedAgentConfig {
     pub home: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub target: String,
-    /// Optional local log file path. When set, the ssh process's
-    /// stdout/stderr is forwarded into this file so the remote agent's
-    /// logs (forwarded through ssh) are captured locally. The file is
-    /// appended to so agent restarts accumulate logs, and kept under the
-    /// owner's log size limit.
+    /// Relay log file, which the relay forwards its ssh process's stdout and stderr into,
+    /// kept under the relay's log size limit. Always `None` for `[[agents]]` entries: a
+    /// managed agent's daemon logs to `agent.log` in its own namespace on the device.
     pub log: Option<String>,
     /// Optional SSH login password. When set, OpenSSH is given `SSH_ASKPASS`
     /// pointing at this binary so password auth can run without a TTY or
@@ -154,13 +152,8 @@ pub struct LocalAgentConfig {
     /// defaults to the system hostname so multiple local agents on
     /// different machines are naturally distinguishable.
     pub name: Option<String>,
-    /// Home directory the spawned agent publishes for UI tab navigation.
+    /// Home directory the daemon publishes for UI tab navigation.
     pub home: Option<String>,
-    /// Log file path. When set, the spawned `redoor agent` process's
-    /// stdout/stderr is forwarded by the server into this size-bounded
-    /// file. When `None`, stdio is inherited so the agent's logs appear
-    /// in the server's terminal.
-    pub log: Option<String>,
 }
 
 /// One configured agent entry from the agents toml. The variant decides
@@ -304,8 +297,8 @@ pub struct ServerSection {
     pub bind: Option<String>,
     /// Server log file; CLI and env override it.
     pub log: Option<String>,
-    /// Size limit of the server log and of the forwarded logs of server-managed agents;
-    /// `None` uses [`crate::rotating_log::DEFAULT_LOG_MAX_BYTES`].
+    /// Size limit of the server log; `None` uses
+    /// [`crate::rotating_log::DEFAULT_LOG_MAX_BYTES`].
     pub log_max_size: Option<u64>,
     /// Initial server threshold; runtime API changes deliberately do not rewrite it.
     pub log_level: Option<Level>,
@@ -594,7 +587,6 @@ impl From<LocalAgentConfig>
         Self {
             name: config.name,
             home: config.home,
-            log: config.log,
         }
     }
 }
@@ -611,7 +603,6 @@ impl From<SshBackedAgentConfig>
             name: config.name,
             remote_bin: config.remote_bin,
             home: config.home,
-            log: config.log,
             password: None,
             has_password: config.password.is_some(),
             has_managed_ssh_key: config.managed_ssh_key,
@@ -718,7 +709,6 @@ target = "user@example.com"
         assert!(agent.name.is_none());
         assert!(agent.remote_bin.is_none());
         assert!(agent.home.is_none());
-        assert!(agent.log.is_none(), "log should be None when not specified");
     }
 
     /// Verifies that every supported field is read from the toml file so
@@ -734,7 +724,6 @@ ssh_port = 2222
 name = "db-agent"
 remote_bin = "/usr/local/bin/redoor"
 home = "/srv/app"
-log = "log/db-agent.log"
 
 [[agents]]
 target = "web-1"
@@ -754,7 +743,6 @@ target = "web-1"
         assert_eq!(first.name.as_deref(), Some("db-agent"));
         assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
         assert_eq!(first.home.as_deref(), Some("/srv/app"));
-        assert_eq!(first.log.as_deref(), Some("log/db-agent.log"));
 
         // The second entry defers to OpenSSH while the first overrides its port explicitly.
         let second = match &config.agents[1] {
@@ -832,7 +820,6 @@ local = true
             "name should be None so the runtime defaults to hostname"
         );
         assert!(agent.home.is_none(), "home should be None by default");
-        assert!(agent.log.is_none(), "log should be None by default");
     }
 
     /// Verifies that every supported local field is read from the toml file
@@ -845,7 +832,6 @@ local = true
 local = true
 name = "my-local"
 home = "/var/work"
-log = "/var/log/my-local.log"
 "#;
         write_test_config(&temp, content).unwrap();
 
@@ -862,7 +848,6 @@ log = "/var/log/my-local.log"
         };
         assert_eq!(agent.name.as_deref(), Some("my-local"));
         assert_eq!(agent.home.as_deref(), Some("/var/work"));
-        assert_eq!(agent.log.as_deref(), Some("/var/log/my-local.log"));
     }
 
     /// Verifies that a single agents file can mix ssh and local entries,
@@ -967,31 +952,20 @@ local = true
         }
     }
 
-    /// Verifies that a `log` on an ssh entry is accepted and forwarded into
-    /// the SshBackedAgentConfig so the operator can capture a remote agent's
-    /// forwarded stdout/stderr into a local log file.
+    /// Managed agents log on their device, so a `log` left in an `[[agents]]` entry is
+    /// refused instead of being silently ignored.
     #[tokio::test]
-    async fn test_parse_config_file_ssh_entry_with_log() {
-        let (_directory, temp) = test_config_path();
-        let content = r#"
-[[agents]]
-target = "prod-db"
-log = "log/prod-db.log"
-"#;
-        write_test_config(&temp, content).unwrap();
+    async fn test_parse_config_file_rejects_agent_log() {
+        for entry in ["target = \"prod-db\"", "local = true"] {
+            let (_directory, temp) = test_config_path();
+            let content = format!("[[agents]]\n{entry}\nlog = \"log/agent.log\"\n");
+            write_test_config(&temp, &content).unwrap();
 
-        let config = parse_config_file(&temp).await.unwrap();
+            let error = parse_config_file(&temp).await.unwrap_err();
 
-        assert_eq!(config.agents.len(), 1);
-        let agent = match &config.agents[0] {
-            AgentConfig::SshBacked(config) => config,
-            AgentConfig::Local(_) => panic!("entry without `local = true` should be SSH-backed"),
-        };
-        assert_eq!(
-            agent.log.as_deref(),
-            Some("log/prod-db.log"),
-            "log should be read from the ssh toml entry"
-        );
+            // The parse error names the removed key so the operator knows what to delete.
+            assert!(format!("{error:#}").contains("log"), "{error:#}");
+        }
     }
 
     /// Stores the SSH password as written so OpenSSH askpass can replay it later.
@@ -1150,10 +1124,6 @@ target = "host"
             local_agent.name.as_deref(),
             Some("local"),
             "demo local agent should use the README name"
-        );
-        assert!(
-            local_agent.log.is_none(),
-            "starter managed agents should inherit output unless a log is configured"
         );
         for option in [
             "agent_token =",

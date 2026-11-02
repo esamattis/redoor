@@ -99,7 +99,6 @@ async function createConnectedDevice(
     const response = await api.createLocalAgent({
         name,
         home,
-        log: `log/playwright-device-names-${path.basename(home)}.log`,
     });
 
     await startDevice(api, response.agent.id);
@@ -272,7 +271,6 @@ test.describe.serial("Device names in URLs", () => {
         await api.updateLocalAgent(idA, {
             name: STALE_RENAMED,
             home: homeA,
-            log: `log/playwright-device-names-${path.basename(homeA)}.log`,
         });
 
         const idB = await createConnectedDevice(api, {
@@ -340,7 +338,6 @@ test.describe.serial("Device names in URLs", () => {
         await api.updateLocalAgent(idA, {
             name: CHOSEN_RENAMED,
             home: homeA,
-            log: `log/playwright-device-names-${path.basename(homeA)}.log`,
         });
 
         const idB = await createConnectedDevice(api, {

@@ -37,7 +37,6 @@ function localRequest(
     return {
         name: null,
         home: null,
-        log: null,
         ...overrides,
     };
 }
@@ -49,7 +48,6 @@ function localUpdateRequest(
     return {
         name: null,
         home: null,
-        log: null,
         ...overrides,
     };
 }
@@ -65,7 +63,6 @@ function sshRequest(
         name: null,
         remote_bin: null,
         home: null,
-        log: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -117,7 +114,6 @@ describe("Local agent configuration API", () => {
         const response = await apiClient.createLocalAgent({
             name: AGENT_NAME,
             home: "/srv/local",
-            log: "/tmp/created-local-agent.log",
         });
 
         // The response must be immediately usable without restarting the server.
@@ -156,7 +152,6 @@ describe("Local agent configuration API", () => {
         expect(editedConfig).toContain("local = true");
         expect(editedConfig).toContain(`name = "${AGENT_NAME}"`);
         expect(editedConfig).toContain('home = "/srv/local"');
-        expect(editedConfig).toContain('log = "/tmp/created-local-agent.log"');
         // The id is created on add and stored with the entry, so it survives restarts.
         expect(editedConfig).toContain(`id = "${response.agent.id}"`);
 
@@ -201,7 +196,6 @@ describe("Local agent configuration API", () => {
         expect(configuration).toMatchObject({
             name: AGENT_NAME,
             home: "/srv/local",
-            log: "/tmp/created-local-agent.log",
         });
 
         const renamed = "updated-local-agent";
@@ -216,7 +210,6 @@ describe("Local agent configuration API", () => {
         const updateRequest: UpdateLocalAgentRequest = {
             name: renamed,
             home: "/srv/updated-local",
-            log: null,
         };
 
         const update = await apiClient.updateLocalAgent(
@@ -238,8 +231,6 @@ describe("Local agent configuration API", () => {
         expect(inventory.some((agent) => agent.name === AGENT_NAME)).toBe(false);
         expect(inventory.some((agent) => agent.name === renamed)).toBe(true);
         const afterUpdate = await apiClient.getLocalAgentConfiguration(renamed);
-        // Clearing optional paths on PUT must persist as omitted settings, not leftover values.
-        expect(afterUpdate.log).toBeNull();
         expect(afterUpdate.home).toBe("/srv/updated-local");
         const editedConfig = readFileSync(configPath, "utf8");
         // Updating must preserve unrelated comments while replacing old local values.
@@ -249,7 +240,6 @@ describe("Local agent configuration API", () => {
         expect(editedConfig).toContain("local = true");
         expect(editedConfig).toContain(`name = "${renamed}"`);
         expect(editedConfig).not.toContain(`name = "${AGENT_NAME}"`);
-        expect(editedConfig).not.toContain("/tmp/created-local-agent.log");
         // The edit handler rebuilds the entry, so it must carry the id over explicitly.
         expect(editedConfig).toContain(`id = "${configuredAgent.id}"`);
 
@@ -286,7 +276,6 @@ describe("Local agent configuration API", () => {
             localUpdateRequest({
                 name,
                 home: "/srv/after",
-                log: "/tmp/local-edit-keeps-id.log",
             }),
         );
 
@@ -444,7 +433,7 @@ describe("Local agent configuration API", () => {
         );
     });
 
-    it("keeps provisioning status empty for a local managed agent", async () => {
+    it("publishes only daemon steps, never SSH steps, for a local managed agent", async () => {
         const name = "local-silent-provisioning";
         await apiClient.createLocalAgent(localRequest({ name }));
         onTestFinished(async () => {
@@ -465,30 +454,33 @@ describe("Local agent configuration API", () => {
 
         const connected = await waitForValue({
             timeoutMs: 15_000,
-            description: "local managed agent to connect without SSH steps",
+            description: "local managed agent to connect",
             predicate: async () => {
                 const agent = (await apiClient.listAgents()).find(
                     (entry) => entry.name === name,
                 );
 
-                const extra = agent?.provisioningStatus.filter(
-                    (step) => step.message !== "Connected",
-                );
-
-                if (extra && extra.length > 0) {
-                    throw new Error(
-                        `local agent published SSH provisioning status: ${JSON.stringify(extra)}`,
-                    );
-                }
-
-                return agent?.status === "connected" ? agent : undefined;
+                return agent?.status === "connected" &&
+                    agent.provisioningStatus.some(
+                        (step) => step.message === "Connected",
+                    )
+                    ? agent
+                    : undefined;
             },
         });
 
-        // Local spawn has no sniff/download/upload; Connected is the only lifecycle line.
+        const messages = connected.provisioningStatus.map(
+            (step) => step.message,
+        );
+
+        // A local start has no sniff, download or upload, only the daemon's ensure step.
+        expect(messages.some((message) => /SSH|sniff|upload/i.test(message))).toBe(
+            false,
+        );
+        // The ensure step says what it did with the daemon.
         expect(
-            connected.provisioningStatus.every(
-                (step) => step.message === "Connected",
+            messages.some((message) =>
+                message.startsWith("Started the agent daemon"),
             ),
         ).toBe(true);
     }, 20_000);

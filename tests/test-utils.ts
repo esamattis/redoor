@@ -4,6 +4,8 @@ import {
     writeFileSync,
     rmSync,
     mkdirSync,
+    readdirSync,
+    readFileSync,
     realpathSync,
 } from "node:fs";
 import { readFile } from "node:fs/promises";
@@ -89,6 +91,7 @@ export async function createToxiproxyAgent(options: {
             connection_id: options.agent.connectionId,
             last_seen_at: options.agent.lastSeenAt,
             connection_issue: options.agent.connectionIssue,
+            waiting_for_ssh_key: false,
             provisioning_status: options.agent.provisioningStatus,
             binary: options.agent.binary,
             supports_native_open: options.agent.supportsNativeOpen,
@@ -311,7 +314,109 @@ export type SpawnServerArgs = {
     config?: string;
     /** Isolates durable server state while allowing restart tests to reuse the same home. */
     home?: string;
+    /** Extra environment, for example a short `REDOOR_MANAGED_ORPHAN_TIMEOUT`. */
+    env?: NodeJS.ProcessEnv;
+    /** Another binary than the built one, for tests of a server started from a new file. */
+    executablePath?: string;
 };
+
+/**
+ * Orphan limit of the managed agent daemons of test servers. Daemons outlive their server by
+ * design, so one a test leaves behind ends on its own instead of reconnecting for a day.
+ */
+const TEST_MANAGED_ORPHAN_TIMEOUT = "600s";
+
+/** The namespace of a managed agent's daemon of a test server: `<app name>-<agent id>`. */
+export function managedNamespace(agentId: string): string {
+    return `${TEST_APP_NAME}-${agentId}`;
+}
+
+/** Data directory of a test server's managed daemon, under the server's `HOME`. */
+export function managedDaemonDataDir(
+    agentId: string,
+    home: string = TEST_SERVER_HOME,
+): string {
+    return join(home, ".local", "share", managedNamespace(agentId));
+}
+
+/** The PID a managed daemon recorded in its PID file, or `null` without one. */
+export function managedDaemonPid(
+    agentId: string,
+    home: string = TEST_SERVER_HOME,
+): number | null {
+    try {
+        const record = z
+            .object({ pid: z.number() })
+            .parse(
+                JSON.parse(
+                    readFileSync(
+                        join(managedDaemonDataDir(agentId, home), "agent.pid"),
+                        "utf8",
+                    ),
+                ),
+            );
+
+        return record.pid;
+    } catch {
+        return null;
+    }
+}
+
+/** Whether a process with `pid` exists. */
+export function processIsAlive(pid: number): boolean {
+    try {
+        process.kill(pid, 0);
+
+        return true;
+    } catch (error) {
+        return !isErrorCode(error, "ESRCH");
+    }
+}
+
+/**
+ * Kills every managed daemon a test server under `home` left running and forgets which
+ * devices were running, so the next test file on this worker starts from nothing. Daemons
+ * run in their own session, outside the server's process group that `kill` ends.
+ */
+export function killManagedDaemons(home: string = TEST_SERVER_HOME): void {
+    const share = join(home, ".local", "share");
+    let entries: string[];
+
+    try {
+        entries = readdirSync(share);
+    } catch {
+        return;
+    }
+
+    for (const entry of entries) {
+        if (!entry.startsWith(`${TEST_APP_NAME}-dev_`)) {
+            continue;
+        }
+
+        try {
+            const record = z
+                .object({ pid: z.number() })
+                .parse(
+                    JSON.parse(
+                        readFileSync(join(share, entry, "agent.pid"), "utf8"),
+                    ),
+                );
+
+            const cmdline = readFileSync(`/proc/${record.pid}/cmdline`, "utf8");
+
+            // Only a daemon of this namespace; the PID may have been reused.
+            if (cmdline.includes(entry)) {
+                process.kill(record.pid, "SIGKILL");
+            }
+        } catch {
+            // No record, no process, or not a daemon anymore.
+        }
+    }
+
+    rmSync(join(share, TEST_APP_NAME, "managed-running.json"), {
+        force: true,
+    });
+}
 
 /** Groups optional process settings so callers cannot confuse cwd and environment. */
 type SpawnOptions = {
@@ -343,6 +448,8 @@ export class ProcessManager {
     private stdoutBuffers: Map<number, OutputBuffer> = new Map();
     private agentAppNames: Map<number, string> = new Map();
     private agentNamespace = 0;
+    /** Homes of the servers this manager started, whose managed daemons `killAll` ends. */
+    private serverHomes: Set<string> = new Set();
 
     spawn(command: string, args: string[], options: SpawnOptions = {}): number {
         const proc = spawn(command, args, {
@@ -461,12 +568,15 @@ password = "${TEST_PASSWORD}"
         const serverHome = args.home ?? TEST_SERVER_HOME;
 
         mkdirSync(serverHome, { recursive: true });
+        this.serverHomes.add(serverHome);
 
-        return this.spawn(SERVER_PATH, cliArgs, {
+        return this.spawn(args.executablePath ?? SERVER_PATH, cliArgs, {
             cwd: PROJECT_ROOT,
             env: {
                 HOME: serverHome,
                 REDOOR_APP_NAME: TEST_APP_NAME,
+                REDOOR_MANAGED_ORPHAN_TIMEOUT: TEST_MANAGED_ORPHAN_TIMEOUT,
+                ...args.env,
             },
         });
     }
@@ -519,6 +629,10 @@ password = "${TEST_PASSWORD}"
         }
 
         await Promise.all(exits);
+
+        for (const home of this.serverHomes) {
+            killManagedDaemons(home);
+        }
     }
 
     getProcess(pid: number): ChildProcess | undefined {

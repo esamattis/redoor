@@ -38,6 +38,7 @@ function agentInfo(
         connection_id: `${id}-socket-1`,
         last_seen_at: null,
         connection_issue: null,
+        waiting_for_ssh_key: false,
         provisioning_status: [],
         binary: null,
         supports_native_open: false,

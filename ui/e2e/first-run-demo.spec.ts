@@ -112,6 +112,42 @@ async function stopServer(child: ChildProcess | undefined): Promise<void> {
     });
 }
 
+/**
+ * Kills the managed agent daemons the demo server started under `home`. They run in their
+ * own session and outlive the server by design, so stopping the server leaves them.
+ */
+async function stopManagedDaemons(home: string): Promise<void> {
+    const share = path.join(home, ".local", "share");
+    const entries = await fs.readdir(share).catch(() => []);
+
+    for (const entry of entries) {
+        try {
+            const record = z
+                .object({ pid: z.number().int().positive() })
+                .parse(
+                    JSON.parse(
+                        await fs.readFile(
+                            path.join(share, entry, "agent.pid"),
+                            "utf8",
+                        ),
+                    ),
+                );
+
+            const cmdline = await fs.readFile(
+                `/proc/${record.pid}/cmdline`,
+                "utf8",
+            );
+
+            // Only a daemon of this namespace; the PID may have been reused.
+            if (cmdline.includes(entry)) {
+                process.kill(record.pid, "SIGKILL");
+            }
+        } catch {
+            // No record, no process, or not a daemon anymore.
+        }
+    }
+}
+
 test.describe("First-run demo", () => {
     // Fresh app namespace must not inherit the shared playwright-dev cookie jar.
     test.use({ storageState: { cookies: [], origins: [] } });
@@ -193,6 +229,7 @@ password = "changeme"
             ).toBeVisible({ timeout: 30_000 });
         } finally {
             await stopServer(child);
+            await stopManagedDaemons(home);
             await fs.rm(home, { recursive: true, force: true });
         }
     });

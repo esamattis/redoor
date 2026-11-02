@@ -28,10 +28,17 @@ import {
     SSH_TEST_HOST,
     SSH_TEST_USER,
     cleanupSshTest,
+    killLocalSshSession,
+    reattach,
+    remoteDaemonPid,
+    remoteProcessAlive,
     shellQuote,
     sshCommandWithPassword,
     sshTestCommand,
+    terminalShellPid,
+    waitForReconnect,
 } from "./ssh-test-utils";
+import { openTerminal } from "./terminal-test-utils";
 
 const execFileAsync = promisify(execFile);
 
@@ -432,7 +439,6 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const agentName = `managed-ssh-test-${suffix}`;
             const remoteRoot = `/tmp/redoor-managed-ssh-test-${suffix}`;
             const configPath = join(home, "config.toml");
-            const agentLogPath = join(home, "managed-agent.log");
             writeFileSync(
                 configPath,
                 `agent_token = "${TEST_AGENT_TOKEN}"
@@ -447,7 +453,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
 home = "${remoteRoot}"
-log = "${agentLogPath}"
 `,
             );
 
@@ -591,7 +596,13 @@ log = "${agentLogPath}"
 
             expect(
                 provisioningMessages.some((message) =>
-                    message.startsWith("Spawning the remote binary"),
+                    message.startsWith("Starting the agent session with"),
+                ),
+            ).toBe(true);
+            // The fresh namespace has no daemon yet, so the ensure step starts one.
+            expect(
+                provisioningMessages.some((message) =>
+                    message.startsWith("Started the agent daemon"),
                 ),
             ).toBe(true);
             expect(provisioningMessages).toContain("Connected");
@@ -630,18 +641,75 @@ log = "${agentLogPath}"
             // Byte equality exercises streamed upload and download over the managed SSH tunnel.
             expect(Buffer.compare(downloaded, payload)).toBe(0);
 
-            const shutdown = await firstConnection.shutdown();
-            // Managed shutdown retains configured inventory while reaping the SSH child.
-            expect(shutdown.agent.managed).toBe(true);
-            expect(shutdown.agent.status).toBe("stopped");
+            const namespace = `${appName}-${firstConnection.id}`;
+            const daemonPid = await remoteDaemonPid(namespace);
 
-            const stoppedAgent = (await apiClient.listAgents()).find(
+            const { session, viewer } = await openTerminal(
+                apiClient,
+                firstConnection,
+                remoteRoot,
+            );
+
+            const shell = await terminalShellPid(viewer, "first");
+
+            // An SSH session that drops (a network change, a killed client) only takes the
+            // tunnel with it: the daemon and its shell keep running.
+            await killLocalSshSession(namespace);
+
+            const afterDrop = await waitForReconnect(
+                apiClient,
+                agentName,
+                firstConnectionId,
+            );
+
+            expect(await remoteDaemonPid(namespace)).toBe(daemonPid);
+            expect(
+                await terminalShellPid(
+                    await reattach(apiClient, session.id),
+                    "after-drop",
+                ),
+            ).toBe(shell);
+
+            // A server restart in place likewise keeps the daemon and the shell.
+            await apiClient.restartServer();
+            await waitForReconnect(apiClient, agentName, afterDrop.connectionId);
+            expect(await remoteDaemonPid(namespace)).toBe(daemonPid);
+            expect(
+                await terminalShellPid(
+                    await reattach(apiClient, session.id),
+                    "after-restart",
+                ),
+            ).toBe(shell);
+
+            const current = (await apiClient.listAgents()).find(
                 (agent) => agent.name === agentName,
             );
 
-            if (stoppedAgent === undefined) {
-                throw new Error("Stopped managed SSH agent disappeared");
+            if (current === undefined) {
+                throw new Error("Managed SSH agent disappeared");
             }
+
+            const shutdown = await current.shutdown();
+            // Managed shutdown retains configured inventory while it stops the daemon.
+            expect(shutdown.agent.managed).toBe(true);
+            expect(["stopping", "stopped"]).toContain(shutdown.agent.status);
+            // Stop reaches the daemon on the device, not only the tunnel.
+            await waitForValue({
+                predicate: async () =>
+                    (await remoteProcessAlive(daemonPid)) ? undefined : true,
+                timeoutMs: 30_000,
+                description: "stopped SSH daemon to exit",
+            });
+
+            const stoppedAgent = await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listAgents()).find(
+                        (agent) =>
+                            agent.name === agentName &&
+                            agent.status === "stopped",
+                    ),
+                description: "managed SSH agent to settle stopped",
+            });
 
             // Wiping the remote state is what a reinstall or cleared Termux data does.
             await sshTestCommand(
@@ -689,7 +757,6 @@ describe.skipIf(
         const agentName = `managed-ssh-password-${suffix}`;
         const remoteRoot = `/tmp/redoor-managed-ssh-password-${suffix}`;
         const configPath = join(home, "config.toml");
-        const agentLogPath = join(home, "managed-agent.log");
         const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
 
         if (sshPassword === undefined) {
@@ -711,7 +778,6 @@ username = "${SSH_PASSWORD_USER}"
 password = ${JSON.stringify(sshPassword)}
 name = "${agentName}"
 home = "${remoteRoot}"
-log = "${agentLogPath}"
 `,
         );
 
@@ -807,7 +873,6 @@ describe.skipIf(
         const remoteRoot = `/tmp/redoor-root-ownership-${suffix}`;
         const parentPath = `${remoteRoot}/parent`;
         const configPath = join(home, "config.toml");
-        const agentLogPath = join(home, "root-agent.log");
         const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
 
         if (sshPassword === undefined) {
@@ -829,7 +894,6 @@ username = "${SSH_ROOT_USER}"
 password = ${JSON.stringify(sshPassword)}
 name = "${agentName}"
 home = "${remoteRoot}"
-log = "${agentLogPath}"
 `,
         );
 
@@ -1094,9 +1158,10 @@ home = "${remoteRoot}"
                 "Configure a password, SSH key, or ssh-agent credential",
             );
             // Progress lines may exist, but authentication failure still uses connection_issue.
+            // The first SSH round trip resolves the agent's socket directory.
             expect(
                 failed.provisioningStatus.some((step) =>
-                    step.message.includes("Sniffing the SSH target"),
+                    step.message.includes("on the SSH target"),
                 ),
             ).toBe(true);
             // The failed startup remains desired-running so watchdog retries are visible.

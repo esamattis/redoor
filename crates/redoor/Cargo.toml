@@ -22,7 +22,7 @@ libc.workspace = true
 nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-tokio = { workspace = true, features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 
 [dev-dependencies]
 redoor-core = { workspace = true, features = ["test-support"] }

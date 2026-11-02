@@ -50,7 +50,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${name}"
 home = "${options.remoteRoot}"
-log = "${join(home, `${name}.log`)}"
 `,
         )
         .join("\n");

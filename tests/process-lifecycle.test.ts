@@ -2,6 +2,7 @@ import { execFile, spawn } from "node:child_process";
 import {
     mkdirSync,
     mkdtempSync,
+    readdirSync,
     readFileSync,
     rmSync,
     writeFileSync,
@@ -18,6 +19,38 @@ import {
     waitForPort,
     waitForValue,
 } from "./test-utils";
+
+/**
+ * PIDs of the `redoor agent managed` session processes of device `agentId`, found by their
+ * command line, which names the device's namespace. The daemon (`--serve`) is left out.
+ */
+function managedSessionPids(agentId: string): number[] {
+    const pids: number[] = [];
+
+    for (const entry of readdirSync("/proc")) {
+        if (!/^\d+$/.test(entry)) continue;
+
+        let argv: string[];
+
+        try {
+            argv = readFileSync(join("/proc", entry, "cmdline"), "utf8")
+                .split("\0")
+                .filter((arg) => arg !== "");
+        } catch {
+            continue;
+        }
+
+        if (
+            argv.some((arg) => arg.endsWith(`-${agentId}`)) &&
+            argv.includes("managed") &&
+            !argv.includes("--serve")
+        ) {
+            pids.push(Number(entry));
+        }
+    }
+
+    return pids;
+}
 
 const execFileAsync = promisify(execFile);
 
@@ -382,7 +415,7 @@ port = ${port}
     );
 
     test.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
-        "managed local agent exits when its daemon server is killed",
+        "managed local agent's session ends with its daemon server while the agent daemon survives",
         async () => {
             const isolated = isolatedProcess("server");
             const port = await getAvailablePort();
@@ -445,14 +478,20 @@ home = "${agentHome}"
                 description: "managed lifecycle agent connection",
             });
 
-            const agentPid = (await connectedAgent.getDetails()).pid;
-            killOnTestFinished(agentPid);
+            const daemonPid = (await connectedAgent.getDetails()).pid;
+            killOnTestFinished(daemonPid);
+            const session = managedSessionPids(connectedAgent.id);
+            // The server runs one session process for the device besides its daemon.
+            expect(session).toHaveLength(1);
 
             process.kill(serverPid, "SIGKILL");
             await vi.waitFor(() => {
-                // A daemon marker inherited from the server must not detach its managed child.
-                expect(() => process.kill(agentPid, 0)).toThrow();
+                // The session belongs to the server, and the daemon marker inherited from a
+                // --daemon server must not keep it alive after the server died.
+                expect(managedSessionPids(connectedAgent.id)).toEqual([]);
             });
+            // The daemon outlives its server by design, so its shells survive a crash.
+            expect(() => process.kill(daemonPid, 0)).not.toThrow();
         },
         30_000,
     );

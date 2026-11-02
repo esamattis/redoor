@@ -332,10 +332,14 @@ function AgentDetailsContent(props: {
                         messages={storedProvisioning}
                         nowMs={provisioningNowMs}
                     />
-                    <AgentUpgradeControls
-                        agent={props.agent}
-                        details={props.details}
-                    />
+                    {/* The server runs its own binary on managed devices at every start,
+                        so a per-device upgrade would be undone and is refused. */}
+                    {props.agent.managed ? null : (
+                        <AgentUpgradeControls
+                            agent={props.agent}
+                            details={props.details}
+                        />
+                    )}
                 </div>
             </div>
             <Outlet />

@@ -21,9 +21,11 @@ use super::provision::{
     force_upload_binary,
 };
 use super::shell::path_word;
-use super::transport::{SshHost, SshRunOptions};
-use super::{ProvisionContext, ProvisionError};
-use crate::watchdog::ProvisioningStatusSink;
+use super::transport::{STREAM_FORWARD_FAILURE, SshHost, SshRunOptions};
+use super::{ManagedSshDevice, ProvisionContext, ProvisionError, SessionSockets};
+use crate::watchdog::{ManagedSession, ProvisioningStatusSink};
+use redoor_protocol::wire::managed::{ManagedConnect, ManagedLaunch};
+use tokio::io::AsyncWriteExt;
 
 /// Remembers the last random remote port so every retry necessarily chooses a
 /// different candidate while sharing the same policy across launcher types.
@@ -177,30 +179,28 @@ impl PreparedSshBackedAgent {
         Ok((remote_port, child))
     }
 
-    /// Starts a TOML-managed agent from a binary that is used without checking, with the
-    /// shared random-port policy, leaving retries and stale-session handling to the
-    /// server watchdog.
-    async fn spawn_managed(
-        &self,
-        status: &ProvisioningStatusSink,
-    ) -> std::io::Result<tokio::process::Child> {
-        let remote_port = self.random_remote_port.next();
-        status.report(format!("Spawning the remote binary at {}", self.remote_bin));
-        let (remote_argv, options) = self.managed_launch_settings(remote_port);
-        self.spawn_on(remote_port, &options, &remote_argv).await
+    /// Arguments of `redoor agent managed` in this agent's own namespace, naming the socket
+    /// of this session's forward; the settings travel in the payload.
+    fn managed_argv(&self, session_socket: &str) -> Vec<String> {
+        vec![
+            "--app-name".to_string(),
+            self.app_name.clone(),
+            "agent".to_string(),
+            "managed".to_string(),
+            "--session-socket".to_string(),
+            session_socket.to_string(),
+        ]
     }
 
-    /// Launch settings of a managed agent: the shared ones plus the managed-agent marker
-    /// and, without a log file, piped stderr for the watchdog.
-    fn managed_launch_settings(&self, remote_port: u16) -> (Vec<String>, SshRunOptions) {
-        let (remote_argv, options) = self.launch_settings(remote_port);
-        let mut options = options.with_managed_agent();
-        if options.log_file().is_none() {
-            // The watchdog drains this bounded stream into connection_issue so
-            // OpenSSH failures do not collapse into an unexplained status 255.
-            options = options.with_piped_stderr();
-        }
-        (remote_argv, options)
+    /// SSH options of a managed session: the Unix socket forward to the server's listener,
+    /// stdin kept for the payload and as the liveness signal, and stderr piped for the
+    /// watchdog's diagnostics.
+    fn managed_session_options(&self, socket: &str) -> SshRunOptions {
+        SshRunOptions::default()
+            .with_stream_forward(socket, self.destination.host.clone(), self.destination.port)
+            .with_managed_agent()
+            .with_piped_stdin()
+            .with_piped_stderr()
     }
 
     /// Appends `--home` to the agent's arguments inside the launch script, so a
@@ -306,38 +306,39 @@ impl Preparation<'_> {
         Ok(prepared)
     }
 
-    /// Starts a server-managed agent. A binary at the default install path is probed in
+    /// Starts a server-managed agent's session: `redoor agent managed` behind a Unix socket
+    /// forward, with `launch` on its stdin. A binary at the default install path is probed in
     /// the same SSH session that starts it, so a device with a current binary needs one
     /// session; only a missing or stale binary costs an upload and a second start.
-    pub(super) async fn start_managed(self) -> Result<tokio::process::Child, ProvisionError> {
+    ///
+    /// A failed forward means sshd refuses stream-local forwarding or the directory went
+    /// away, so the socket directory is resolved again on the next cycle.
+    pub(super) async fn start_managed(
+        self,
+        launch: ManagedLaunch,
+        device: &ManagedSshDevice,
+        daemon_may_run: &crate::watchdog::DaemonMayRun,
+    ) -> Result<ManagedSession, ProvisionError> {
         let started = Instant::now();
         let prepared = self.assemble().await?;
-        let result = if self.config.remote_bin.is_some() {
-            self.trust_operator_binary(&prepared.remote_bin);
-            prepared
-                .spawn_managed(self.status)
-                .await
-                .map_err(ProvisionError::from)
-        } else {
-            Installer {
-                host: &prepared.host,
-                provision: self.provision,
-                status: self.status,
-            }
-            .ensure(&mut LaunchCheck {
-                prepared: &prepared,
-                status: self.status,
-            })
-            .await
-        };
+        let sockets = device
+            .sockets(&prepared.host, &prepared.app_name, self.status)
+            .await?;
+        let result = self
+            .start_session(&prepared, launch, &sockets, device, daemon_may_run)
+            .await;
+        if is_stream_forward_failure(&result) {
+            device.forget_socket_dir();
+        }
         match &result {
-            Ok(child) => log!(
+            Ok(session) => log!(
                 Level::Info,
-                "Started managed SSH agent: target={}, name={}, agent_id={}, child_id={:?}, elapsed={:?}",
+                "Started managed SSH agent session: target={}, name={}, agent_id={}, daemon_pid={}, outcome={:?}, elapsed={:?}",
                 self.config.target,
                 prepared.agent_name,
                 prepared.agent_id,
-                child.id(),
+                session.daemon.pid,
+                session.daemon.outcome,
                 started.elapsed()
             ),
             Err(error) => log_error!(
@@ -350,6 +351,73 @@ impl Preparation<'_> {
             ),
         }
         result
+    }
+
+    /// One attempt of [`Self::start_managed`]: installs the binary when needed, starts the
+    /// session, sends the payload and reads the ensure report.
+    async fn start_session(
+        &self,
+        prepared: &PreparedSshBackedAgent,
+        mut launch: ManagedLaunch,
+        sockets: &SessionSockets,
+        device: &ManagedSshDevice,
+        daemon_may_run: &crate::watchdog::DaemonMayRun,
+    ) -> Result<ManagedSession, ProvisionError> {
+        launch.connect = ManagedConnect::Unix(sockets.stable());
+        let (mut child, remote_bin) = if self.config.remote_bin.is_some() {
+            self.trust_operator_binary(&prepared.remote_bin);
+            self.status.report(format!(
+                "Starting the agent session with {}",
+                prepared.remote_bin
+            ));
+            let session_socket = sockets.next_session();
+            let argv = prepared.managed_argv(&session_socket);
+            let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+            let script = format!("exec {} \"$@\"", path_word(&prepared.remote_bin));
+            let options = prepared.managed_session_options(&session_socket);
+            let child = prepared.host.spawn(&script, &argv_refs, &options).await?;
+            (child, prepared.remote_bin.clone())
+        } else {
+            Installer {
+                host: &prepared.host,
+                provision: self.provision,
+                status: self.status,
+            }
+            .ensure(&mut LaunchCheck {
+                prepared,
+                sockets,
+                status: self.status,
+            })
+            .await?
+        };
+        device.set_remote_bin(remote_bin);
+        let mut stdin = child.stdin.take().ok_or_else(|| {
+            ProvisionError::Remote("the agent session's stdin is not piped".to_string())
+        })?;
+        daemon_may_run.mark();
+        let written = stdin.write_all(launch.to_line().as_bytes()).await;
+        // The pipe stays open: its end is how the session learns that the server dropped it.
+        child.stdin = Some(stdin);
+        self.status.report("Ensuring the agent daemon runs");
+        match crate::managed_session::read_report(&mut child).await {
+            Ok(daemon) => Ok(ManagedSession { child, daemon }),
+            Err(crate::managed_session::ReportError::Ended {
+                status: Some(status),
+                stderr,
+            }) => Err(ProvisionError::Io(std::io::Error::other(
+                prepared.host.failure_message(
+                    "agent session",
+                    &super::transport::SshOutput { status, stderr },
+                ),
+            ))),
+            Err(error) => {
+                let mut message = error.message("SSH process");
+                if let Err(write) = written {
+                    message.push_str(&format!("\nSending the launch payload failed: {write}"));
+                }
+                Err(ProvisionError::Remote(message))
+            }
+        }
     }
 
     /// Builds the launchable agent for the requested binary path without touching the host.
@@ -481,46 +549,47 @@ impl Preparation<'_> {
     }
 }
 
-/// Checks a managed agent's binary by starting it with the launch script, which probes
-/// first and only `exec`s a matching binary; the ready value is the running ssh child.
+/// Checks a managed agent's binary by starting its session with the launch script, which
+/// probes first and only `exec`s a matching binary; the ready value is the running ssh child
+/// and the expanded path of the binary it runs.
 struct LaunchCheck<'a> {
     /// The agent to start.
     prepared: &'a PreparedSshBackedAgent,
+    /// Where each session's Unix socket forward listens.
+    sockets: &'a SessionSockets,
     /// Progress lines for the lifecycle UI.
     status: &'a ProvisioningStatusSink,
 }
 
 impl BinaryCheck for LaunchCheck<'_> {
-    type Ready = tokio::process::Child;
+    type Ready = (tokio::process::Child, String);
 
     async fn check(
         &mut self,
         remote_bin: &str,
         expect: &BinaryExpectation,
-    ) -> Result<BinaryCheckResult<tokio::process::Child>, ProvisionError> {
+    ) -> Result<BinaryCheckResult<Self::Ready>, ProvisionError> {
         let prepared = self.prepared;
         let target = prepared.host.target();
-        let remote_port = prepared.random_remote_port.next();
-        let (remote_argv, options) = prepared.managed_launch_settings(remote_port);
-        let argv_refs: Vec<&str> = remote_argv.iter().map(String::as_str).collect();
-        let script = format!(
-            "{}{}",
-            prepared.home_statement(),
-            expect.launch_script(remote_bin)
-        );
+        // Every session gets its own socket: sshd keeps a forward's socket file after the
+        // session ends, so the next session could not bind the same path.
+        let session_socket = self.sockets.next_session();
+        let options = prepared.managed_session_options(&session_socket);
+        let argv = prepared.managed_argv(&session_socket);
+        let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let script = expect.launch_script(remote_bin);
         log!(
             Level::Info,
-            "Starting SSH-backed redoor agent if its binary matches: target={}, ssh_server_port={}, name={}, remote_bin={}, random_remote_port={}, destination={}:{}",
+            "Starting the managed agent session if its binary matches: target={}, ssh_server_port={}, name={}, remote_bin={}, destination={}:{}",
             target,
             prepared.host.server_port_label(),
             prepared.agent_name,
             remote_bin,
-            remote_port,
             prepared.destination.host,
             prepared.destination.port
         );
-        // A dropped child kills the ssh client, which stops a started agent through
-        // `--exit-on-stdin-eof`, so every early return below leaves nothing running.
+        // A dropped child kills the ssh client, which ends the session without touching the
+        // daemon, so every early return below leaves nothing behind but a running daemon.
         let reported = prepared
             .host
             .spawn_with_report(
@@ -537,12 +606,13 @@ impl BinaryCheck for LaunchCheck<'_> {
         match decision.first().map(String::as_str) {
             Some(LAUNCH_READY) => {
                 self.status.report(format!(
-                    "Spawning the remote binary at {}",
+                    "Starting the agent session with {}",
                     sniff.remote_bin
                 ));
+                let remote_bin = sniff.remote_bin.clone();
                 Ok(BinaryCheckResult {
                     sniff,
-                    ready: Some(child),
+                    ready: Some((child, remote_bin)),
                 })
             }
             Some(LAUNCH_NEEDS_INSTALL) => {
@@ -578,6 +648,16 @@ impl BinaryCheck for LaunchCheck<'_> {
             }
         }
     }
+}
+
+/// Whether a start failed because the Unix socket forward could not be created.
+fn is_stream_forward_failure(result: &Result<ManagedSession, ProvisionError>) -> bool {
+    result.as_ref().err().is_some_and(|error| {
+        error
+            .to_string()
+            .to_ascii_lowercase()
+            .contains(STREAM_FORWARD_FAILURE)
+    })
 }
 
 #[cfg(test)]

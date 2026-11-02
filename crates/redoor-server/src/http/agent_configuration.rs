@@ -181,9 +181,12 @@ async fn update_ssh_agent(
     let _operation = state.ssh_key_operations.begin(agent_id)?;
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent(state, agent_id).await?;
-    config.id = existing_config.id;
-    config.password =
-        apply_password_update(config.password, clear_password, existing_config.password);
+    config.id = existing_config.id.clone();
+    config.password = apply_password_update(
+        config.password,
+        clear_password,
+        existing_config.password.clone(),
+    );
     let target_changed = config.target != existing_config.target;
     let username_changed = config.username != existing_config.username;
     config.managed_ssh_key =
@@ -195,12 +198,31 @@ async fn update_ssh_agent(
     }
     let agent_config = AgentConfig::SshBacked(config.clone());
     let name = agent_config.effective_name();
+    // The daemon keeps its namespace (the id does not change), so the new entry's first
+    // ensure step replaces it through its spec hash. New connection settings may reach
+    // another device or account, though, so the old daemon is stopped with the old ones,
+    // prepared before the held key is released. It runs in the background once the old
+    // supervisor is gone, like a delete's cleanup, because removing the supervisor would
+    // cancel a stop it was still running.
+    let connection_changed =
+        target_changed || username_changed || config.ssh_port != existing_config.ssh_port;
+    let stop = if connection_changed {
+        state
+            .launcher
+            .remote_job(
+                &AgentConfig::SshBacked(existing_config.clone()),
+                crate::ssh::ManagedRemoteAction::Stop,
+            )
+            .await
+    } else {
+        None
+    };
     with_name_reserved(state, agent_id, &name, async {
         stop_for_configuration_change(state, agent_id).await?;
         edit_ssh_agent(&state.config_path, agent_id, Some(&config))
             .await
             .map_err(internal_error)?;
-        replace_runtime_agent(state, agent_id, agent_config).await
+        replace_runtime_agent(state, agent_id, agent_config, stop).await
     })
     .await?;
     // Deleted only after the config stopped pointing at them: the key is not installed for
@@ -280,7 +302,7 @@ async fn update_local_agent(
         edit_local_agent(&state.config_path, agent_id, Some(&config))
             .await
             .map_err(internal_error)?;
-        replace_runtime_agent(state, agent_id, agent_config).await
+        replace_runtime_agent(state, agent_id, agent_config, None).await
     })
     .await?;
     Ok(stopped_agent_response(
@@ -328,6 +350,17 @@ async fn delete_managed_agent(
         }
         _ => None,
     };
+    // Prepared before the held key is released, so a deleted device's daemon and namespace
+    // can still be removed with an encrypted key.
+    let cleanup = match &configured {
+        Some(config) => {
+            state
+                .launcher
+                .remote_job(config, crate::ssh::ManagedRemoteAction::Remove)
+                .await
+        }
+        None => None,
+    };
     stop_for_configuration_change(state, agent_id).await?;
     match &configured {
         Some(AgentConfig::SshBacked(_)) => {
@@ -342,7 +375,7 @@ async fn delete_managed_agent(
         }
         None => {}
     }
-    let runtime_result = unregister_runtime_agent(state, agent_id).await;
+    let runtime_result = unregister_runtime_agent(state, agent_id, cleanup).await;
     // Remote cleanup must follow route ownership, lifecycle checks and persistence, so a
     // rejected deletion or failed write cannot revoke a device that still exists.
     drop(_edit_guard);
@@ -404,7 +437,8 @@ impl ManagedAgentKind {
     }
 }
 
-/// Swaps the dormant supervisor and inventory row for ones built from the new entry.
+/// Swaps the dormant supervisor and inventory row for ones built from the new entry;
+/// `cleanup` runs on the device in the background once the old supervisor is gone.
 ///
 /// The id stays the same, so a retry after a partial failure simply runs this again: removing
 /// an already removed supervisor and row is a no-op.
@@ -412,8 +446,9 @@ pub(super) async fn replace_runtime_agent(
     state: &ServerState,
     agent_id: &AgentId,
     config: AgentConfig,
+    cleanup: Option<crate::watchdog::RemoteJob>,
 ) -> Result<(), ApiError> {
-    unregister_runtime_agent(state, agent_id).await?;
+    unregister_runtime_agent(state, agent_id, cleanup).await?;
     state
         .launcher
         .register(config, &state.watchdog_registry, &state.router_ref)
@@ -424,8 +459,15 @@ pub(super) async fn replace_runtime_agent(
 
 /// Removes the dormant supervisor and retained router inventory together. A replaced or
 /// removed supervisor no longer runs the device, so its held SSH key is dropped too.
-async fn unregister_runtime_agent(state: &ServerState, agent_id: &AgentId) -> Result<(), ApiError> {
-    state.watchdog_registry.remove_stopped(agent_id.as_str())?;
+/// `cleanup`, for a deleted device, removes its daemon and namespace in the background.
+async fn unregister_runtime_agent(
+    state: &ServerState,
+    agent_id: &AgentId,
+    cleanup: Option<crate::watchdog::RemoteJob>,
+) -> Result<(), ApiError> {
+    state
+        .watchdog_registry
+        .remove_stopped(agent_id.as_str(), cleanup)?;
     state.held_ssh_keys.release(agent_id);
     state
         .router_ref
@@ -444,7 +486,7 @@ async fn unregister_runtime_agent(state: &ServerState, agent_id: &AgentId) -> Re
 /// Settles any delayed start before persistence while the shared edit lock blocks new starts.
 ///
 /// The device's held SSH key is dropped first: an edited, deleted or rekeyed device must be
-/// unlocked again by the next browser Start.
+/// unlocked again by the next browser Start. A connected daemon ends through its connection.
 pub(super) async fn stop_for_configuration_change(
     state: &ServerState,
     agent_id: &AgentId,
@@ -454,7 +496,7 @@ pub(super) async fn stop_for_configuration_change(
         // A retry after persist+remove must not 404 just because the supervisor is already gone.
         return Ok(());
     };
-    match tokio::time::timeout(std::time::Duration::from_secs(10), handle.shutdown()).await {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), handle.shutdown(None)).await {
         Ok(Ok(())) => Ok(()),
         // A dead supervisor channel means the previous attempt already tore the task down.
         Ok(Err(_)) => Ok(()),
@@ -565,6 +607,7 @@ fn stopped_agent_response(
         connection_id: None,
         last_seen_at: None,
         connection_issue: None,
+        waiting_for_ssh_key: false,
         provisioning_status: Vec::new(),
         binary: None,
         supports_native_open: false,
@@ -577,7 +620,7 @@ fn stopped_agent_response(
     }
 }
 
-/// Trims optional local fields; nothing is required because hostname/home/stdio already have
+/// Trims optional local fields; nothing is required because the name and home already have
 /// defaults. The id is never part of the request: the server creates it on add and copies it
 /// on edit.
 fn validate_local_request(request: CreateLocalAgentRequest) -> Result<LocalAgentConfig, ApiError> {
@@ -586,7 +629,6 @@ fn validate_local_request(request: CreateLocalAgentRequest) -> Result<LocalAgent
         id: None,
         name,
         home: optional_text(request.home),
-        log: optional_text(request.log),
     })
 }
 
@@ -597,7 +639,6 @@ fn validate_local_update_request(
     validate_local_request(CreateLocalAgentRequest {
         name: request.name,
         home: request.home,
-        log: request.log,
     })
 }
 
@@ -621,7 +662,7 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
         name,
         remote_bin: optional_text(request.remote_bin),
         home: optional_text(request.home),
-        log: optional_text(request.log),
+        log: None,
         password: optional_password(request.password),
         // Never part of a request: only enrollment sets it and edits copy it over.
         managed_ssh_key: false,
@@ -643,7 +684,6 @@ fn validate_update_request(
         name: request.name,
         remote_bin: request.remote_bin,
         home: request.home,
-        log: request.log,
         password: request.password,
         clear_password: request.clear_password,
     })

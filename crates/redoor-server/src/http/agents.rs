@@ -213,10 +213,35 @@ pub(crate) async fn shutdown_agent_handler(
     let _edit_guard = state.config_edit_lock.lock().await;
     let snapshot = managed_agent_snapshot(&state, &agent_id).await?;
     let watchdog = managed_watchdog(&state, &snapshot)?;
-    // A stopped device must be unlocked again by the next browser Start, so its held SSH
-    // key goes first; later reconnect attempts of the stopping cycle find it locked.
-    state.held_ssh_keys.release(&agent_id);
-    tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown())
+    stop_managed_device(&state, &agent_id, &watchdog).await?;
+    apply_managed_snapshot(&state, agent_id.clone(), watchdog.snapshot()).await?;
+    Ok(Json(ShutdownAgentResponse {
+        agent: current_agent_snapshot(&state, &agent_id).await?,
+    }))
+}
+
+/// Stops a managed device: drops its session and stops its daemon on the device.
+///
+/// The daemon stop is prepared first, with the device's current credentials, because the
+/// device's held SSH key is released next: a stopped device must be unlocked again by the
+/// next browser Start, and later reconnect attempts of the stopping cycle find it locked. The
+/// prepared stop keeps its own copy of the key until it finishes or gives up.
+pub(crate) async fn stop_managed_device(
+    state: &ServerState,
+    agent_id: &AgentId,
+    watchdog: &WatchdogHandle,
+) -> Result<(), ApiError> {
+    let stop = match super::agent_configuration::find_configured_agent(state, agent_id).await? {
+        Some(config) => {
+            state
+                .launcher
+                .remote_job(&config, crate::ssh::ManagedRemoteAction::Stop)
+                .await
+        }
+        None => None,
+    };
+    state.held_ssh_keys.release(agent_id);
+    tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown(stop))
         .await
         .map_err(|_| {
             ApiError::status(
@@ -224,10 +249,7 @@ pub(crate) async fn shutdown_agent_handler(
                 format!("Timed out shutting down managed agent: {agent_id}"),
             )
         })??;
-    apply_managed_snapshot(&state, agent_id.clone(), watchdog.snapshot()).await?;
-    Ok(Json(ShutdownAgentResponse {
-        agent: current_agent_snapshot(&state, &agent_id).await?,
-    }))
+    Ok(())
 }
 
 /// Route: `GET /api/v1/agents/{agent}`
@@ -242,7 +264,10 @@ pub(crate) async fn get_agent_details_handler(
     Ok(Json(details))
 }
 
-/// Route: `POST /api/v1/agents/{agent}/restart` asks the process to exec itself in place.
+/// Route: `POST /api/v1/agents/{agent}/restart` restarts the agent process.
+///
+/// A standalone agent execs itself in place. A managed daemon cannot (its stdin is closed
+/// and exec would release its lock), so its supervisor replaces it in a new cycle instead.
 pub(crate) async fn restart_agent_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
@@ -251,6 +276,10 @@ pub(crate) async fn restart_agent_handler(
         redoor_protocol::wire::log::Level::Info,
         "Device restart requested: device={agent_id}"
     );
+    if let Some(watchdog) = state.watchdog_registry.lookup(agent_id.as_str()) {
+        watchdog.restart().await?;
+        return Ok(Json(RestartResponse { restarting: true }));
+    }
     state.agents.call(&agent_id, Restart {}).await?;
     Ok(Json(RestartResponse { restarting: true }))
 }

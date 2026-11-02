@@ -1,6 +1,7 @@
 //! Redoor binary entry point: dispatches the server, agent, and remote CLI roles.
 
 mod examples;
+mod managed;
 mod process_control;
 mod process_logs;
 mod service;
@@ -173,6 +174,9 @@ enum AgentCommand {
     /// Start an agent on an SSH host and relay it through this machine to a redoor server.
     #[command(after_help = examples::RELAY)]
     Relay(Box<RelayCommandArgs>),
+    /// Keep a server-managed agent's daemon running; started by the server.
+    #[command(hide = true, after_help = examples::AGENT_MANAGED)]
+    Managed(managed::ManagedArgs),
 }
 
 /// Requires an explicit lifecycle action for one configured relay.
@@ -388,6 +392,7 @@ async fn run_agent_command(
         Some(AgentCommand::Launchd(launchd)) => {
             service::run_launchd(launchd, ServiceRole::Agent, paths).await?
         }
+        Some(AgentCommand::Managed(managed)) => return managed::run(managed, &context).await,
         Some(AgentCommand::Relay(relay)) => match relay.command {
             RelayCommand::Ls(list) => list_relays(list, paths).await?,
             RelayCommand::Start(start) => return run_named_relay(start, &context, parent).await,

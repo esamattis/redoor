@@ -41,6 +41,9 @@ export function AgentLifecycle(props: {
     const shouldAppearStarting =
         props.agent.status === "starting" || state?.starting === true;
 
+    const isStopping =
+        props.agent.status === "stopping" && !shouldAppearStarting;
+
     /** Shows the lifecycle change a request caused without waiting for the server event. */
     const refreshAgents = () =>
         queryClient.invalidateQueries({
@@ -137,7 +140,7 @@ export function AgentLifecycle(props: {
                 aria-live="polite"
                 className="m-auto w-full min-w-0 max-w-xl text-center"
             >
-                {shouldAppearStarting ? (
+                {shouldAppearStarting || isStopping ? (
                     <LoaderCircle className="mx-auto h-12 w-12 animate-spin text-blue-400" />
                 ) : (
                     <HardDrive className="mx-auto h-12 w-12 text-slate-500" />
@@ -145,7 +148,9 @@ export function AgentLifecycle(props: {
                 <h1 className="mt-4 text-2xl font-semibold text-slate-100">
                     {shouldAppearStarting
                         ? `Connecting ${props.agent.name}`
-                        : props.agent.name}
+                        : isStopping
+                          ? `Stopping ${props.agent.name}…`
+                          : props.agent.name}
                 </h1>
                 {shouldAppearStarting &&
                 props.agent.provisioningStatus.length > 0 ? (
@@ -158,9 +163,11 @@ export function AgentLifecycle(props: {
                     <p className="mt-2 text-slate-400">
                         {shouldAppearStarting
                             ? "The server is waiting for the agent connection."
-                            : props.agent.managed
-                              ? "This device is disconnected. Connect it to start its Redoor agent."
-                              : "This device is disconnected. Start the Redoor agent on this device to connect it."}
+                            : isStopping
+                              ? "The server is stopping the Redoor agent on this device and retries until the device answers."
+                              : props.agent.managed
+                                ? "This device is disconnected. Connect it to start its Redoor agent."
+                                : "This device is disconnected. Start the Redoor agent on this device to connect it."}
                     </p>
                 )}
                 <p className="mt-2 text-sm text-slate-500">
@@ -215,7 +222,7 @@ export function AgentLifecycle(props: {
                 <ConfirmationDialog
                     isOpen={isShutdownOpen}
                     title={`Disconnect ${props.agent.name}?`}
-                    description="Stops the Redoor agent and disables automatic reconnection. Active transfers and terminals for this device will be interrupted."
+                    description="Stops the Redoor agent on the device and disables automatic reconnection. Active transfers and terminals for this device will end."
                     confirmLabel="Disconnect"
                     busyLabel="Disconnecting…"
                     isBusy={shutdownMutation.isPending}

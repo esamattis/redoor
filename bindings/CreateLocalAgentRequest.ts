@@ -12,8 +12,4 @@ name: string | null,
 /**
  * Optional initial browser directory advertised before the first connection.
  */
-home: string | null, 
-/**
- * Optional local path receiving the spawned agent process diagnostics.
- */
-log: string | null, };
+home: string | null, };

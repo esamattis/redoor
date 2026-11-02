@@ -421,6 +421,39 @@ impl RouterState {
         let _ = request.reply.send(());
     }
 
+    /// Ends a managed daemon's current connection with `superseded` when it is still the
+    /// connection `socket_id`; the daemon exits and the next ensure step starts the expected
+    /// one.
+    pub(crate) fn supersede_managed_connection(&mut self, agent_id: AgentId, socket_id: SocketId) {
+        let is_current = self
+            .agents
+            .by_id
+            .get(&agent_id)
+            .is_some_and(|connection| connection.socket_id == socket_id);
+        if !is_current {
+            return;
+        }
+        let Some(connection) = self.agents.by_id.remove(&agent_id) else {
+            return;
+        };
+        log!(
+            Level::Warning,
+            "Superseding managed agent connection: agent_id={}, socket_id={}",
+            agent_id,
+            socket_id
+        );
+        let _ = connection.send_priority_message(ServerToAgent::Rejected {
+            reason: RejectReason::Superseded,
+            message: "This daemon's build or settings differ from the daemon the server started; it is being replaced".to_string(),
+        });
+        self.forget_connection(&agent_id);
+        if let Some(known) = self.agents.known_by_id.get_mut(&agent_id) {
+            known.status = AgentConnectionStatus::Starting;
+        }
+        self.notify_agents_changed();
+        self.release_connection(connection, None);
+    }
+
     /// Projects supervisor changes into retained inventory without touching streaming lanes.
     pub(crate) fn apply_managed_lifecycle(&mut self, request: ApplyManagedLifecycleRequest) {
         let ApplyManagedLifecycleRequest {
@@ -456,14 +489,20 @@ impl RouterState {
             .known_by_id
             .get_mut(&agent_id)
             .expect("managed agent disappeared during lifecycle projection");
-        if live_socket.is_some() && snapshot.status != AgentConnectionStatus::Stopped {
+        let stopping = matches!(
+            snapshot.status,
+            AgentConnectionStatus::Stopped | AgentConnectionStatus::Stopping
+        );
+        if live_socket.is_some() && !stopping {
             // A live connection is fully usable, whatever the supervisor learned last.
             known.status = AgentConnectionStatus::Connected;
             known.connection_issue = snapshot.connection_issue;
+            known.waiting_for_ssh_key = snapshot.waiting_for_ssh_key;
             known.provisioning_status = snapshot.provisioning_status.clone();
         } else {
             known.status = snapshot.status.clone();
             known.connection_issue = snapshot.connection_issue;
+            known.waiting_for_ssh_key = snapshot.waiting_for_ssh_key;
             known.provisioning_status = snapshot.provisioning_status;
             known.socket_id = snapshot.socket_id;
             if known.status != AgentConnectionStatus::Connected {
@@ -471,8 +510,12 @@ impl RouterState {
             }
         }
 
-        if known.status == AgentConnectionStatus::Stopped
-            && let Some(connection) = self.agents.by_id.remove(&agent_id)
+        // A stopping device's daemon is ended through its connection right away; the stop on
+        // the device covers a daemon that is not connected.
+        if matches!(
+            known.status,
+            AgentConnectionStatus::Stopped | AgentConnectionStatus::Stopping
+        ) && let Some(connection) = self.agents.by_id.remove(&agent_id)
         {
             known.last_seen_at = Some(now());
             known.socket_id = None;
@@ -571,6 +614,7 @@ impl RouterState {
                 connection_id: info.socket_id.clone(),
                 last_seen_at: info.last_seen_at,
                 connection_issue: info.connection_issue.clone(),
+                waiting_for_ssh_key: info.waiting_for_ssh_key,
                 provisioning_status: info.provisioning_status.clone(),
                 identity: info.identity.clone(),
                 capabilities: info.capabilities,
@@ -1088,6 +1132,7 @@ mod tests {
                 desired_running: true,
                 status: AgentConnectionStatus::Starting,
                 connection_issue: None,
+                waiting_for_ssh_key: false,
                 provisioning_status: Vec::new(),
                 socket_id: None,
             },
@@ -1103,6 +1148,50 @@ mod tests {
             AgentConnectionStatus::Starting
         );
         assert_eq!(state.agents.known_by_id[&agent_id].socket_id, None);
+    }
+
+    /// A device whose daemon is being stopped loses its connection at once: the daemon exits
+    /// on the eviction, and the row says Stopping instead of Connected.
+    #[tokio::test]
+    async fn stopping_lifecycle_evicts_the_managed_connection() {
+        let mut state = test_state();
+        let agent_id = redoor_core::test_support::test_agent_id("managed-stop");
+        let (register_reply, register_receiver) = oneshot::channel();
+        state.register_managed(RegisterManagedAgentRequest {
+            agent_id: agent_id.clone(),
+            name: "managed-stop".to_string(),
+            default_directory: Some("/tmp".to_string()),
+            configuration_editable: true,
+            ssh_target: None,
+            reply: register_reply,
+        });
+        register_receiver
+            .await
+            .expect("managed inventory registration acknowledged");
+        insert_control(&mut state, "managed-stop");
+
+        state.apply_managed_lifecycle(ApplyManagedLifecycleRequest {
+            agent_id: agent_id.clone(),
+            snapshot: crate::watchdog::WatchdogSnapshot {
+                attempt_generation: 2,
+                desired_running: false,
+                status: AgentConnectionStatus::Stopping,
+                connection_issue: None,
+                waiting_for_ssh_key: false,
+                provisioning_status: Vec::new(),
+                socket_id: None,
+            },
+            evict_existing: false,
+            reply: None,
+        });
+
+        // The live connection must not keep a stopped device looking connected.
+        assert!(!state.agents.by_id.contains_key(&agent_id));
+        assert_eq!(
+            state.agents.known_by_id[&agent_id].status,
+            AgentConnectionStatus::Stopping
+        );
+        state.ui.refresh_check_task.abort();
     }
 
     /// The single connection carries every stream, so an accepted hello is fully usable.

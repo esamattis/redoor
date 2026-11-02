@@ -15,10 +15,10 @@ use rustls::{
     crypto::{WebPkiSupportedAlgorithms, verify_tls12_signature, verify_tls13_signature},
     pki_types::{CertificateDer, ServerName, UnixTime},
 };
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::net::{TcpStream, UnixStream};
 use tokio_tungstenite::{
-    Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config, connect_async,
-    connect_async_tls_with_config,
+    Connector, MaybeTlsStream, WebSocketStream, client_async_tls_with_config,
     tungstenite::{
         self,
         client::IntoClientRequest,
@@ -27,8 +27,40 @@ use tokio_tungstenite::{
     },
 };
 
+/// A byte stream to the server, TCP or a Unix socket, before TLS and WebSocket framing.
+pub(crate) trait ServerStream:
+    AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug
+{
+}
+
+impl<T: AsyncRead + AsyncWrite + Unpin + Send + std::fmt::Debug> ServerStream for T {}
+
 /// WebSocket stream type shared by every control and data-plane agent connection.
-pub(crate) type AgentSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+///
+/// Boxed so a TCP connection and the Unix socket of an SSH stream-local forward share one
+/// socket type, and everything above the transport stays the same for both.
+pub(crate) type AgentSocket = WebSocketStream<MaybeTlsStream<Box<dyn ServerStream>>>;
+
+/// Where the agent opens its stream when it differs from the URL's authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum ConnectAddress {
+    /// `host:port` of an SSH reverse forward or the server's own listener.
+    Tcp(String),
+    /// The Unix socket of an SSH stream-local reverse forward. A managed daemon outlives its
+    /// SSH session, so it needs an address the next session's forward can listen on again,
+    /// which a random port cannot promise.
+    Unix(std::path::PathBuf),
+}
+
+impl std::fmt::Display for ConnectAddress {
+    /// Shows the address in connection errors.
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Tcp(address) => formatter.write_str(address),
+            Self::Unix(path) => write!(formatter, "unix:{}", path.display()),
+        }
+    }
+}
 
 /// Why an authenticated upgrade failed.
 ///
@@ -161,8 +193,9 @@ pub(crate) struct AuthenticatedSocket {
 pub(crate) struct AgentConnection {
     /// URL whose authority supplies TLS SNI and the WebSocket HTTP Host value.
     server_url: String,
-    /// Physical endpoint used only to establish TCP before TLS and WebSocket negotiation.
-    connect_address: Option<String>,
+    /// Physical endpoint used only to establish the stream before TLS and WebSocket
+    /// negotiation; the URL's authority when absent.
+    connect_address: Option<ConnectAddress>,
     /// Explicit opt-out from certificate verification, for self-signed servers and for
     /// managed agents whose `localhost` tunnel cannot match any server certificate.
     insecure_tls: bool,
@@ -172,7 +205,7 @@ impl AgentConnection {
     /// Validates one immutable connection policy before any reconnecting tasks clone it.
     pub(crate) fn new(
         server_url: String,
-        connect_address: Option<String>,
+        connect_address: Option<ConnectAddress>,
         insecure_tls: bool,
     ) -> Result<Self> {
         let url = url::Url::parse(&server_url).context("invalid agent websocket URL")?;
@@ -217,24 +250,49 @@ impl AgentConnection {
     /// authority for TLS and HTTP when TCP goes through a tunnel.
     async fn upgrade(&self, request: Request) -> Result<(AgentSocket, Response), ConnectError> {
         let connector = self.insecure_tls.then(insecure_connector);
-        let result = match (&self.connect_address, connector) {
-            (None, None) => connect_async(request).await,
-            (None, connector @ Some(_)) => {
-                connect_async_tls_with_config(request, None, false, connector).await
+        let stream = self.open_stream().await?;
+        client_async_tls_with_config(request, stream, None, connector)
+            .await
+            .map_err(|error| match error {
+                tungstenite::Error::Http(response) => ConnectError::from_http(&response),
+                other => ConnectError::Transport(
+                    anyhow::Error::new(other).context("TLS handshake or WebSocket upgrade failed"),
+                ),
+            })
+    }
+
+    /// Opens the stream the TLS and WebSocket handshakes run on: the connect address when
+    /// one is set, otherwise the URL's host and port.
+    async fn open_stream(&self) -> Result<Box<dyn ServerStream>, ConnectError> {
+        let stream: Box<dyn ServerStream> = match &self.connect_address {
+            Some(ConnectAddress::Tcp(address)) => Box::new(
+                TcpStream::connect(address)
+                    .await
+                    .with_context(|| format!("failed to reach routed server through {address}"))?,
+            ),
+            Some(ConnectAddress::Unix(path)) => {
+                Box::new(UnixStream::connect(path).await.with_context(|| {
+                    format!(
+                        "failed to reach the server through the tunnel socket {}",
+                        path.display()
+                    )
+                })?)
             }
-            (Some(connect_address), connector) => {
-                let tcp = TcpStream::connect(connect_address).await.with_context(|| {
-                    format!("failed to reach routed server through {connect_address}")
-                })?;
-                client_async_tls_with_config(request, tcp, None, connector).await
+            None => {
+                let url =
+                    url::Url::parse(&self.server_url).context("invalid agent websocket URL")?;
+                let host = url.host_str().context("agent websocket URL has no host")?;
+                let port = url
+                    .port_or_known_default()
+                    .context("agent websocket URL has no port")?;
+                Box::new(
+                    TcpStream::connect(format!("{host}:{port}"))
+                        .await
+                        .with_context(|| format!("failed to reach the server at {host}:{port}"))?,
+                )
             }
         };
-        result.map_err(|error| match error {
-            tungstenite::Error::Http(response) => ConnectError::from_http(&response),
-            other => ConnectError::Transport(
-                anyhow::Error::new(other).context("TLS handshake or WebSocket upgrade failed"),
-            ),
-        })
+        Ok(stream)
     }
 }
 
@@ -404,7 +462,7 @@ mod tests {
         });
         let connection = AgentConnection::new(
             "ws://redoor.example:8443/ws".to_string(),
-            Some(connect_address),
+            Some(super::ConnectAddress::Tcp(connect_address)),
             false,
         )
         .unwrap();
@@ -416,6 +474,49 @@ mod tests {
 
         // The reverse proxy must see the route authority rather than localhost tunnel details.
         assert_eq!(authority_receiver.await.unwrap(), "redoor.example:8443");
+        server.await.unwrap();
+    }
+
+    /// A managed daemon behind an SSH stream-local forward connects through a Unix socket
+    /// while the request keeps the server's logical authority.
+    // The tungstenite handshake callback signature fixes the large `ErrorResponse` error type.
+    #[allow(clippy::result_large_err)]
+    #[tokio::test]
+    async fn unix_socket_tunnel_retains_logical_http_authority() {
+        let directory = redoor_core::test_support::TempDir::create();
+        let socket_path = directory.path().join("agent.sock");
+        let listener = tokio::net::UnixListener::bind(&socket_path).unwrap();
+        let (authority_sender, authority_receiver) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _peer) = listener.accept().await.unwrap();
+            let mut socket = accept_hdr_async(stream, move |request: &ServerRequest, response| {
+                let authority = request
+                    .headers()
+                    .get("host")
+                    .and_then(|value| value.to_str().ok())
+                    .unwrap_or_default()
+                    .to_string();
+                let _ = authority_sender.send(authority);
+                Ok(accept_as_server(request, response))
+            })
+            .await
+            .unwrap();
+            socket.send(Message::Close(None)).await.unwrap();
+        });
+        let connection = AgentConnection::new(
+            "ws://localhost:7666/api/v1/agent/ws".to_string(),
+            Some(super::ConnectAddress::Unix(socket_path)),
+            false,
+        )
+        .unwrap();
+
+        connection
+            .connect_authenticated(connection.server_url(), TOKEN)
+            .await
+            .unwrap();
+
+        // The server sees the URL's authority, not the socket path, as with a TCP tunnel.
+        assert_eq!(authority_receiver.await.unwrap(), "localhost:7666");
         server.await.unwrap();
     }
 
@@ -457,7 +558,7 @@ mod tests {
         });
         let connection = AgentConnection::new(
             "wss://redoor.example:443/ws".to_string(),
-            Some(connect_address),
+            Some(super::ConnectAddress::Tcp(connect_address)),
             true,
         )
         .unwrap();
@@ -487,7 +588,7 @@ mod tests {
         });
         let connection = AgentConnection::new(
             "wss://redoor.example:443/ws".to_string(),
-            Some(connect_address),
+            Some(super::ConnectAddress::Tcp(connect_address)),
             false,
         )
         .unwrap();

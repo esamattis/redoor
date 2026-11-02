@@ -1,16 +1,18 @@
-//! Lazy per-key watchdog supervisors for managed agent subprocesses.
+//! Per-device watchdog supervisors for managed agents.
 //!
-//! A supervisor is registered at server startup but remains dormant until a
-//! control request asks it to start. Once desired-running, it owns spawning,
-//! registration tracking, stale-session recovery, bounded restart backoff, and
-//! intentional shutdown without coupling the generic lifecycle code to Axum.
+//! A managed agent is a daemon on its device (`redoor agent managed`), which outlives SSH
+//! sessions and server restarts so its shells do too. A supervisor owns the server's
+//! *session* to that daemon. Each cycle runs the ensure step, which keeps or replaces the
+//! daemon, reports it, and then holds the session open; for SSH devices the session carries
+//! the tunnel. Killing the session only drops the tunnel: the daemon reconnects through the
+//! next one.
 //!
-//! It never gives up on a desired-running agent: every failure is retried on the shared
-//! [`Backoff`] schedule, and a child that stays without a connection is replaced. The only
-//! wait without a timer is for a locked SSH key, which no retry can unlock.
+//! A supervisor is registered at server startup and runs while its device is
+//! desired-running, which survives restarts (see [`crate::managed_running`]). It never gives
+//! up on a desired-running device: every failure is retried on the shared [`Backoff`]
+//! schedule, and a daemon that stays without a connection is replaced. The only wait without
+//! a timer is for a locked SSH key, which no retry can unlock.
 
-use std::collections::HashMap;
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -19,32 +21,35 @@ use tokio::sync::{mpsc, oneshot};
 
 use redoor_core::backoff::Backoff;
 use redoor_core::log;
-use redoor_core::rotating_log::{LogFileSpec, RotatingLogFile};
 use redoor_protocol::api::agents::{AgentConnectionStatus, ProvisioningStatusMessage};
+use redoor_protocol::identity::BinaryIdentity;
 use redoor_protocol::ids::{SocketId, UnixTimestampMillis};
 use redoor_protocol::wire::log::Level;
+use redoor_protocol::wire::managed::{DaemonReport, EnsureOutcome, HolderEnd};
 
-/// Surfaces a useful issue when a live child has not registered promptly.
+use crate::managed_running::DesiredRunningStore;
+
+/// Surfaces a useful issue when a session's daemon has not connected promptly.
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long a live child may stay without a connection, after its start or after its
-/// socket closed, before it is replaced. The agent gives up on its own after its stale
-/// timeout; this also covers a child that cannot tell, such as an `ssh` whose remote side
-/// hangs, and is long enough for a slow SSH login and launch.
+/// How long a session may stay without a connection, after its start or after the socket
+/// closed, before the next cycle replaces the daemon. A running session is no proof the
+/// daemon comes back (a wedged daemon, an `ssh` whose remote side hangs), and the deadline
+/// is long enough for a slow SSH login and launch.
 const CONNECTION_DEADLINE: Duration = Duration::from_secs(60);
 /// Bounds browser-visible subprocess output so repeated failures cannot grow API responses.
-const MAX_EXIT_DIAGNOSTIC_BYTES: u64 = 8 * 1024;
+const MAX_EXIT_DIAGNOSTIC_BYTES: usize = 8 * 1024;
 /// Supervisor mailbox size; senders wait (rather than grow memory) while a child is reaped.
 const SUPERVISOR_COMMAND_CAPACITY: usize = 16;
 /// Longest a lifecycle request waits for a mailbox slot. HTTP handlers call the watchdog
 /// while holding the configuration lock, so a wedged supervisor must surface as a busy error
 /// instead of stalling every lifecycle and configuration route behind that lock.
 const COMMAND_RESERVE_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long an exited child's stderr may stay open before its diagnostic is given up. A
+/// How long an exited session's output may stay open before its diagnostic is given up. A
 /// `ProxyCommand` grandchild can inherit the pipe and keep it open long after the child
 /// died, and the supervisor must not stop processing commands while it waits.
 const CHILD_DIAGNOSTIC_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// Why one spawn attempt produced no child.
+/// Why one cycle produced no session.
 ///
 /// Typed instead of a string so logs keep the failure class while the browser only sees
 /// the transport's own actionable text via [`SpawnError::user_message`].
@@ -53,9 +58,12 @@ pub enum SpawnError {
     /// Preparing the target (SSH probe, binary install) failed before any child existed.
     #[error("Preparing the agent failed: {0}")]
     Provision(#[source] crate::ssh::ProvisionError),
-    /// The child process itself could not be started.
+    /// The session process itself could not be started or reported nothing usable.
     #[error("Starting the agent process failed: {0}")]
     Spawn(#[source] std::io::Error),
+    /// The ensure step ran but no daemon runs, with its explanation.
+    #[error("Starting the agent daemon failed: {0}")]
+    Ensure(String),
 }
 
 impl SpawnError {
@@ -64,6 +72,7 @@ impl SpawnError {
         match self {
             Self::Provision(error) => error.to_string(),
             Self::Spawn(error) => error.to_string(),
+            Self::Ensure(message) => message.clone(),
         }
     }
 
@@ -71,7 +80,7 @@ impl SpawnError {
     fn is_retryable(&self) -> bool {
         match self {
             Self::Provision(error) => error.is_retryable(),
-            Self::Spawn(_) => true,
+            Self::Spawn(_) | Self::Ensure(_) => true,
         }
     }
 }
@@ -82,36 +91,74 @@ pub enum WatchdogError {
     /// The supervisor task is gone (removed or crashed), so it cannot act on the request.
     #[error("Watchdog supervisor stopped: {key}")]
     SupervisorStopped {
-        /// Supervisor key (effective agent name).
+        /// Supervisor key (device id).
         key: String,
     },
-    /// The supervisor ended before acknowledging a shutdown or retry it had accepted.
+    /// The supervisor ended before acknowledging a request it had accepted.
     #[error("Watchdog {operation} acknowledgement dropped: {key}")]
     AcknowledgementDropped {
-        /// `shutdown` or `retry`.
+        /// `shutdown`, `retry`, `restart` or `detach`.
         operation: &'static str,
-        /// Supervisor key (effective agent name).
+        /// Supervisor key (device id).
         key: String,
     },
-    /// Another supervisor already owns this name.
+    /// Another supervisor already owns this key.
     #[error("Watchdog key already registered: key={key}")]
     AlreadyRegistered {
-        /// Supervisor key (effective agent name).
+        /// Supervisor key (device id).
         key: String,
     },
     /// The supervisor did not accept the request in time (it is busy reaping or wedged).
     #[error("Watchdog supervisor is busy: {key}")]
     Busy {
-        /// Supervisor key (effective agent name).
+        /// Supervisor key (device id).
         key: String,
     },
     /// Configuration may only change while the managed agent is stopped.
     #[error("Managed agent must be stopped before its configuration can change")]
     StillRunning,
+    /// A restart needs a running device; a stopped one is started instead.
+    #[error("Managed agent is not running; start it instead")]
+    NotRunning,
 }
 
-/// Result of one spawn attempt.
-type SpawnResult = Result<Child, SpawnError>;
+/// What one cycle's ensure step needs to know besides the device's configuration.
+pub struct CycleRequest {
+    /// Progress lines for the lifecycle UI.
+    pub status: ProvisioningStatusSink,
+    /// Replace the daemon even when it matches (a Restart, or one that stopped connecting).
+    pub replace: bool,
+    /// Whether the server has a socket from this device now; a kept daemon is woken to
+    /// reconnect at once only when it has none.
+    pub server_connected: bool,
+    /// Marks that a daemon may run on the device. The transport sets it right before it
+    /// sends the payload, from which on the ensure step can start a daemon even if its
+    /// report never arrives, so a later Stop must reach the device.
+    pub daemon_may_run: DaemonMayRun,
+}
+
+/// See [`CycleRequest::daemon_may_run`].
+#[derive(Clone)]
+pub struct DaemonMayRun(Arc<std::sync::atomic::AtomicBool>);
+
+impl DaemonMayRun {
+    /// Records that the ensure step may start a daemon from now on.
+    pub fn mark(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A running session: the process holding it and the daemon its ensure step reported.
+pub struct ManagedSession {
+    /// The session process (`redoor agent managed` locally, `ssh` for SSH devices). Its
+    /// stdin is the session's liveness signal and must stay open while the cycle runs.
+    pub child: Child,
+    /// The daemon running after the ensure step.
+    pub daemon: DaemonReport,
+}
+
+/// Result of one cycle's ensure step.
+type SpawnResult = Result<ManagedSession, SpawnError>;
 
 /// Non-blocking sink so long SSH prepare/spawn work can publish inventory lines immediately.
 #[derive(Clone)]
@@ -133,62 +180,50 @@ impl ProvisioningStatusSink {
     }
 }
 
-/// Spawn strategy kept transport-agnostic so local and SSH-backed agents share lifecycle code.
+/// Session strategy kept transport-agnostic so local and SSH-backed agents share lifecycle
+/// code.
 pub struct SpawnFn {
     inner: Arc<
-        dyn Fn(ProvisioningStatusSink) -> futures_util::future::BoxFuture<'static, SpawnResult>
-            + Send
-            + Sync,
+        dyn Fn(CycleRequest) -> futures_util::future::BoxFuture<'static, SpawnResult> + Send + Sync,
     >,
-    /// Size-bounded file the child's piped stdout and stderr are forwarded into.
-    log_file: Option<LogFileSpec>,
     process_name: &'static str,
 }
 
 impl SpawnFn {
-    /// Boxes a reusable async spawn closure once at the supervisor boundary.
+    /// Boxes a reusable async session closure once at the supervisor boundary.
     pub fn new<F, Fut>(f: F) -> Self
     where
-        F: Fn(ProvisioningStatusSink) -> Fut + Send + Sync + 'static,
+        F: Fn(CycleRequest) -> Fut + Send + Sync + 'static,
         Fut: std::future::Future<Output = SpawnResult> + Send + 'static,
     {
         Self {
-            inner: Arc::new(move |status| Box::pin(f(status))),
-            log_file: None,
-            process_name: "Agent process",
+            inner: Arc::new(move |request| Box::pin(f(request))),
+            process_name: "Agent session",
         }
     }
 
-    /// Forwards the child's piped stdout and stderr into `log_file`; the spawn closure must
-    /// pipe both streams. The forwarded tail also explains an unsuccessful exit.
-    pub fn with_log_file(mut self, log_file: LogFileSpec) -> Self {
-        self.log_file = Some(log_file);
-        self
-    }
-
-    /// Opens the configured log before spawning, so an unwritable log fails the attempt
-    /// instead of leaving a child blocked on an undrained pipe.
-    async fn open_log_file(&self) -> std::io::Result<Option<RotatingLogFile>> {
-        match &self.log_file {
-            Some(spec) => spec.open().await.map(Some),
-            None => Ok(None),
-        }
-    }
-
-    /// Names the owned child accurately in browser-visible lifecycle failures.
+    /// Names the session process accurately in browser-visible lifecycle failures.
     pub fn with_process_name(mut self, process_name: &'static str) -> Self {
         self.process_name = process_name;
         self
     }
 
-    /// Starts one transport-specific preparation/spawn attempt with a progress sink.
+    /// Starts one transport-specific ensure step.
     fn spawn(
         &self,
-        status: ProvisioningStatusSink,
+        request: CycleRequest,
     ) -> futures_util::future::BoxFuture<'static, SpawnResult> {
-        (self.inner)(status)
+        (self.inner)(request)
     }
 }
+
+/// A prepared operation on the device's daemon (stop it, or stop it and delete its
+/// namespace), with the credentials it needs captured when it was built.
+///
+/// Built by the HTTP handler before it releases a held SSH key, so an encrypted key stays
+/// usable for the operation and is dropped with it.
+pub type RemoteJob =
+    Arc<dyn Fn() -> futures_util::future::BoxFuture<'static, Result<(), String>> + Send + Sync>;
 
 /// Public lifecycle snapshot shared with inventory and REST projections.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -199,22 +234,25 @@ pub struct WatchdogSnapshot {
     pub desired_running: bool,
     /// Gives clients the lifecycle state without exposing process details.
     pub status: AgentConnectionStatus,
-    /// Retains the latest actionable spawn, exit, or startup issue.
+    /// Retains the latest actionable spawn, exit, stop or startup issue.
     pub connection_issue: Option<String>,
-    /// Accumulated SSH prepare/spawn lines for the current start cycle.
+    /// The device waits for its vault-encrypted SSH key, which only a browser can hand over.
+    pub waiting_for_ssh_key: bool,
+    /// Accumulated prepare/ensure lines for the current start cycle.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Protects replacement connections from stale disconnect events.
     pub socket_id: Option<SocketId>,
 }
 
 impl WatchdogSnapshot {
-    /// Creates the intentionally dormant state used for every configured agent.
+    /// The state of a device nobody started.
     fn stopped() -> Self {
         Self {
             attempt_generation: 0,
             desired_running: false,
             status: AgentConnectionStatus::Stopped,
             connection_issue: None,
+            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             socket_id: None,
         }
@@ -224,19 +262,73 @@ impl WatchdogSnapshot {
 /// Callback used by server wiring to project lifecycle changes into the router.
 pub type SnapshotCallback = Arc<dyn Fn(WatchdogSnapshot) + Send + Sync>;
 
+/// Callback that ends the router connection of `socket` with `superseded`, for a daemon that
+/// connected before its ensure report and turned out not to be the reported one.
+pub type SupersedeCallback = Arc<dyn Fn(SocketId) + Send + Sync>;
+
+/// What a connecting daemon announced about itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConnectingDaemon {
+    /// Its build.
+    pub binary: BinaryIdentity,
+    /// Its spec hash; absent for agents that are not managed daemons.
+    pub spec_hash: Option<String>,
+}
+
+/// The daemon the current cycle's ensure step reported, the only one whose `hello` is
+/// accepted.
+#[derive(Clone, Debug)]
+struct ExpectedDaemon {
+    /// Attempt the report belongs to.
+    attempt_generation: u64,
+    /// Build of the reported daemon.
+    binary: BinaryIdentity,
+    /// Spec hash of the reported daemon.
+    spec_hash: String,
+}
+
+impl ExpectedDaemon {
+    /// Whether `daemon` is the reported one.
+    fn matches(&self, daemon: &ConnectingDaemon) -> bool {
+        daemon.binary == self.binary && daemon.spec_hash.as_deref() == Some(&self.spec_hash)
+    }
+}
+
+/// How a managed `hello` is answered.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ConnectVerdict {
+    /// Accepted for this attempt; provisionally when no ensure report exists yet.
+    Accepted(u64),
+    /// The device is not desired-running.
+    Stopped,
+    /// Another build or settings than the latest ensure report.
+    Superseded,
+}
+
 /// Events serialize lifecycle changes so socket generations are checked by the supervisor.
 enum SupervisorCommand {
     Start,
     Retry {
         reply: oneshot::Sender<()>,
     },
+    /// Replaces the daemon in a new cycle (Restart of a managed device).
+    Restart {
+        reply: oneshot::Sender<()>,
+    },
     Remove,
+    /// Drops the session and, with a job, stops the daemon on the device afterwards.
     Shutdown {
+        reply: oneshot::Sender<()>,
+        stop: Option<RemoteJob>,
+    },
+    /// Drops the session only and ends the supervisor, for a server that is going away.
+    Detach {
         reply: oneshot::Sender<()>,
     },
     Connected {
         socket_id: SocketId,
         attempt_generation: u64,
+        daemon: ConnectingDaemon,
     },
     Disconnected(SocketId),
     Stale(SocketId),
@@ -249,6 +341,16 @@ pub struct WatchdogHandle {
     commands: mpsc::Sender<SupervisorCommand>,
     snapshot: Arc<Mutex<WatchdogSnapshot>>,
     callback: SnapshotCallback,
+    supersede: SupersedeCallback,
+    /// The latest ensure report of the current attempt; see [`ExpectedDaemon`].
+    expected: Arc<Mutex<Option<ExpectedDaemon>>>,
+    /// Where desired-running is persisted; `None` in tests that do not need it.
+    desired_running: Option<DesiredRunningStore>,
+    /// Whether a daemon of this device may run: an ensure step reported one in this server
+    /// process, or the device was running when the previous server process went away. A
+    /// stop only reaches out to the device then, so stopping a device that never got a
+    /// daemon (a wrong password, an unreachable host) does not wait for that device.
+    daemon_may_run: Arc<std::sync::atomic::AtomicBool>,
     /// The signed-in user whose Start or Retry asked for the next cycle. The supervisor
     /// takes it for that cycle's spawn, so its provisioning logs name the user, while
     /// later automatic reconnects find nothing and log without one.
@@ -266,7 +368,7 @@ impl std::fmt::Debug for WatchdogHandle {
 }
 
 impl WatchdogHandle {
-    /// Returns the stable configured name used by sessions and management routes.
+    /// Returns the stable configured key (the device id) used by sessions and routes.
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -332,25 +434,82 @@ impl WatchdogHandle {
         if should_publish {
             (self.callback)(self.snapshot());
         }
+        self.persist_desired_running(true).await;
         Ok(())
     }
 
-    /// Waits until startup/backoff is canceled and any owned child is killed and reaped.
-    pub async fn shutdown(&self) -> Result<(), WatchdogError> {
+    /// Drops the device's session and stops it.
+    ///
+    /// Acknowledged once the session is gone, without waiting for `stop`: reaching an SSH
+    /// device can take long, and the HTTP handlers waiting here have a short timeout. The
+    /// supervisor then runs `stop` (status `Stopping`) and retries it on the backoff until
+    /// it succeeds or the device is started again. Without `stop`, a connected daemon is
+    /// still ended through its connection.
+    pub async fn shutdown(&self, stop: Option<RemoteJob>) -> Result<(), WatchdogError> {
         let (reply, response) = oneshot::channel();
         let permit = self.reserve().await?;
         {
             let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
             snapshot.desired_running = false;
             snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
-            permit.send(SupervisorCommand::Shutdown { reply });
+            permit.send(SupervisorCommand::Shutdown { reply, stop });
         }
+        self.persist_desired_running(false).await;
         response
             .await
             .map_err(|_| WatchdogError::AcknowledgementDropped {
                 operation: "shutdown",
                 key: self.key.clone(),
             })
+    }
+
+    /// Drops the device's session and ends the supervisor without changing anything else.
+    ///
+    /// Used when the server itself goes away (restart or shutdown): the daemon keeps running
+    /// and the next server process starts a new session to it.
+    pub async fn detach(&self) -> Result<(), WatchdogError> {
+        let (reply, response) = oneshot::channel();
+        self.reserve()
+            .await?
+            .send(SupervisorCommand::Detach { reply });
+        response
+            .await
+            .map_err(|_| WatchdogError::AcknowledgementDropped {
+                operation: "detach",
+                key: self.key.clone(),
+            })
+    }
+
+    /// Replaces the daemon of a running device in a new cycle.
+    ///
+    /// A daemon started from a payload cannot re-exec itself (its stdin is closed, and exec
+    /// would release its lock), so a Restart of a managed device asks the ensure step to
+    /// replace it instead.
+    pub async fn restart(&self) -> Result<(), WatchdogError> {
+        let (reply, response) = oneshot::channel();
+        let permit = self.reserve().await?;
+        if !self.snapshot().desired_running {
+            return Err(WatchdogError::NotRunning);
+        }
+        permit.send(SupervisorCommand::Restart { reply });
+        response
+            .await
+            .map_err(|_| WatchdogError::AcknowledgementDropped {
+                operation: "restart",
+                key: self.key.clone(),
+            })
+    }
+
+    /// Records the desired-running intent for the next server start.
+    async fn persist_desired_running(&self, running: bool) {
+        let Some(store) = &self.desired_running else {
+            return;
+        };
+        if running {
+            store.add(&self.key).await;
+        } else {
+            store.remove(&self.key).await;
+        }
     }
 
     /// Remembers the calling task's user for the next cycle; see `requester`.
@@ -380,6 +539,7 @@ impl WatchdogHandle {
             snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
             permit.send(SupervisorCommand::Retry { reply });
         }
+        self.persist_desired_running(true).await;
         response
             .await
             .map_err(|_| WatchdogError::AcknowledgementDropped {
@@ -388,19 +548,64 @@ impl WatchdogHandle {
             })
     }
 
-    /// Marks a matching managed registration and rejects connections after shutdown intent.
-    pub async fn mark_connected(&self, socket_id: SocketId) -> Option<u64> {
-        let permit = self.reserve().await.ok()?;
+    /// Decides a managed `hello`: rejected while stopped, superseded when it is not the daemon
+    /// the latest ensure report describes, otherwise accepted for the current attempt.
+    ///
+    /// Without a report for the current cycle the `hello` is accepted provisionally: a local
+    /// daemon reconnects on its own, and an SSH forward exists before the remote command
+    /// prints anything. The supervisor checks it once the report arrives.
+    pub async fn mark_connected(
+        &self,
+        socket_id: SocketId,
+        daemon: ConnectingDaemon,
+    ) -> ConnectVerdict {
+        let Ok(permit) = self.reserve().await else {
+            return ConnectVerdict::Stopped;
+        };
         let snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
         if !snapshot.desired_running {
-            return None;
+            return ConnectVerdict::Stopped;
         }
         let attempt_generation = snapshot.attempt_generation;
+        let superseded = self.expected().is_some_and(|expected| {
+            expected.attempt_generation == attempt_generation && !expected.matches(&daemon)
+        });
+        if superseded {
+            return ConnectVerdict::Superseded;
+        }
         permit.send(SupervisorCommand::Connected {
             socket_id,
             attempt_generation,
+            daemon,
         });
-        Some(attempt_generation)
+        ConnectVerdict::Accepted(attempt_generation)
+    }
+
+    /// Records whether a daemon of this device may run; see `daemon_may_run`.
+    fn set_daemon_may_run(&self, may_run: bool) {
+        self.daemon_may_run
+            .store(may_run, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Keeps `stop` only when a daemon of this device may run.
+    fn stop_if_needed(&self, stop: Option<RemoteJob>) -> Option<RemoteJob> {
+        stop.filter(|_| {
+            self.daemon_may_run
+                .load(std::sync::atomic::Ordering::SeqCst)
+        })
+    }
+
+    /// The latest ensure report, if the current cycle has one.
+    fn expected(&self) -> Option<ExpectedDaemon> {
+        self.expected
+            .lock()
+            .expect("watchdog expectation poisoned")
+            .clone()
+    }
+
+    /// Replaces the latest ensure report.
+    fn set_expected(&self, expected: Option<ExpectedDaemon>) {
+        *self.expected.lock().expect("watchdog expectation poisoned") = expected;
     }
 
     /// Reports socket teardown while letting the supervisor ignore stale generations.
@@ -426,7 +631,7 @@ impl WatchdogHandle {
             .clone()
     }
 
-    /// Requests restart only if the stale WebSocket is still the current generation.
+    /// Asks for a new session only if the stale WebSocket is still the current generation.
     pub fn signal_stale(&self, socket_id: SocketId) {
         self.notify(SupervisorCommand::Stale(socket_id));
     }
@@ -480,20 +685,74 @@ impl WatchdogHandle {
     }
 }
 
-/// Shared lookup from configured effective name to its lifecycle handle.
+/// Shared lookup from device id to its lifecycle handle.
 #[derive(Clone, Default)]
 pub struct WatchdogRegistry {
-    inner: Arc<Mutex<HashMap<String, WatchdogHandle>>>,
+    inner: Arc<Mutex<std::collections::HashMap<String, WatchdogHandle>>>,
+    /// Persisted desired-running intent shared by every handle.
+    desired_running: Option<DesiredRunningStore>,
 }
 
 impl WatchdogRegistry {
-    /// Creates an empty registry before configured entries are validated.
+    /// Creates an empty registry that does not persist desired-running, for tests.
+    #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Stops every managed child before process replacement so exec cannot orphan agents.
-    pub async fn shutdown_all(&self) {
+    /// Creates an empty registry whose handles persist desired-running in `store`.
+    pub(crate) fn with_desired_running(store: DesiredRunningStore) -> Self {
+        Self {
+            inner: Arc::default(),
+            desired_running: Some(store),
+        }
+    }
+
+    /// Starts every device the last server process left desired-running.
+    ///
+    /// Called after every supervisor is registered and before the listener accepts
+    /// connections, so a daemon that reconnects at once finds its device desired-running
+    /// instead of being rejected as stopped, which would end it and its shells. Listed ids
+    /// without a configured device are dropped.
+    pub(crate) async fn start_desired_running(&self) {
+        let Some(store) = &self.desired_running else {
+            return;
+        };
+        let configured = self
+            .inner
+            .lock()
+            .expect("watchdog registry poisoned")
+            .keys()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        store.retain(|key| configured.contains(key)).await;
+        for key in store.listed().await {
+            let Some(handle) = self.lookup(&key) else {
+                continue;
+            };
+            log!(
+                Level::Info,
+                "Starting managed agent that was running before the server started: key={}",
+                key
+            );
+            handle.set_daemon_may_run(true);
+            if let Err(error) = handle.start().await {
+                log!(
+                    Level::Warning,
+                    "Failed to start a previously running managed agent: key={}, error={}",
+                    key,
+                    error
+                );
+            }
+        }
+    }
+
+    /// Drops every session before the server process goes away.
+    ///
+    /// Daemons are never stopped here: they keep their shells, and the next server process
+    /// runs a new session to each desired-running device. Exec preserves process memory
+    /// rather than dropping Rust values, so the sessions are ended explicitly.
+    pub async fn detach_all(&self) {
         let handles = self
             .inner
             .lock()
@@ -502,10 +761,10 @@ impl WatchdogRegistry {
             .cloned()
             .collect::<Vec<_>>();
         for handle in handles {
-            if let Err(error) = handle.shutdown().await {
+            if let Err(error) = handle.detach().await {
                 log!(
                     Level::Warning,
-                    "Failed to shut down watchdog during server teardown: key={}, error={}",
+                    "Failed to detach watchdog during server teardown: key={}, error={}",
                     handle.key(),
                     error
                 );
@@ -513,7 +772,7 @@ impl WatchdogRegistry {
         }
     }
 
-    /// Returns the managed handle for a configured name, or `None` for external agents.
+    /// Returns the managed handle for a device id, or `None` for external agents.
     pub fn lookup(&self, key: &str) -> Option<WatchdogHandle> {
         self.inner
             .lock()
@@ -522,12 +781,19 @@ impl WatchdogRegistry {
             .cloned()
     }
 
-    /// Removes a dormant supervisor after callers verify it has no running intent.
+    /// Removes a stopped supervisor after callers verify it has no running intent, then runs
+    /// `cleanup` on the device in the background.
     ///
     /// The map entry is removed under the registry lock; the `Remove` command is sent
     /// afterwards (deferred to a task when the mailbox is full) because waiting for mailbox
     /// space must neither hold a std mutex nor stall the configuration route calling this.
-    pub fn remove_stopped(&self, key: &str) -> Result<(), WatchdogError> {
+    /// The cleanup runs once after the supervisor is gone, so an unreachable device cannot
+    /// block a delete; a daemon it misses ends at its orphan limit.
+    pub fn remove_stopped(
+        &self,
+        key: &str,
+        cleanup: Option<RemoteJob>,
+    ) -> Result<(), WatchdogError> {
         let handle = {
             let mut map = self.inner.lock().expect("watchdog registry poisoned");
             let Some(handle) = map.get(key) else {
@@ -542,6 +808,24 @@ impl WatchdogRegistry {
         if let Some(handle) = handle {
             handle.notify(SupervisorCommand::Remove);
         }
+        if let Some(cleanup) = cleanup {
+            let key = key.to_string();
+            tokio::spawn(async move {
+                match cleanup().await {
+                    Ok(()) => log!(
+                        Level::Info,
+                        "Removed a deleted managed agent from its device: key={}",
+                        key
+                    ),
+                    Err(error) => log!(
+                        Level::Warning,
+                        "Failed to remove a deleted managed agent from its device; its daemon ends at the orphan limit: key={}, error={}",
+                        key,
+                        error
+                    ),
+                }
+            });
+        }
         Ok(())
     }
 
@@ -550,6 +834,7 @@ impl WatchdogRegistry {
         &self,
         key: String,
         callback: SnapshotCallback,
+        supersede: SupersedeCallback,
     ) -> Result<(WatchdogHandle, mpsc::Receiver<SupervisorCommand>), WatchdogError> {
         let mut map = self.inner.lock().expect("watchdog registry poisoned");
         if map.contains_key(&key) {
@@ -561,6 +846,10 @@ impl WatchdogRegistry {
             commands,
             snapshot: Arc::new(Mutex::new(WatchdogSnapshot::stopped())),
             callback,
+            supersede,
+            expected: Arc::default(),
+            desired_running: self.desired_running.clone(),
+            daemon_may_run: Arc::default(),
             requester: Arc::default(),
         };
         map.insert(key, handle.clone());
@@ -568,107 +857,179 @@ impl WatchdogRegistry {
     }
 }
 
-/// Registers a dormant supervisor and returns its task for test cleanup.
+/// Registers a stopped supervisor and returns its task for test cleanup.
 pub fn spawn_supervisor(
     key: String,
     spawn: SpawnFn,
     registry: &WatchdogRegistry,
     callback: SnapshotCallback,
+    supersede: SupersedeCallback,
 ) -> Result<tokio::task::JoinHandle<()>, WatchdogError> {
-    let (watchdog, commands) = registry.register(key.clone(), callback)?;
+    let (watchdog, commands) = registry.register(key.clone(), callback, supersede)?;
     log!(Level::Info, "Watchdog supervisor registered: key={}", key);
-    Ok(tokio::spawn(run_supervisor(key, spawn, watchdog, commands)))
+    Ok(tokio::spawn(
+        Supervisor {
+            key,
+            spawn,
+            watchdog,
+            commands,
+            replace_next: false,
+            connected: None,
+        }
+        .run(),
+    ))
 }
 
-/// Why the idle wait ended: start a cycle or drop the supervisor task.
+/// What ends a cycle and decides the next step.
+enum CommandAction {
+    /// Retry after the backoff.
+    Continue,
+    /// An explicit operator retry or restart skips the backoff and begins a clean cycle.
+    Restart,
+    /// Stop: the session is gone and the stop job, if any, still has to run.
+    Stop(Option<RemoteJob>),
+    /// The attempt failed in a way retrying cannot fix (a locked SSH key); the agent stays
+    /// desired-running with the issue shown until the next Start or Retry.
+    WaitForStart,
+    /// Configuration replacement must end the task, not just return it to idle.
+    Exit,
+    /// The server is going away: end the task without touching the snapshot.
+    Detach,
+}
+
+/// Separates commands that keep watching a session from those that finish its cycle.
+enum RunningCommandAction {
+    /// The current session remains authoritative and should keep running.
+    Continue,
+    /// The cycle ended and the supervisor should apply this lifecycle action.
+    Finish(CommandAction),
+}
+
+/// Captures the information needed to decide whether another cycle should run.
+struct CycleResult {
+    action: CommandAction,
+    was_connected: bool,
+}
+
+/// How the stopped state ended.
 enum IdleWait {
-    /// A start command arrived while the supervisor was intentionally dormant.
+    /// A start (or retry) arrived.
     Start,
-    /// Remove or channel close must drop the task so a replacement can reuse the key.
+    /// Remove, detach or channel close must drop the task so a replacement can reuse the key.
     Exit,
 }
 
-/// Waits for start commands while acknowledging harmless shutdowns in the dormant state.
-async fn wait_until_running(
-    watchdog: &WatchdogHandle,
-    commands: &mut mpsc::Receiver<SupervisorCommand>,
-) -> IdleWait {
-    while let Some(command) = commands.recv().await {
-        match command {
-            SupervisorCommand::Start => return IdleWait::Start,
-            SupervisorCommand::Retry { reply } => {
-                publish_fresh_start(watchdog);
-                let _ = reply.send(());
-                return IdleWait::Start;
-            }
-            SupervisorCommand::Remove => return IdleWait::Exit,
-            SupervisorCommand::Shutdown { reply } => {
-                publish_stopped(watchdog);
-                let _ = reply.send(());
-            }
-            SupervisorCommand::Connected { .. }
-            | SupervisorCommand::Disconnected(_)
-            | SupervisorCommand::Stale(_) => {}
-        }
-    }
-    IdleWait::Exit
+/// One device's supervisor task.
+struct Supervisor {
+    /// Device id.
+    key: String,
+    /// Transport-specific ensure step.
+    spawn: SpawnFn,
+    /// Shared handle.
+    watchdog: WatchdogHandle,
+    /// Lifecycle mailbox.
+    commands: mpsc::Receiver<SupervisorCommand>,
+    /// Set when the next cycle must replace the daemon (a Restart, or a daemon that stayed
+    /// without a connection for the deadline).
+    replace_next: bool,
+    /// The current socket and what its daemon announced, kept across cycles because a local
+    /// daemon's connection does not depend on the session.
+    connected: Option<(SocketId, ConnectingDaemon)>,
 }
 
-/// Runs desired-running cycles while every long operation remains cancelable by commands.
-async fn run_supervisor(
-    key: String,
-    spawn: SpawnFn,
-    watchdog: WatchdogHandle,
-    mut commands: mpsc::Receiver<SupervisorCommand>,
-) {
-    loop {
-        match wait_until_running(&watchdog, &mut commands).await {
-            IdleWait::Exit => break,
-            IdleWait::Start => {}
+impl Supervisor {
+    /// Waits in the stopped state, then runs desired-running cycles, until removed.
+    async fn run(mut self) {
+        let mut start_now = false;
+        loop {
+            if !start_now && let IdleWait::Exit = self.wait_until_running().await {
+                return;
+            }
+            start_now = false;
+            match self.run_desired().await {
+                CommandAction::Exit => {
+                    publish_stopped(&self.watchdog);
+                    return;
+                }
+                CommandAction::Detach => return,
+                CommandAction::Stop(Some(stop)) => match self.run_stop(stop).await {
+                    StopEnd::Exit => return,
+                    StopEnd::Start => start_now = true,
+                    StopEnd::Idle => {}
+                },
+                _ => {
+                    self.connected = None;
+                    publish_stopped(&self.watchdog);
+                }
+            }
         }
+    }
+
+    /// Waits for a start while stopped, acknowledging harmless requests.
+    async fn wait_until_running(&mut self) -> IdleWait {
+        while let Some(command) = self.commands.recv().await {
+            match command {
+                SupervisorCommand::Start => return IdleWait::Start,
+                SupervisorCommand::Retry { reply } => {
+                    publish_fresh_start(&self.watchdog);
+                    let _ = reply.send(());
+                    return IdleWait::Start;
+                }
+                SupervisorCommand::Remove => return IdleWait::Exit,
+                SupervisorCommand::Detach { reply } => {
+                    let _ = reply.send(());
+                    return IdleWait::Exit;
+                }
+                SupervisorCommand::Shutdown { reply, stop } => {
+                    let _ = reply.send(());
+                    let Some(stop) = self.watchdog.stop_if_needed(stop) else {
+                        publish_stopped(&self.watchdog);
+                        continue;
+                    };
+                    // A stop of a stopped device still reaches a daemon its last stop missed,
+                    // for example one that outlived a server restart.
+                    publish_stopping(&self.watchdog);
+                    match self.run_stop(stop).await {
+                        StopEnd::Exit => return IdleWait::Exit,
+                        StopEnd::Start => return IdleWait::Start,
+                        StopEnd::Idle => {}
+                    }
+                }
+                SupervisorCommand::Restart { reply } => {
+                    let _ = reply.send(());
+                }
+                SupervisorCommand::Connected { .. }
+                | SupervisorCommand::Disconnected(_)
+                | SupervisorCommand::Stale(_) => {}
+            }
+        }
+        IdleWait::Exit
+    }
+
+    /// Runs cycles with backoff while the device is desired-running.
+    async fn run_desired(&mut self) -> CommandAction {
         let mut backoff = Backoff::default();
         loop {
             // Shutdown changes intent before queue processing so a stale Start command
             // cannot revive preparation while its shutdown acknowledgement is pending.
-            if !watchdog.snapshot().desired_running {
-                break;
+            if !self.watchdog.snapshot().desired_running {
+                return CommandAction::Stop(None);
             }
-            watchdog.publish_update(|snapshot| {
-                snapshot.desired_running = true;
-                snapshot.status = AgentConnectionStatus::Starting;
-                snapshot.socket_id = None;
-                snapshot.provisioning_status.clear();
-            });
             let started = Instant::now();
-            let attempt_generation = watchdog.snapshot().attempt_generation;
-            let cycle =
-                run_started_cycle(&spawn, &watchdog, &mut commands, attempt_generation).await;
+            let cycle = self.run_cycle().await;
             match cycle.action {
-                CommandAction::Exit => {
-                    publish_stopped(&watchdog);
-                    return;
-                }
-                CommandAction::Stop => break,
                 CommandAction::Restart => {
                     backoff.reset();
-                    continue;
                 }
                 CommandAction::WaitForStart => {
                     log!(
                         Level::Info,
                         "Watchdog waiting for the next start: key={}",
-                        key
+                        self.key
                     );
-                    match wait_for_start(&watchdog, &mut commands).await {
-                        CommandAction::Stop => break,
-                        CommandAction::Exit => {
-                            publish_stopped(&watchdog);
-                            return;
-                        }
-                        _ => {
-                            backoff.reset();
-                            continue;
-                        }
+                    match self.wait_for_start().await {
+                        CommandAction::Continue | CommandAction::Restart => backoff.reset(),
+                        action => return action,
                     }
                 }
                 CommandAction::Continue => {
@@ -679,85 +1040,438 @@ async fn run_supervisor(
                     log!(
                         Level::Info,
                         "Watchdog retry scheduled: key={}, backoff={:?}",
-                        key,
+                        self.key,
                         delay
                     );
-                    match wait_for_restart(&watchdog, &mut commands, delay).await {
+                    match self.wait_for_restart(delay).await {
                         CommandAction::Continue => {}
-                        CommandAction::Stop => break,
-                        CommandAction::Restart | CommandAction::WaitForStart => {
-                            backoff.reset();
-                            continue;
+                        CommandAction::Restart | CommandAction::WaitForStart => backoff.reset(),
+                        action => return action,
+                    }
+                }
+                action => return action,
+            }
+        }
+    }
+
+    /// One cycle: the cancellable ensure step, then watching the session.
+    async fn run_cycle(&mut self) -> CycleResult {
+        let watchdog = self.watchdog.clone();
+        watchdog.publish_update(|snapshot| {
+            snapshot.desired_running = true;
+            // A local daemon can stay connected while its session is replaced.
+            if snapshot.socket_id.is_none() {
+                snapshot.status = AgentConnectionStatus::Starting;
+            }
+            snapshot.waiting_for_ssh_key = false;
+            snapshot.provisioning_status.clear();
+        });
+        // Until this cycle's report arrives, every `hello` is provisional.
+        watchdog.set_expected(None);
+        let snapshot = watchdog.snapshot();
+        let attempt_generation = snapshot.attempt_generation;
+        let request = CycleRequest {
+            status: watchdog.provisioning_status_sink(attempt_generation),
+            replace: std::mem::take(&mut self.replace_next),
+            server_connected: snapshot.socket_id.is_some(),
+            daemon_may_run: DaemonMayRun(watchdog.daemon_may_run.clone()),
+        };
+        // A cycle a user asked for logs its provisioning as that user.
+        let spawn_future =
+            redoor_core::logging::user_scope(watchdog.take_requester(), self.spawn.spawn(request));
+        tokio::pin!(spawn_future);
+        let session = loop {
+            tokio::select! {
+                result = &mut spawn_future => break result,
+                command = self.commands.recv() => {
+                    match self.handle_pre_session_command(command) {
+                        RunningCommandAction::Continue => {}
+                        RunningCommandAction::Finish(action) => {
+                            return CycleResult { action, was_connected: false };
                         }
-                        CommandAction::Exit => {
-                            publish_stopped(&watchdog);
-                            return;
+                    }
+                }
+            }
+        };
+        match session {
+            Ok(session) => {
+                self.accept_report(&session.daemon, attempt_generation);
+                self.watch_session(session.child, attempt_generation).await
+            }
+            Err(error) => report_spawn_failure(&watchdog, attempt_generation, error),
+        }
+    }
+
+    /// Records the ensure report as the only daemon whose `hello` is accepted and checks a
+    /// daemon that connected before it.
+    fn accept_report(&self, daemon: &DaemonReport, attempt_generation: u64) {
+        let status = match daemon.outcome {
+            EnsureOutcome::Kept => format!("Kept the running agent daemon (PID {})", daemon.pid),
+            EnsureOutcome::Started => format!("Started the agent daemon (PID {})", daemon.pid),
+            EnsureOutcome::Restarted => {
+                format!("Replaced the agent daemon (new PID {})", daemon.pid)
+            }
+        };
+        self.watchdog
+            .report_provisioning_status(attempt_generation, status);
+        self.watchdog.set_daemon_may_run(true);
+        self.watchdog.set_expected(Some(ExpectedDaemon {
+            attempt_generation,
+            binary: daemon.binary.clone(),
+            spec_hash: daemon.spec_hash.clone(),
+        }));
+        self.supersede_if_unexpected();
+    }
+
+    /// Ends the current connection when it is not the reported daemon. Its `hello` came
+    /// before the report and was accepted provisionally.
+    fn supersede_if_unexpected(&self) {
+        let (Some(expected), Some((socket_id, daemon))) =
+            (self.watchdog.expected(), &self.connected)
+        else {
+            return;
+        };
+        if expected.matches(daemon) {
+            return;
+        }
+        log!(
+            Level::Warning,
+            "Superseding a managed agent connection that is not the reported daemon: key={}, socket_id={}",
+            self.key,
+            socket_id
+        );
+        (self.watchdog.supersede)(socket_id.clone());
+    }
+
+    /// Applies a command while the ensure step still runs.
+    fn handle_pre_session_command(
+        &mut self,
+        command: Option<SupervisorCommand>,
+    ) -> RunningCommandAction {
+        match command {
+            Some(SupervisorCommand::Shutdown { reply, stop }) => {
+                let stop = self.watchdog.stop_if_needed(stop);
+                self.connected = None;
+                publish_stop_requested(&self.watchdog, stop.is_some());
+                let _ = reply.send(());
+                RunningCommandAction::Finish(CommandAction::Stop(stop))
+            }
+            Some(SupervisorCommand::Retry { reply }) => {
+                self.connected = None;
+                publish_fresh_start(&self.watchdog);
+                let _ = reply.send(());
+                RunningCommandAction::Finish(CommandAction::Restart)
+            }
+            Some(SupervisorCommand::Restart { reply }) => {
+                self.replace_next = true;
+                let _ = reply.send(());
+                RunningCommandAction::Finish(CommandAction::Restart)
+            }
+            Some(SupervisorCommand::Detach { reply }) => {
+                let _ = reply.send(());
+                RunningCommandAction::Finish(CommandAction::Detach)
+            }
+            Some(SupervisorCommand::Remove) | None => {
+                RunningCommandAction::Finish(CommandAction::Exit)
+            }
+            Some(command) => {
+                self.apply_socket_event(command);
+                RunningCommandAction::Continue
+            }
+        }
+    }
+
+    /// Applies `Connected` and `Disconnected` of the current socket; events of replaced
+    /// sockets change nothing.
+    fn apply_socket_event(&mut self, command: SupervisorCommand) {
+        match command {
+            SupervisorCommand::Connected {
+                socket_id,
+                attempt_generation,
+                daemon,
+            } => {
+                if publish_connected(&self.watchdog, attempt_generation, socket_id.clone()) {
+                    self.connected = Some((socket_id, daemon));
+                    self.supersede_if_unexpected();
+                }
+            }
+            SupervisorCommand::Disconnected(socket_id)
+                if publish_disconnected(&self.watchdog, &socket_id) =>
+            {
+                self.connected = None;
+            }
+            _ => {}
+        }
+    }
+
+    /// Watches the session, registration timeouts and lifecycle commands concurrently.
+    ///
+    /// A session that has no connection for [`CONNECTION_DEADLINE`], after its start or after
+    /// its socket closed, is dropped and the next cycle replaces the daemon: a running session
+    /// is no proof that the daemon will ever reach the server again.
+    async fn watch_session(&mut self, mut child: Child, attempt_generation: u64) -> CycleResult {
+        // Tokio closes Child::stdin when wait() is polled. The session's stdin stays open so
+        // the holder sees EOF only when this cycle ends.
+        let _retained_stdin = child.stdin.take();
+        let output_reader = spawn_output_reader(&mut child);
+        let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
+        tokio::pin!(startup_timeout);
+        let connection_deadline = tokio::time::sleep(CONNECTION_DEADLINE);
+        tokio::pin!(connection_deadline);
+        // The daemon can register while the ensure step still runs, or stay connected from
+        // an earlier cycle; that connection already counts.
+        let mut connected = self.watchdog.snapshot().socket_id.is_some();
+        let mut timeout_reported = false;
+        let process_name = self.spawn.process_name;
+
+        loop {
+            tokio::select! {
+                status = child.wait() => {
+                    let output = read_child_diagnostic(output_reader, CHILD_DIAGNOSTIC_TIMEOUT).await;
+                    let issue = format_exit_issue(status, process_name, output.as_ref());
+                    publish_issue(&self.watchdog, attempt_generation, issue);
+                    return CycleResult { action: CommandAction::Continue, was_connected: connected };
+                }
+                _ = &mut startup_timeout, if !connected && !timeout_reported => {
+                    timeout_reported = true;
+                    publish_issue(&self.watchdog, attempt_generation, "Agent daemon is running but has not connected within 15 seconds".to_string());
+                }
+                _ = &mut connection_deadline, if !connected => {
+                    return self.replace_unconnected(&mut child, attempt_generation).await;
+                }
+                command = self.commands.recv() => {
+                    let was_connected = connected;
+                    match self.handle_session_command(command, &mut child, &mut connected, attempt_generation).await {
+                        RunningCommandAction::Continue => {}
+                        RunningCommandAction::Finish(action) => {
+                            return CycleResult { action, was_connected: connected };
+                        }
+                    }
+                    if was_connected && !connected {
+                        connection_deadline.as_mut().reset(tokio::time::Instant::now() + CONNECTION_DEADLINE);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drops a session whose daemon stayed without a connection past the deadline; the next
+    /// cycle, after the usual backoff, replaces the daemon.
+    async fn replace_unconnected(
+        &mut self,
+        child: &mut Child,
+        attempt_generation: u64,
+    ) -> CycleResult {
+        log!(
+            Level::Warning,
+            "Managed agent has no connection; replacing its daemon: key={}",
+            self.key
+        );
+        kill_and_reap(child).await;
+        self.replace_next = true;
+        publish_issue(
+            &self.watchdog,
+            attempt_generation,
+            format!(
+                "Agent daemon had no connection for {} seconds and is being replaced",
+                CONNECTION_DEADLINE.as_secs()
+            ),
+        );
+        CycleResult {
+            action: CommandAction::Continue,
+            was_connected: false,
+        }
+    }
+
+    /// Applies one command while a session runs. Every command that ends the cycle drops the
+    /// session first, which never stops the daemon by itself.
+    async fn handle_session_command(
+        &mut self,
+        command: Option<SupervisorCommand>,
+        child: &mut Child,
+        connected: &mut bool,
+        attempt_generation: u64,
+    ) -> RunningCommandAction {
+        match command {
+            Some(SupervisorCommand::Stale(socket_id)) => {
+                if self.watchdog.snapshot().socket_id.as_ref() != Some(&socket_id) {
+                    return RunningCommandAction::Continue;
+                }
+                // Only the tunnel is rebuilt; a repeat failure reaches the deadline, which
+                // replaces the daemon.
+                kill_and_reap(child).await;
+                publish_issue(
+                    &self.watchdog,
+                    attempt_generation,
+                    "Agent connection went stale".to_string(),
+                );
+                RunningCommandAction::Finish(CommandAction::Continue)
+            }
+            Some(SupervisorCommand::Start) => RunningCommandAction::Continue,
+            Some(
+                command
+                @ (SupervisorCommand::Connected { .. } | SupervisorCommand::Disconnected(_)),
+            ) => {
+                self.apply_socket_event(command);
+                *connected = self.watchdog.snapshot().socket_id.is_some();
+                RunningCommandAction::Continue
+            }
+            command => {
+                kill_and_reap(child).await;
+                self.handle_pre_session_command(command)
+            }
+        }
+    }
+
+    /// Waits through restart backoff while allowing shutdown to win immediately.
+    async fn wait_for_restart(&mut self, backoff: Duration) -> CommandAction {
+        let delay = tokio::time::sleep(backoff);
+        tokio::pin!(delay);
+        loop {
+            tokio::select! {
+                _ = &mut delay => return CommandAction::Continue,
+                command = self.commands.recv() => {
+                    match self.handle_pre_session_command(command) {
+                        RunningCommandAction::Continue => {}
+                        RunningCommandAction::Finish(action) => return action,
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parks a desired-running device whose start needs an operator (a locked SSH key) until
+    /// a Start or Retry arrives, while shutdown and removal still win at once.
+    async fn wait_for_start(&mut self) -> CommandAction {
+        loop {
+            let command = self.commands.recv().await;
+            if matches!(command, Some(SupervisorCommand::Start)) {
+                return CommandAction::Restart;
+            }
+            match self.handle_pre_session_command(command) {
+                RunningCommandAction::Continue => {}
+                RunningCommandAction::Finish(action) => return action,
+            }
+        }
+    }
+
+    /// Runs `stop` until it succeeds, retrying on the backoff with the failure shown, while a
+    /// Start, Retry, Remove or Detach still wins at once.
+    ///
+    /// Kept in memory only: after a server restart, the orphan limit ends a daemon whose stop
+    /// never reached its device.
+    async fn run_stop(&mut self, mut stop: RemoteJob) -> StopEnd {
+        let mut backoff = Backoff::default();
+        loop {
+            let attempt = stop();
+            tokio::pin!(attempt);
+            let result = loop {
+                tokio::select! {
+                    result = &mut attempt => break result,
+                    command = self.commands.recv() => {
+                        match self.handle_stop_command(command, &mut stop) {
+                            StopStep::Continue => {}
+                            StopStep::End(end) => return end,
+                        }
+                    }
+                }
+            };
+            match result {
+                Ok(()) => {
+                    self.watchdog.set_daemon_may_run(false);
+                    publish_stopped(&self.watchdog);
+                    return StopEnd::Idle;
+                }
+                Err(error) => {
+                    log!(
+                        Level::Warning,
+                        "Stopping the managed agent's daemon failed; retrying: key={}, error={}",
+                        self.key,
+                        error
+                    );
+                    publish_stopping_issue(&self.watchdog, error);
+                }
+            }
+            let delay = tokio::time::sleep(backoff.next_delay());
+            tokio::pin!(delay);
+            loop {
+                tokio::select! {
+                    _ = &mut delay => break,
+                    command = self.commands.recv() => {
+                        match self.handle_stop_command(command, &mut stop) {
+                            StopStep::Continue => {}
+                            StopStep::End(end) => return end,
                         }
                     }
                 }
             }
         }
-        publish_stopped(&watchdog);
     }
-}
 
-/// Captures the information needed to decide whether another cycle should run.
-struct CycleResult {
-    action: CommandAction,
-    was_connected: bool,
-}
-
-/// Keeps spawning cancelable so slow SSH preparation never blocks shutdown controls.
-async fn run_started_cycle(
-    spawn: &SpawnFn,
-    watchdog: &WatchdogHandle,
-    commands: &mut mpsc::Receiver<SupervisorCommand>,
-    attempt_generation: u64,
-) -> CycleResult {
-    let log_file = match spawn.open_log_file().await {
-        Ok(log_file) => log_file,
-        Err(error) => {
-            return report_spawn_failure(watchdog, attempt_generation, SpawnError::Spawn(error));
-        }
-    };
-    // A cycle a user asked for logs its provisioning as that user.
-    let spawn_future = redoor_core::logging::user_scope(
-        watchdog.take_requester(),
-        spawn.spawn(watchdog.provisioning_status_sink(attempt_generation)),
-    );
-    tokio::pin!(spawn_future);
-    let child = loop {
-        tokio::select! {
-            result = &mut spawn_future => break result,
-            command = commands.recv() => {
-                match handle_pre_spawn_command(watchdog, command) {
-                    CommandAction::Continue => {}
-                    action => return CycleResult { action, was_connected: false },
-                }
+    /// Applies one command while a stop is pending.
+    fn handle_stop_command(
+        &mut self,
+        command: Option<SupervisorCommand>,
+        stop: &mut RemoteJob,
+    ) -> StopStep {
+        match command {
+            Some(SupervisorCommand::Start) => StopStep::End(StopEnd::Start),
+            Some(SupervisorCommand::Retry { reply }) => {
+                publish_fresh_start(&self.watchdog);
+                let _ = reply.send(());
+                StopStep::End(StopEnd::Start)
             }
+            Some(SupervisorCommand::Shutdown {
+                reply,
+                stop: replacement,
+            }) => {
+                if let Some(replacement) = replacement {
+                    *stop = replacement;
+                }
+                let _ = reply.send(());
+                StopStep::Continue
+            }
+            Some(SupervisorCommand::Restart { reply }) => {
+                let _ = reply.send(());
+                StopStep::Continue
+            }
+            Some(SupervisorCommand::Detach { reply }) => {
+                let _ = reply.send(());
+                StopStep::End(StopEnd::Exit)
+            }
+            Some(SupervisorCommand::Remove) | None => {
+                publish_stopped(&self.watchdog);
+                StopStep::End(StopEnd::Exit)
+            }
+            Some(SupervisorCommand::Connected { .. })
+            | Some(SupervisorCommand::Disconnected(_))
+            | Some(SupervisorCommand::Stale(_)) => StopStep::Continue,
         }
-    };
-
-    match child {
-        Ok(child) => {
-            wait_for_child(
-                child,
-                watchdog,
-                commands,
-                log_file,
-                spawn.process_name,
-                attempt_generation,
-            )
-            .await
-        }
-        Err(error) => report_spawn_failure(watchdog, attempt_generation, error),
     }
 }
 
-/// Publishes why an attempt produced no child; the supervisor retries after backoff, unless
-/// retrying cannot help (a locked SSH key). The agent then stays desired-running with the
-/// issue shown and waits for the Start that unlocks the key, instead of stopping and making
-/// the operator notice that it needs to be started again.
+/// What a command does to a pending stop.
+enum StopStep {
+    /// Keep stopping.
+    Continue,
+    /// Leave the stop with this result.
+    End(StopEnd),
+}
+
+/// How a pending stop ended.
+enum StopEnd {
+    /// The daemon is stopped; wait for the next start.
+    Idle,
+    /// The device was started again, which wins over the stop.
+    Start,
+    /// The supervisor was removed or detached.
+    Exit,
+}
+
+/// Publishes why an attempt produced no session; the supervisor retries after backoff,
+/// unless retrying cannot help (a locked SSH key). The agent then stays desired-running with
+/// the issue shown and waits for the Start that unlocks the key, instead of stopping and
+/// making the operator notice that it needs to be started again.
 fn report_spawn_failure(
     watchdog: &WatchdogHandle,
     attempt_generation: u64,
@@ -772,6 +1486,11 @@ fn report_spawn_failure(
         retryable
     );
     publish_issue(watchdog, attempt_generation, issue);
+    if !retryable {
+        watchdog.publish_attempt_update(attempt_generation, |snapshot| {
+            snapshot.waiting_for_ssh_key = true;
+        });
+    }
     CycleResult {
         // A shutdown or retry queued meanwhile still wins: the wait handles it first.
         action: if retryable {
@@ -783,45 +1502,6 @@ fn report_spawn_failure(
     }
 }
 
-/// Reduces command handling during preparation to an explicit continue/stop decision.
-fn handle_pre_spawn_command(
-    watchdog: &WatchdogHandle,
-    command: Option<SupervisorCommand>,
-) -> CommandAction {
-    match command {
-        Some(SupervisorCommand::Shutdown { reply }) => {
-            publish_stopped(watchdog);
-            let _ = reply.send(());
-            CommandAction::Stop
-        }
-        Some(SupervisorCommand::Retry { reply }) => {
-            publish_fresh_start(watchdog);
-            let _ = reply.send(());
-            CommandAction::Restart
-        }
-        Some(SupervisorCommand::Connected {
-            socket_id,
-            attempt_generation: connected_generation,
-        }) => {
-            publish_connected(watchdog, connected_generation, socket_id);
-            CommandAction::Continue
-        }
-        Some(SupervisorCommand::Remove) => {
-            publish_stopped(watchdog);
-            CommandAction::Exit
-        }
-        Some(SupervisorCommand::Disconnected(socket_id)) => {
-            // The child watcher starts from this socket, so a closed one must not linger.
-            publish_disconnected(watchdog, &socket_id);
-            CommandAction::Continue
-        }
-        Some(SupervisorCommand::Start) | Some(SupervisorCommand::Stale(_)) => {
-            CommandAction::Continue
-        }
-        None => CommandAction::Exit,
-    }
-}
-
 /// Clears the current socket when `socket_id` is it, so late events of replaced sockets
 /// change nothing. Returns whether the current connection ended.
 fn publish_disconnected(watchdog: &WatchdogHandle, socket_id: &SocketId) -> bool {
@@ -829,268 +1509,51 @@ fn publish_disconnected(watchdog: &WatchdogHandle, socket_id: &SocketId) -> bool
         return false;
     }
     watchdog.publish_update(|snapshot| {
-        snapshot.desired_running = true;
-        snapshot.status = AgentConnectionStatus::Starting;
         snapshot.socket_id = None;
+        if snapshot.desired_running {
+            snapshot.status = AgentConnectionStatus::Starting;
+        }
     });
     true
 }
 
-/// Watches child exit, registration timeouts, and serialized lifecycle controls concurrently.
-///
-/// A child that has no connection for [`CONNECTION_DEADLINE`], after its start or after its
-/// socket closed, is killed so the next cycle starts a fresh one: a running process is no
-/// proof that the agent will ever reach the server again.
-async fn wait_for_child(
-    mut child: Child,
-    watchdog: &WatchdogHandle,
-    commands: &mut mpsc::Receiver<SupervisorCommand>,
-    log_file: Option<RotatingLogFile>,
-    process_name: &str,
-    attempt_generation: u64,
-) -> CycleResult {
-    // Tokio closes Child::stdin when wait() is polled. Managed SSH agents retain
-    // that pipe so the remote process sees EOF only when this watchdog cycle ends.
-    let _retained_stdin = child.stdin.take();
-    let log_path = log_file
-        .as_ref()
-        .map(|log_file| log_file.path().to_path_buf());
-    let output_reader = spawn_output_reader(&mut child, log_file);
-    let startup_timeout = tokio::time::sleep(STARTUP_CONNECTION_TIMEOUT);
-    tokio::pin!(startup_timeout);
-    let connection_deadline = tokio::time::sleep(CONNECTION_DEADLINE);
-    tokio::pin!(connection_deadline);
-    // The agent can register while the spawn future is still running; that registration
-    // already counts, or the deadline would replace a healthy agent.
-    let mut connected = watchdog.snapshot().socket_id.is_some();
-    let mut timeout_reported = false;
-
-    loop {
-        tokio::select! {
-            status = child.wait() => {
-                let output = read_child_diagnostic(output_reader, CHILD_DIAGNOSTIC_TIMEOUT).await;
-                let issue = format_exit_issue(
-                    status,
-                    log_path.as_deref(),
-                    process_name,
-                    output.as_deref(),
-                );
-                publish_issue(watchdog, attempt_generation, issue);
-                return CycleResult { action: CommandAction::Continue, was_connected: connected };
-            }
-            _ = &mut startup_timeout, if !connected && !timeout_reported => {
-                timeout_reported = true;
-                publish_issue(watchdog, attempt_generation, "Agent process started but has not connected within 15 seconds".to_string());
-            }
-            _ = &mut connection_deadline, if !connected => {
-                return replace_unconnected_child(&mut child, watchdog, attempt_generation).await;
-            }
-            command = commands.recv() => {
-                let was_connected = connected;
-                match handle_running_command(watchdog, command, &mut child, &mut connected, attempt_generation).await {
-                    RunningCommandAction::Continue => {}
-                    RunningCommandAction::Finish(action) => {
-                        return CycleResult { action, was_connected: connected };
-                    }
-                }
-                if was_connected && !connected {
-                    connection_deadline.as_mut().reset(tokio::time::Instant::now() + CONNECTION_DEADLINE);
-                }
-            }
-        }
+/// Settles a stop: `Stopping` while a stop job still has to run, `Stopped` otherwise.
+fn publish_stop_requested(watchdog: &WatchdogHandle, stopping: bool) {
+    if stopping {
+        publish_stopping(watchdog);
+    } else {
+        publish_stopped(watchdog);
     }
 }
 
-/// Kills a child that stayed without a connection past [`CONNECTION_DEADLINE`] and lets the
-/// supervisor start a fresh one after the usual backoff.
-async fn replace_unconnected_child(
-    child: &mut Child,
-    watchdog: &WatchdogHandle,
-    attempt_generation: u64,
-) -> CycleResult {
-    log!(
-        Level::Warning,
-        "Managed agent has no connection; replacing it: key={}",
-        watchdog.key()
-    );
-    kill_and_reap(child).await;
-    publish_issue(
-        watchdog,
-        attempt_generation,
-        format!(
-            "Agent process had no connection for {} seconds and was replaced",
-            CONNECTION_DEADLINE.as_secs()
-        ),
-    );
-    CycleResult {
-        action: CommandAction::Continue,
-        was_connected: false,
-    }
-}
-
-/// Applies one command while a child is owned, including guaranteed shutdown reaping.
-async fn handle_running_command(
-    watchdog: &WatchdogHandle,
-    command: Option<SupervisorCommand>,
-    child: &mut Child,
-    connected: &mut bool,
-    attempt_generation: u64,
-) -> RunningCommandAction {
-    match command {
-        Some(SupervisorCommand::Shutdown { reply }) => {
-            kill_and_reap(child).await;
-            publish_stopped(watchdog);
-            let _ = reply.send(());
-            RunningCommandAction::Finish(CommandAction::Stop)
-        }
-        Some(SupervisorCommand::Retry { reply }) => {
-            kill_and_reap(child).await;
-            publish_fresh_start(watchdog);
-            let _ = reply.send(());
-            RunningCommandAction::Finish(CommandAction::Restart)
-        }
-        Some(SupervisorCommand::Connected {
-            socket_id,
-            attempt_generation: connected_generation,
-        }) => {
-            if publish_connected(watchdog, connected_generation, socket_id) {
-                *connected = true;
-            }
-            RunningCommandAction::Continue
-        }
-        Some(SupervisorCommand::Disconnected(socket_id)) => {
-            if publish_disconnected(watchdog, &socket_id) {
-                *connected = false;
-            }
-            RunningCommandAction::Continue
-        }
-        Some(SupervisorCommand::Stale(socket_id)) => {
-            if watchdog.snapshot().socket_id.as_ref() == Some(&socket_id) {
-                kill_and_reap(child).await;
-                publish_issue(
-                    watchdog,
-                    attempt_generation,
-                    "Agent connection went stale".to_string(),
-                );
-                RunningCommandAction::Finish(CommandAction::Continue)
-            } else {
-                RunningCommandAction::Continue
-            }
-        }
-        Some(SupervisorCommand::Remove) => {
-            kill_and_reap(child).await;
-            publish_stopped(watchdog);
-            RunningCommandAction::Finish(CommandAction::Exit)
-        }
-        Some(SupervisorCommand::Start) => RunningCommandAction::Continue,
-        None => {
-            kill_and_reap(child).await;
-            RunningCommandAction::Finish(CommandAction::Exit)
-        }
-    }
-}
-
-/// Waits through restart backoff while allowing shutdown to win immediately.
-async fn wait_for_restart(
-    watchdog: &WatchdogHandle,
-    commands: &mut mpsc::Receiver<SupervisorCommand>,
-    backoff: Duration,
-) -> CommandAction {
-    let delay = tokio::time::sleep(backoff);
-    tokio::pin!(delay);
-    loop {
-        tokio::select! {
-            _ = &mut delay => return CommandAction::Continue,
-            command = commands.recv() => {
-                match apply_restart_command(watchdog, command) {
-                    CommandAction::Continue => {}
-                    action => return action,
-                }
-            }
-        }
-    }
-}
-
-/// Parks a desired-running agent whose start needs an operator (a locked SSH key) until a
-/// Start or Retry arrives, while shutdown and removal still win at once.
-async fn wait_for_start(
-    watchdog: &WatchdogHandle,
-    commands: &mut mpsc::Receiver<SupervisorCommand>,
-) -> CommandAction {
-    loop {
-        let command = commands.recv().await;
-        if matches!(command, Some(SupervisorCommand::Start)) {
-            return CommandAction::Restart;
-        }
-        match apply_restart_command(watchdog, command) {
-            CommandAction::Continue => {}
-            action => return action,
-        }
-    }
-}
-
-/// Applies one idle-backoff command without growing the `tokio::select!` arm.
-fn apply_restart_command(
-    watchdog: &WatchdogHandle,
-    command: Option<SupervisorCommand>,
-) -> CommandAction {
-    match command {
-        Some(SupervisorCommand::Shutdown { reply }) => {
-            publish_stopped(watchdog);
-            let _ = reply.send(());
-            CommandAction::Stop
-        }
-        Some(SupervisorCommand::Retry { reply }) => {
-            publish_fresh_start(watchdog);
-            let _ = reply.send(());
-            CommandAction::Restart
-        }
-        Some(SupervisorCommand::Remove) => {
-            publish_stopped(watchdog);
-            CommandAction::Exit
-        }
-        Some(SupervisorCommand::Connected {
-            socket_id,
-            attempt_generation,
-        }) => {
-            publish_connected(watchdog, attempt_generation, socket_id);
-            CommandAction::Continue
-        }
-        Some(SupervisorCommand::Disconnected(_))
-        | Some(SupervisorCommand::Stale(_))
-        | Some(SupervisorCommand::Start) => CommandAction::Continue,
-        None => CommandAction::Exit,
-    }
-}
-
-/// Keeps command branch results compact inside `tokio::select!` call sites.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CommandAction {
-    Continue,
-    /// An explicit operator retry skips automatic backoff and begins a clean attempt.
-    Restart,
-    Stop,
-    /// The attempt failed in a way retrying cannot fix (a locked SSH key); the agent stays
-    /// desired-running with the issue shown until the next Start or Retry.
-    WaitForStart,
-    /// Configuration replacement must end the task, not just return it to idle.
-    Exit,
-}
-
-/// Separates commands that keep watching a child from those that finish its cycle.
-enum RunningCommandAction {
-    /// The current child remains authoritative and should keep running.
-    Continue,
-    /// The child cycle ended and the supervisor should apply this lifecycle action.
-    Finish(CommandAction),
-}
-
-/// Settles intentional shutdown before acknowledging the management request.
+/// The device is stopped and nothing is pending.
 fn publish_stopped(watchdog: &WatchdogHandle) {
     watchdog.publish_update(|snapshot| {
         snapshot.desired_running = false;
         snapshot.status = AgentConnectionStatus::Stopped;
+        snapshot.connection_issue = None;
+        snapshot.waiting_for_ssh_key = false;
         snapshot.socket_id = None;
+    });
+}
+
+/// The session is gone and the daemon is being stopped on the device.
+fn publish_stopping(watchdog: &WatchdogHandle) {
+    watchdog.publish_update(|snapshot| {
+        snapshot.desired_running = false;
+        snapshot.status = AgentConnectionStatus::Stopping;
+        snapshot.connection_issue = None;
+        snapshot.waiting_for_ssh_key = false;
+        snapshot.socket_id = None;
+    });
+}
+
+/// Shows why the pending stop failed while it is retried.
+fn publish_stopping_issue(watchdog: &WatchdogHandle, issue: String) {
+    watchdog.publish_update(|snapshot| {
+        if snapshot.status == AgentConnectionStatus::Stopping {
+            snapshot.connection_issue = Some(issue);
+        }
     });
 }
 
@@ -1100,6 +1563,7 @@ fn publish_fresh_start(watchdog: &WatchdogHandle) {
         snapshot.desired_running = true;
         snapshot.status = AgentConnectionStatus::Starting;
         snapshot.connection_issue = None;
+        snapshot.waiting_for_ssh_key = false;
         snapshot.provisioning_status.clear();
         snapshot.socket_id = None;
     });
@@ -1125,6 +1589,7 @@ fn publish_connected(
         snapshot.desired_running = true;
         snapshot.status = AgentConnectionStatus::Connected;
         snapshot.connection_issue = None;
+        snapshot.waiting_for_ssh_key = false;
         snapshot.socket_id = Some(socket_id);
     })
 }
@@ -1133,45 +1598,80 @@ fn publish_connected(
 fn publish_issue(watchdog: &WatchdogHandle, attempt_generation: u64, issue: String) {
     watchdog.publish_attempt_update(attempt_generation, |snapshot| {
         snapshot.desired_running = true;
-        snapshot.status = AgentConnectionStatus::Starting;
+        if snapshot.socket_id.is_none() {
+            snapshot.status = AgentConnectionStatus::Starting;
+        }
         snapshot.connection_issue = Some(issue);
     });
 }
 
-/// Starts draining the child's output so its diagnostic tail is available after exit.
-///
-/// With a log file both pipes are forwarded into it; otherwise only a piped stderr is
-/// read, because unpiped streams already reach the server's terminal.
-fn spawn_output_reader(
-    child: &mut Child,
-    log_file: Option<RotatingLogFile>,
-) -> Option<tokio::task::JoinHandle<std::io::Result<Vec<u8>>>> {
-    let tail_limit = MAX_EXIT_DIAGNOSTIC_BYTES as usize;
-    match log_file {
-        Some(log_file) => {
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-            Some(tokio::spawn(async move {
-                Ok(log_file
-                    .forward_child_output(stdout, stderr, tail_limit)
-                    .await)
-            }))
-        }
-        None => child.stderr.take().map(|stderr| {
-            tokio::spawn(redoor_core::bounded_tail::read_bounded_tail(
-                stderr, tail_limit,
-            ))
-        }),
-    }
+/// The rest of an exited session's output: its stdout after the report, which ends with the
+/// holder's end line, and its stderr (SSH's own errors).
+#[derive(Debug, Default, PartialEq, Eq)]
+struct SessionOutput {
+    /// Bounded tail of stdout.
+    stdout: Vec<u8>,
+    /// Bounded tail of stderr.
+    stderr: Vec<u8>,
 }
 
-/// Adds a bounded tail of the child's output so clients receive its real error.
+/// Starts draining the session's output so its diagnostic is available after exit.
+fn spawn_output_reader(
+    child: &mut Child,
+) -> Option<tokio::task::JoinHandle<std::io::Result<SessionOutput>>> {
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    if stdout.is_none() && stderr.is_none() {
+        return None;
+    }
+    Some(tokio::spawn(async move {
+        let read_stdout = async {
+            match stdout {
+                Some(stdout) => {
+                    redoor_core::bounded_tail::read_bounded_tail(stdout, MAX_EXIT_DIAGNOSTIC_BYTES)
+                        .await
+                }
+                None => Ok(Vec::new()),
+            }
+        };
+        let read_stderr = async {
+            match stderr {
+                Some(stderr) => {
+                    redoor_core::bounded_tail::read_bounded_tail(stderr, MAX_EXIT_DIAGNOSTIC_BYTES)
+                        .await
+                }
+                None => Ok(Vec::new()),
+            }
+        };
+        let (stdout, stderr) = tokio::join!(read_stdout, read_stderr);
+        Ok(SessionOutput {
+            stdout: stdout?,
+            stderr: stderr?,
+        })
+    }))
+}
+
+/// Explains why a session ended: the daemon's log when it died, otherwise the session's own
+/// exit status and stderr.
 fn format_exit_issue(
     status: std::io::Result<std::process::ExitStatus>,
-    log_path: Option<&Path>,
     process_name: &str,
-    captured_output: Option<&[u8]>,
+    output: Option<&SessionOutput>,
 ) -> String {
+    let end = output.and_then(|output| {
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str::<HolderEnd>(line).ok())
+    });
+    if let Some(HolderEnd::DaemonExited { log_tail }) = end {
+        let log_tail = sanitize_diagnostic_output(log_tail.as_bytes());
+        let log_tail = log_tail.trim();
+        if log_tail.is_empty() {
+            return "The agent daemon exited".to_string();
+        }
+        return format!("The agent daemon exited. End of its log:\n{log_tail}");
+    }
     let mut issue = match status {
         Ok(status) => match status.code() {
             Some(code) => format!("{process_name} exited with status code {code}"),
@@ -1179,41 +1679,36 @@ fn format_exit_issue(
         },
         Err(error) => format!("Failed to wait for {process_name}: {error}"),
     };
-    let Some(output) = captured_output else {
-        return issue;
-    };
-    let output = sanitize_diagnostic_output(output);
-    let output = output.trim();
-    match log_path {
-        Some(path) if output.is_empty() => issue.push_str(&format!(
-            "\nThe configured agent log '{}' contained no output for this attempt.",
-            path.display()
-        )),
-        Some(path) => issue.push_str(&format!(
-            "\nAgent output from '{}':\n{output}",
-            path.display()
-        )),
-        None if output.is_empty() => {}
-        None => issue.push_str(&format!("\n{process_name} output:\n{output}")),
+    let stderr = output
+        .map(|output| sanitize_diagnostic_output(&output.stderr))
+        .unwrap_or_default();
+    let stderr = stderr.trim();
+    if !stderr.is_empty() {
+        issue.push_str(&format!("\n{process_name} output:\n{stderr}"));
     }
     issue
 }
 
-/// Resolves a completed stderr reader without replacing the process status on read failure.
+/// Resolves a completed output reader without replacing the process status on read failure.
 ///
 /// The read waits for EOF, which a surviving grandchild holding the pipe can postpone
 /// indefinitely, so it is bounded by `timeout`. The reader is left running rather than
-/// aborted: it keeps forwarding the grandchild's output into the configured log and
-/// keeps the pipe drained so that process never blocks on a full pipe.
+/// aborted, which keeps the pipe drained so that process never blocks on a full pipe.
 async fn read_child_diagnostic(
-    reader: Option<tokio::task::JoinHandle<std::io::Result<Vec<u8>>>>,
+    reader: Option<tokio::task::JoinHandle<std::io::Result<SessionOutput>>>,
     timeout: Duration,
-) -> Option<Vec<u8>> {
+) -> Option<SessionOutput> {
     let mut reader = reader?;
     match tokio::time::timeout(timeout, &mut reader).await {
         Ok(Ok(Ok(output))) => Some(output),
-        Ok(Ok(Err(error))) => Some(format!("Failed to read process output: {error}").into_bytes()),
-        Ok(Err(error)) => Some(format!("Process output task failed: {error}").into_bytes()),
+        Ok(Ok(Err(error))) => Some(SessionOutput {
+            stdout: Vec::new(),
+            stderr: format!("Failed to read process output: {error}").into_bytes(),
+        }),
+        Ok(Err(error)) => Some(SessionOutput {
+            stdout: Vec::new(),
+            stderr: format!("Process output task failed: {error}").into_bytes(),
+        }),
         Err(_) => {
             log!(
                 Level::Warning,
@@ -1225,7 +1720,7 @@ async fn read_child_diagnostic(
 }
 
 /// Removes terminal controls and direction markers before output reaches browser clients.
-fn sanitize_diagnostic_output(output: &[u8]) -> String {
+pub(crate) fn sanitize_diagnostic_output(output: &[u8]) -> String {
     String::from_utf8_lossy(output)
         .chars()
         .filter(|character| {
@@ -1244,7 +1739,7 @@ fn sanitize_diagnostic_output(output: &[u8]) -> String {
         .collect()
 }
 
-/// Terminates and reaps the owned child so intentional shutdown cannot leave zombies.
+/// Terminates and reaps the session process; this only drops the session, never the daemon.
 async fn kill_and_reap(child: &mut Child) {
     let _ = child.start_kill();
     let _ = tokio::time::timeout(Duration::from_secs(10), child.wait()).await;
@@ -1253,7 +1748,6 @@ async fn kill_and_reap(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redoor_core::test_support::TempDir;
     use std::process::Stdio;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::process::Command;
@@ -1273,6 +1767,19 @@ mod tests {
         Arc::new(|_| {})
     }
 
+    /// Ignores supersede requests in tests that do not check them.
+    fn no_supersede() -> SupersedeCallback {
+        Arc::new(|_| {})
+    }
+
+    /// Registers a supervisor with the no-op callbacks.
+    fn supervise(key: &str, spawn: SpawnFn, registry: &WatchdogRegistry) -> SupervisorGuard {
+        SupervisorGuard(
+            spawn_supervisor(key.into(), spawn, registry, callback(), no_supersede())
+                .expect("register"),
+        )
+    }
+
     /// Polls a condition cooperatively without adding fixed sleeps to lifecycle tests.
     async fn wait_until(mut predicate: impl FnMut() -> bool) {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -1284,73 +1791,163 @@ mod tests {
         .expect("watchdog condition should become observable");
     }
 
+    /// The daemon every test session reports.
+    fn reported_daemon() -> DaemonReport {
+        DaemonReport {
+            outcome: EnsureOutcome::Started,
+            pid: 1,
+            binary: redoor_core::identity::current_binary_identity(),
+            spec_hash: "spec".to_string(),
+        }
+    }
+
+    /// What the reported daemon announces in its `hello`.
+    fn reported_hello() -> ConnectingDaemon {
+        ConnectingDaemon {
+            binary: redoor_core::identity::current_binary_identity(),
+            spec_hash: Some("spec".to_string()),
+        }
+    }
+
+    /// A `hello` of another build than the reported daemon.
+    fn other_hello() -> ConnectingDaemon {
+        ConnectingDaemon {
+            binary: BinaryIdentity {
+                git_rev: "0000000".to_string(),
+                ..redoor_core::identity::current_binary_identity()
+            },
+            spec_hash: Some("spec".to_string()),
+        }
+    }
+
+    /// Wraps `child` as a session whose ensure step reported [`reported_daemon`].
+    fn session(child: std::io::Result<Child>) -> SpawnResult {
+        Ok(ManagedSession {
+            child: child.map_err(SpawnError::Spawn)?,
+            daemon: reported_daemon(),
+        })
+    }
+
+    /// Spawns a long-running session that keeps running until the supervisor kills it.
+    fn idle_session() -> SpawnResult {
+        session(
+            Command::new("sh")
+                .arg("-c")
+                .arg("cat")
+                .kill_on_drop(true)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn(),
+        )
+    }
+
+    /// Accepts the reported daemon's `hello` and returns its attempt.
+    async fn connect(handle: &WatchdogHandle, socket: &SocketId) -> Option<u64> {
+        match handle
+            .mark_connected(socket.clone(), reported_hello())
+            .await
+        {
+            ConnectVerdict::Accepted(generation) => Some(generation),
+            _ => None,
+        }
+    }
+
+    /// A spawn closure counting its calls and recording each cycle's flags.
+    #[derive(Clone, Default)]
+    struct Recorder {
+        count: Arc<AtomicUsize>,
+        requests: Arc<Mutex<Vec<(bool, bool)>>>,
+    }
+
+    impl Recorder {
+        /// A spawn function that records and then runs an idle session.
+        fn spawn(&self) -> SpawnFn {
+            let recorder = self.clone();
+            SpawnFn::new(move |request| {
+                recorder.count.fetch_add(1, Ordering::SeqCst);
+                recorder
+                    .requests
+                    .lock()
+                    .unwrap()
+                    .push((request.replace, request.server_connected));
+                async { idle_session() }
+            })
+        }
+
+        /// How many cycles ran.
+        fn count(&self) -> usize {
+            self.count.load(Ordering::SeqCst)
+        }
+
+        /// `(replace, server_connected)` of every cycle.
+        fn requests(&self) -> Vec<(bool, bool)> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
     #[tokio::test]
     async fn remove_stopped_is_idempotent_and_exits_a_dormant_supervisor() {
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "removed".into(),
-                SpawnFn::new(|_status| async {
-                    Command::new("sh")
-                        .arg("-c")
-                        .arg("cat")
-                        .kill_on_drop(true)
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(SpawnError::Spawn)
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
-        );
+        let _guard = supervise("removed", Recorder::default().spawn(), &registry);
 
         // The first removal must drop the handle so replacement can register the same key.
-        registry.remove_stopped("removed").expect("first remove");
+        registry
+            .remove_stopped("removed", None)
+            .expect("first remove");
         assert!(registry.lookup("removed").is_none());
         // A retry after a partial persist-then-remove must not fail just because the handle is gone.
-        registry.remove_stopped("removed").expect("retry remove");
+        registry
+            .remove_stopped("removed", None)
+            .expect("retry remove");
+    }
+
+    /// Deleting a device cleans it up in the background after its supervisor is gone, so an
+    /// unreachable device cannot block the delete.
+    #[tokio::test]
+    async fn removal_runs_its_cleanup_job_after_the_supervisor_is_gone() {
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("cleaned", Recorder::default().spawn(), &registry);
+        let ran = Arc::new(tokio::sync::Notify::new());
+        let notify = ran.clone();
+        let cleanup: RemoteJob = Arc::new(move || {
+            let notify = notify.clone();
+            Box::pin(async move {
+                notify.notify_one();
+                Ok(())
+            })
+        });
+
+        registry
+            .remove_stopped("cleaned", Some(cleanup))
+            .expect("remove");
+        // The handle is gone at once, before the device answered.
+        assert!(registry.lookup("cleaned").is_none());
+        // The namespace cleanup still runs.
+        tokio::time::timeout(Duration::from_secs(5), ran.notified())
+            .await
+            .expect("cleanup job should run");
     }
 
     #[tokio::test]
     async fn supervisor_is_dormant_until_started_and_start_is_idempotent() {
-        let count = Arc::new(AtomicUsize::new(0));
-        let spawn_count = count.clone();
-        let spawn = SpawnFn::new(move |_status| {
-            let spawn_count = spawn_count.clone();
-            async move {
-                spawn_count.fetch_add(1, Ordering::SeqCst);
-                Command::new("sh")
-                    .arg("-c")
-                    .arg("cat")
-                    .kill_on_drop(true)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .map_err(SpawnError::Spawn)
-            }
-        });
+        let recorder = Recorder::default();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor("lazy".into(), spawn, &registry, callback()).expect("register"),
-        );
+        let _guard = supervise("lazy", recorder.spawn(), &registry);
         let handle = registry.lookup("lazy").expect("managed handle");
 
         // Registration must not eagerly invoke the process factory.
-        assert_eq!(count.load(Ordering::SeqCst), 0);
+        assert_eq!(recorder.count(), 0);
         // The initial public state makes the dormant agent visible to clients.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
 
         handle.start().await.expect("first start accepted");
         handle.start().await.expect("duplicate start accepted");
-        wait_until(|| count.load(Ordering::SeqCst) == 1).await;
-        // Duplicate UI/direct-route requests must not create concurrent children.
-        assert_eq!(count.load(Ordering::SeqCst), 1);
+        wait_until(|| recorder.count() == 1).await;
+        // Duplicate UI/direct-route requests must not create concurrent sessions.
+        assert_eq!(recorder.count(), 1);
 
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
         // Acknowledgement guarantees the supervisor has settled intentionally stopped.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
     }
@@ -1361,7 +1958,7 @@ mod tests {
     #[tokio::test]
     async fn started_cycle_spawns_as_the_requesting_user() {
         let (seen_tx, mut seen) = mpsc::unbounded_channel();
-        let spawn = SpawnFn::new(move |_status| {
+        let spawn = SpawnFn::new(move |_request| {
             let seen_tx = seen_tx.clone();
             async move {
                 let _ = seen_tx.send(redoor_core::logging::current_user());
@@ -1369,9 +1966,7 @@ mod tests {
             }
         });
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor("attributed".into(), spawn, &registry, callback()).expect("register"),
-        );
+        let _guard = supervise("attributed", spawn, &registry);
         let handle = registry.lookup("attributed").expect("managed handle");
 
         redoor_core::logging::user_scope(Some(Arc::from("alice (password)")), handle.start())
@@ -1384,7 +1979,7 @@ mod tests {
         );
         // The cycle took the user, so a later automatic cycle has none to log with.
         assert!(handle.take_requester().is_none());
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
     #[tokio::test]
@@ -1392,30 +1987,31 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let observed_spawn = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "pending".into(),
-                SpawnFn::new(move |_status| {
-                    let observed_spawn = observed_spawn.clone();
-                    async move {
-                        observed_spawn.fetch_add(1, Ordering::SeqCst);
-                        std::future::pending::<SpawnResult>().await
-                    }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+        let _guard = supervise(
+            "pending",
+            SpawnFn::new(move |_request| {
+                let observed_spawn = observed_spawn.clone();
+                async move {
+                    observed_spawn.fetch_add(1, Ordering::SeqCst);
+                    std::future::pending::<SpawnResult>().await
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("pending").expect("managed handle");
         handle.start().await.expect("start accepted");
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
 
         let shutdown_handle = handle.clone();
-        let shutdown = tokio::spawn(async move { shutdown_handle.shutdown().await });
+        let shutdown = tokio::spawn(async move { shutdown_handle.shutdown(None).await });
         wait_until(|| !handle.snapshot().desired_running).await;
         // Once shutdown intent wins, a socket parsed earlier cannot register late.
-        assert!(handle.mark_connected(SocketId::new()).await.is_none());
+        assert_eq!(
+            handle
+                .mark_connected(SocketId::new(), reported_hello())
+                .await,
+            ConnectVerdict::Stopped
+        );
         shutdown
             .await
             .expect("shutdown task should complete")
@@ -1431,21 +2027,17 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let observed_spawns = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "retry-pending".into(),
-                SpawnFn::new(move |status| {
-                    let observed_spawns = observed_spawns.clone();
-                    async move {
-                        let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
-                        status.report(format!("attempt-{attempt}"));
-                        std::future::pending::<SpawnResult>().await
-                    }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+        let _guard = supervise(
+            "retry-pending",
+            SpawnFn::new(move |request| {
+                let observed_spawns = observed_spawns.clone();
+                async move {
+                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
+                    request.status.report(format!("attempt-{attempt}"));
+                    std::future::pending::<SpawnResult>().await
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("retry-pending").expect("managed handle");
         handle.start().await.expect("start accepted");
@@ -1458,8 +2050,7 @@ mod tests {
 
         let late_socket = SocketId::new();
         // Queueing registration first models a connection that completed as cancellation began.
-        let canceled_generation = handle
-            .mark_connected(late_socket)
+        let canceled_generation = connect(&handle, &late_socket)
             .await
             .expect("old attempt should initially admit registration");
         handle
@@ -1488,44 +2079,33 @@ mod tests {
             ["attempt-2"]
         );
         assert_eq!(snapshot.status, AgentConnectionStatus::Starting);
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
     #[cfg(unix)]
     #[tokio::test]
-    async fn retry_reaps_owned_child_before_acknowledging_replacement() {
+    async fn retry_reaps_owned_session_before_acknowledging_replacement() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let first_pid = Arc::new(AtomicUsize::new(0));
         let observed_spawns = spawn_count.clone();
         let observed_pid = first_pid.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "retry-child".into(),
-                SpawnFn::new(move |_status| {
-                    let observed_spawns = observed_spawns.clone();
-                    let observed_pid = observed_pid.clone();
-                    async move {
-                        let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
-                        let child = Command::new("sh")
-                            .arg("-c")
-                            .arg("cat")
-                            .kill_on_drop(true)
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .spawn()
-                            .map_err(SpawnError::Spawn)?;
-                        if attempt == 0 {
-                            observed_pid.store(child.id().unwrap_or(0) as usize, Ordering::SeqCst);
-                        }
-                        Ok(child)
+        let _guard = supervise(
+            "retry-child",
+            SpawnFn::new(move |_request| {
+                let observed_spawns = observed_spawns.clone();
+                let observed_pid = observed_pid.clone();
+                async move {
+                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
+                    let session = idle_session()?;
+                    if attempt == 0 {
+                        observed_pid
+                            .store(session.child.id().unwrap_or(0) as usize, Ordering::SeqCst);
                     }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+                    Ok(session)
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("retry-child").expect("managed handle");
         handle.start().await.expect("start accepted");
@@ -1539,12 +2119,12 @@ mod tests {
             .status()
             .await
             .expect("probe old child");
-        // Retry acknowledgement is a cleanup barrier, so the original child cannot remain alive.
+        // Retry acknowledgement is a cleanup barrier, so the original session cannot remain.
         assert!(!status.success());
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 2).await;
         // Exactly one replacement proves retry did not change ordinary duplicate-start behavior.
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
     #[tokio::test]
@@ -1552,22 +2132,18 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let observed_spawns = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "broken".into(),
-                SpawnFn::new(move |_status| {
-                    let observed_spawns = observed_spawns.clone();
-                    async move {
-                        observed_spawns.fetch_add(1, Ordering::SeqCst);
-                        Err(SpawnError::Spawn(std::io::Error::other(
-                            "missing executable",
-                        )))
-                    }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+        let _guard = supervise(
+            "broken",
+            SpawnFn::new(move |_request| {
+                let observed_spawns = observed_spawns.clone();
+                async move {
+                    observed_spawns.fetch_add(1, Ordering::SeqCst);
+                    Err(SpawnError::Spawn(std::io::Error::other(
+                        "missing executable",
+                    )))
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("broken").expect("managed handle");
         handle.start().await.expect("start accepted");
@@ -1579,24 +2155,11 @@ mod tests {
             Some("missing executable")
         );
         assert!(handle.snapshot().desired_running);
-        handle.shutdown().await.expect("backoff interrupted");
+        handle.shutdown(None).await.expect("backoff interrupted");
         // Shutdown must win over a pending retry timer.
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
         // Acknowledgement cancels the failed attempt instead of letting its backoff respawn it.
         assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
-    }
-
-    /// Spawns a long-running child that keeps running until the supervisor kills it.
-    fn idle_child() -> SpawnResult {
-        Command::new("sh")
-            .arg("-c")
-            .arg("cat")
-            .kill_on_drop(true)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(SpawnError::Spawn)
     }
 
     /// Moves the paused clock forward in small steps until `predicate` holds, so timers
@@ -1625,25 +2188,21 @@ mod tests {
         let spawn_count = Arc::new(AtomicUsize::new(0));
         let observed_spawns = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "locked".into(),
-                SpawnFn::new(move |_status| {
-                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
-                    async move {
-                        if attempt == 1 {
-                            Err(SpawnError::Provision(
-                                crate::ssh::ProvisionError::SshKeyLocked("key locked".into()),
-                            ))
-                        } else {
-                            idle_child()
-                        }
+        let _guard = supervise(
+            "locked",
+            SpawnFn::new(move |_request| {
+                let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if attempt == 1 {
+                        Err(SpawnError::Provision(
+                            crate::ssh::ProvisionError::SshKeyLocked("key locked".into()),
+                        ))
+                    } else {
+                        idle_session()
                     }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("locked").expect("managed handle");
         handle.start().await.expect("start accepted");
@@ -1657,6 +2216,8 @@ mod tests {
         // ... while the agent stays wanted, so unlocking needs no second Start decision.
         assert!(handle.snapshot().desired_running);
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Starting);
+        // Browsers with an unlocked vault hand the key over when they see this.
+        assert!(handle.snapshot().waiting_for_ssh_key);
         // Retrying on a timer cannot unlock the key, so no attempt is made without a Start.
         assert!(
             !advance_until(Duration::from_secs(120), || {
@@ -1669,39 +2230,25 @@ mod tests {
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 2).await;
         // The Start of an already desired-running agent wakes the waiting supervisor.
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
-        handle.shutdown().await.expect("shutdown acknowledged");
+        // The new attempt no longer waits for the key.
+        assert!(!handle.snapshot().waiting_for_ssh_key);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
-    /// A live child is no proof the agent will connect again; one without a connection for
-    /// the deadline, after its start or after its socket closed, is replaced.
+    /// A live session is no proof the daemon will connect again; one without a connection
+    /// for the deadline, after its start or after its socket closed, is dropped and the next
+    /// cycle replaces the daemon.
     #[tokio::test(start_paused = true)]
-    async fn child_without_a_connection_is_replaced_after_the_deadline() {
-        let spawn_count = Arc::new(AtomicUsize::new(0));
-        let observed_spawns = spawn_count.clone();
+    async fn session_without_a_connection_replaces_the_daemon_after_the_deadline() {
+        let recorder = Recorder::default();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "unconnected".into(),
-                SpawnFn::new(move |_status| {
-                    observed_spawns.fetch_add(1, Ordering::SeqCst);
-                    async { idle_child() }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
-        );
+        let _guard = supervise("unconnected", recorder.spawn(), &registry);
         let handle = registry.lookup("unconnected").expect("managed handle");
         handle.start().await.expect("start accepted");
-        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+        wait_until(|| recorder.count() == 1).await;
 
-        // A child that never connects is replaced once the deadline passes.
-        assert!(
-            advance_until(CONNECTION_DEADLINE * 2, || {
-                spawn_count.load(Ordering::SeqCst) == 2
-            })
-            .await
-        );
+        // A daemon that never connects is replaced once the deadline passes.
+        assert!(advance_until(CONNECTION_DEADLINE * 2, || recorder.count() == 2).await);
         // The replacement is explained to the operator.
         assert!(
             handle
@@ -1709,31 +2256,23 @@ mod tests {
                 .connection_issue
                 .is_some_and(|issue| issue.contains("had no connection"))
         );
+        // The first cycle keeps a matching daemon; the next one asks for its replacement.
+        assert_eq!(recorder.requests(), [(false, false), (true, false)]);
 
         let socket = SocketId::new();
-        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        assert!(connect(&handle, &socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
-        // A connected child is left alone however long it runs.
-        assert!(
-            !advance_until(CONNECTION_DEADLINE * 2, || {
-                spawn_count.load(Ordering::SeqCst) > 2
-            })
-            .await
-        );
+        // A connected daemon is left alone however long it runs.
+        assert!(!advance_until(CONNECTION_DEADLINE * 2, || recorder.count() > 2).await);
 
         handle.mark_disconnected(socket);
-        // After a clean close the child gets the deadline again to reconnect, then is replaced.
-        assert!(
-            advance_until(CONNECTION_DEADLINE * 2, || {
-                spawn_count.load(Ordering::SeqCst) == 3
-            })
-            .await
-        );
-        handle.shutdown().await.expect("shutdown acknowledged");
+        // After a clean close the daemon gets the deadline again to reconnect.
+        assert!(advance_until(CONNECTION_DEADLINE * 2, || recorder.count() == 3).await);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
-    /// An agent can register before its spawn future finishes (an SSH launch reads the
-    /// script's report first); that connection must count, or the deadline kills it.
+    /// A daemon can register before its ensure step finishes (an SSH forward exists before
+    /// the report); that connection must count, or the deadline replaces a healthy daemon.
     #[tokio::test(start_paused = true)]
     async fn registration_during_spawn_counts_against_the_deadline() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
@@ -1741,21 +2280,17 @@ mod tests {
         let observed_spawns = spawn_count.clone();
         let spawn_release = release.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "early-registration".into(),
-                SpawnFn::new(move |_status| {
-                    observed_spawns.fetch_add(1, Ordering::SeqCst);
-                    let release = spawn_release.clone();
-                    async move {
-                        release.notified().await;
-                        idle_child()
-                    }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+        let _guard = supervise(
+            "early-registration",
+            SpawnFn::new(move |_request| {
+                observed_spawns.fetch_add(1, Ordering::SeqCst);
+                let release = spawn_release.clone();
+                async move {
+                    release.notified().await;
+                    idle_session()
+                }
+            }),
+            &registry,
         );
         let handle = registry
             .lookup("early-registration")
@@ -1764,22 +2299,22 @@ mod tests {
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
 
         let socket = SocketId::new();
-        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        assert!(connect(&handle, &socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
         release.notify_one();
 
-        // The healthy agent outlives the deadline instead of being replaced.
+        // The healthy daemon outlives the deadline instead of being replaced.
         assert!(
             !advance_until(CONNECTION_DEADLINE * 2, || {
                 spawn_count.load(Ordering::SeqCst) > 1
             })
             .await
         );
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
-    /// A socket that registered and closed again before the spawn finished is no
-    /// connection; the child still gets replaced after the deadline.
+    /// A socket that registered and closed again before the ensure step finished is no
+    /// connection; the daemon still gets replaced after the deadline.
     #[tokio::test(start_paused = true)]
     async fn socket_closed_during_spawn_does_not_count_as_connected() {
         let spawn_count = Arc::new(AtomicUsize::new(0));
@@ -1787,33 +2322,29 @@ mod tests {
         let observed_spawns = spawn_count.clone();
         let spawn_release = release.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "early-disconnect".into(),
-                SpawnFn::new(move |_status| {
-                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
-                    let release = spawn_release.clone();
-                    async move {
-                        if attempt == 1 {
-                            release.notified().await;
-                        }
-                        idle_child()
+        let _guard = supervise(
+            "early-disconnect",
+            SpawnFn::new(move |_request| {
+                let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst) + 1;
+                let release = spawn_release.clone();
+                async move {
+                    if attempt == 1 {
+                        release.notified().await;
                     }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+                    idle_session()
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("early-disconnect").expect("managed handle");
         handle.start().await.expect("start accepted");
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
 
         let socket = SocketId::new();
-        assert!(handle.mark_connected(socket.clone()).await.is_some());
+        assert!(connect(&handle, &socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&socket)).await;
         handle.mark_disconnected(socket);
-        // The closed socket is forgotten even though no child is being watched yet.
+        // The closed socket is forgotten even though no session is being watched yet.
         assert!(
             advance_until(Duration::from_secs(1), || handle
                 .snapshot()
@@ -1823,42 +2354,34 @@ mod tests {
         );
         release.notify_one();
 
-        // The closed socket does not keep the deadline off, so the child is replaced.
+        // The closed socket does not keep the deadline off, so the daemon is replaced.
         assert!(
             advance_until(CONNECTION_DEADLINE * 2, || {
                 spawn_count.load(Ordering::SeqCst) == 2
             })
             .await
         );
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
-    /// Output of a child with a configured log is forwarded into the log, and only the
-    /// latest attempt's output explains its exit.
+    /// A session ended by its dead daemon explains the exit with the end of the daemon's log,
+    /// which the holder printed as its last line.
     #[tokio::test]
-    async fn exit_issue_includes_forwarded_output_from_the_latest_attempt() {
-        let temp_dir = TempDir::create();
-        let path = temp_dir.path().join("exit-diagnostic.log");
-        tokio::fs::write(&path, "output from an earlier attempt\n")
-            .await
-            .expect("seed diagnostic log");
+    async fn daemon_exit_is_explained_with_its_log_tail() {
         let registry = WatchdogRegistry::new();
-        let spawn = SpawnFn::new(|_status| async {
-            Command::new("sh")
-                .arg("-c")
-                .arg("echo 'starting agent'; echo 'invalid configured directory: /missing' >&2; exit 1")
-                .kill_on_drop(true)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(SpawnError::Spawn)
-        })
-        .with_log_file(LogFileSpec::new(&path, None));
-        let _guard = SupervisorGuard(
-            spawn_supervisor("log-diagnostic".into(), spawn, &registry, callback())
-                .expect("register"),
-        );
+        let spawn = SpawnFn::new(|_request| async {
+            session(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg(r#"echo '{"ended":"daemon_exited","log_tail":"invalid home: /missing"}'; exit 1"#)
+                    .kill_on_drop(true)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn(),
+            )
+        });
+        let _guard = supervise("log-diagnostic", spawn, &registry);
         let handle = registry.lookup("log-diagnostic").expect("managed handle");
 
         handle.start().await.expect("start accepted");
@@ -1866,45 +2389,32 @@ mod tests {
         let issue = handle
             .snapshot()
             .connection_issue
-            .expect("failed child should publish its output");
-        handle.shutdown().await.expect("backoff interrupted");
+            .expect("a dead daemon should publish its log");
+        handle.shutdown(None).await.expect("backoff interrupted");
 
-        // The browser-facing issue must expose the subprocess's actionable error.
-        assert!(
-            issue.contains("invalid configured directory: /missing"),
-            "{issue}"
-        );
-        // Output from an old retry must not be presented as part of the latest failure.
-        assert!(!issue.contains("output from an earlier attempt"), "{issue}");
-        let log = tokio::fs::read_to_string(&path).await.expect("read log");
-        // Both streams are persisted after the existing history.
-        assert!(log.starts_with("output from an earlier attempt\n"), "{log}");
-        assert!(log.contains("starting agent\n"), "{log}");
-        assert!(
-            log.contains("invalid configured directory: /missing\n"),
-            "{log}"
-        );
+        // The browser-facing issue must expose the daemon's own error.
+        assert!(issue.contains("invalid home: /missing"), "{issue}");
+        // It must say that the daemon died, not that some process exited with a status.
+        assert!(issue.contains("agent daemon exited"), "{issue}");
     }
 
     #[tokio::test]
     async fn piped_ssh_stderr_is_visible_in_connection_issue() {
         let registry = WatchdogRegistry::new();
-        let spawn = SpawnFn::new(|_status| async {
-            Command::new("sh")
-                .arg("-c")
-                .arg("printf 'Error: remote port forwarding failed for listen port 51268\\n' >&2; exit 255")
-                .kill_on_drop(true)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(SpawnError::Spawn)
+        let spawn = SpawnFn::new(|_request| async {
+            session(
+                Command::new("sh")
+                    .arg("-c")
+                    .arg("printf 'Error: remote port forwarding failed for listen path /tmp/x.sock\\n' >&2; exit 255")
+                    .kill_on_drop(true)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn(),
+            )
         })
         .with_process_name("SSH process");
-        let _guard = SupervisorGuard(
-            spawn_supervisor("ssh-diagnostic".into(), spawn, &registry, callback())
-                .expect("register"),
-        );
+        let _guard = supervise("ssh-diagnostic", spawn, &registry);
         let handle = registry.lookup("ssh-diagnostic").expect("managed handle");
 
         handle.start().await.expect("start accepted");
@@ -1914,11 +2424,11 @@ mod tests {
             .connection_issue
             .expect("failed SSH child should publish its stderr");
 
-        // Naming the actual child avoids implying that the verified remote binary returned 255.
+        // Naming the actual child avoids implying that the remote agent returned 255.
         assert!(issue.contains("SSH process exited with status code 255"));
         // OpenSSH's reason must reach the UI instead of collapsing into a bare exit status.
-        assert!(issue.contains("remote port forwarding failed for listen port 51268"));
-        handle.shutdown().await.expect("backoff interrupted");
+        assert!(issue.contains("remote port forwarding failed for listen path"));
+        handle.shutdown(None).await.expect("backoff interrupted");
     }
 
     #[tokio::test]
@@ -1929,17 +2439,7 @@ mod tests {
         let _guard = SupervisorGuard(
             spawn_supervisor(
                 "generation".into(),
-                SpawnFn::new(|_status| async {
-                    Command::new("sh")
-                        .arg("-c")
-                        .arg("cat")
-                        .kill_on_drop(true)
-                        .stdin(Stdio::piped())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null())
-                        .spawn()
-                        .map_err(SpawnError::Spawn)
-                }),
+                SpawnFn::new(|_request| async { idle_session() }),
                 &registry,
                 Arc::new(move |snapshot| {
                     callback_snapshots
@@ -1947,6 +2447,7 @@ mod tests {
                         .expect("snapshot history poisoned")
                         .push(snapshot);
                 }),
+                no_supersede(),
             )
             .expect("register"),
         );
@@ -1960,11 +2461,11 @@ mod tests {
         let old_socket = SocketId::new();
         let new_socket = SocketId::new();
         let fence_socket = SocketId::new();
-        assert!(handle.mark_connected(old_socket.clone()).await.is_some());
-        assert!(handle.mark_connected(new_socket.clone()).await.is_some());
+        assert!(connect(&handle, &old_socket).await.is_some());
+        assert!(connect(&handle, &new_socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&new_socket)).await;
         handle.mark_disconnected(old_socket);
-        assert!(handle.mark_connected(fence_socket.clone()).await.is_some());
+        assert!(connect(&handle, &fence_socket).await.is_some());
         wait_until(|| {
             snapshots
                 .lock()
@@ -1997,75 +2498,44 @@ mod tests {
         }
         // Successful registration removes an earlier lifecycle diagnostic.
         assert_eq!(handle.snapshot().connection_issue, None);
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
+    /// A stale socket only drops the session (the tunnel); the next cycle keeps the daemon,
+    /// and only a repeated failure reaches the deadline, which replaces it.
     #[tokio::test]
-    async fn stale_signal_restarts_only_the_current_socket_generation() {
-        let spawn_count = Arc::new(AtomicUsize::new(0));
-        let observed_spawns = spawn_count.clone();
+    async fn stale_signal_drops_only_the_session_of_the_current_socket() {
+        let recorder = Recorder::default();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "stale-generation".into(),
-                SpawnFn::new(move |_status| {
-                    let observed_spawns = observed_spawns.clone();
-                    async move {
-                        observed_spawns.fetch_add(1, Ordering::SeqCst);
-                        Command::new("sh")
-                            .arg("-c")
-                            .arg("cat")
-                            .kill_on_drop(true)
-                            .stdin(Stdio::piped())
-                            .stdout(Stdio::null())
-                            .stderr(Stdio::null())
-                            .spawn()
-                            .map_err(SpawnError::Spawn)
-                    }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
-        );
+        let _guard = supervise("stale-generation", recorder.spawn(), &registry);
         let handle = registry.lookup("stale-generation").expect("managed handle");
         handle.start().await.expect("start accepted");
-        wait_until(|| spawn_count.load(Ordering::SeqCst) == 1).await;
+        wait_until(|| recorder.count() == 1).await;
         let old_socket = SocketId::new();
         let replacement_socket = SocketId::new();
         let fence_socket = SocketId::new();
         // Managed registrations must be accepted while the supervisor is desired-running.
-        assert!(handle.mark_connected(old_socket.clone()).await.is_some());
+        assert!(connect(&handle, &old_socket).await.is_some());
         // A replacement registration must supersede the old socket generation.
-        assert!(
-            handle
-                .mark_connected(replacement_socket.clone())
-                .await
-                .is_some()
-        );
+        assert!(connect(&handle, &replacement_socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&replacement_socket)).await;
 
         handle.signal_stale(old_socket);
         // This connection acts as a queue fence after the stale event without pre-checking state.
-        assert!(handle.mark_connected(fence_socket.clone()).await.is_some());
+        assert!(connect(&handle, &fence_socket).await.is_some());
         wait_until(|| handle.snapshot().socket_id.as_ref() == Some(&fence_socket)).await;
 
-        // The replaced socket's late stale event must not terminate the healthy child.
-        assert_eq!(spawn_count.load(Ordering::SeqCst), 1);
+        // The replaced socket's late stale event must not end the healthy session.
+        assert_eq!(recorder.count(), 1);
         // Ignoring an old generation must not publish a misleading lifecycle issue.
         assert_eq!(handle.snapshot().connection_issue, None);
 
-        handle.signal_stale(fence_socket);
-        wait_until(|| {
-            handle.snapshot().connection_issue.as_deref() == Some("Agent connection went stale")
-        })
-        .await;
-        // A stale event for the authoritative socket must promptly end the current child cycle.
-        assert_eq!(
-            handle.snapshot().connection_issue.as_deref(),
-            Some("Agent connection went stale")
-        );
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.signal_stale(fence_socket.clone());
+        handle.mark_disconnected(fence_socket);
+        wait_until(|| recorder.count() == 2).await;
+        // The new cycle rebuilds the tunnel to the same daemon instead of replacing it.
+        assert!(!recorder.requests()[1].0);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
     #[tokio::test]
@@ -2077,29 +2547,25 @@ mod tests {
         let hold_first = release_first.clone();
         let observed_spawns = spawn_count.clone();
         let registry = WatchdogRegistry::new();
-        let _guard = SupervisorGuard(
-            spawn_supervisor(
-                "status".into(),
-                SpawnFn::new(move |status| {
-                    let wait_first = wait_first.clone();
-                    let hold_first = hold_first.clone();
-                    let observed_spawns = observed_spawns.clone();
-                    async move {
-                        let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
-                        status.report(format!("step-{attempt}"));
-                        if attempt == 0 {
-                            wait_first.notify_one();
-                            hold_first.notified().await;
-                        }
-                        Err(SpawnError::Spawn(std::io::Error::other(format!(
-                            "spawn failed {attempt}"
-                        ))))
+        let _guard = supervise(
+            "status",
+            SpawnFn::new(move |request| {
+                let wait_first = wait_first.clone();
+                let hold_first = hold_first.clone();
+                let observed_spawns = observed_spawns.clone();
+                async move {
+                    let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
+                    request.status.report(format!("step-{attempt}"));
+                    if attempt == 0 {
+                        wait_first.notify_one();
+                        hold_first.notified().await;
                     }
-                }),
-                &registry,
-                callback(),
-            )
-            .expect("register"),
+                    Err(SpawnError::Spawn(std::io::Error::other(format!(
+                        "spawn failed {attempt}"
+                    ))))
+                }
+            }),
+            &registry,
         );
         let handle = registry.lookup("status").expect("managed handle");
         handle.start().await.expect("start accepted");
@@ -2135,7 +2601,338 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["step-1"]
         );
-        handle.shutdown().await.expect("shutdown acknowledged");
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// A Restart of a managed device replaces the daemon in a new cycle at once, and a
+    /// Restart of a stopped device is refused.
+    #[tokio::test]
+    async fn restart_replaces_the_daemon_without_backoff() {
+        let recorder = Recorder::default();
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("restarted", recorder.spawn(), &registry);
+        let handle = registry.lookup("restarted").expect("managed handle");
+
+        // A stopped device has no daemon to replace.
+        assert!(matches!(
+            handle.restart().await,
+            Err(WatchdogError::NotRunning)
+        ));
+        handle.start().await.expect("start accepted");
+        wait_until(|| recorder.count() == 1).await;
+        handle.restart().await.expect("restart accepted");
+        wait_until(|| recorder.count() == 2).await;
+
+        // Only the restarted cycle asks the ensure step to replace a matching daemon.
+        assert_eq!(recorder.requests(), [(false, false), (true, false)]);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// The ensure step learns whether the server still has a socket, so a kept daemon is only
+    /// woken when it has none.
+    #[tokio::test]
+    async fn cycle_reports_whether_the_server_is_connected() {
+        let recorder = Recorder::default();
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("connected-flag", recorder.spawn(), &registry);
+        let handle = registry.lookup("connected-flag").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| recorder.count() == 1).await;
+        let socket = SocketId::new();
+        assert!(connect(&handle, &socket).await.is_some());
+        wait_until(|| handle.snapshot().socket_id.is_some()).await;
+
+        handle.restart().await.expect("restart accepted");
+        wait_until(|| recorder.count() == 2).await;
+
+        // A local daemon's connection does not depend on the session, so it survives the
+        // session's replacement and the next ensure step knows about it.
+        assert_eq!(recorder.requests()[1], (true, true));
+        // The device stays connected while its session is replaced.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Connected);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// A server going away drops the sessions but leaves the devices' state alone: the
+    /// daemons keep running and the next server process takes over.
+    #[tokio::test]
+    async fn detach_leaves_the_device_state_alone() {
+        let recorder = Recorder::default();
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("detached", recorder.spawn(), &registry);
+        let handle = registry.lookup("detached").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| recorder.count() == 1).await;
+        let before = handle.snapshot();
+
+        registry.detach_all().await;
+
+        // Nothing was stopped, so no Stopped state reaches the router, which would evict
+        // the daemon.
+        assert_eq!(handle.snapshot(), before);
+        assert!(handle.snapshot().desired_running);
+    }
+
+    /// A stop job runs after the acknowledgement, shows `Stopping` with its failure while it
+    /// is retried, and settles `Stopped` once it succeeds.
+    #[tokio::test(start_paused = true)]
+    async fn stop_job_is_retried_until_it_succeeds() {
+        let recorder = Recorder::default();
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("stopping", recorder.spawn(), &registry);
+        let handle = registry.lookup("stopping").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| recorder.count() == 1).await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let counted = attempts.clone();
+        let stop: RemoteJob = Arc::new(move || {
+            let attempt = counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async move {
+                if attempt == 0 {
+                    Err("device unreachable".to_string())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+
+        handle
+            .shutdown(Some(stop))
+            .await
+            .expect("shutdown acknowledged");
+        wait_until(|| handle.snapshot().connection_issue.is_some()).await;
+        // The failure is shown while the stop is still pending.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopping);
+        assert_eq!(
+            handle.snapshot().connection_issue.as_deref(),
+            Some("device unreachable")
+        );
+        assert!(
+            advance_until(Duration::from_secs(5), || handle.snapshot().status
+                == AgentConnectionStatus::Stopped)
+            .await
+        );
+        // The retry succeeded and nothing started again.
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+        assert_eq!(recorder.count(), 1);
+    }
+
+    /// A device that never got a daemon (its start failed) stops at once, without reaching
+    /// out to a device that may not even be reachable.
+    #[tokio::test]
+    async fn stop_without_a_daemon_skips_the_device() {
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise(
+            "never-started",
+            SpawnFn::new(|_request| async {
+                Err(SpawnError::Spawn(std::io::Error::other("wrong password")))
+            }),
+            &registry,
+        );
+        let handle = registry.lookup("never-started").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| handle.snapshot().connection_issue.is_some()).await;
+        let ran = Arc::new(AtomicUsize::new(0));
+        let counted = ran.clone();
+        let stop: RemoteJob = Arc::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Ok(()) })
+        });
+
+        handle
+            .shutdown(Some(stop))
+            .await
+            .expect("shutdown acknowledged");
+
+        // No daemon can run, so the device is stopped right away.
+        assert_eq!(handle.snapshot().status, AgentConnectionStatus::Stopped);
+        assert_eq!(ran.load(Ordering::SeqCst), 0);
+    }
+
+    /// A Stop while the ensure step runs after it sent the payload still stops the device:
+    /// the step may have started a daemon whose report never arrived.
+    #[tokio::test]
+    async fn stop_after_the_payload_was_sent_reaches_the_device() {
+        let (sent_tx, sent) = tokio::sync::oneshot::channel();
+        let sent_tx = Arc::new(Mutex::new(Some(sent_tx)));
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise(
+            "payload-sent",
+            SpawnFn::new(move |request| {
+                let sent_tx = sent_tx.clone();
+                async move {
+                    request.daemon_may_run.mark();
+                    if let Some(sent_tx) = sent_tx.lock().unwrap().take() {
+                        let _ = sent_tx.send(());
+                    }
+                    std::future::pending::<SpawnResult>().await
+                }
+            }),
+            &registry,
+        );
+        let handle = registry.lookup("payload-sent").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        sent.await.expect("payload sent");
+        let ran = Arc::new(tokio::sync::Notify::new());
+        let notify = ran.clone();
+        let stop: RemoteJob = Arc::new(move || {
+            notify.notify_one();
+            Box::pin(async { Ok(()) })
+        });
+
+        handle
+            .shutdown(Some(stop))
+            .await
+            .expect("shutdown acknowledged");
+
+        // The device stop runs although no report ever arrived.
+        tokio::time::timeout(Duration::from_secs(5), ran.notified())
+            .await
+            .expect("the device stop should run");
+    }
+
+    /// A Start while a stop is pending wins: the device runs again.
+    #[tokio::test]
+    async fn start_wins_over_a_pending_stop() {
+        let recorder = Recorder::default();
+        let registry = WatchdogRegistry::new();
+        let _guard = supervise("restarting", recorder.spawn(), &registry);
+        let handle = registry.lookup("restarting").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        wait_until(|| recorder.count() == 1).await;
+        let stop: RemoteJob = Arc::new(|| Box::pin(std::future::pending()));
+
+        handle
+            .shutdown(Some(stop))
+            .await
+            .expect("shutdown acknowledged");
+        wait_until(|| handle.snapshot().status == AgentConnectionStatus::Stopping).await;
+        handle.start().await.expect("start accepted");
+
+        // The start is not stuck behind a stop that never finishes.
+        wait_until(|| recorder.count() == 2).await;
+        assert!(handle.snapshot().desired_running);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// A `hello` after the report is checked at once: another build is superseded.
+    #[tokio::test]
+    async fn hello_after_the_report_must_match_it() {
+        let registry = WatchdogRegistry::new();
+        let reported = Arc::new(tokio::sync::Notify::new());
+        let notify = reported.clone();
+        let _guard = supervise(
+            "checked",
+            SpawnFn::new(move |_request| {
+                let notify = notify.clone();
+                async move {
+                    let session = idle_session();
+                    notify.notify_one();
+                    session
+                }
+            }),
+            &registry,
+        );
+        let handle = registry.lookup("checked").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        reported.notified().await;
+        wait_until(|| handle.expected().is_some()).await;
+
+        // A daemon of another build is not the one the ensure step reported.
+        assert_eq!(
+            handle.mark_connected(SocketId::new(), other_hello()).await,
+            ConnectVerdict::Superseded
+        );
+        // The reported daemon is accepted.
+        assert!(connect(&handle, &SocketId::new()).await.is_some());
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// A `hello` before the report is accepted provisionally and superseded when the report
+    /// describes another daemon.
+    #[tokio::test]
+    async fn provisional_hello_is_superseded_by_a_mismatching_report() {
+        let registry = WatchdogRegistry::new();
+        let release = Arc::new(tokio::sync::Notify::new());
+        let spawn_release = release.clone();
+        let (superseded_tx, mut superseded) = mpsc::unbounded_channel();
+        let _guard = SupervisorGuard(
+            spawn_supervisor(
+                "provisional".into(),
+                SpawnFn::new(move |_request| {
+                    let release = spawn_release.clone();
+                    async move {
+                        release.notified().await;
+                        idle_session()
+                    }
+                }),
+                &registry,
+                callback(),
+                Arc::new(move |socket| {
+                    let _ = superseded_tx.send(socket);
+                }),
+            )
+            .expect("register"),
+        );
+        let handle = registry.lookup("provisional").expect("managed handle");
+        handle.start().await.expect("start accepted");
+        let socket = SocketId::new();
+
+        let verdict = handle.mark_connected(socket.clone(), other_hello()).await;
+        // Without a report the daemon cannot be judged yet, so it is not refused.
+        assert!(matches!(verdict, ConnectVerdict::Accepted(_)));
+        wait_until(|| handle.snapshot().socket_id.is_some()).await;
+        release.notify_one();
+
+        // The report names another build, so the provisional connection is ended.
+        assert_eq!(superseded.recv().await, Some(socket));
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+    }
+
+    /// Desired-running is persisted on Start and Stop but not on a detach, so the next server
+    /// process starts exactly the devices that were running.
+    #[tokio::test]
+    async fn desired_running_is_persisted_across_server_restarts() {
+        let directory = redoor_core::test_support::TempDir::create();
+        let store = DesiredRunningStore::load(directory.path()).await;
+        let registry = WatchdogRegistry::with_desired_running(store.clone());
+        let recorder = Recorder::default();
+        let _running = supervise("dev_running", recorder.spawn(), &registry);
+        let _stopped = supervise("dev_stopped", Recorder::default().spawn(), &registry);
+        let running = registry.lookup("dev_running").unwrap();
+        let stopped = registry.lookup("dev_stopped").unwrap();
+        running.start().await.unwrap();
+        stopped.start().await.unwrap();
+        stopped.shutdown(None).await.unwrap();
+        registry.detach_all().await;
+
+        // Only the device still running when the server went away is listed.
+        assert_eq!(store.listed().await, ["dev_running".to_string()]);
+
+        let restarted = WatchdogRegistry::with_desired_running(
+            DesiredRunningStore::load(directory.path()).await,
+        );
+        let recorder = Recorder::default();
+        let _running = supervise("dev_running", recorder.spawn(), &restarted);
+        let _stopped = supervise("dev_stopped", Recorder::default().spawn(), &restarted);
+        restarted.start_desired_running().await;
+
+        // The running device starts again on its own; the stopped one stays stopped.
+        wait_until(|| recorder.count() == 1).await;
+        assert!(
+            restarted
+                .lookup("dev_running")
+                .unwrap()
+                .snapshot()
+                .desired_running
+        );
+        assert!(
+            !restarted
+                .lookup("dev_stopped")
+                .unwrap()
+                .snapshot()
+                .desired_running
+        );
     }
 
     /// A full supervisor mailbox makes lifecycle events wait instead of growing memory or
@@ -2143,7 +2940,9 @@ mod tests {
     #[tokio::test]
     async fn full_mailbox_defers_socket_events_instead_of_dropping() {
         let registry = WatchdogRegistry::new();
-        let (handle, mut commands) = registry.register("busy".into(), callback()).unwrap();
+        let (handle, mut commands) = registry
+            .register("busy".into(), callback(), no_supersede())
+            .unwrap();
         for _ in 0..SUPERVISOR_COMMAND_CAPACITY {
             handle.mark_disconnected(SocketId::new());
         }
@@ -2169,7 +2968,9 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn full_mailbox_bounds_lifecycle_requests() {
         let registry = WatchdogRegistry::new();
-        let (handle, _commands) = registry.register("wedged".into(), callback()).unwrap();
+        let (handle, _commands) = registry
+            .register("wedged".into(), callback(), no_supersede())
+            .unwrap();
         for _ in 0..SUPERVISOR_COMMAND_CAPACITY {
             handle.mark_disconnected(SocketId::new());
         }
@@ -2180,10 +2981,10 @@ mod tests {
         ));
     }
 
-    /// A stderr pipe kept open by a surviving grandchild must not stall the supervisor.
+    /// An output pipe kept open by a surviving grandchild must not stall the supervisor.
     #[tokio::test(start_paused = true)]
     async fn child_diagnostic_read_is_bounded() {
-        let reader = tokio::spawn(std::future::pending::<std::io::Result<Vec<u8>>>());
+        let reader = tokio::spawn(std::future::pending::<std::io::Result<SessionOutput>>());
         // Paused time advances to the deadline; the diagnostic is skipped, not awaited forever.
         assert_eq!(
             read_child_diagnostic(Some(reader), CHILD_DIAGNOSTIC_TIMEOUT).await,

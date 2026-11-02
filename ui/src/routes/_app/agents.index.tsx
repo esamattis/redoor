@@ -353,6 +353,7 @@ function AgentActionsMenu(props: {
                 <>
                     {props.agent.managed &&
                     (props.agent.status === "stopped" ||
+                        props.agent.status === "stopping" ||
                         props.agent.status === "disconnected") ? (
                         <ActionMenuButton
                             onClick={() => {

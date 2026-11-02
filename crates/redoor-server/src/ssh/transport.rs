@@ -28,14 +28,24 @@ const SSH_CONNECT_TIMEOUT_SECONDS: u32 = 15;
 /// notices the exit and builds a new tunnel.
 const SSH_SERVER_ALIVE_INTERVAL_SECONDS: u32 = 10;
 
-/// One reverse forward: SSH listens on `remote_port` at the remote host and
-/// asks the local SSH client to connect to `destination_host:destination_port`.
-/// Keeping the destination explicit lets a relay machine route agent traffic
-/// to a redoor server that the SSH target cannot reach directly.
+/// Where a reverse forward listens on the remote host.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum ForwardListen {
+    /// A TCP port on the remote loopback, used by relays.
+    Port(u16),
+    /// A Unix socket path, used by managed agents: their daemon outlives the session and must
+    /// find the next session's forward at the same address, which a random port cannot give.
+    Path(String),
+}
+
+/// One reverse forward: SSH listens on the remote host and asks the local SSH client to
+/// connect to `destination_host:destination_port`. Keeping the destination explicit lets a
+/// relay machine route agent traffic to a redoor server that the SSH target cannot reach
+/// directly.
 #[derive(Clone)]
 pub(super) struct ReverseForward {
-    /// Port exposed on the SSH target for the remotely launched agent.
-    remote_port: u16,
+    /// Where SSH listens on the SSH target for the remotely launched agent.
+    listen: ForwardListen,
     /// Host reached from the machine running the local SSH client.
     destination_host: String,
     /// Port reached from the machine running the local SSH client.
@@ -51,12 +61,17 @@ impl ReverseForward {
         } else {
             self.destination_host.clone()
         };
-        format!(
-            "{}:{}:{}",
-            self.remote_port, destination_host, self.destination_port
-        )
+        let listen = match &self.listen {
+            ForwardListen::Port(port) => port.to_string(),
+            ForwardListen::Path(path) => path.clone(),
+        };
+        format!("{listen}:{destination_host}:{}", self.destination_port)
     }
 }
+
+/// The text OpenSSH prints when sshd refuses or cannot create a stream-local forward, which
+/// `ExitOnForwardFailure` then turns into the end of the session.
+pub(super) const STREAM_FORWARD_FAILURE: &str = "forwarding failed for listen path";
 
 /// Options for [`SshHost::run`] that are orthogonal to the remote command,
 /// such as reverse port forwards and whether ssh should compress its traffic.
@@ -80,9 +95,12 @@ pub(super) struct SshRunOptions {
     /// Pipes stderr so a standalone launcher can detect an initial reverse
     /// forwarding bind failure while still copying agent logs to its terminal.
     pub(super) pipe_stderr: bool,
-    /// Pipes stdout so [`SshHost::spawn_with_report`] can read the launch script's report
-    /// before forwarding the rest to the log file or terminal itself.
+    /// Pipes stdout so [`SshHost::spawn_with_report`] can read the launch script's report;
+    /// the rest stays in the pipe for the session's owner.
     pipe_stdout: bool,
+    /// Pipes stdin and leaves it with the child, so the caller can write a payload and keep
+    /// the pipe open as the session's liveness signal.
+    pipe_stdin: bool,
     /// Managed SSH agents must skip the remote singleton PID lock so sequential
     /// TOML-backed agents on one user can start after the previous session.
     pub(super) managed_agent: bool,
@@ -123,10 +141,32 @@ impl SshRunOptions {
         destination_port: u16,
     ) -> Self {
         self.reverse_forwards.push(ReverseForward {
-            remote_port,
+            listen: ForwardListen::Port(remote_port),
             destination_host: destination_host.into(),
             destination_port,
         });
+        self
+    }
+
+    /// Adds a reverse forward from the Unix socket `path` on the SSH target to a destination
+    /// reached by the local SSH client.
+    pub(super) fn with_stream_forward(
+        mut self,
+        path: impl Into<String>,
+        destination_host: impl Into<String>,
+        destination_port: u16,
+    ) -> Self {
+        self.reverse_forwards.push(ReverseForward {
+            listen: ForwardListen::Path(path.into()),
+            destination_host: destination_host.into(),
+            destination_port,
+        });
+        self
+    }
+
+    /// Pipes stdin and leaves it with the child; see `pipe_stdin`.
+    pub(super) fn with_piped_stdin(mut self) -> Self {
+        self.pipe_stdin = true;
         self
     }
 
@@ -777,12 +817,10 @@ impl SshHost {
     /// script prints on stdout before it `exec`s the long-running process. Reporting and
     /// starting in one session saves a separate SSH round-trip for the report.
     ///
-    /// With a log file, the report is read without buffering ahead, so the rest of the
-    /// output stays in the child's pipes for its owner to forward into the size-bounded
-    /// log exactly like an ordinary spawn, keeping the exit diagnostic intact. Without one,
-    /// the rest goes to the server's terminal. Stderr is piped until the report is
-    /// complete, so when the session ends early, typically because SSH itself failed, the
-    /// returned error carries OpenSSH's explanation even for agents with a log file.
+    /// The report is read without buffering ahead, so the rest of stdout stays in the
+    /// child's pipe for its owner, and stderr stays piped too. When the session ends before
+    /// the report is complete, typically because SSH itself failed, the returned error
+    /// carries OpenSSH's explanation.
     pub(super) async fn spawn_with_report(
         &self,
         command: &str,
@@ -793,7 +831,6 @@ impl SshHost {
     ) -> Result<ReportedChild, std::io::Error> {
         let mut options = options.clone();
         options.pipe_stdout = true;
-        let caller_pipes_stderr = options.pipe_stderr;
         options.pipe_stderr = true;
         let mut child = self.spawn(command, args, &options).await?;
         let mut stdout = child
@@ -817,33 +854,19 @@ impl SshHost {
             }
         };
         if report.len() < lines {
-            return Err(self
-                .report_cut_short(child, stage, &report, options.log_file.as_ref())
-                .await);
+            return Err(self.report_cut_short(child, stage, &report).await);
         }
-        if options.log_file.is_some() {
-            // Both pipes go back to the child; the owner forwards them into the log.
-            child.stdout = Some(stdout);
-        } else {
-            forward_output(stdout, OutputStream::Stdout);
-            if !caller_pipes_stderr && let Some(stderr) = child.stderr.take() {
-                // The caller expected stderr on the terminal, as an ordinary spawn would
-                // have arranged.
-                forward_output(stderr, OutputStream::Stderr);
-            }
-        }
+        child.stdout = Some(stdout);
         Ok(ReportedChild { child, report })
     }
 
     /// Explains a session that ended before its report was complete, using the ssh exit
-    /// status and stderr. The stderr is also appended to the agent log file, if any, so
-    /// the log holds the failure like it would for an ordinary spawn.
-    async fn report_cut_short(
+    /// status and stderr.
+    pub(super) async fn report_cut_short(
         &self,
         mut child: tokio::process::Child,
         stage: &str,
         report: &[String],
-        log_file: Option<&LogFileSpec>,
     ) -> std::io::Error {
         let stderr = child
             .stderr
@@ -854,11 +877,6 @@ impl SshHost {
             read_bounded_tail(stderr, MAX_SSH_DIAGNOSTIC_BYTES)
         );
         let stderr = stderr.unwrap_or_default();
-        if let Some(log_file) = log_file
-            && !stderr.is_empty()
-        {
-            append_to_log(log_file, &stderr).await;
-        }
         let status = match status {
             Ok(status) => status,
             Err(error) => {
@@ -933,54 +951,6 @@ async fn read_report_lines(
     Ok(report)
 }
 
-/// Appends `bytes` to the agent log file, logging instead of failing because the caller
-/// is already reporting a more important error.
-async fn append_to_log(log_file: &LogFileSpec, bytes: &[u8]) {
-    let result = async { log_file.open().await?.write_message(bytes).await }.await;
-    if let Err(error) = result {
-        redoor_core::log_failure!(
-            Level::Error,
-            "Appending SSH diagnostics to the agent log failed: log_file={}, error={:#}",
-            log_file.path.display(),
-            error
-        );
-    }
-}
-
-/// Which of this process's streams a reported child's output goes to without a log file.
-#[derive(Debug, Clone, Copy)]
-enum OutputStream {
-    /// The remote process's stdout.
-    Stdout,
-    /// The remote process's stderr.
-    Stderr,
-}
-
-/// Copies the rest of a reported child's output to this process's matching stream, which
-/// is where it goes for ordinary spawns without a log file. Draining it also keeps a full
-/// pipe from blocking the remote process.
-fn forward_output(
-    mut reader: impl tokio::io::AsyncRead + Unpin + Send + 'static,
-    stream: OutputStream,
-) {
-    tokio::spawn(async move {
-        let result = match stream {
-            OutputStream::Stdout => tokio::io::copy(&mut reader, &mut tokio::io::stdout()).await,
-            OutputStream::Stderr => tokio::io::copy(&mut reader, &mut tokio::io::stderr()).await,
-        };
-        if let Err(error) = result {
-            redoor_core::log_failure!(
-                Level::Error,
-                "Forwarding remote agent output failed: stream={:?}, error={:#}",
-                stream,
-                error
-            );
-            // Keep draining so the remote process never blocks on a full pipe.
-            let _ = tokio::io::copy(&mut reader, &mut tokio::io::sink()).await;
-        }
-    });
-}
-
 /// Captured result of [`SshHost::output`].
 pub(super) struct SshOutput {
     /// Exit status of the ssh process; 255 means ssh itself failed.
@@ -1052,7 +1022,7 @@ async fn build_ssh_command(
         apply_askpass_env(&mut ssh, password)?;
     }
 
-    if options.secret_env.is_some() {
+    if options.secret_env.is_some() || options.pipe_stdin {
         ssh.stdin(Stdio::piped());
     } else {
         ssh.stdin(Stdio::inherit());
@@ -1271,6 +1241,15 @@ fn ssh_argv(
     }
     host.host_key.write_options(&mut ssh_options);
     host.auth.write_options(&mut ssh_options, ssh_agent);
+    if options
+        .reverse_forwards
+        .iter()
+        .any(|forward| matches!(forward.listen, ForwardListen::Path(_)))
+    {
+        // A socket left behind by a session that ended uncleanly must not block the next
+        // forward to the same path.
+        ssh_options.set("StreamLocalBindUnlink", "yes");
+    }
     argv.extend(ssh_options.args);
     for forward in &options.reverse_forwards {
         argv.push("-R".to_string());
@@ -1582,6 +1561,8 @@ fn format_ssh_failure(
         || lower.contains("remote host identification has changed")
     {
         "SSH host key verification failed. Verify the host key and update known_hosts before retrying."
+    } else if lower.contains(STREAM_FORWARD_FAILURE) {
+        "SSH could not create the agent's Unix socket forward on the device. Its sshd must allow stream-local forwarding (AllowStreamLocalForwarding, DisableForwarding in sshd_config)."
     } else if lower.contains("could not resolve hostname") {
         "SSH could not resolve the target hostname."
     } else if lower.contains("connection refused") {
@@ -1724,9 +1705,9 @@ mod tests {
         );
     }
 
-    /// Sequential managed SSH agents share one remote user and must not take the singleton lock.
+    /// Managed sessions carry the marker that keeps `redoor upgrade` from listing them.
     #[tokio::test]
-    async fn managed_agent_exports_the_skip_lock_environment() {
+    async fn managed_agent_exports_the_managed_marker() {
         let host = super::SshHost::new("example.test".to_string());
         let options = super::SshRunOptions::default()
             .with_secret_env("REDOOR_AGENT_TOKEN", "top-secret-token")
@@ -1741,7 +1722,7 @@ mod tests {
         .unwrap();
         let debug_command = format!("{command:?}");
 
-        // The remote preamble must mark the process managed so it skips the user-wide PID lock.
+        // The remote preamble must mark the process managed so upgrades leave it to the server.
         assert!(debug_command.contains("REDOOR_MANAGED_AGENT=1"));
         // Token delivery must still use the stdin preamble after the managed export is added.
         assert!(debug_command.contains("REDOOR_AGENT_TOKEN"));
@@ -2376,12 +2357,45 @@ Host key verification failed.";
     #[test]
     fn reverse_forward_brackets_ipv6_destination() {
         let forward = super::ReverseForward {
-            remote_port: 3000,
+            listen: super::ForwardListen::Port(3000),
             destination_host: "2001:db8::10".to_string(),
             destination_port: 4000,
         };
 
         // Brackets prevent IPv6 colons from being parsed as SSH field separators.
         assert_eq!(forward.to_ssh_spec(), "3000:[2001:db8::10]:4000");
+    }
+
+    /// A managed session forwards a Unix socket on the device to the server's listener and
+    /// unlinks a stale socket before binding.
+    #[tokio::test]
+    async fn stream_forward_listens_on_a_socket_path() {
+        let host = super::SshHost::new("example.test".to_string());
+        let options = super::SshRunOptions::default().with_stream_forward(
+            "/run/user/1000/redoor-dev_x.sock",
+            "localhost",
+            7666,
+        );
+        let command = super::build_ssh_command(&host, "true", &[], &options)
+            .await
+            .unwrap();
+        let argv = command
+            .command
+            .as_std()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        // The forward names the socket path, so the daemon finds every session's tunnel at
+        // the same address.
+        let forward = argv.iter().position(|arg| arg == "-R").unwrap();
+        assert_eq!(
+            argv[forward + 1],
+            "/run/user/1000/redoor-dev_x.sock:localhost:7666"
+        );
+        // A socket left by an uncleanly ended session must not block the forward.
+        assert!(argv.iter().any(|arg| arg == "StreamLocalBindUnlink=yes"));
+        // A failed forward still ends the session instead of leaving it without a tunnel.
+        assert!(argv.iter().any(|arg| arg == "ExitOnForwardFailure=yes"));
     }
 }

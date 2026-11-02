@@ -9,9 +9,7 @@ use redoor_protocol::wire::log::Level;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, BufReader};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
-use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, tungstenite::protocol::Message as WsMessage,
-};
+use tokio_tungstenite::tungstenite::protocol::Message as WsMessage;
 
 /// The receiving ends of one connection's outbound lanes, drained by its single writer.
 pub(super) struct LaneReceivers {
@@ -26,9 +24,7 @@ pub(super) struct LaneReceivers {
 /// their stream, so payload never passes through the runtime mailbox.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn spawn_read_task(
-    mut read: futures_util::stream::SplitStream<
-        WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>,
-    >,
+    mut read: futures_util::stream::SplitStream<crate::connection::AgentSocket>,
     agent_ref: AgentHandle,
     connection_generation: u64,
     control_tx: ControlSender,

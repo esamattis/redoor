@@ -477,6 +477,8 @@ pub(crate) fn start_pty(
         .arg("-l")
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
+        // The token would let anything running in the shell pass as the server.
+        .env_remove(redoor_core::process::AGENT_TOKEN_ENV)
         .current_dir(cwd)
         .kill_on_drop(true);
     let child = command

@@ -8,7 +8,7 @@ use crate::actors::router::{
     RouteTransferReadyRequest, RouterHandle, RouterMsg, TransferProgressUpdateRequest,
 };
 use crate::terminals::registry::TerminalRegistry;
-use crate::watchdog::{WatchdogHandle, WatchdogRegistry};
+use crate::watchdog::{ConnectVerdict, ConnectingDaemon, WatchdogHandle, WatchdogRegistry};
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use redoor_core::log;
@@ -97,6 +97,8 @@ struct Hello {
     agent_name: String,
     identity: AgentIdentity,
     capabilities: AgentCapabilities,
+    /// Spec hash of a managed daemon, checked against the watchdog's latest ensure report.
+    spec_hash: Option<String>,
 }
 
 /// Whether the read loop keeps serving the socket after one frame.
@@ -158,6 +160,7 @@ impl SessionRuntime {
                     token_proof,
                     identity,
                     capabilities,
+                    spec_hash,
                 },
             ) => {
                 if !self.hello_proof.matches(&token_proof) {
@@ -174,6 +177,7 @@ impl SessionRuntime {
                         agent_name,
                         identity: *identity,
                         capabilities,
+                        spec_hash,
                     },
                     watchdog_registry,
                 )
@@ -214,23 +218,59 @@ impl SessionRuntime {
         // watchdog (e.g. an external agent spawned outside the server) and stale cleanup has
         // no process to restart.
         self.watchdog = watchdog_registry.lookup(hello.agent_id.as_str());
+        if self.watchdog.is_none() && hello.spec_hash.is_some() {
+            // A managed daemon whose device this server does not manage (deleted, or from
+            // another server sharing the token) must not show up as a standalone device; the
+            // rejection ends it.
+            log!(
+                Level::Warning,
+                "Rejecting managed agent daemon without a configured device: agent_id={}, agent_name={}",
+                hello.agent_id,
+                hello.agent_name
+            );
+            let _ = self.lanes.try_priority(ServerToAgent::Rejected {
+                reason: RejectReason::Stopped,
+                message: "This server manages no device with this agent's id".to_string(),
+            });
+            return SessionStep::Rejected;
+        }
         let mut watchdog_attempt_generation = None;
         if let Some(watchdog) = self.watchdog.as_ref() {
-            let Some(attempt_generation) = watchdog.mark_connected(self.socket_id.clone()).await
-            else {
+            let daemon = ConnectingDaemon {
+                binary: hello.identity.binary.clone(),
+                spec_hash: hello.spec_hash.clone(),
+            };
+            let (reason, message) = match watchdog
+                .mark_connected(self.socket_id.clone(), daemon)
+                .await
+            {
+                ConnectVerdict::Accepted(attempt_generation) => {
+                    watchdog_attempt_generation = Some(attempt_generation);
+                    (None, "")
+                }
+                ConnectVerdict::Stopped => (
+                    Some(RejectReason::Stopped),
+                    "Managed agent is intentionally stopped",
+                ),
+                ConnectVerdict::Superseded => (
+                    Some(RejectReason::Superseded),
+                    "This daemon's build or settings differ from the daemon the server started; it is being replaced",
+                ),
+            };
+            if let Some(reason) = reason {
                 log!(
                     Level::Warning,
-                    "Rejecting managed agent while stopped: agent_name={}",
-                    hello.agent_name
+                    "Rejecting managed agent: agent_name={}, reason={:?}",
+                    hello.agent_name,
+                    reason
                 );
                 self.watchdog = None;
                 let _ = self.lanes.try_priority(ServerToAgent::Rejected {
-                    reason: RejectReason::Stopped,
-                    message: "Managed agent is intentionally stopped".to_string(),
+                    reason,
+                    message: message.to_string(),
                 });
                 return SessionStep::Rejected;
-            };
-            watchdog_attempt_generation = Some(attempt_generation);
+            }
             log!(
                 Level::Debug,
                 "Session linked to watchdog supervisor: agent_name={}",
@@ -893,6 +933,33 @@ mod tests {
         // Without the proof the socket cannot speak for any agent.
         assert_eq!(step, SessionStep::Close);
         // The agent was never registered.
+        assert!(
+            receiver
+                .try_recv()
+                .map(|envelope| envelope.message)
+                .is_err()
+        );
+    }
+
+    /// A managed daemon whose device this server does not manage is refused instead of
+    /// showing up as a standalone device, which ends it.
+    #[tokio::test]
+    async fn daemon_without_a_supervisor_is_rejected() {
+        let (mut runtime, mut receiver) = capture_session(None);
+        let mut hello: serde_json::Value = serde_json::from_str(
+            r#"{"type":"hello","agent_id":"dev_abcdefghijklmnopqrst","agent_name":"orphan","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":false,"supports_move_to_trash":false,"spec_hash":"spec"}"#,
+        )
+        .unwrap();
+        hello["token_proof"] = runtime.hello_proof.as_str().into();
+        let step = runtime
+            .handle_control_message(
+                serde_json::from_value(hello).unwrap(),
+                &WatchdogRegistry::new(),
+            )
+            .await;
+        // The rejection is flushed and the socket closed, which makes the daemon exit.
+        assert_eq!(step, SessionStep::Rejected);
+        // The router never learns about the daemon, so no external device appears.
         assert!(
             receiver
                 .try_recv()

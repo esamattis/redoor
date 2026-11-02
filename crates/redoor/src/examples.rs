@@ -83,6 +83,17 @@ pub(crate) const AGENT_STOP: &str = "Examples:
   # Stop an agent started with --daemon
   redoor agent stop";
 
+/// Shown by `redoor agent managed --help`.
+pub(crate) const AGENT_MANAGED: &str = "Examples:
+  # Started by the server with its launch payload on stdin; not meant to be run by hand
+  redoor --app-name redoor-dev_abcdefghijklmnopqrst agent managed
+
+  # Stop the daemon of one managed device
+  redoor --app-name redoor-dev_abcdefghijklmnopqrst agent managed --stop
+
+  # Stop it and delete its namespace's data, cache, config and logs
+  redoor --app-name redoor-dev_abcdefghijklmnopqrst agent managed --remove";
+
 /// Shown by `redoor agent status --help`.
 pub(crate) const AGENT_STATUS: &str = "Examples:
   # Check whether the standalone agent is running

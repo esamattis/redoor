@@ -171,7 +171,7 @@ describe("Built-in HTTPS with a self-signed certificate", () => {
 
     it("connects a managed local agent over TLS", async () => {
         const name = "https-local-agent";
-        await apiClient.createLocalAgent({ name, home: null, log: null });
+        await apiClient.createLocalAgent({ name, home: null });
         onTestFinished(async () => {
             try {
                 await apiClient.deleteManagedAgent(name, "local");
