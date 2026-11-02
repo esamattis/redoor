@@ -39,16 +39,21 @@ async function closedPort(): Promise<number> {
 async function createDownstreamBlackholeProxy(upstreamPort: number): Promise<{
     port: number;
     setBlocked: (blocked: boolean) => void;
+    disconnectUpstreams: () => void;
     close: () => Promise<void>;
 }> {
     let blocked = false;
     const sockets = new Set<Socket>();
+    const upstreams = new Set<Socket>();
 
     const server = createServer((client) => {
         const upstream = connect(upstreamPort, "127.0.0.1");
         sockets.add(client);
         sockets.add(upstream);
-        client.on("data", (chunk) => upstream.write(chunk));
+        upstreams.add(upstream);
+        client.on("data", (chunk) => {
+            if (!upstream.destroyed) upstream.write(chunk);
+        });
         upstream.on("data", (chunk) => {
             if (!blocked) {
                 client.write(chunk);
@@ -60,7 +65,11 @@ async function createDownstreamBlackholeProxy(upstreamPort: number): Promise<{
         });
         upstream.on("close", () => {
             sockets.delete(upstream);
-            client.destroy();
+            upstreams.delete(upstream);
+
+            // A blackhole drops remote closure as well as bytes; only the agent's own
+            // liveness monitor may end its socket while downstream traffic is blocked.
+            if (!blocked) client.destroy();
         });
         client.on("error", () => client.destroy());
         upstream.on("error", () => upstream.destroy());
@@ -76,6 +85,12 @@ async function createDownstreamBlackholeProxy(upstreamPort: number): Promise<{
         port: address.port,
         setBlocked: (nextBlocked) => {
             blocked = nextBlocked;
+        },
+        // Force server-first teardown to exercise the liveness race under any CPU load.
+        disconnectUpstreams: () => {
+            for (const upstream of upstreams) {
+                upstream.destroy();
+            }
         },
         close: async () => {
             for (const socket of sockets) {
@@ -132,6 +147,8 @@ describe("Agent connection recovery", () => {
         });
 
         proxy.setBlocked(true);
+        // A blackhole must hide a remote FIN just as it hides WebSocket frames.
+        proxy.disconnectUpstreams();
 
         await waitForValue({
             description: "agent-side stale connection detection",
