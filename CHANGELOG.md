@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.2.0
+
+_2026-11-02_
+
+### Breaking changes
+
+- The agent protocol is now `redoor.v5`. Upgrade standalone agents together with the server; older agents cannot connect until upgraded. Managed local and SSH agents are upgraded with the server.
+
+### Features
+
+- Terminal shells now live in the agent and can survive server restarts and connection drops. Standalone and relay-backed agents keep their shells; managed local and SSH agents still restart with the server.
+- Agent upgrades run in the background with visible progress and survive page reloads and reconnects. If the new agent binary cannot start, the running image is restored.
+
+### Fixes
+
+- Server upgrades and restarts recover without a hard browser reload, and open requests no longer delay a restart indefinitely. Stalled release downloads time out, and failed updates report the failure.
+- Logging out reliably returns to the login page even when a background request detects the expired session first.
+- Agent connection logs preserve the original reason for a disconnect, making stale connections easier to diagnose.
+
 ## v2.1.2
 
 _2026-11-01_
