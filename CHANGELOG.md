@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.3.0
+
+_2026-11-02_
+
+### Breaking changes
+
+- Managed local and SSH agents now run as daemons on their devices, so they and their terminals survive server restarts, upgrades, crashes and dropped SSH connections. Devices that were running start again when the server starts, and upgrades still replace the daemons. To upgrade:
+    - Remove `log` from every `[[agents]]` entry; the server refuses to load a config that still has it. A managed agent now logs to `agent.log` in its data directory on the device.
+    - If the server is installed as a system service, reinstall its unit with `redoor server systemd install` so restarts keep local daemons running. The server warns at startup until you do.
+    - Devices with SSH targets need sshd to allow stream-local (Unix socket) forwarding.
+
+### Features
+
+- After a server restart, an open browser tab with an unlocked vault hands waiting devices their vault-encrypted SSH keys automatically instead of requiring a click per device.
+
+### Fixes
+
+- Unlocking the vault with a passkey (such as from 1Password) works when the unlock dialog opens over another dialog, such as the SSH key setup of a new device.
+- A debug server no longer endlessly re-uploads its build to devices with an older glibc or musl that cannot run it; it falls back to the static release build, and the start screen shows the loader error.
+
 ## v2.2.0
 
 _2026-11-02_

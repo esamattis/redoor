@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "redoor"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -3467,7 +3467,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-agent"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "bytes",
@@ -3511,7 +3511,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-cli"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -3538,7 +3538,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-core"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3563,7 +3563,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-protocol"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "getrandom 0.4.3",
@@ -3580,7 +3580,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-server"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -3627,7 +3627,7 @@ dependencies = [
 
 [[package]]
 name = "redoor-vault"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
