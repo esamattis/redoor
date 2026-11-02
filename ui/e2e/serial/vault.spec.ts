@@ -379,6 +379,37 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
     });
 
+    test("hides a dialog while the vault unlock it asks for is open", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page);
+        await page.getByRole("button", { name: "Lock now" }).click();
+
+        await page.getByRole("button", { name: "Rename vault" }).click();
+        const rename = page.getByRole("dialog", { name: "Rename vault" });
+        await rename.getByLabel("Name").fill("Renamed vault");
+        await rename.getByRole("button", { name: "Rename" }).click();
+
+        const unlock = page.getByRole("dialog", { name: "Unlock vault" });
+        await expect(unlock).toBeVisible();
+        // Only the topmost dialog stays open, so password managers that draw their passkey
+        // prompt into the open dialog do not put it in the covered one.
+        await expect(rename).toBeHidden();
+
+        await unlock.getByRole("button", { name: "Cancel" }).first().click();
+        await expect(unlock).toBeHidden();
+        // The covered dialog comes back as the user left it.
+        await expect(rename.getByLabel("Name")).toHaveValue("Renamed vault");
+
+        await rename.getByRole("button", { name: "Rename" }).click();
+        await unlockInDialog(page);
+        await expect(rename).toBeHidden();
+        // The rename went through after the unlock, so the reopened dialog still works.
+        await expect(page.getByText("Renamed vault")).toBeVisible();
+    });
+
     test("creates a passwordless vault, adds a generated passphrase and removes it again", async ({
         page,
     }) => {

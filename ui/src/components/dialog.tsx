@@ -38,6 +38,87 @@ export type DialogProps = {
     initialFocus?: "panel";
 };
 
+/** A native dialog in the stack and the control focused in it when a dialog covered it. */
+type StackedDialog = {
+    dialog: HTMLDialogElement;
+    focus: HTMLElement | null;
+};
+
+/**
+ * Keeps only the topmost dialog open when dialogs stack, such as the vault unlock dialog a
+ * form dialog asks for. Password managers like 1Password draw their passkey prompt into the
+ * page, and with several open modal dialogs it lands in a covered, inert one, so the prompt
+ * never shows. The covered dialogs stay mounted with their state and reopen when the dialog
+ * above them closes.
+ */
+class ModalDialogStack {
+    private entries: StackedDialog[] = [];
+
+    /**
+     * Shows the dialog modally above all others and hides the one it covers. Returns the
+     * release that closes it again and reopens the dialog below.
+     */
+    push(dialog: HTMLDialogElement): () => void {
+        const covered = this.entries.at(-1);
+
+        if (covered !== undefined) {
+            const active = document.activeElement;
+
+            covered.focus =
+                active instanceof HTMLElement && covered.dialog.contains(active)
+                    ? active
+                    : null;
+
+            covered.dialog.close();
+        }
+
+        this.entries.push({ dialog, focus: null });
+
+        if (!dialog.open) {
+            dialog.showModal();
+        }
+
+        return () => this.release(dialog);
+    }
+
+    /**
+     * Closes the dialog and, when it was the topmost one, reopens the dialog below with the
+     * control the user left focused there.
+     */
+    private release(dialog: HTMLDialogElement): void {
+        const index = this.entries.findIndex(
+            (entry) => entry.dialog === dialog,
+        );
+
+        if (index === -1) {
+            return;
+        }
+
+        const wasTopmost = index === this.entries.length - 1;
+        this.entries.splice(index, 1);
+
+        if (dialog.open) {
+            dialog.close();
+        }
+
+        const uncovered = this.entries.at(-1);
+
+        if (!wasTopmost || uncovered === undefined) {
+            return;
+        }
+
+        if (!uncovered.dialog.open) {
+            uncovered.dialog.showModal();
+        }
+
+        uncovered.focus?.focus();
+        uncovered.focus = null;
+    }
+}
+
+/** Shared by every dialog, because stacking spans unrelated components. */
+const modalDialogStack = new ModalDialogStack();
+
 export function Dialog(props: DialogProps) {
     const titleId = React.useId();
     const descriptionId = React.useId();
@@ -228,9 +309,7 @@ function useDialogBehavior(props: {
             return;
         }
 
-        if (!dialog.open) {
-            dialog.showModal();
-        }
+        const release = modalDialogStack.push(dialog);
 
         // showModal() runs after React's autoFocus layout effect and focuses the
         // first tabbable control (usually the close button). Prefer an explicit
@@ -244,11 +323,7 @@ function useDialogBehavior(props: {
 
         autofocusTarget?.focus();
 
-        return () => {
-            if (dialog.open) {
-                dialog.close();
-            }
-        };
+        return release;
     }, [
         props.dialogRef,
         props.initialFocus,

@@ -1952,6 +1952,12 @@ native element, so behaviour and look stay in one place.
   (which is portaled and so lacks the native `<dialog>` trap) both use it. Escape stays a
   separate binding per overlay because their phases differ on purpose: the drawer lets a
   keyboard sort inside it claim Escape first, while an anchored menu swallows it in capture.
+- **Only the topmost native dialog is open.** A flow can open a dialog over another one, such
+  as the vault unlock a form dialog asks for. `Dialog` keeps a shared stack: opening a dialog
+  closes the one it covers, and closing it reopens that one with its focus, while React keeps
+  the covered dialog mounted with its state. Password managers such as 1Password draw their
+  passkey prompt into the page, and with two open modal dialogs it lands in the covered, inert
+  one and never shows.
 - **Theme colors are semantic.** The light theme is a set of `--app-*` variables that switch
   with `light-dark()`, and `@theme inline` in `styles.css` exposes them as the Tailwind colors
   `canvas`, `chrome`, `surface` (and its `active`, `raised`, `code`, `error` variants) plus
