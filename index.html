@@ -111,8 +111,12 @@ img { max-width: 100%; display: block; }
 .nav-links a:hover { color: var(--text-strong); background: rgb(255 255 255 / 0.05); }
 .nav-links .gh { display: inline-flex; align-items: center; gap: 8px; color: var(--text); border: 1px solid var(--border-strong); }
 .nav-links .gh svg { width: 18px; height: 18px; }
-@media (max-width: 720px) {
-    .nav-links a:not(.gh):not(.docs-link) { display: none; }
+@media (max-width: 520px) {
+    .nav .container { gap: 12px; }
+    .nav-links { gap: 0; }
+    .nav-links a { font-size: 14px; padding: 8px 9px; }
+    .nav-links .gh { margin-left: 4px; }
+    .nav-links .gh-label { display: none; }
 }
 
 /* ---------- Buttons ---------- */
@@ -615,10 +619,9 @@ footer p { margin: 6px 0; }
     <div class="container">
         <a class="brand" href="#top"><img src="logo.svg" alt="" width="34" height="34">Redoor</a>
         <div class="nav-links">
-            <a href="#features">Features</a>
-            <a href="#install">Install</a>
-            <a class="docs-link" href="https://github.com/esamattis/redoor/tree/main/docs">Docs</a>
-            <a class="gh" href="https://github.com/esamattis/redoor"><svg><use href="#i-github"/></svg>GitHub</a>
+            <a href="https://github.com/esamattis/redoor/tree/main/docs">Docs</a>
+            <a href="https://github.com/esamattis/redoor/blob/main/CHANGELOG.md">Changelog</a>
+            <a class="gh" href="https://github.com/esamattis/redoor" aria-label="GitHub"><svg aria-hidden="true"><use href="#i-github"/></svg><span class="gh-label">GitHub</span></a>
         </div>
     </div>
 </nav>
