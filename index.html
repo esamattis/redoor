@@ -282,6 +282,17 @@ h2 {
     color: var(--text-strong);
     font-weight: 750;
 }
+.anchor { color: inherit; text-decoration: none; }
+.anchor::after {
+    content: "#" / "";
+    margin-left: 0.3em;
+    color: var(--faint);
+    font-weight: 500;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+.anchor:hover::after, .anchor:focus-visible::after { opacity: 1; }
+@media (hover: none) { .anchor::after { opacity: 0.5; } }
 h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin: 0 0 10px; line-height: 1.25; }
 .section-head p { color: var(--muted); font-size: 19px; margin: 0; }
 
@@ -657,10 +668,10 @@ footer p { margin: 6px 0; }
 <section id="features" style="padding-top: 20px">
     <div class="container">
 
-        <div class="showcase">
+        <div class="showcase" id="files">
             <div class="showcase-text reveal">
                 <span class="kicker">01 / Files</span>
-                <h2>Browse every device like it’s local</h2>
+                <h2><a class="anchor" href="#files">Browse every device like it’s local</a></h2>
                 <p>Every connected device shows up in the sidebar with its bookmarks. Jump between machines without opening a single SSH session by hand.</p>
                 <ul class="checks">
                     <li>Fast file browser with sorting, filtering and selection</li>
@@ -679,10 +690,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse">
+        <div class="showcase reverse" id="search">
             <div class="showcase-text reveal">
                 <span class="kicker">02 / Search</span>
-                <h2>Find anything, on any device</h2>
+                <h2><a class="anchor" href="#search">Find anything, on any device</a></h2>
                 <p>Search a device by file path or by file contents. The search runs on the device itself using the same libraries as ripgrep, so even large trees answer quickly.</p>
                 <ul class="checks">
                     <li>Path and content search with regex and case sensitivity toggles</li>
@@ -701,10 +712,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase" id="editor">
             <div class="showcase-text reveal">
                 <span class="kicker">03 / Editor</span>
-                <h2>A text editor, right in the browser</h2>
+                <h2><a class="anchor" href="#editor">A text editor, right in the browser</a></h2>
                 <p>Open any file on any device in a real code editor and save it straight back. No local copy, no sync step.</p>
                 <ul class="checks">
                     <li>Syntax highlighting, code folding and in-file search</li>
@@ -723,10 +734,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse">
+        <div class="showcase reverse" id="terminal">
             <div class="showcase-text reveal">
                 <span class="kicker">04 / Terminal</span>
-                <h2>Terminals that outlive your tab</h2>
+                <h2><a class="anchor" href="#terminal">Terminals that outlive your tab</a></h2>
                 <p>Open a shell on any device from anywhere in the app. Sessions keep running on the device when you close the browser, so you can pick up where you left off from your laptop or your phone.</p>
                 <ul class="checks">
                     <li>Available from every view in the bottom drawer, or full window</li>
@@ -745,10 +756,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase" id="git">
             <div class="showcase-text reveal">
                 <span class="kicker">05 / Git</span>
-                <h2>Read your history, not just your files</h2>
+                <h2><a class="anchor" href="#git">Read your history, not just your files</a></h2>
                 <p>Redoor understands Git repositories on every device. Step through commits, review diffs, and browse the whole tree as it was at any point in time.</p>
                 <ul class="checks">
                     <li>Changes, commits, branches, tags and worktrees</li>
@@ -767,10 +778,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse">
+        <div class="showcase reverse" id="vault">
             <div class="showcase-text reveal">
                 <span class="kicker">06 / SSH keys &amp; vault</span>
-                <h2>SSH keys managed for you, locked by your passkey</h2>
+                <h2><a class="anchor" href="#vault">SSH keys managed for you, locked by your passkey</a></h2>
                 <p>Redoor manages the SSH keys of your devices and their rotation, and keeps them in a vault encrypted with your passkey. The same encryption protects any file you choose, so devices only ever store ciphertext.</p>
                 <ul class="checks">
                     <li>Manages the SSH keys of your devices, including rotation</li>
@@ -796,10 +807,10 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase">
+        <div class="showcase" id="automation">
             <div class="showcase-text reveal">
                 <span class="kicker">07 / Automation</span>
-                <h2>Let your AI agents in, with scoped keys</h2>
+                <h2><a class="anchor" href="#automation">Let your AI agents in, with scoped keys</a></h2>
                 <p>A stateless MCP endpoint and a remote CLI give scripts and AI agents access to all your devices at once. Every token is limited to the permissions and devices you pick.</p>
                 <ul class="checks">
                     <li>Stateless MCP support for your agents</li>
@@ -834,7 +845,7 @@ footer p { margin: 6px 0; }
 <section id="connect" style="padding-top: 40px">
     <div class="container">
         <div class="section-head reveal">
-            <h2>One server. Any network.</h2>
+            <h2><a class="anchor" href="#connect">One server. Any network.</a></h2>
             <p>Run the server once, then attach devices in whichever way their network allows.</p>
         </div>
         <div class="connect">
@@ -860,11 +871,11 @@ footer p { margin: 6px 0; }
     </div>
 </section>
 
-<section style="padding-top: 40px">
+<section id="more" style="padding-top: 40px">
     <div class="container">
         <div class="section-head reveal">
             <span class="kicker">And more</span>
-            <h2>Built for running on anything</h2>
+            <h2><a class="anchor" href="#more">Built for running on anything</a></h2>
             <p>Redoor is written in Rust. That means one static binary with no runtime to install, a small memory footprint, and async I/O that stays responsive during big transfers, from a beefy server to a phone in your pocket.</p>
         </div>
         <div class="grid reveal">
@@ -906,7 +917,7 @@ footer p { margin: 6px 0; }
     <div class="container">
         <div class="section-head reveal">
             <span class="kicker">Get started</span>
-            <h2>Up and running in a minute</h2>
+            <h2><a class="anchor" href="#install">Up and running in a minute</a></h2>
             <p>For Linux, macOS and Termux on Android.</p>
         </div>
         <div class="install-box reveal">
