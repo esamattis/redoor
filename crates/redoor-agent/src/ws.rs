@@ -170,15 +170,24 @@ async fn monitor_connection_liveness(
     }
 }
 
-/// Stops both socket halves before publishing loss so actor backpressure cannot retain the transport.
+/// Lets the task initiating shutdown publish its diagnosis exactly once for this generation.
+/// Reader cleanup must not race the liveness monitor with a generic end-of-stream reason.
 fn report_connection_loss(
     shutdown_sender: &watch::Sender<bool>,
     agent_ref: &AgentHandle,
     connection_generation: u64,
     reason: String,
 ) {
-    let _ = shutdown_sender.send(true);
-    agent_ref.report_connection_lost(connection_generation, reason);
+    let initiated_shutdown = shutdown_sender.send_if_modified(|shutdown| {
+        if *shutdown {
+            return false;
+        }
+        *shutdown = true;
+        true
+    });
+    if initiated_shutdown {
+        agent_ref.report_connection_lost(connection_generation, reason);
+    }
 }
 
 /// Spawns the connection writer and reports write failures through the non-blocking lifecycle
@@ -465,6 +474,24 @@ mod tests {
         ));
         // Shutdown must be published before actor cleanup so blocked reader and writer tasks can exit.
         assert!(*observed_shutdown.borrow());
+    }
+
+    /// A transport diagnosis must survive reader cleanup observing the same shutdown.
+    #[tokio::test]
+    async fn first_connection_loss_keeps_its_reason() {
+        let (handle, _receiver, mut lifecycle) = AgentHandle::channel(1);
+        let (shutdown, _observed_shutdown) = watch::channel(false);
+
+        report_connection_loss(&shutdown, &handle, 7, "Server connection stale".into());
+        report_connection_loss(&shutdown, &handle, 7, "Server connection ended".into());
+
+        // Only the initiating task owns the lifecycle event; reader cleanup cannot replace it.
+        assert!(matches!(
+            lifecycle.recv().await,
+            Some(AgentLifecycleMsg::ConnectionLost { reason, .. }) if reason == "Server connection stale"
+        ));
+        // Duplicate teardown must not enqueue a later competing reason for this generation.
+        assert!(lifecycle.try_recv().is_err());
     }
 
     /// Verifies shutdown cancels a send already blocked inside the socket sink.

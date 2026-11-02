@@ -804,7 +804,10 @@ so a peer that accepts and drops at once is not retried at the shortest delay fo
 
 - **Standalone agents own their connection.** The agent pings the server every keepalive
   period and drops the socket after `stale_timeout` without any inbound frame; the server
-  pings too, so a live link is never silent that long. It then reconnects on the backoff.
+  pings too, so a live link is never silent that long. The reader, writer and liveness monitor
+  share a shutdown signal; only the task that first sets it reports connection loss, so
+  reader cleanup cannot replace a stale-connection diagnosis with a generic end-of-stream.
+  The agent then reconnects on the backoff.
   It never exits on its own: refusals that only an operator can fix (`401`, `426`, a
   `rejected` hello) are logged and retried at the cap, because a standalone agent has
   nobody to restart it.
