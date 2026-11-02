@@ -21,8 +21,18 @@ const REMOTE_TEMP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// by a shell startup file, for example) is not mistaken for probe fields.
 const PROBE_MARKER: &str = "redoor-probe";
 
-/// Lines of a probe report: the marker, os, arch, path and version.
-pub(super) const PROBE_REPORT_LINES: usize = 5;
+/// Lines of a probe report: the marker, os, arch, path, presence, version and run error.
+pub(super) const PROBE_REPORT_LINES: usize = 7;
+
+/// Presence line of a probe report when a file exists at the probed path.
+const PROBE_PRESENT: &str = "present";
+
+/// Presence line of a probe report when nothing exists at the probed path.
+const PROBE_MISSING: &str = "missing";
+
+/// Longest run error kept from a probe. The line comes from the remote shell or loader and
+/// ends up in the lifecycle UI, so a binary printing a huge first line cannot flood it.
+const RUN_ERROR_MAX_CHARS: usize = 300;
 
 /// Last line of a launch report when the binary matched and is being started.
 pub(super) const LAUNCH_READY: &str = "ready";
@@ -150,10 +160,19 @@ fn debug_remote_bin(app_name: &str, hash: &str) -> String {
 pub(super) struct RemoteSniff {
     pub(super) os: String,
     pub(super) arch: String,
+    /// Whether a file exists at the path. Together with an empty version it tells a
+    /// binary that cannot run on this device (a glibc build on a musl or older-glibc host,
+    /// for example) apart from one that was never installed, so the installer can fall
+    /// back to the release build instead of uploading the same unrunnable bytes forever.
+    pub(super) present: bool,
     /// First line of `<remote_bin> --version` with surrounding whitespace stripped.
     /// Empty when the binary is missing, not executable, or otherwise fails to run,
     /// in which case it needs to be (re)installed.
     pub(super) version_output: String,
+    /// First stderr line of a present binary whose `--version` printed nothing, such as
+    /// the loader's "GLIBC_2.39 not found". Empty otherwise. Without it the UI could only
+    /// show an empty version and the operator would have to log in to find the reason.
+    pub(super) run_error: String,
     /// Shell-expanded remote path so status lines can show the real file.
     pub(super) remote_bin: String,
 }
@@ -166,11 +185,21 @@ pub(super) struct RemoteSniff {
 /// the other fields. The binary is deliberately not hashed: its path already identifies
 /// the build (see [`debug_remote_bin`]), and hashing it remotely was the slowest part of
 /// every start on small devices.
+///
+/// The binary only runs a second time, to capture its stderr, when the first run printed
+/// no version. Keeping stderr out of the first run means a working binary that warns on
+/// stderr still reports a clean version line.
 fn probe_statements(remote_bin: &str) -> String {
     format!(
         "bin={bin}; os=$(uname); arch=$(uname -m); \
+         present={PROBE_MISSING}; version=; error=; \
+         if [ -e \"$bin\" ]; then present={PROBE_PRESENT}; \
          version=$(\"$bin\" --version 2>/dev/null | head -n 1); \
-         printf '%s\\n' {PROBE_MARKER} \"$os\" \"$arch\" \"$bin\" \"$version\"",
+         if [ -z \"$version\" ]; then error=$(\"$bin\" --version 2>&1 >/dev/null); code=$?; \
+         error=$(printf '%s\\n' \"$error\" | head -n 1); \
+         if [ -z \"$error\" ]; then error=\"--version printed nothing (exit status $code)\"; fi; \
+         fi; fi; \
+         printf '%s\\n' {PROBE_MARKER} \"$os\" \"$arch\" \"$bin\" \"$present\" \"$version\" \"$error\"",
         bin = path_word(remote_bin)
     )
 }
@@ -185,12 +214,26 @@ fn remote_sniff_script(remote_bin: &str) -> String {
 impl RemoteSniff {
     /// Parses the probe report lines printed by [`probe_statements`].
     pub(super) fn parse(target: &str, report: &[String]) -> Result<Self, ProvisionError> {
-        let [marker, os, arch, remote_bin, version_output] = report else {
+        let [
+            marker,
+            os,
+            arch,
+            remote_bin,
+            present,
+            version_output,
+            run_error,
+        ] = report
+        else {
             return Err(Self::unexpected(target, report));
         };
         if marker != PROBE_MARKER {
             return Err(Self::unexpected(target, report));
         }
+        let present = match present.as_str() {
+            PROBE_PRESENT => true,
+            PROBE_MISSING => false,
+            _ => return Err(Self::unexpected(target, report)),
+        };
         // Map `uname` values to the os component used in the release artifact
         // filenames (e.g. `redoor-aarch64-linux.tar.gz`).
         let os = match os.trim() {
@@ -216,9 +259,32 @@ impl RemoteSniff {
         Ok(Self {
             os: os.to_string(),
             arch: arch.to_string(),
+            present,
             version_output: version_output.trim().to_string(),
+            run_error: run_error.trim().chars().take(RUN_ERROR_MAX_CHARS).collect(),
             remote_bin: remote_bin.to_string(),
         })
+    }
+
+    /// A file exists at the path but reports no version, so it cannot run here. At a
+    /// content-addressed debug path, whose bytes were size-checked on upload, this means
+    /// the build itself is incompatible with the device rather than missing or stale.
+    pub(super) fn unrunnable(&self) -> bool {
+        self.present && self.version_output.is_empty()
+    }
+
+    /// Describes the probed version for status lines and errors, including why a present
+    /// binary did not run.
+    fn version_description(&self) -> String {
+        if !self.version_output.is_empty() {
+            format!("'{}'", self.version_output)
+        } else if !self.present {
+            "(not installed)".to_string()
+        } else if self.run_error.is_empty() {
+            "(fails to run)".to_string()
+        } else {
+            format!("(fails to run: {})", self.run_error)
+        }
     }
 
     /// Logs and describes a report that does not have the probe's shape.
@@ -230,7 +296,7 @@ impl RemoteSniff {
             report
         );
         ProvisionError::Remote(format!(
-            "unexpected probe output from {target}: {report:?}; expected '{PROBE_MARKER}' followed by os, arch, path and version lines"
+            "unexpected probe output from {target}: {report:?}; expected '{PROBE_MARKER}' followed by os, arch, path, presence, version and run error lines"
         ))
     }
 
@@ -241,11 +307,7 @@ impl RemoteSniff {
             self.arch,
             self.os,
             self.remote_bin,
-            if self.version_output.is_empty() {
-                "(none)"
-            } else {
-                self.version_output.as_str()
-            }
+            self.version_description()
         )
     }
 }
@@ -287,12 +349,14 @@ pub(super) async fn sniff_remote(
     let sniff = RemoteSniff::parse(host.target(), &report)?;
     log!(
         Level::Info,
-        "Remote sniff complete: target={}, remote_bin={}, os={}, arch={}, version_output='{}', elapsed={:?}",
+        "Remote sniff complete: target={}, remote_bin={}, os={}, arch={}, present={}, version_output='{}', run_error='{}', elapsed={:?}",
         host.target(),
         sniff.remote_bin,
         sniff.os,
         sniff.arch,
+        sniff.present,
         sniff.version_output,
+        sniff.run_error,
         sniff_start.elapsed()
     );
     Ok(sniff)
@@ -535,8 +599,10 @@ impl BinaryExpectation {
     /// Explains why a just-uploaded binary was rejected.
     fn mismatch_message(&self, sniff: &RemoteSniff) -> String {
         format!(
-            "remote binary at {} did not verify after upload: version '{}' (want '{}')",
-            sniff.remote_bin, sniff.version_output, self.version
+            "remote binary at {} did not verify after upload: version {} (want '{}')",
+            sniff.remote_bin,
+            sniff.version_description(),
+            self.version
         )
     }
 }
@@ -643,9 +709,12 @@ impl Installer<'_> {
         let mut target = self.first_candidate().await?;
         let mut uploaded = false;
         let mut first_check = true;
-        // At most: the debug path, the release path after a platform mismatch, and the
-        // verification after the upload.
-        for _ in 0..3 {
+        // Set once the local debug build proved unable to run on this device, so the
+        // release install is used from then on instead of switching back to the debug path.
+        let mut debug_rejected = false;
+        // At most: the debug path, the verification after a debug upload that does not run,
+        // the release path, and the verification after the release upload.
+        for _ in 0..4 {
             let expect = target.expectation();
             log!(
                 Level::Debug,
@@ -687,6 +756,23 @@ impl Installer<'_> {
                 );
                 return Ok(ready);
             }
+            if let InstallSource::Debug { build, .. } = &target.source
+                && sniff.unrunnable()
+            {
+                // The content-addressed path holds exactly this build, size-checked on
+                // upload, so a failure to run is the build's fault (for example a glibc
+                // build on a musl or older-glibc host). Uploading it again would fail the
+                // same way on every start, so the release build is used instead.
+                self.reject_debug_build(&sniff, build);
+                debug_rejected = true;
+                uploaded = false;
+                target = self.release_target();
+                self.status.report(format!(
+                    "Checking the release install at {} for this device",
+                    target.remote_bin
+                ));
+                continue;
+            }
             if uploaded {
                 let message = expect.mismatch_message(&sniff);
                 redoor_core::log_failure!(
@@ -697,7 +783,11 @@ impl Installer<'_> {
                 );
                 return Err(ProvisionError::Remote(message));
             }
-            let install = self.install_target(&sniff).await?;
+            let install = if debug_rejected {
+                self.release_target()
+            } else {
+                self.install_target(&sniff).await?
+            };
             if install.remote_bin != target.remote_bin {
                 // The probe looked at another path than this platform installs to: the
                 // debug path on a device that needs the release install, or the previous
@@ -818,6 +908,31 @@ impl Installer<'_> {
         }
     }
 
+    /// Reports that the local debug build cannot run on the device and why.
+    ///
+    /// The unrunnable install is kept on purpose: its presence is what lets later starts
+    /// skip straight to the release build without uploading hundreds of megabytes again.
+    /// Other debug installs are removed as after a verified upload, so a device that can
+    /// never run debug builds still holds at most one of them.
+    fn reject_debug_build(&self, sniff: &RemoteSniff, build: &LocalBuild) {
+        log!(
+            Level::Warning,
+            "Local debug build does not run on the device, using the release build: target={}, remote_bin={}, run_error='{}'",
+            self.host.target(),
+            sniff.remote_bin,
+            sniff.run_error
+        );
+        self.status.report(format!(
+            "The local debug build does not run on this device: {}",
+            if sniff.run_error.is_empty() {
+                "--version printed nothing"
+            } else {
+                sniff.run_error.as_str()
+            }
+        ));
+        self.spawn_stale_debug_cleanup(&build.hash);
+    }
+
     /// Removes the installs of other debug builds once the build with `keep_hash` verified.
     ///
     /// Every rebuild gets a new content-addressed directory, so without this a device would
@@ -918,13 +1033,15 @@ pub(super) async fn force_upload_binary(
     if uploaded.version_output.is_empty() {
         redoor_core::log_failure!(
             Level::Error,
-            "Forced binary upload does not run: target={}, remote_bin={}",
+            "Forced binary upload does not run: target={}, remote_bin={}, run_error='{}'",
             host.target(),
-            uploaded.remote_bin
+            uploaded.remote_bin,
+            uploaded.run_error
         );
         return Err(ProvisionError::Remote(format!(
-            "uploaded binary at {} did not execute successfully with --version",
-            uploaded.remote_bin
+            "uploaded binary at {} did not execute successfully with --version: {}",
+            uploaded.remote_bin,
+            uploaded.version_description()
         )));
     }
 
@@ -1130,14 +1247,20 @@ mod tests {
     /// A separate writer process prevents concurrent forks in this test process from
     /// inheriting a writable descriptor, which can cause ETXTBSY even after our write ends.
     async fn fake_binary(path: &Path, version: &str) {
-        let parent = path.parent().unwrap();
-        tokio::fs::create_dir_all(parent).await.unwrap();
         let script = format!(
             r#"#!/bin/sh
 if [ "$1" = --version ]; then echo '{version}'; echo 'second line, with comma'; exit 0; fi
 printf 'agent:%s|' "$@"
 "#
         );
+        write_executable(path, &script).await;
+    }
+
+    /// Writes `script` to `path` as an executable, through a separate writer process for
+    /// the ETXTBSY reason described on [`fake_binary`].
+    async fn write_executable(path: &Path, script: &str) {
+        let parent = path.parent().unwrap();
+        tokio::fs::create_dir_all(parent).await.unwrap();
         let quoted_path = quote(path.to_str().unwrap());
         let command = format!("cat > {quoted_path} && chmod 755 {quoted_path}");
         let output = run_remote(&command, script.as_bytes(), parent).await;
@@ -1273,6 +1396,104 @@ printf 'agent:%s|' "$@"
         );
         // A missing binary has no version, so it gets installed.
         assert_eq!(sniff.version_output, "");
+        // Nothing is there, so the binary is missing rather than unable to run.
+        assert!(!sniff.present);
+        assert!(!sniff.unrunnable());
+        assert_eq!(sniff.run_error, "");
+    }
+
+    /// A binary that exists but cannot run is reported as present with the first line of
+    /// its error, so the installer can stop re-uploading it and the UI can say why.
+    #[tokio::test]
+    async fn probe_reports_why_a_present_binary_does_not_run() {
+        let home = redoor_core::test_support::TempDir::create();
+        let cases = [
+            (
+                // What the loader prints for a glibc build on an older-glibc host.
+                "#!/bin/sh
+echo 'redoor: version GLIBC_2.99 not found (required by redoor)' >&2
+echo 'second error line' >&2
+exit 1
+",
+                "redoor: version GLIBC_2.99 not found (required by redoor)",
+            ),
+            (
+                "#!/bin/sh
+exit 3
+",
+                "--version printed nothing (exit status 3)",
+            ),
+        ];
+        for (index, (script, run_error)) in cases.into_iter().enumerate() {
+            let remote_bin = format!("~/broken-{index}/redoor");
+            write_executable(&home.path().join(format!("broken-{index}/redoor")), script).await;
+            let output = run_remote(
+                "exec sh -s",
+                remote_sniff_script(&remote_bin).as_bytes(),
+                home.path(),
+            )
+            .await;
+            let sniff = RemoteSniff::parse("test", &lines(&output)).unwrap();
+            // A binary that only prints errors has no version.
+            assert_eq!(sniff.version_output, "");
+            // Present without a version is what makes the installer fall back to a release.
+            assert!(sniff.unrunnable());
+            // Only the first error line is kept, or a fallback naming the exit status.
+            assert_eq!(sniff.run_error, run_error);
+            // The status line carries the reason to the lifecycle UI.
+            assert!(
+                sniff
+                    .status_message()
+                    .ends_with(&format!("version=(fails to run: {run_error})")),
+                "status: {}",
+                sniff.status_message()
+            );
+        }
+    }
+
+    /// A working binary that also writes to stderr still reports a clean version and no
+    /// run error, because stderr is only read when no version came out.
+    #[tokio::test]
+    async fn probe_ignores_stderr_of_a_working_binary() {
+        let home = redoor_core::test_support::TempDir::create();
+        write_executable(
+            &home.path().join("bin/redoor"),
+            "#!/bin/sh
+echo 'warning: something' >&2
+echo 'redoor 1.2.3'
+",
+        )
+        .await;
+        let output = run_remote(
+            "exec sh -s",
+            remote_sniff_script("~/bin/redoor").as_bytes(),
+            home.path(),
+        )
+        .await;
+        let sniff = RemoteSniff::parse("test", &lines(&output)).unwrap();
+        // The warning does not leak into the version the expectation compares.
+        assert_eq!(sniff.version_output, "redoor 1.2.3");
+        // A running binary is never treated as unable to run.
+        assert!(!sniff.unrunnable());
+        assert_eq!(sniff.run_error, "");
+    }
+
+    /// A report whose presence line is neither value is rejected instead of guessed, since
+    /// a wrong guess would either re-upload forever or skip a needed install.
+    #[test]
+    fn probe_rejects_an_unknown_presence_line() {
+        let report = [
+            "redoor-probe",
+            "Linux",
+            "x86_64",
+            "/bin/redoor",
+            "maybe",
+            "",
+            "",
+        ]
+        .map(str::to_string);
+        // The parser must fail on the unexpected shape.
+        assert!(RemoteSniff::parse("test", &report).is_err());
     }
 
     /// A path with spaces and shell syntax is probed literally, and only the first version
@@ -1490,7 +1711,9 @@ echo uploaded
         let sniff = |version: &str| RemoteSniff {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
+            present: true,
             version_output: version.to_string(),
+            run_error: String::new(),
             remote_bin: "/bin/redoor".to_string(),
         };
         let expect = BinaryExpectation::this_version();
@@ -1515,7 +1738,9 @@ echo uploaded
         let sniff = RemoteSniff {
             os: "linux".to_string(),
             arch: "x86_64".to_string(),
+            present: true,
             version_output: "redoor 999.0.0".to_string(),
+            run_error: String::new(),
             remote_bin: "/bin/redoor".to_string(),
         };
         // An upload of the build verifies even though this server reports another version.

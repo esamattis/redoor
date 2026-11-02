@@ -890,7 +890,15 @@ SSH-backed agents. The server's watchdog runs them. Standalone agents manage the
   count must equal the local file's size before it is renamed into place, because a
   stream that ended early would otherwise be trusted forever at a content-addressed path.
   The size check plus the post-upload `--version` probe replace the former SHA-1
-  comparison for release, debug and forced uploads. After a debug upload verifies, a
+  comparison for release, debug and forced uploads. The probe also reports whether a file
+  exists at the path and, when `--version` prints nothing, the first line of its stderr.
+  A file at a `debug-<hash>` path that exists but does not run is therefore the build's
+  fault, not a missing or stale install: the platform check compares only OS and CPU, so a
+  dynamically linked glibc debug build still reaches musl or older-glibc hosts. The
+  installer then uses the release build (static musl) for that start, and keeps the
+  unrunnable debug install so later starts skip straight to the release without uploading
+  hundreds of megabytes again; the loader's error is shown in the status lines. After a
+  debug upload verifies or is rejected this way, a
   background task removes the other `debug-*` directories and the legacy `debug/`
   directory; an agent still running an old build keeps its deleted file open. Each step is
   published as `provisioning_status`, which the UI lists while the agent starts. The ssh
