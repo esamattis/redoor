@@ -670,10 +670,35 @@ home = "${remoteRoot}"
                 ),
             ).toBe(shell);
 
-            // A server restart in place likewise keeps the daemon and the shell.
+            // A server restart in place likewise keeps the daemon and the shell, but the
+            // restarted server opens no SSH session by itself: the device waits, stopped, for
+            // the user's Start.
             await apiClient.restartServer();
+
+            const waiting = await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listAgents().catch(() => [])).find(
+                        (agent) =>
+                            agent.name === agentName &&
+                            agent.status === "stopped",
+                    ),
+                timeoutMs: 30_000,
+                description: "restarted server to list the SSH device stopped",
+            });
+
+            await waiting.start();
             await waitForReconnect(apiClient, agentName, afterDrop.connectionId);
+            // The Start keeps the daemon that outlived the server.
             expect(await remoteDaemonPid(namespace)).toBe(daemonPid);
+            // The daemon reports its shell once it is connected again.
+            await waitForValue({
+                predicate: async () =>
+                    (await apiClient.listTerminalSessions()).sessions.find(
+                        (listed) => listed.id === session.id,
+                    ),
+                timeoutMs: 15_000,
+                description: "SSH daemon to report its shell",
+            });
             expect(
                 await terminalShellPid(
                     await reattach(apiClient, session.id),

@@ -93,8 +93,6 @@ pub struct AgentListEntry {
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed lifecycle diagnostic.
     pub connection_issue: Option<String>,
-    /// Whether the managed device waits for its encrypted SSH key.
-    pub waiting_for_ssh_key: bool,
     /// Sticky SSH start steps copied from the supervisor snapshot.
     pub provisioning_status: Vec<redoor_protocol::api::agents::ProvisioningStatusMessage>,
     /// Identity from the latest registration; absent until the agent first connects.
@@ -146,7 +144,6 @@ impl From<AgentListEntry> for AgentInfoResponse {
             connection_id: agent.connection_id,
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
-            waiting_for_ssh_key: agent.waiting_for_ssh_key,
             provisioning_status: agent.provisioning_status,
             uid: identity.as_ref().map(|identity| identity.uid),
             is_root: identity.as_ref().is_some_and(|identity| identity.is_root),
@@ -625,7 +622,6 @@ mod tests {
             connection_id: None,
             last_seen_at: None,
             connection_issue: None,
-            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             identity: Some(registration.identity),
             capabilities: registration.capabilities,

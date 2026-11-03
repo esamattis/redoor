@@ -73,8 +73,6 @@ pub struct KnownAgent {
     pub last_seen_at: Option<UnixTimestampSeconds>,
     /// Latest managed spawn, exit, or registration issue.
     pub connection_issue: Option<String>,
-    /// Whether the managed device waits for its encrypted SSH key.
-    pub waiting_for_ssh_key: bool,
     /// Sticky SSH start steps for the current watchdog cycle.
     pub provisioning_status: Vec<redoor_protocol::api::agents::ProvisioningStatusMessage>,
     /// Guards the inventory against stale socket teardown.
@@ -105,7 +103,6 @@ impl KnownAgent {
             connected_at: None,
             last_seen_at: None,
             connection_issue: None,
-            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             socket_id: None,
             identity: None,

@@ -91,7 +91,6 @@ export async function createToxiproxyAgent(options: {
             connection_id: options.agent.connectionId,
             last_seen_at: options.agent.lastSeenAt,
             connection_issue: options.agent.connectionIssue,
-            waiting_for_ssh_key: false,
             provisioning_status: options.agent.provisioningStatus,
             binary: options.agent.binary,
             supports_native_open: options.agent.supportsNativeOpen,
@@ -374,8 +373,9 @@ export function processIsAlive(pid: number): boolean {
 }
 
 /**
- * Kills every managed daemon a test server under `home` left running and forgets which
- * devices were running, so the next test file on this worker starts from nothing. Daemons
+ * Kills every managed daemon a test server under `home` left running, so the next test
+ * file on this worker starts from nothing; a surviving local daemon would otherwise
+ * reconnect and be adopted. Daemons
  * run in their own session, outside the server's process group that `kill` ends.
  */
 export function killManagedDaemons(home: string = TEST_SERVER_HOME): void {
@@ -412,10 +412,6 @@ export function killManagedDaemons(home: string = TEST_SERVER_HOME): void {
             // No record, no process, or not a daemon anymore.
         }
     }
-
-    rmSync(join(share, TEST_APP_NAME, "managed-running.json"), {
-        force: true,
-    });
 }
 
 /** Groups optional process settings so callers cannot confuse cwd and environment. */

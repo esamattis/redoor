@@ -74,8 +74,9 @@ impl ManagedLauncher {
         }
     }
 
-    /// Registers configured inventory and supervisors, then starts the devices that were
-    /// running when the last server process went away.
+    /// Registers configured inventory and supervisors, all stopped. No device is started on
+    /// the user's behalf; a local daemon that outlived the last server process reconnects and
+    /// is adopted (see [`crate::watchdog::WatchdogHandle::mark_connected`]).
     ///
     /// Config validation already rejected duplicate ids and names, so a registry conflict
     /// here means an earlier registration of the same id is still alive.
@@ -93,7 +94,6 @@ impl ManagedLauncher {
         for config in configs.iter().cloned() {
             self.register(config, registry, router).await?;
         }
-        registry.start_desired_running().await;
         Ok(())
     }
 

@@ -13,9 +13,7 @@ import {
     SERVER_PATH,
     TempFileManager,
     TEST_AGENT_TOKEN,
-    TEST_APP_NAME,
     TEST_PASSWORD,
-    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     managedDaemonDataDir,
@@ -96,6 +94,33 @@ async function waitForConnected(
             );
 
             return agent;
+        },
+    });
+}
+
+/**
+ * Waits until the daemon of `name` that reconnected on its own was adopted and then
+ * replaced by the ensure step with the daemon this server expects, and that one connected.
+ * The adopted daemon's provisional connection comes first, so waiting for any connection
+ * would return the daemon that is about to be replaced.
+ */
+async function waitForReplacedDaemon(name: string): Promise<Agent> {
+    return waitForValue({
+        timeoutMs: 30_000,
+        description: `${name}'s daemon to be replaced and connect`,
+        predicate: async () => {
+            const agent = await agentNamed(name);
+            const steps = agent.provisioningStatus.map((step) => step.message);
+
+            const replaced = steps.findIndex((message) =>
+                message.startsWith("Replaced the agent daemon"),
+            );
+
+            return agent.status === "connected" &&
+                replaced !== -1 &&
+                steps.lastIndexOf("Connected") > replaced
+                ? agent
+                : undefined;
         },
     });
 }
@@ -184,10 +209,20 @@ describe("managed local agent daemons", () => {
             predicate: async () =>
                 (await api.getServerInfo()).boot_id !== bootId || undefined,
         });
+        // Nothing starts the device; its daemon reconnects by itself and is adopted.
         await waitForConnected(RUNNING_AGENT, agent.connectionId);
 
         // The server only dropped the session; the daemon and its shell kept running.
         expect(daemonPid(await agentNamed(RUNNING_AGENT))).toBe(pidBefore);
+        // The daemon reports its shell to the restarted server, which kept no index of it.
+        await waitForValue({
+            timeoutMs: 15_000,
+            description: "session reported by the daemon",
+            predicate: async () =>
+                (await api.listTerminalSessions()).sessions.find(
+                    (listed) => listed.id === session.id,
+                ),
+        });
 
         const reattached = new TerminalViewer(
             api,
@@ -202,40 +237,25 @@ describe("managed local agent daemons", () => {
         expect(await shellPid(reattached, "after")).toBe(shell);
     }, 90_000);
 
-    it("starts running devices again after a crash and ends a stopped device's daemon", async () => {
+    it("adopts a reconnecting daemon after a crash and starts no stopped device", async () => {
         const stopped = await agentNamed(STOPPED_AGENT);
         await stopped.start();
         await waitForConnected(STOPPED_AGENT);
         const stoppedPid = daemonPid(stopped);
+        await stopped.shutdown();
+        await waitForExit(stoppedPid, "the stopped device's daemon to exit");
         const running = await agentNamed(RUNNING_AGENT);
         const runningPid = daemonPid(running);
 
         await crashServer();
-
-        // The stop of this device never reached its daemon, as when the server dies right
-        // after the user pressed Stop: only the record of the intent is gone.
-        const store = join(
-            TEST_SERVER_HOME,
-            ".local",
-            "share",
-            TEST_APP_NAME,
-            "managed-running.json",
-        );
-
-        writeFileSync(
-            store,
-            JSON.stringify({ running: [running.id] }),
-        );
-        // Both daemons outlived the server.
+        // The daemon outlived the server.
         expect(processIsAlive(runningPid)).toBe(true);
-        expect(processIsAlive(stoppedPid)).toBe(true);
         await startServer();
 
-        // The device that was running comes back on its own, with the same daemon.
+        // The running device's daemon reconnects by itself and is kept, so its shells live on.
         const back = await waitForConnected(RUNNING_AGENT);
         expect(daemonPid(back)).toBe(runningPid);
-        // The stopped device's daemon is refused and exits instead of undoing the stop.
-        await waitForExit(stoppedPid, "stopped device's daemon to exit");
+        // The server starts no device itself, so the stopped one stays stopped.
         expect((await agentNamed(STOPPED_AGENT)).status).toBe("stopped");
     }, 90_000);
 
@@ -254,13 +274,15 @@ describe("managed local agent daemons", () => {
 
         await crashServer();
         await startServer({ executablePath: copy });
-        const replaced = await waitForConnected(RUNNING_AGENT);
+        const replaced = await waitForReplacedDaemon(RUNNING_AGENT);
 
-        // The ensure step replaced the daemon before it reconnected to the new server.
+        // The old daemon reconnected and was adopted, and the adoption's ensure step replaced
+        // it because it runs another binary file.
         expect(daemonPid(replaced)).not.toBe(pidBefore);
         await waitForExit(pidBefore, "the old daemon to exit");
 
-        // The tab explains why its shell is gone.
+        // The adopted old daemon reported its shell before it was replaced, so the tab
+        // explains why its shell is gone.
         const listed = await waitForValue({
             timeoutMs: 15_000,
             description: "the old shell to be listed as ended",
@@ -281,7 +303,7 @@ describe("managed local agent daemons", () => {
         });
         await crashServer();
         await startServer();
-        await waitForConnected(RUNNING_AGENT);
+        await waitForReplacedDaemon(RUNNING_AGENT);
     }, 120_000);
 
     it("does not loop when the binary at the old server's path was replaced", async () => {
@@ -290,7 +312,7 @@ describe("managed local agent daemons", () => {
         copyFileSync(SERVER_PATH, path);
         await crashServer();
         await startServer({ executablePath: path });
-        const before = await waitForConnected(RUNNING_AGENT);
+        const before = await waitForReplacedDaemon(RUNNING_AGENT);
         const pidBefore = daemonPid(before);
 
         // What `redoor upgrade --no-restart` does: a new file is renamed over the path while
@@ -326,7 +348,7 @@ describe("managed local agent daemons", () => {
         expect(daemonPid(settled)).toBe(pidAfter);
         await crashServer();
         await startServer();
-        await waitForConnected(RUNNING_AGENT);
+        await waitForReplacedDaemon(RUNNING_AGENT);
     }, 120_000);
 
     it("refuses per-device upgrades of managed agents", async () => {
@@ -398,6 +420,7 @@ describe("managed local agent daemons", () => {
         await crashServer();
         await startServer({ env: { REDOOR_MANAGED_ORPHAN_TIMEOUT: "2s" } });
         const agent = await agentNamed(RUNNING_AGENT);
+        // An earlier test stopped the device, so no daemon is left to adopt.
         await agent.start();
         const connected = await waitForConnected(RUNNING_AGENT);
         const pid = daemonPid(connected);

@@ -3,10 +3,11 @@
 //! Shells and their screens live in the agents. The server keeps their records, as each
 //! agent last reported them, so every window can list them, and it decides which one browser
 //! views a session. Records stay while their agent is disconnected, because the shells keep
-//! running there and come back with the agent.
+//! running there and come back with the agent. Nothing is saved: a restarted server starts
+//! empty and learns each agent's sessions from the report it sends after connecting, because
+//! that report is the only authority on which shells still run.
 
 use super::TerminalsChangedNotifier;
-use super::store::{PendingClose, SessionStore, StoredSession, StoredSessions};
 use crate::http::agent_client::AgentClient;
 use crate::http::error::ApiError;
 use redoor_core::log;
@@ -66,7 +67,6 @@ pub(crate) struct TerminalRegistry {
     state: Arc<Mutex<RegistryState>>,
     agents: AgentClient,
     notifier: TerminalsChangedNotifier,
-    store: SessionStore,
 }
 
 /// The sessions in the order the server learned them, and closes still owed to agents.
@@ -75,6 +75,12 @@ struct RegistryState {
     sessions: Vec<Entry>,
     pending_closes: Vec<PendingClose>,
     next_serial: u64,
+}
+
+/// A session closed while its agent was away; the agent is told when it reconnects.
+struct PendingClose {
+    agent_id: AgentId,
+    id: TerminalSessionId,
 }
 
 /// One session and its current viewer.
@@ -117,22 +123,6 @@ impl Entry {
 }
 
 impl RegistryState {
-    /// What the saved index holds.
-    fn stored(&self) -> StoredSessions {
-        StoredSessions {
-            sessions: self
-                .sessions
-                .iter()
-                .map(|entry| StoredSession {
-                    agent_id: entry.agent_id.clone(),
-                    record: entry.record.clone(),
-                    orphaned: entry.orphaned,
-                })
-                .collect(),
-            pending_closes: self.pending_closes.clone(),
-        }
-    }
-
     /// Whether the session's close still has to reach its agent.
     fn close_pending(&self, agent_id: &AgentId, id: TerminalSessionId) -> bool {
         self.pending_closes
@@ -142,56 +132,28 @@ impl RegistryState {
 }
 
 impl TerminalRegistry {
-    /// Starts from the saved index, so sessions are listed again before their agents
-    /// reconnect.
-    pub(crate) fn new(
-        agents: AgentClient,
-        notifier: TerminalsChangedNotifier,
-        store: SessionStore,
-        stored: StoredSessions,
-    ) -> Self {
-        let state = RegistryState {
-            sessions: stored
-                .sessions
-                .into_iter()
-                .map(|stored| Entry {
-                    agent_id: stored.agent_id,
-                    record: stored.record,
-                    orphaned: stored.orphaned,
-                    viewer: None,
-                })
-                .collect(),
-            pending_closes: stored.pending_closes,
-            next_serial: 0,
-        };
+    /// Starts empty; each agent's first report after connecting lists its sessions.
+    pub(crate) fn new(agents: AgentClient, notifier: TerminalsChangedNotifier) -> Self {
         Self {
-            state: Arc::new(Mutex::new(state)),
+            state: Arc::new(Mutex::new(RegistryState::default())),
             agents,
             notifier,
-            store,
         }
     }
 
-    /// An empty index whose agent calls fail and whose changes go nowhere, for tests.
+    /// An empty index whose agent calls fail at once, as if no agent were connected, and
+    /// whose changes go nowhere, for tests.
     #[cfg(test)]
     pub(crate) fn disabled() -> Self {
         Self::new(
             AgentClient::new(crate::actors::router::RouterHandle::closed_for_test()),
             TerminalsChangedNotifier::disabled(),
-            SessionStore::disabled(),
-            StoredSessions::default(),
         )
     }
 
     /// Locks the index, tolerating poison because every operation leaves it valid.
     fn state(&self) -> MutexGuard<'_, RegistryState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Saves the index and tells browser windows to reload their tabs.
-    fn changed(&self, state: &RegistryState) {
-        self.store.save(state.stored());
-        self.notifier.publish();
     }
 
     /// Starts a shell on the agent and lists its session. The session is listed before the
@@ -228,7 +190,8 @@ impl TerminalRegistry {
             }
         };
         let info = state.sessions[index].info();
-        self.changed(&state);
+        drop(state);
+        self.notifier.publish();
         Ok(info)
     }
 
@@ -310,7 +273,7 @@ impl TerminalRegistry {
                 agent_id: entry.agent_id.clone(),
                 id,
             });
-            self.changed(&state);
+            self.notifier.publish();
             entry.agent_id
         };
         self.close_on_agent(agent_id, id).await;
@@ -330,17 +293,16 @@ impl TerminalRegistry {
             );
             return;
         }
-        let mut state = self.state();
-        state
+        self.state()
             .pending_closes
             .retain(|close| !(close.agent_id == agent_id && close.id == id));
-        self.changed(&state);
     }
 
     /// Replaces what the server knows about `agent_id`'s sessions with the agent's report.
     ///
-    /// Sessions keep their place and viewer. A session the agent no longer has (it was
-    /// restarted) stays listed as exited until its tab is closed, like a shell that exited,
+    /// This is also how a restarted server learns which shells still run, so the browsers
+    /// get their tabs back as each agent reconnects. Sessions keep their place and viewer. A
+    /// session the agent no longer has (it was restarted) stays listed as exited until its tab is closed, like a shell that exited,
     /// so the tab explains what happened. Sessions closed while the agent was away are left
     /// out and closed on the agent now.
     pub(crate) fn report(&self, agent_id: &AgentId, records: Vec<TerminalSessionRecord>) {
@@ -360,7 +322,8 @@ impl TerminalRegistry {
                 !pending
             })
             .collect();
-        let before = state.stored();
+        // Browsers only reload their tabs when what they list changed.
+        let mut changed = false;
         for entry in state
             .sessions
             .iter_mut()
@@ -371,10 +334,13 @@ impl TerminalRegistry {
                 .position(|record| record.id == entry.record.id)
             {
                 Some(position) => {
-                    entry.record = records.remove(position);
+                    let record = records.remove(position);
+                    changed |= entry.orphaned || entry.record != record;
+                    entry.record = record;
                     entry.orphaned = false;
                 }
                 None if !entry.orphaned => {
+                    changed = true;
                     entry.orphaned = true;
                     entry.record.status = TerminalSessionStatus::Exited {
                         message: ENDED_WITH_AGENT.to_string(),
@@ -384,6 +350,8 @@ impl TerminalRegistry {
                 None => {}
             }
         }
+        // What is left are sessions the server did not list yet.
+        changed |= !records.is_empty();
         for record in records {
             state.sessions.push(Entry {
                 agent_id: agent_id.clone(),
@@ -392,10 +360,10 @@ impl TerminalRegistry {
                 viewer: None,
             });
         }
-        if state.stored() != before {
-            self.changed(&state);
-        }
         drop(state);
+        if changed {
+            self.notifier.publish();
+        }
         for id in to_close {
             let registry = self.clone();
             let agent_id = agent_id.clone();
@@ -420,38 +388,12 @@ mod tests {
         }
     }
 
-    /// A registry whose agent calls fail at once, as if no agent were connected.
-    fn registry(stored: StoredSessions) -> TerminalRegistry {
-        TerminalRegistry::new(
-            AgentClient::new(crate::actors::router::RouterHandle::closed_for_test()),
-            TerminalsChangedNotifier::disabled(),
-            SessionStore::disabled(),
-            stored,
-        )
-    }
-
     fn titles(registry: &TerminalRegistry) -> Vec<String> {
         registry
             .list()
             .into_iter()
             .map(|session| session.title)
             .collect()
-    }
-
-    /// Saved sessions are listed again after a restart, before their agent reconnects.
-    #[test]
-    fn saved_sessions_are_listed_at_start() {
-        let agent_id = redoor_core::test_support::test_agent_id("agent");
-        let registry = registry(StoredSessions {
-            sessions: vec![StoredSession {
-                agent_id,
-                record: record("saved"),
-                orphaned: false,
-            }],
-            pending_closes: Vec::new(),
-        });
-        // Browsers keep their tabs across the restart.
-        assert_eq!(titles(&registry), vec!["saved"]);
     }
 
     /// An agent's report updates sessions in place, adds new ones and drops the ones it no
@@ -462,7 +404,7 @@ mod tests {
         let other = redoor_core::test_support::test_agent_id("other");
         let kept = record("kept");
         let gone = record("gone");
-        let registry = registry(StoredSessions::default());
+        let registry = TerminalRegistry::disabled();
         registry.report(&agent, vec![kept.clone(), gone.clone()]);
         registry.report(&other, vec![record("other")]);
         let mut exited = kept.clone();
@@ -494,7 +436,7 @@ mod tests {
         let agent = redoor_core::test_support::test_agent_id("agent");
         let closed = record("closed");
         let open = record("open");
-        let registry = registry(StoredSessions::default());
+        let registry = TerminalRegistry::disabled();
         registry.report(&agent, vec![closed.clone(), open.clone()]);
         let mut ticket = registry.attach(closed.id).unwrap();
         assert!(registry.close(closed.id).await);
@@ -515,7 +457,7 @@ mod tests {
     fn attach_takes_over_and_detach_only_frees_the_current_viewer() {
         let agent = redoor_core::test_support::test_agent_id("agent");
         let session = record("s");
-        let registry = registry(StoredSessions::default());
+        let registry = TerminalRegistry::disabled();
         registry.report(&agent, vec![session.clone()]);
         let mut first = registry.attach(session.id).unwrap();
         let second = registry.attach(session.id).unwrap();

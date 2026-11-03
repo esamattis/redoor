@@ -1,12 +1,12 @@
 //! The server's view of terminal sessions.
 //!
 //! Shells and their mirrored screens live in the agent processes, so they survive server
-//! restarts. The server keeps an index of the sessions, saved across its own restarts, and
-//! decides which one browser views each of them. This is long-lived server state, not HTTP,
+//! restarts. The server keeps an in-memory index of the sessions, which each agent refills
+//! after a server restart by reporting its sessions when it connects, and decides which one
+//! browser views each of them. This is long-lived server state, not HTTP,
 //! so the REST and websocket handlers in `http` only look sessions up here.
 
 pub(crate) mod registry;
-pub(crate) mod store;
 
 use crate::actors::router::{RouterHandle, RouterMsg, RouterSendError};
 

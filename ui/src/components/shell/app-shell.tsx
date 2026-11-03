@@ -19,7 +19,6 @@ import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
 import { useTerminalSessionSync } from "#ui/use-terminals";
 import { useEscapeBlursTextControls } from "#ui/utils/use-escape-blur";
-import { useHandOverWaitingSshKeys } from "#ui/vault/use-hand-over-waiting-ssh-keys";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -39,7 +38,6 @@ export function AppShell() {
     useTerminalSessionSync();
     useRememberAgentTabLocation();
     useEscapeBlursTextControls();
-    useHandOverWaitingSshKeys();
 
     return (
         <ShellFileImportHandler>

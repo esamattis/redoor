@@ -607,7 +607,6 @@ fn stopped_agent_response(
         connection_id: None,
         last_seen_at: None,
         connection_issue: None,
-        waiting_for_ssh_key: false,
         provisioning_status: Vec::new(),
         binary: None,
         supports_native_open: false,

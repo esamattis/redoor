@@ -5,7 +5,6 @@
 pub mod actors;
 mod binaries;
 pub mod http;
-mod managed_running;
 mod managed_session;
 mod one_time_token_registry;
 mod protocol_mismatches;

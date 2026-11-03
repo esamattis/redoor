@@ -24,12 +24,6 @@ ssh_target: string | null, status: AgentConnectionStatus, connected_at: UnixTime
  */
 connection_id: SocketId | null, last_seen_at: UnixTimestampSeconds | null, connection_issue: string | null, 
 /**
- * Whether the managed device waits for its vault-encrypted SSH key, which the server
- * no longer holds (after a server restart), so a browser with an unlocked vault can
- * hand it over without a click. Absent from older servers, which the CLI may talk to.
- */
-waiting_for_ssh_key: boolean, 
-/**
  * Ordered SSH start steps for the current attempt; empty for local or dormant agents.
  */
 provisioning_status: Array<ProvisioningStatusMessage>, 

@@ -538,20 +538,21 @@ test.describe.serial("Dedicated SSH device keys", () => {
                 timeout: 30_000,
             })
             .not.toBe(bootId);
-        // The restarted server starts the device again but no longer holds its key. This
-        // tab's vault is still unlocked, so it hands the key over without a click ...
-        await expect
-            .poll(
-                async () => (await getKeyStatus(page.request, agent.id)).held,
-                {
-                    timeout: 90_000,
-                },
-            )
-            .toBe(true);
-        // ... and the device connects again.
+        // The restarted server starts no SSH device on its own, because it no longer holds
+        // the key and starting one is the user's decision.
+        await expect(
+            page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, stopped` }),
+        ).toBeVisible({ timeout: 30_000 });
+        expect((await getKeyStatus(page.request, agent.id)).held).toBe(false);
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+        // This tab's vault is still unlocked, so the start hands the key over without asking
+        // for the passphrase, and the device connects again.
         await expect(
             page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, connected` }),
         ).toBeVisible({ timeout: 90_000 });
+        expect((await getKeyStatus(page.request, agent.id)).held).toBe(true);
 
         await page
             .getByRole("link", { name: `Edit ${ENCRYPTED_DEVICE}` })

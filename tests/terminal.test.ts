@@ -424,21 +424,14 @@ describe("terminal sessions", () => {
             },
         });
 
-        // The restarted server lists the session from its saved index, so browser tabs stay.
-        expect(
-            (await api.listTerminalSessions()).sessions.map(
-                (listed) => listed.id,
-            ),
-        ).toContain(session.id);
-
+        // The restarted server learns the session from the agent's report once it is back, so
+        // browser tabs return without the server saving anything.
         await waitForValue({
             timeoutMs: 30_000,
-            description: "agent reconnected to the restarted server",
+            description: "session reported by the reconnected agent",
             predicate: async () =>
-                (await api.listAgents()).find(
-                    (agent) =>
-                        agent.id === testAgent.id &&
-                        agent.status === "connected",
+                (await api.listTerminalSessions()).sessions.find(
+                    (listed) => listed.id === session.id,
                 ),
         });
 

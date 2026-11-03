@@ -203,7 +203,7 @@ CLI values take precedence over role-specific environment variables, which take 
 
 ## `[[agents]]`
 
-Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start when you start a device from the UI or management API, and devices that were running start again when the server restarts. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent daemon, deletes the daemon's own namespace directories on the device and removes its configuration, without touching any other files on the device.
+Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start when you start a device from the UI or management API. The server never starts a device on its own: after a server restart, a local device whose agent is still running reconnects by itself, and an SSH device stays stopped until you start it. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent daemon, deletes the daemon's own namespace directories on the device and removes its configuration, without touching any other files on the device.
 
 ### Device ids and names
 
@@ -265,7 +265,7 @@ home = "/home/me/projects"
 
 ### Managed agent daemons
 
-A managed agent (local or SSH-backed) runs as a daemon on its device, in its own namespace `<server app name>-<agent id>` (for example `redoor-dev_k3j…`). It keeps running, with its terminals, when the server restarts or an SSH connection drops; the server only rebuilds the connection. Devices that were running before a server restart are started again automatically.
+A managed agent (local or SSH-backed) runs as a daemon on its device, in its own namespace `<server app name>-<agent id>` (for example `redoor-dev_k3j…`). It keeps running, with its terminals, when the server restarts or an SSH connection drops; the server only rebuilds the connection. After a server restart, a local agent reconnects on its own. An SSH device waits until you start it again, and its agent, with its terminals, is still there if you do so within 24 hours.
 
 - The daemon logs to `agent.log` in its namespace's data directory on the device, for example `~/.local/share/redoor-dev_k3j…/agent.log`. Live logs are also available in the UI.
 - A daemon without a server connection for 24 hours exits on its own.

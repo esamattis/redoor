@@ -534,7 +534,6 @@ mod tests {
             connection_id: Some(connection),
             last_seen_at: None,
             connection_issue: None,
-            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             identity: Some(registration.identity),
             capabilities: registration.capabilities,

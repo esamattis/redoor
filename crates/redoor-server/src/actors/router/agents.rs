@@ -497,12 +497,10 @@ impl RouterState {
             // A live connection is fully usable, whatever the supervisor learned last.
             known.status = AgentConnectionStatus::Connected;
             known.connection_issue = snapshot.connection_issue;
-            known.waiting_for_ssh_key = snapshot.waiting_for_ssh_key;
             known.provisioning_status = snapshot.provisioning_status.clone();
         } else {
             known.status = snapshot.status.clone();
             known.connection_issue = snapshot.connection_issue;
-            known.waiting_for_ssh_key = snapshot.waiting_for_ssh_key;
             known.provisioning_status = snapshot.provisioning_status;
             known.socket_id = snapshot.socket_id;
             if known.status != AgentConnectionStatus::Connected {
@@ -614,7 +612,6 @@ impl RouterState {
                 connection_id: info.socket_id.clone(),
                 last_seen_at: info.last_seen_at,
                 connection_issue: info.connection_issue.clone(),
-                waiting_for_ssh_key: info.waiting_for_ssh_key,
                 provisioning_status: info.provisioning_status.clone(),
                 identity: info.identity.clone(),
                 capabilities: info.capabilities,
@@ -1132,7 +1129,6 @@ mod tests {
                 desired_running: true,
                 status: AgentConnectionStatus::Starting,
                 connection_issue: None,
-                waiting_for_ssh_key: false,
                 provisioning_status: Vec::new(),
                 socket_id: None,
             },
@@ -1177,7 +1173,6 @@ mod tests {
                 desired_running: false,
                 status: AgentConnectionStatus::Stopping,
                 connection_issue: None,
-                waiting_for_ssh_key: false,
                 provisioning_status: Vec::new(),
                 socket_id: None,
             },

@@ -7,8 +7,10 @@
 //! the tunnel. Killing the session only drops the tunnel: the daemon reconnects through the
 //! next one.
 //!
-//! A supervisor is registered at server startup and runs while its device is
-//! desired-running, which survives restarts (see [`crate::managed_running`]). It never gives
+//! A supervisor is registered at server startup, stopped, and runs while its device is
+//! desired-running. Nothing is saved across server restarts: the user starts devices, and a
+//! local daemon that reconnects on its own is adopted (see
+//! [`WatchdogHandle::mark_connected`]). It never gives
 //! up on a desired-running device: every failure is retried on the shared [`Backoff`]
 //! schedule, and a daemon that stays without a connection is replaced. The only wait without
 //! a timer is for a locked SSH key, which no retry can unlock.
@@ -26,8 +28,6 @@ use redoor_protocol::identity::BinaryIdentity;
 use redoor_protocol::ids::{SocketId, UnixTimestampMillis};
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::managed::{DaemonReport, EnsureOutcome, HolderEnd};
-
-use crate::managed_running::DesiredRunningStore;
 
 /// Surfaces a useful issue when a session's daemon has not connected promptly.
 const STARTUP_CONNECTION_TIMEOUT: Duration = Duration::from_secs(15);
@@ -236,8 +236,6 @@ pub struct WatchdogSnapshot {
     pub status: AgentConnectionStatus,
     /// Retains the latest actionable spawn, exit, stop or startup issue.
     pub connection_issue: Option<String>,
-    /// The device waits for its vault-encrypted SSH key, which only a browser can hand over.
-    pub waiting_for_ssh_key: bool,
     /// Accumulated prepare/ensure lines for the current start cycle.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Protects replacement connections from stale disconnect events.
@@ -252,7 +250,6 @@ impl WatchdogSnapshot {
             desired_running: false,
             status: AgentConnectionStatus::Stopped,
             connection_issue: None,
-            waiting_for_ssh_key: false,
             provisioning_status: Vec::new(),
             socket_id: None,
         }
@@ -344,11 +341,9 @@ pub struct WatchdogHandle {
     supersede: SupersedeCallback,
     /// The latest ensure report of the current attempt; see [`ExpectedDaemon`].
     expected: Arc<Mutex<Option<ExpectedDaemon>>>,
-    /// Where desired-running is persisted; `None` in tests that do not need it.
-    desired_running: Option<DesiredRunningStore>,
     /// Whether a daemon of this device may run: an ensure step reported one in this server
-    /// process, or the device was running when the previous server process went away. A
-    /// stop only reaches out to the device then, so stopping a device that never got a
+    /// process, or a daemon that outlived the previous server process connected on its own.
+    /// A stop only reaches out to the device then, so stopping a device that never got a
     /// daemon (a wrong password, an unreachable host) does not wait for that device.
     daemon_may_run: Arc<std::sync::atomic::AtomicBool>,
     /// The signed-in user whose Start or Retry asked for the next cycle. The supervisor
@@ -434,7 +429,6 @@ impl WatchdogHandle {
         if should_publish {
             (self.callback)(self.snapshot());
         }
-        self.persist_desired_running(true).await;
         Ok(())
     }
 
@@ -454,7 +448,6 @@ impl WatchdogHandle {
             snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
             permit.send(SupervisorCommand::Shutdown { reply, stop });
         }
-        self.persist_desired_running(false).await;
         response
             .await
             .map_err(|_| WatchdogError::AcknowledgementDropped {
@@ -500,18 +493,6 @@ impl WatchdogHandle {
             })
     }
 
-    /// Records the desired-running intent for the next server start.
-    async fn persist_desired_running(&self, running: bool) {
-        let Some(store) = &self.desired_running else {
-            return;
-        };
-        if running {
-            store.add(&self.key).await;
-        } else {
-            store.remove(&self.key).await;
-        }
-    }
-
     /// Remembers the calling task's user for the next cycle; see `requester`.
     fn record_requester(&self) {
         *self.requester.lock().expect("watchdog requester poisoned") =
@@ -539,7 +520,6 @@ impl WatchdogHandle {
             snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
             permit.send(SupervisorCommand::Retry { reply });
         }
-        self.persist_desired_running(true).await;
         response
             .await
             .map_err(|_| WatchdogError::AcknowledgementDropped {
@@ -551,6 +531,13 @@ impl WatchdogHandle {
     /// Decides a managed `hello`: rejected while stopped, superseded when it is not the daemon
     /// the latest ensure report describes, otherwise accepted for the current attempt.
     ///
+    /// The server never starts devices on its own when it starts, because an SSH device may
+    /// need a key only an unlocked vault gives, and starting one is the user's decision. A
+    /// daemon that outlived the previous server process needs no tunnel when it runs on this
+    /// host, though, and reconnects by itself; such a device is adopted as running instead of
+    /// being refused, which would end the daemon and its shells. Only a device nobody
+    /// started or stopped in this server process is adopted, so a Stop is never undone.
+    ///
     /// Without a report for the current cycle the `hello` is accepted provisionally: a local
     /// daemon reconnects on its own, and an SSH forward exists before the remote command
     /// prints anything. The supervisor checks it once the report arrives.
@@ -559,6 +546,17 @@ impl WatchdogHandle {
         socket_id: SocketId,
         daemon: ConnectingDaemon,
     ) -> ConnectVerdict {
+        if self.untouched() {
+            log!(
+                Level::Info,
+                "Adopting a managed agent daemon that reconnected on its own: key={}",
+                self.key
+            );
+            self.set_daemon_may_run(true);
+            if self.start().await.is_err() {
+                return ConnectVerdict::Stopped;
+            }
+        }
         let Ok(permit) = self.reserve().await else {
             return ConnectVerdict::Stopped;
         };
@@ -579,6 +577,13 @@ impl WatchdogHandle {
             daemon,
         });
         ConnectVerdict::Accepted(attempt_generation)
+    }
+
+    /// Whether nobody started or stopped the device in this server process: every Start,
+    /// Stop and Retry starts a new attempt, so the first attempt generation is still current.
+    fn untouched(&self) -> bool {
+        let snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+        !snapshot.desired_running && snapshot.attempt_generation == 0
     }
 
     /// Records whether a daemon of this device may run; see `daemon_may_run`.
@@ -689,68 +694,20 @@ impl WatchdogHandle {
 #[derive(Clone, Default)]
 pub struct WatchdogRegistry {
     inner: Arc<Mutex<std::collections::HashMap<String, WatchdogHandle>>>,
-    /// Persisted desired-running intent shared by every handle.
-    desired_running: Option<DesiredRunningStore>,
 }
 
 impl WatchdogRegistry {
-    /// Creates an empty registry that does not persist desired-running, for tests.
+    /// Creates an empty registry, for tests.
     #[cfg(test)]
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Creates an empty registry whose handles persist desired-running in `store`.
-    pub(crate) fn with_desired_running(store: DesiredRunningStore) -> Self {
-        Self {
-            inner: Arc::default(),
-            desired_running: Some(store),
-        }
-    }
-
-    /// Starts every device the last server process left desired-running.
-    ///
-    /// Called after every supervisor is registered and before the listener accepts
-    /// connections, so a daemon that reconnects at once finds its device desired-running
-    /// instead of being rejected as stopped, which would end it and its shells. Listed ids
-    /// without a configured device are dropped.
-    pub(crate) async fn start_desired_running(&self) {
-        let Some(store) = &self.desired_running else {
-            return;
-        };
-        let configured = self
-            .inner
-            .lock()
-            .expect("watchdog registry poisoned")
-            .keys()
-            .cloned()
-            .collect::<std::collections::HashSet<_>>();
-        store.retain(|key| configured.contains(key)).await;
-        for key in store.listed().await {
-            let Some(handle) = self.lookup(&key) else {
-                continue;
-            };
-            log!(
-                Level::Info,
-                "Starting managed agent that was running before the server started: key={}",
-                key
-            );
-            handle.set_daemon_may_run(true);
-            if let Err(error) = handle.start().await {
-                log!(
-                    Level::Warning,
-                    "Failed to start a previously running managed agent: key={}, error={}",
-                    key,
-                    error
-                );
-            }
-        }
-    }
-
     /// Drops every session before the server process goes away.
     ///
-    /// Daemons are never stopped here: they keep their shells, and the next server process
-    /// runs a new session to each desired-running device. Exec preserves process memory
+    /// Daemons are never stopped here: they keep their shells. The next server process starts
+    /// no device on its own; a local daemon reconnects and is adopted, and an SSH device
+    /// waits for the user's Start, which keeps its running daemon. Exec preserves process memory
     /// rather than dropping Rust values, so the sessions are ended explicitly.
     pub async fn detach_all(&self) {
         let handles = self
@@ -848,7 +805,6 @@ impl WatchdogRegistry {
             callback,
             supersede,
             expected: Arc::default(),
-            desired_running: self.desired_running.clone(),
             daemon_may_run: Arc::default(),
             requester: Arc::default(),
         };
@@ -1063,7 +1019,6 @@ impl Supervisor {
             if snapshot.socket_id.is_none() {
                 snapshot.status = AgentConnectionStatus::Starting;
             }
-            snapshot.waiting_for_ssh_key = false;
             snapshot.provisioning_status.clear();
         });
         // Until this cycle's report arrives, every `hello` is provisional.
@@ -1486,11 +1441,6 @@ fn report_spawn_failure(
         retryable
     );
     publish_issue(watchdog, attempt_generation, issue);
-    if !retryable {
-        watchdog.publish_attempt_update(attempt_generation, |snapshot| {
-            snapshot.waiting_for_ssh_key = true;
-        });
-    }
     CycleResult {
         // A shutdown or retry queued meanwhile still wins: the wait handles it first.
         action: if retryable {
@@ -1532,7 +1482,6 @@ fn publish_stopped(watchdog: &WatchdogHandle) {
         snapshot.desired_running = false;
         snapshot.status = AgentConnectionStatus::Stopped;
         snapshot.connection_issue = None;
-        snapshot.waiting_for_ssh_key = false;
         snapshot.socket_id = None;
     });
 }
@@ -1543,7 +1492,6 @@ fn publish_stopping(watchdog: &WatchdogHandle) {
         snapshot.desired_running = false;
         snapshot.status = AgentConnectionStatus::Stopping;
         snapshot.connection_issue = None;
-        snapshot.waiting_for_ssh_key = false;
         snapshot.socket_id = None;
     });
 }
@@ -1563,7 +1511,6 @@ fn publish_fresh_start(watchdog: &WatchdogHandle) {
         snapshot.desired_running = true;
         snapshot.status = AgentConnectionStatus::Starting;
         snapshot.connection_issue = None;
-        snapshot.waiting_for_ssh_key = false;
         snapshot.provisioning_status.clear();
         snapshot.socket_id = None;
     });
@@ -1589,7 +1536,6 @@ fn publish_connected(
         snapshot.desired_running = true;
         snapshot.status = AgentConnectionStatus::Connected;
         snapshot.connection_issue = None;
-        snapshot.waiting_for_ssh_key = false;
         snapshot.socket_id = Some(socket_id);
     })
 }
@@ -2216,8 +2162,6 @@ mod tests {
         // ... while the agent stays wanted, so unlocking needs no second Start decision.
         assert!(handle.snapshot().desired_running);
         assert_eq!(handle.snapshot().status, AgentConnectionStatus::Starting);
-        // Browsers with an unlocked vault hand the key over when they see this.
-        assert!(handle.snapshot().waiting_for_ssh_key);
         // Retrying on a timer cannot unlock the key, so no attempt is made without a Start.
         assert!(
             !advance_until(Duration::from_secs(120), || {
@@ -2230,8 +2174,6 @@ mod tests {
         wait_until(|| spawn_count.load(Ordering::SeqCst) == 2).await;
         // The Start of an already desired-running agent wakes the waiting supervisor.
         assert_eq!(spawn_count.load(Ordering::SeqCst), 2);
-        // The new attempt no longer waits for the key.
-        assert!(!handle.snapshot().waiting_for_ssh_key);
         handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
@@ -2889,50 +2831,42 @@ mod tests {
         handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 
-    /// Desired-running is persisted on Start and Stop but not on a detach, so the next server
-    /// process starts exactly the devices that were running.
+    /// A freshly started server starts no device, but adopts a daemon that reconnects on its
+    /// own, so a local daemon keeps its shells across a server restart. A device stopped in
+    /// this server process refuses its daemon instead, so a Stop is never undone.
     #[tokio::test]
-    async fn desired_running_is_persisted_across_server_restarts() {
-        let directory = redoor_core::test_support::TempDir::create();
-        let store = DesiredRunningStore::load(directory.path()).await;
-        let registry = WatchdogRegistry::with_desired_running(store.clone());
+    async fn adopts_a_reconnecting_daemon_only_when_untouched() {
+        let registry = WatchdogRegistry::new();
         let recorder = Recorder::default();
-        let _running = supervise("dev_running", recorder.spawn(), &registry);
+        let _adopted = supervise("dev_adopted", recorder.spawn(), &registry);
         let _stopped = supervise("dev_stopped", Recorder::default().spawn(), &registry);
-        let running = registry.lookup("dev_running").unwrap();
+        let adopted = registry.lookup("dev_adopted").unwrap();
         let stopped = registry.lookup("dev_stopped").unwrap();
-        running.start().await.unwrap();
+
+        // Registration alone starts nothing, so an SSH device waits for the user's Start.
+        assert!(!adopted.snapshot().desired_running);
+        assert_eq!(recorder.count(), 0);
+
+        let verdict = adopted
+            .mark_connected(SocketId::new(), reported_hello())
+            .await;
+        // The daemon that reconnected by itself is accepted and its device runs again, with
+        // a cycle that checks the daemon like any start.
+        assert!(matches!(verdict, ConnectVerdict::Accepted(_)));
+        assert!(adopted.snapshot().desired_running);
+        wait_until(|| recorder.count() == 1).await;
+
         stopped.start().await.unwrap();
         stopped.shutdown(None).await.unwrap();
-        registry.detach_all().await;
-
-        // Only the device still running when the server went away is listed.
-        assert_eq!(store.listed().await, ["dev_running".to_string()]);
-
-        let restarted = WatchdogRegistry::with_desired_running(
-            DesiredRunningStore::load(directory.path()).await,
+        // The user stopped this device, so its daemon is refused and exits.
+        assert_eq!(
+            stopped
+                .mark_connected(SocketId::new(), reported_hello())
+                .await,
+            ConnectVerdict::Stopped
         );
-        let recorder = Recorder::default();
-        let _running = supervise("dev_running", recorder.spawn(), &restarted);
-        let _stopped = supervise("dev_stopped", Recorder::default().spawn(), &restarted);
-        restarted.start_desired_running().await;
-
-        // The running device starts again on its own; the stopped one stays stopped.
-        wait_until(|| recorder.count() == 1).await;
-        assert!(
-            restarted
-                .lookup("dev_running")
-                .unwrap()
-                .snapshot()
-                .desired_running
-        );
-        assert!(
-            !restarted
-                .lookup("dev_stopped")
-                .unwrap()
-                .snapshot()
-                .desired_running
-        );
+        assert!(!stopped.snapshot().desired_running);
+        adopted.shutdown(None).await.unwrap();
     }
 
     /// A full supervisor mailbox makes lifecycle events wait instead of growing memory or

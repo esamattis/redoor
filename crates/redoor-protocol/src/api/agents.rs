@@ -280,11 +280,6 @@ pub struct AgentInfoResponse {
     pub connection_id: Option<SocketId>,
     pub last_seen_at: Option<UnixTimestampSeconds>,
     pub connection_issue: Option<String>,
-    /// Whether the managed device waits for its vault-encrypted SSH key, which the server
-    /// no longer holds (after a server restart), so a browser with an unlocked vault can
-    /// hand it over without a click. Absent from older servers, which the CLI may talk to.
-    #[serde(default)]
-    pub waiting_for_ssh_key: bool,
     /// Ordered SSH start steps for the current attempt; empty for local or dormant agents.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
     /// Binary identity from the latest registration; absent until first connect.

@@ -250,19 +250,19 @@ The agent runtime and the implementation of every command.
       router.
     - Every router handler is synchronous (enforced by `clippy::unused_async`), so the
       router mailbox never waits on a peer.
-- `terminals/`: the server's index of terminal sessions (see "Terminals and live logs").
+- `terminals/`: the server's in-memory index of terminal sessions (see "Terminals and live
+  logs").
   - `registry`: `TerminalRegistry` in `ServerState`, every session as its agent last
     reported it, plus which browser views each one and the closes still owed to agents
-    that are away.
-  - `store`: saves the index to `<data_dir>/terminal-sessions.json` in the background, so
-    a restarted server lists the sessions before their agents reconnect.
+    that are away. Nothing is saved; a restarted server learns the sessions again from each
+    agent's report.
   - `http/terminal_sessions` (list, create, delete) is a thin handler over the registry.
     `http/terminals` is the attach websocket: it takes the session's viewer slot and
     relays between the browser and an attach stream on the agent.
 - `watchdog`: one supervisor per managed agent, which owns the session to its daemon, with
   restart backoff, a reconnect deadline, generation counters, the ensure report a `hello`
-  must match and the pending stop of the daemon. `managed_running` persists which devices
-  are desired-running, and `managed_session` reads a session's ensure report.
+  must match and the pending stop of the daemon. `managed_session` reads a session's ensure
+  report.
 - `ssh/`: preparing remote hosts (OS and architecture probe, binary install), launching
   agents through SSH reverse forwards, and the standalone `relay`.
   - `transport`: `SshHost` with a `HostKeyPolicy` and an `AuthPolicy`. `build_ssh_command`
@@ -947,15 +947,20 @@ sequenceDiagram
   agent whose socket drops goes back to `Starting`, because the watchdog is already bringing
   it back. A local daemon may stay connected while its session is replaced, and the device
   then stays `Connected`.
-- **Desired-running survives server restarts.** Start and Retry start record the device in
-  `<data_dir>/managed-running.json` (written with a rename); Stop, delete and configuration
-  changes remove it. At startup every supervisor is registered and the listed devices are
-  started **before the listener accepts connections**, so a local daemon that reconnects at
-  once finds its device desired-running instead of being rejected as `stopped`, which would
-  end it and its shells. A device that is not listed (its stop never reached the daemon) gets
-  `stopped` and its daemon exits. A device with an encrypted SSH key stays desired-running
-  and waits for its key (`waiting_for_ssh_key` in the inventory), while its daemon keeps
-  running; a browser tab whose vault is unlocked hands the key over (see "SSH device keys").
+- **The server starts no device on its own.** Desired-running lives in memory only, and
+  every supervisor starts `Stopped`. Starting a device is the user's decision: an SSH
+  device with a vault-encrypted key cannot even be started before a browser unlocks the
+  vault, and a server that reconnected devices by itself would hold their keys in a state
+  nobody chose. A local daemon that outlived the previous server process needs no tunnel,
+  though, and reconnects by itself; its device is **adopted**: the `hello` starts it as if
+  the user had pressed Start, and the cycle's ensure step keeps or replaces the daemon like
+  any start. Refusing it as `stopped` would end the daemon and its shells. Only a device
+  nobody started or stopped in this server process (its first attempt generation is still
+  current) is adopted, so a Stop is never undone. An SSH daemon cannot connect without the
+  session's tunnel, so an SSH device stays `Stopped`, its daemon and shells waiting on the
+  device (until its orphan limit), until the user's Start keeps that daemon. The trade-off:
+  a stop that never reached a local daemon (the server died right after Stop) is undone by
+  the adoption after the restart.
 - **Actions**:
 
   | Action | Endpoint | Effect |
@@ -972,7 +977,7 @@ sequenceDiagram
   | Session ends | Tunnel lost. The issue comes from the end line (daemon died: its log tail), else from SSH's stderr. New cycle on the backoff. |
   | No connection 60 s into a session or after a disconnect | The session is dropped and the next cycle replaces the daemon. |
   | `Stale(socket)` | Drops the session only. A repeat failure reaches the deadline above. |
-  | Stop | Drops the session, acknowledges, then stops the daemon (`agent managed --stop`). The pending stop lives in memory only; after a server restart the orphan limit ends a daemon it missed. A device that was not running at startup and to which no session of this process sent a payload stops at once. |
+  | Stop | Drops the session, acknowledges, then stops the daemon (`agent managed --stop`). The pending stop lives in memory only; after a server restart a local daemon it missed reconnects and is adopted, and an SSH one ends at its orphan limit. A device whose daemon this process neither adopted nor sent a payload to stops at once. |
   | Delete | Stops the session; a background task then runs `agent managed --remove` once (stop, then `safe_rm_all` of the namespace's data, cache, config and root log dirs), so an unreachable device cannot block the delete. |
   | `hello` that differs from the latest report | `rejected { superseded }`; the daemon exits, its session sees the lock released, and the next cycle starts the expected one. |
   | Server restart or shutdown | Drops the sessions only (`detach_all`). The server never stops daemons on its own shutdown. |
@@ -1052,7 +1057,9 @@ sequenceDiagram
   another provision's cleanup removed their `debug-<hash>` directory.
 - **A stop wins every race.** Every start, shutdown and retry bumps an attempt generation, and
   the router commits a registration only if its generation is still current. An agent that
-  connects while its entry is not desired-running gets `rejected` with `stopped` and exits.
+  connects while its entry is not desired-running gets `rejected` with `stopped` and exits,
+  unless nobody touched the device in this server process, which adopts it (see "The
+  server starts no device on its own").
   Without this, a `hello` that was already in flight, or a daemon whose stop has not reached
   it yet, would reconnect and silently undo the user's stop. Socket ids likewise filter
   out late disconnect and stale events from replaced sockets.
@@ -1064,8 +1071,8 @@ sequenceDiagram
   `config.toml` by hand take effect on the next server restart.
 - **Server restart** (`POST /api/v1/server/restart`, or the `redoor upgrade` signal) validates
   the config first. It then drops every managed session before re-executing, because `exec`
-  would otherwise leave them orphaned. The daemons keep running and reconnect, like
-  standalone agents.
+  would otherwise leave them orphaned. The daemons keep running; local ones reconnect and
+  are adopted, SSH ones wait for the user's Start.
 - **A restart waits at most a few seconds for open requests.** Graceful shutdown stops
   accepting at once and then waits for every open request, so a long download or a slow
   agent command would keep the server unreachable for its whole duration. After
@@ -1150,14 +1157,14 @@ half-written file.
   download would hang the update request and the release cache, which agent upgrades and SSH
   provisioning wait on, forever; a speed floor instead of a total time limit still lets a
   large binary finish over a slow link.
-- **Every server start upgrades its managed daemons.** Every start of a desired-running
-  device runs the ensure step, which replaces every daemon whose binary differs from the
-  expected one (local: the file at the server's path; SSH: the release or debug build,
-  installed first), whatever brought the server up: the UI's Update or `redoor upgrade`
-  (the server re-execs and the new watchdogs run the ensure step), `systemctl restart` after
-  a package install, a crash, a reboot (no daemons survive it, so they just start), or a
-  downgrade. An unreachable SSH device is upgraded on its first successful tunnel. An old
-  local daemon that reconnects before its ensure step is accepted provisionally with the same
+- **The first start after a server start upgrades a managed daemon.** Every start of a
+  device, and the adoption of a local daemon that reconnects, runs the ensure step, which
+  replaces every daemon whose binary differs from the expected one (local: the file at the
+  server's path; SSH: the release or debug build, installed first), whatever brought the
+  server up: the UI's Update or `redoor upgrade`, `systemctl restart` after a package
+  install, a crash or a downgrade. Local daemons are therefore upgraded as soon as they
+  reconnect, SSH devices on the user's next Start, and an unreachable SSH device on its
+  first successful tunnel. An old local daemon is adopted provisionally with the same
   protocol and gets `426` after a protocol change, until the ensure step replaces it; the
   lock rules out two daemons at once. The update dialog counts, from the server's terminal
   index, the terminal sessions on managed devices this will end, and says that shells on
@@ -1564,8 +1571,8 @@ Directory archives start over.
 A terminal is a session of the agent process, not of a browser socket or of a connection.
 The agent owns the shell's PTY and a mirror of its screen, so the shell survives a page
 reload, a sleeping laptop, a phone switching networks, a dropped agent connection and a
-server restart, and any browser can pick it up again. The server keeps an index of the
-sessions and relays one browser per session to the agent.
+server restart, and any browser can pick it up again. The server keeps an in-memory index
+of the sessions and relays one browser per session to the agent.
 
 ```mermaid
 sequenceDiagram
@@ -1613,17 +1620,20 @@ sequenceDiagram
   title, number, creation time, status). The whole list replaces what the server knew about
   that agent, which is how a restarted server learns which shells still run.
 - **The server's index.** `TerminalRegistry` keeps the records as each agent last reported
-  them and saves them to `<data_dir>/terminal-sessions.json`. A restarted server therefore
-  lists the sessions before their agents reconnect, so browsers keep their tabs, which
-  attach as soon as the agent is back. Records stay while their agent is disconnected,
-  because the shells keep running there. A session the agent no longer reports (it was
-  restarted) stays listed as exited ("Shell ended when its device restarted") until its tab
-  is closed, like a shell that exited, so the tab explains what happened and offers a new
-  shell; the server answers its attach itself.
+  them, in memory only. The agents are the only authority on which shells run, and a
+  restarted server does not reconnect managed SSH devices on its own (see "The server
+  starts no device on its own"), so a restarted server starts empty and each agent's first
+  report after it connects brings its sessions back; browsers drop the tabs meanwhile and restore them, in their saved order,
+  from the next list. Records stay while their agent is disconnected, because the shells
+  keep running there. A session the agent no longer reports (it was restarted) stays listed
+  as exited ("Shell ended when its device restarted") until its tab is closed, like a shell
+  that exited, so the tab explains what happened and offers a new shell; the server answers
+  its attach itself. A server restart forgets such records, so their tabs just disappear.
 - **Closing.** `DELETE` removes the record, tells the attached browser `closed` and sends
-  `CloseTerminal`. The close is remembered (and saved) until the agent no longer reports the
-  session, so a close made while the agent is away reaches it when it reconnects, and its
-  next report does not bring the tab back. At most 256 closes are remembered.
+  `CloseTerminal`. The close is remembered until the agent no longer reports the session,
+  so a close made while the agent is away reaches it when it reconnects, and its next
+  report does not bring the tab back. At most 256 closes are remembered, in memory only: a
+  server restart before the agent is back lets that shell run on and its tab return.
 - **The mirror.** Every output chunk is fed into a headless `libghostty-vt` emulator, the
   engine the browser renders with, so the agent parses output exactly as the client does.
   On attach the session asks it for a snapshot: a reset (`ESC c`, so a browser emulator
@@ -1659,16 +1669,18 @@ sequenceDiagram
   | `DELETE /api/v1/terminals/{id}` | Record removed, PTY killed (when the agent is back, if it is away). An attached viewer gets `closed`. |
   | Shell exits | `exited { message }`. The mirror stays, so a reload shows the last screen and why it ended. |
   | Agent disconnects | The shell keeps running and stays listed; viewers' sockets close and they attach again. |
-  | Server restart | The shells keep running; the saved index keeps the tabs listed until the agents report again. |
-  | Agent restart or upgrade | Its shells are gone; after its first report they are listed as exited, and their viewers get `closed`. A managed daemon is restarted when its device is restarted and when a server with another binary starts. |
+  | Server restart | The shells keep running; the restarted server lists them, and browsers show their tabs again, once each agent has reconnected and reported them: local and standalone agents on their own, managed SSH devices after the user's Start. |
+  | Agent restart or upgrade | Its shells are gone; after its first report they are listed as exited, and their viewers get `closed`. A managed daemon is restarted when its device is restarted and when a server with another binary first starts the device or adopts its daemon. |
 
   An exited session keeps only its mirror. Sessions live until their tab is closed, without
   a timeout: every window restores every session as a tab, so a forgotten shell is always
   visible there. An agent runs at most 8 shells and keeps at most 64 sessions.
 - **Managed agents keep their shells across server restarts.** Managed agents are daemons
   that outlive the server and their SSH sessions, so a server restart or a dropped SSH
-  connection only interrupts the viewers, which attach again once the daemon is back. A
-  server start with another binary replaces the daemons, and their shells end. Standalone
+  connection only interrupts the viewers, which attach again once the daemon is back: a
+  local daemon reconnects on its own, an SSH device's daemon once the user starts the
+  device, within its orphan limit. A server with another binary replaces the daemons when
+  they come back, and their shells end. Standalone
   agents and agents behind a relay keep their shells across a server restart too.
 - The session routes are session-only, so API tokens and MCP cannot list, open or take over
   interactive shells. Creating, deleting and a shell exiting publish `terminals_changed` on
@@ -1928,8 +1940,8 @@ context (`useTerminals`, `useUploads`).
   - An unexpected close re-attaches after 0.5, 1, 2 and 4 seconds, then offers "Reconnect".
     Before each attempt it checks that the session is still listed, because once it was
     closed elsewhere or its agent restarted it never will be ("Terminal session no longer
-    exists"). A server restart keeps it listed, so the tab attaches again once the agent has
-    reconnected.
+    exists"). After a server restart the session is not listed until its agent has
+    reconnected; the list result drops the tab meanwhile and a later one restores it.
   - `taken_over` keeps the last screen visible and dimmed, takes the input's focus away,
     and attaches again only on a focus, click or "Take over", so two open windows never
     take a session back and forth by themselves.
@@ -2787,14 +2799,11 @@ devices.
     with the process (including self-restarts; nothing is handed to the re-exec'd server).
     The browser's "Lock now" does not drop held keys, because that must not break the
     reconnects of running devices. Restarting a running agent keeps its key.
-  - A spawn that finds an encrypted key not held (after a server restart, which started the
-    device again, or a race with Stop) shows "The SSH key is locked" and waits,
-    desired-running, for the next Start or Retry instead of retrying on a timer. The
-    inventory marks such a device `waiting_for_ssh_key`, and every browser tab whose vault
-    is unlocked starts it with the key's file key on its own, once per wait
-    (`useHandOverWaitingSshKeys`), so a restart does not need a click per device. A locked
-    vault never asks for its passphrase for this; the device keeps waiting for a manual
-    start. `POST …/retry-start` takes the same optional body as Start and refuses with
+  - A restarted server holds no keys and starts no SSH device (see "The server starts no
+    device on its own"), so the user's Start brings the key again. A spawn that still
+    finds an encrypted key not held (a race with Stop or an edit) shows "The SSH key is
+    locked" and waits, desired-running, for the next Start or Retry instead of retrying on
+    a timer; no browser hands the key over on its own. `POST …/retry-start` takes the same optional body as Start and refuses with
     `ssh_key_locked` when the key is neither held nor given, so the device page's Retry
     unlocks the vault like a Start. A Start of an already desired-running agent still
     reaches the waiting watchdog.
@@ -3083,9 +3092,8 @@ own endpoints:
   thread itself ends only its session ("Terminal emulator failed"). The mirror never
   answers terminal queries (DSR, DA), so a program cannot make the agent write to the PTY;
   the browser answers them.
-- **The terminal index is not trusted for access.** The saved
-  `<data_dir>/terminal-sessions.json` (mode 0600) only lists sessions; attaching still goes
-  to the agent, which refuses ids it does not run, and an agent's report only replaces
+- **The terminal index is not trusted for access.** The server's in-memory index only lists
+  sessions; attaching still goes to the agent, which refuses ids it does not run, and an agent's report only replaces
   that agent's own records, because the connection, not the frame, names the agent.
 - **Browser protections.**
   - The cookie is `HttpOnly` and `SameSite=Lax`.
@@ -3192,7 +3200,7 @@ can never mint another one.
 
 Managed agent daemons outlive their server by design and run in their own session, outside
 the process group the test harness kills. `ProcessManager.killAll` therefore also kills the
-daemons recorded under each test server's home and forgets which devices were running, and
+daemons recorded under each test server's home, so a later server does not adopt them, and
 test servers pass daemons a 10 minute orphan limit, so a daemon a crashed run leaves behind
 ends on its own; one that reconnects to a later server is rejected, because that server
 manages no device with its id. The Playwright fixture kills its daemons the same way.

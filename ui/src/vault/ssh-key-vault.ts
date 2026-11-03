@@ -65,29 +65,6 @@ async function openableKeyHeader(api: ApiClient, agentId: string) {
 }
 
 /**
- * Hands a device that waits for its encrypted SSH key the key's file key from a vault that
- * is already unlocked, without asking. A restarted server no longer holds the keys it was
- * given, so its running devices wait for them; an open browser with an unlocked vault gives
- * them back instead of making the user press Retry Start on every device.
- */
-export async function handOverWaitingSshKey(options: {
-    agent: Agent;
-    api: ApiClient;
-    vault: UnlockedVault;
-}): Promise<void> {
-    const header = await openableKeyHeader(options.api, options.agent.id);
-
-    if (header === null) {
-        return;
-    }
-
-    // A Start of a device that is already desired-running only resumes its wait for the key.
-    await options.agent.start({
-        ssh_key_file_key: await fileKeyForHeader(options.vault, header),
-    });
-}
-
-/**
  * Starts a device. When its SSH key is encrypted and the server does not hold it, the
  * server refuses with `ssh_key_locked`; the vault is then unlocked and the start repeated
  * with the key's file key. Trying first keeps an ordinary start at one request and works
