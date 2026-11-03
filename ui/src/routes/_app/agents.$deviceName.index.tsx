@@ -18,13 +18,13 @@ import {
     Server,
     User,
     Activity,
-    FolderOpen,
     ListOrdered,
-    ScrollText,
+    LoaderCircle,
     Package,
+    Unplug,
 } from "lucide-react";
 import { type Agent } from "#ui/api-client";
-import { browserRoute, deviceRoute } from "#ui/browser-route";
+import { browserRoute } from "#ui/browser-route";
 import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import { agentStartStatesAtom } from "#ui/agent-start-state";
 import {
@@ -32,18 +32,14 @@ import {
     getAgentTabLocation,
 } from "#ui/agent-tab-locations";
 import {
-    AgentLifecycle,
+    AgentLifecycleMessages,
     ProvisioningStatusList,
+    useAgentLifecyclePhase,
 } from "#ui/components/agent-lifecycle";
 import { BinaryIdentityFields } from "#ui/components/binary-identity";
-import {
-    CopyableCodeRow,
-    CopyablePath,
-} from "#ui/components/copyable-code-row";
+import { CopyablePath } from "#ui/components/copyable-code-row";
 import { DetailCard } from "#ui/components/detail-card";
-import { DuplicateIdWarning } from "#ui/components/duplicate-id-warning";
-import { LinkButton } from "#ui/components/link-button";
-import { AgentRestartButton } from "#ui/components/agent-restart-button";
+import { DeviceHeader } from "#ui/components/device-header";
 import { UpgradeButton } from "#ui/components/upgrade-button";
 import {
     AgentUpgradeStatus,
@@ -94,20 +90,51 @@ function AgentBoundary() {
     }
 
     return (
-        <>
+        <DevicePage>
             {/* The agent drops its connection while an upgrade restarts it, which swaps the
                 details for this view, so the upgrade's progress is shown here too. */}
-            <AgentUpgradeStatus
-                agent={agent}
-                className="mx-auto max-w-4xl px-8 pt-8"
-            />
-            {agent.duplicateId ? (
-                <div className="mx-auto max-w-4xl px-8 pt-8">
-                    <DuplicateIdWarning warning={agent.duplicateId} />
-                </div>
-            ) : null}
-            <AgentLifecycle agent={agent} />
-        </>
+            <AgentUpgradeStatus agent={agent} className="mb-6" />
+            <DeviceHeader agent={agent} />
+            <AgentConnectionCard agent={agent} />
+        </DevicePage>
+    );
+}
+
+/** Frames every state of the device home the same way, so its header never moves. */
+function DevicePage(props: { children: React.ReactNode }) {
+    return (
+        <div className="p-4 @xl:p-8">
+            <div className="mx-auto max-w-4xl">{props.children}</div>
+        </div>
+    );
+}
+
+/**
+ * Explains a device that is not connected below the header, where the connected page shows
+ * its details, so the start steps and diagnostics sit next to the controls that act on them.
+ */
+function AgentConnectionCard(props: { agent: Agent }) {
+    const phase = useAgentLifecyclePhase(props.agent);
+    const isBusy = phase === "connecting" || phase === "stopping";
+
+    return (
+        <DetailCard
+            title="Connection"
+            icon={
+                isBusy ? (
+                    <LoaderCircle
+                        className="h-5 w-5 animate-spin text-blue-400"
+                        aria-hidden="true"
+                    />
+                ) : (
+                    <Unplug className="h-5 w-5" aria-hidden="true" />
+                )
+            }
+        >
+            <div aria-live="polite">
+                <AgentLifecycleMessages agent={props.agent} />
+            </div>
+        </DetailCard>
     );
 }
 
@@ -218,13 +245,10 @@ function AgentDetailsContent(props: {
     ]);
 
     return (
-        <div className="p-8">
+        <div className="p-4 @xl:p-8">
             <div className="mx-auto max-w-4xl">
                 <AgentUpgradeStatus agent={props.agent} className="mb-6" />
-                <AgentDetailsHeader
-                    agent={props.agent}
-                    details={props.details}
-                />
+                <DeviceHeader agent={props.agent} />
                 <div className="grid grid-cols-1 gap-4 @2xl:grid-cols-2">
                     <DetailCard
                         title="Redoor agent"
@@ -472,56 +496,6 @@ function formatUsedCapacity(
     if (totalBytes === null || availableBytes === null) return "Unavailable";
 
     return formatSize(Math.max(0, totalBytes - availableBytes));
-}
-
-/** Keeps restart controls isolated from the static detail cards and their data. */
-function AgentDetailsHeader(props: {
-    agent: Agent;
-    details: AgentDetailsResponse;
-}) {
-    return (
-        <div className="mb-6">
-            <div className="flex flex-col gap-3 @xl:flex-row @xl:items-center @xl:justify-between">
-                <h1
-                    aria-label="Device name"
-                    className="flex min-w-0 items-center gap-3 text-2xl font-bold text-slate-100"
-                >
-                    <HardDrive className="h-8 w-8 shrink-0 text-blue-400" />
-                    <span className="truncate">{props.agent.name}</span>
-                </h1>
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                    <AgentRestartButton agent={props.agent} />
-                    <LinkButton
-                        {...deviceRoute(
-                            props.agent,
-                            "/agents/$deviceName/logs",
-                        )}
-                        variant="secondary"
-                    >
-                        <ScrollText className="h-4 w-4" /> View logs
-                    </LinkButton>
-                    <LinkButton
-                        {...browserRoute(props.agent, props.details.cwd)}
-                    >
-                        <FolderOpen className="h-4 w-4" /> Browse Files
-                    </LinkButton>
-                </div>
-            </div>
-            {/* Scripts that must stay on this device across renames address it by id. */}
-            <div className="mt-4 max-w-xl">
-                <CopyableCodeRow
-                    label="Device ID"
-                    value={props.agent.id}
-                    copyAriaLabel="Copy device id"
-                />
-            </div>
-            {props.agent.duplicateId ? (
-                <div className="mt-4">
-                    <DuplicateIdWarning warning={props.agent.duplicateId} />
-                </div>
-            ) : null}
-        </div>
-    );
 }
 
 /** Labels a detail value for both scanning and accessibility queries. */

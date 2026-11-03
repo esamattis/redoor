@@ -254,6 +254,8 @@ export function ManagedAgentForm(props: {
      * its own dialogs and forms (the SSH key actions) cannot submit this one.
      */
     beforeForm?: React.ReactNode;
+    /** Placed above the form card, so an edit can lead back to the device it belongs to. */
+    breadcrumb?: React.ReactNode;
     children?: React.ReactNode;
 }) {
     const [form, setForm] = React.useState<FormState>(() =>
@@ -381,6 +383,9 @@ export function ManagedAgentForm(props: {
 
     return (
         <div className="min-h-full bg-canvas px-4 py-8 @xl:px-8">
+            {props.breadcrumb ? (
+                <div className="mx-auto max-w-4xl">{props.breadcrumb}</div>
+            ) : null}
             <main className="mx-auto max-w-4xl overflow-hidden rounded-xl border border-slate-800 bg-surface shadow-2xl shadow-black/20">
                 <FormHeader mode={props.mode} kind={kind} />
                 {props.beforeForm}

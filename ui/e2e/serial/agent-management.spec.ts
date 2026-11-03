@@ -372,10 +372,8 @@ test.describe.serial("Agent management", () => {
 
         // Explicit connection must show sticky SSH steps instead of a generic loading sentence.
         await expect(
-            page.getByRole("heading", {
-                name: `Connecting ${CREATED_SSH_AGENT}`,
-            }),
-        ).toBeVisible({ timeout: 15_000 });
+            page.getByRole("status", { name: "Connection status" }),
+        ).toHaveText("Connecting…", { timeout: 15_000 });
         await expect(
             page.getByRole("list", { name: "Provisioning status" }),
         ).toBeVisible({ timeout: 30_000 });
@@ -915,8 +913,8 @@ test.describe.serial("Agent management", () => {
 
         // Explicit connection guarantees immediate progress even when local registration is fast.
         await expect(
-            page.getByRole("heading", { name: `Connecting ${VALID_AGENT}` }),
-        ).toBeVisible();
+            page.getByRole("status", { name: "Connection status" }),
+        ).toHaveText("Connecting…");
         expect(startRequests).toBe(1);
 
         if (!releaseStart) {
@@ -939,6 +937,59 @@ test.describe.serial("Agent management", () => {
         await expect(
             page.getByRole("link", { name: `${VALID_AGENT}, connected` }),
         ).toHaveAttribute("aria-current", "page", { timeout: 15_000 });
+    });
+
+    test("edits, connects and disconnects from the device home", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/agents/${VALID_AGENT}`);
+        const status = page.getByRole("status", { name: "Connection status" });
+
+        // The home header names the state of a dormant managed device.
+        await expect(status).toHaveText("Stopped");
+        await page.getByRole("link", { name: "Edit", exact: true }).click();
+        await expect(
+            page.getByRole("heading", { name: "Edit device" }),
+        ).toBeVisible();
+
+        // The edit form belongs to the device, so its breadcrumb leads back to the device home.
+        await page
+            .getByRole("navigation", { name: "Breadcrumb" })
+            .getByRole("link", { name: VALID_AGENT, exact: true })
+            .click();
+        await expect(status).toHaveText("Stopped");
+        await expect(page).toHaveURL(new RegExp(`/agents/${VALID_AGENT}$`));
+
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+        // Connecting from the home opens the device's files once the agent is up.
+        await expect(page).toHaveURL(
+            new RegExp(`/agents/${VALID_AGENT}/browser/`),
+            { timeout: 30_000 },
+        );
+        await page.goto(`${WEB_BASE_URL}/agents/${VALID_AGENT}`);
+        await expect(status).toHaveText("Connected");
+        // A connected device leads with its files.
+        await expect(
+            page.getByRole("link", { name: "Browse files" }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("button", { name: "Disconnect", exact: true })
+            .click();
+        await page
+            .getByRole("dialog", { name: `Disconnect ${VALID_AGENT}?` })
+            .getByRole("button", { name: "Disconnect", exact: true })
+            .click();
+        // Stopping from the header keeps the user on the home, now offering Connect again.
+        await expect(status).toHaveText("Stopped", { timeout: 15_000 });
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible();
+        expect((await getAgent(page.request, VALID_AGENT)).status).toBe(
+            "stopped",
+        );
     });
 
     test("shuts down and restarts from the management row", async ({
@@ -1027,8 +1078,8 @@ test.describe.serial("Agent management", () => {
         // The actionable supervisor issue remains visible after the first explicit attempt fails.
         await expect(page.getByRole("alert")).not.toBeEmpty();
         await expect(
-            page.getByRole("heading", { name: `Connecting ${FAILING_AGENT}` }),
-        ).toBeVisible();
+            page.getByRole("status", { name: "Connection status" }),
+        ).toHaveText("Connecting…");
         const retryButton = page.getByRole("button", { name: "Retry Start" });
         // Desired-running state must not disable the explicit attempt replacement control.
         await expect(retryButton).toBeEnabled();

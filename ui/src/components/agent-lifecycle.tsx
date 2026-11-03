@@ -2,7 +2,7 @@ import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
-import { HardDrive, LoaderCircle } from "lucide-react";
+import { HardDrive, LoaderCircle, Play, Power } from "lucide-react";
 
 import type { Agent } from "#ui/api-client";
 import { agentStartStatesAtom } from "#ui/agent-start-state";
@@ -25,24 +25,184 @@ import {
 
 const rootRouteApi = getRouteApi("__root__");
 
-/** Presents explicit managed lifecycle controls while preserving pending filesystem destinations. */
+/**
+ * What a device page presents, which is not always the server status: a start request is
+ * shown as connecting before the server reports it, so a fast local registration cannot skip
+ * the visible starting step. `idle` covers both stopped and disconnected devices.
+ */
+export type AgentLifecyclePhase =
+    "connected" | "connecting" | "stopping" | "idle";
+
+/**
+ * Derives the phase from the live status and the optimistic start state, so the header,
+ * the controls and the messages of one page never disagree about where the device is.
+ */
+export function useAgentLifecyclePhase(agent: Agent): AgentLifecyclePhase {
+    const startStates = useAtomValue(agentStartStatesAtom);
+
+    if (agent.status === "connected") return "connected";
+
+    if (
+        agent.status === "starting" ||
+        startStates[agent.id]?.starting === true
+    ) {
+        return "connecting";
+    }
+
+    if (agent.status === "stopping") return "stopping";
+
+    return "idle";
+}
+
+/** Short status words for a phase, so every place names the device state the same way. */
+export function agentLifecycleLabel(
+    phase: AgentLifecyclePhase,
+    agent: Agent,
+): string {
+    switch (phase) {
+        case "connected":
+            return "Connected";
+        case "connecting":
+            return "Connecting…";
+        case "stopping":
+            return "Stopping…";
+        case "idle":
+            return agent.status === "stopped" ? "Stopped" : "Disconnected";
+    }
+}
+
+/**
+ * Presents the managed lifecycle for a device that is not connected as a full page, where
+ * the device's own pages, such as the file browser, wait for it while keeping the
+ * destination they were opened for.
+ */
 export function AgentLifecycle(props: {
+    agent: Agent;
+    preserveDestination?: boolean;
+}) {
+    const phase = useAgentLifecyclePhase(props.agent);
+    const now = useNow();
+
+    return (
+        // Margin auto centers the section only while it fits; flex centering would push
+        // tall content above the scroll origin, cutting off the spinner and the buttons.
+        <div className="flex h-full overflow-y-auto p-4 @xl:p-8">
+            <section
+                aria-live="polite"
+                className="m-auto w-full min-w-0 max-w-xl text-center"
+            >
+                {phase === "connecting" || phase === "stopping" ? (
+                    <LoaderCircle className="mx-auto h-12 w-12 animate-spin text-blue-400" />
+                ) : (
+                    <HardDrive className="mx-auto h-12 w-12 text-slate-500" />
+                )}
+                <h1 className="mt-4 text-2xl font-semibold text-slate-100">
+                    {phase === "connecting"
+                        ? `Connecting ${props.agent.name}`
+                        : phase === "stopping"
+                          ? `Stopping ${props.agent.name}…`
+                          : props.agent.name}
+                </h1>
+                <p className="mt-2 text-sm text-slate-500">
+                    {formatAgentRecency(props.agent, now)}
+                </p>
+                <AgentLifecycleMessages agent={props.agent} className="mt-4" />
+                <div className="mt-6 flex justify-center gap-3">
+                    <AgentPowerControls
+                        agent={props.agent}
+                        preserveDestination={props.preserveDestination}
+                    />
+                </div>
+            </section>
+        </div>
+    );
+}
+
+/**
+ * Explains what the device is doing while it is not connected: the start steps while it
+ * connects, otherwise what the operator can do, followed by the supervisor's diagnostic and
+ * the last start failure. Kept apart from the controls so the device home can place it
+ * below its header while the file browser keeps its centered layout.
+ */
+export function AgentLifecycleMessages(props: {
+    agent: Agent;
+    className?: string;
+}) {
+    const phase = useAgentLifecyclePhase(props.agent);
+    const startStates = useAtomValue(agentStartStatesAtom);
+    const startError = startStates[props.agent.id]?.error ?? null;
+    const now = useNow(100);
+
+    return (
+        <div className={cn("space-y-4", props.className)}>
+            {phase === "connecting" &&
+            props.agent.provisioningStatus.length > 0 ? (
+                <ProvisioningStatusList
+                    messages={props.agent.provisioningStatus}
+                    nowMs={now}
+                />
+            ) : (
+                <p className="text-slate-400">
+                    {lifecycleDescription(phase, props.agent)}
+                </p>
+            )}
+            {props.agent.connectionIssue ? (
+                <p
+                    role="alert"
+                    className="whitespace-pre-wrap wrap-anywhere rounded border border-amber-800 bg-amber-950/30 p-3 text-left text-sm text-amber-300"
+                >
+                    {props.agent.connectionIssue}
+                </p>
+            ) : null}
+            {startError ? (
+                <p
+                    role="alert"
+                    className="wrap-anywhere rounded border border-red-800 bg-red-950/30 p-3 text-left text-sm text-red-300"
+                >
+                    {startError}
+                </p>
+            ) : null}
+        </div>
+    );
+}
+
+/** Tells the operator what the phase means and, for unmanaged devices, who has to act. */
+function lifecycleDescription(
+    phase: AgentLifecyclePhase,
+    agent: Agent,
+): string {
+    switch (phase) {
+        case "connected":
+            return "The Redoor agent is connected.";
+        case "connecting":
+            return "The server is waiting for the agent connection.";
+        case "stopping":
+            return "The server is stopping the Redoor agent on this device and retries until the device answers.";
+        case "idle":
+            return agent.managed
+                ? "This device is disconnected. Connect it to start its Redoor agent."
+                : "This device is disconnected. Start the Redoor agent on this device to connect it.";
+    }
+}
+
+/**
+ * The start and stop buttons of a managed device: Connect while it is down, Retry Start and
+ * Disconnect while a start is under way, and Disconnect while it is connected. Rendered as
+ * bare buttons so each page lays them out among its own actions. Unmanaged devices are
+ * started on the device itself, so they get nothing.
+ *
+ * `preserveDestination` keeps the user on the page they opened, such as a file browser
+ * path, instead of redirecting to the device home directory once the agent connects.
+ */
+export function AgentPowerControls(props: {
     agent: Agent;
     preserveDestination?: boolean;
 }) {
     const queryClient = useQueryClient();
     const { api, vault } = rootRouteApi.useRouteContext();
-    const startStates = useAtomValue(agentStartStatesAtom);
     const setStartStates = useSetAtom(agentStartStatesAtom);
-    const state = startStates[props.agent.id];
-    const now = useNow(100);
+    const phase = useAgentLifecyclePhase(props.agent);
     const [isShutdownOpen, setIsShutdownOpen] = React.useState(false);
-
-    const shouldAppearStarting =
-        props.agent.status === "starting" || state?.starting === true;
-
-    const isStopping =
-        props.agent.status === "stopping" && !shouldAppearStarting;
 
     /** Shows the lifecycle change a request caused without waiting for the server event. */
     const refreshAgents = () =>
@@ -132,106 +292,62 @@ export function AgentLifecycle(props: {
         shutdownMutation.reset();
     };
 
+    if (!props.agent.managed) {
+        return null;
+    }
+
+    const disconnectButton = (
+        <Button
+            type="button"
+            variant="secondary"
+            tooltip="Stop the Redoor agent on the device"
+            onClick={() => setIsShutdownOpen(true)}
+        >
+            <Power className="h-4 w-4" aria-hidden="true" />
+            Disconnect
+        </Button>
+    );
+
     return (
-        // Margin auto centers the section only while it fits; flex centering would push
-        // tall content above the scroll origin, cutting off the spinner and the buttons.
-        <div className="flex h-full overflow-y-auto p-4 @xl:p-8">
-            <section
-                aria-live="polite"
-                className="m-auto w-full min-w-0 max-w-xl text-center"
-            >
-                {shouldAppearStarting || isStopping ? (
-                    <LoaderCircle className="mx-auto h-12 w-12 animate-spin text-blue-400" />
-                ) : (
-                    <HardDrive className="mx-auto h-12 w-12 text-slate-500" />
-                )}
-                <h1 className="mt-4 text-2xl font-semibold text-slate-100">
-                    {shouldAppearStarting
-                        ? `Connecting ${props.agent.name}`
-                        : isStopping
-                          ? `Stopping ${props.agent.name}…`
-                          : props.agent.name}
-                </h1>
-                {shouldAppearStarting &&
-                props.agent.provisioningStatus.length > 0 ? (
-                    <ProvisioningStatusList
-                        className="mt-4"
-                        messages={props.agent.provisioningStatus}
-                        nowMs={now}
-                    />
-                ) : (
-                    <p className="mt-2 text-slate-400">
-                        {shouldAppearStarting
-                            ? "The server is waiting for the agent connection."
-                            : isStopping
-                              ? "The server is stopping the Redoor agent on this device and retries until the device answers."
-                              : props.agent.managed
-                                ? "This device is disconnected. Connect it to start its Redoor agent."
-                                : "This device is disconnected. Start the Redoor agent on this device to connect it."}
-                    </p>
-                )}
-                <p className="mt-2 text-sm text-slate-500">
-                    {formatAgentRecency(props.agent, now)}
-                </p>
-                {props.agent.connectionIssue ? (
-                    <p
-                        role="alert"
-                        className="mt-4 whitespace-pre-wrap wrap-anywhere rounded border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-300"
+        <>
+            {phase === "connecting" ? (
+                <>
+                    <Button
+                        type="button"
+                        tooltip="Abandon the current attempt and start the agent again"
+                        onClick={() => retryMutation.mutate()}
+                        isLoading={retryMutation.isPending}
                     >
-                        {props.agent.connectionIssue}
-                    </p>
-                ) : null}
-                {state?.error ? (
-                    <p
-                        role="alert"
-                        className="mt-4 wrap-anywhere rounded border border-red-800 bg-red-950/30 p-3 text-sm text-red-300"
-                    >
-                        {state.error}
-                    </p>
-                ) : null}
-                {props.agent.managed ? (
-                    <div className="mt-6 flex justify-center gap-3">
-                        {shouldAppearStarting ? (
-                            <>
-                                <Button
-                                    type="button"
-                                    onClick={() => retryMutation.mutate()}
-                                    isLoading={retryMutation.isPending}
-                                >
-                                    Retry Start
-                                </Button>
-                                <Button
-                                    type="button"
-                                    variant="secondary"
-                                    onClick={() => setIsShutdownOpen(true)}
-                                >
-                                    Disconnect
-                                </Button>
-                            </>
-                        ) : (
-                            <Button
-                                type="button"
-                                onClick={() => startMutation.mutate()}
-                                isLoading={startMutation.isPending}
-                            >
-                                Connect
-                            </Button>
-                        )}
-                    </div>
-                ) : null}
-                <ConfirmationDialog
-                    isOpen={isShutdownOpen}
-                    title={`Disconnect ${props.agent.name}?`}
-                    description="Stops the Redoor agent on the device and disables automatic reconnection. Active transfers and terminals for this device will end."
-                    confirmLabel="Disconnect"
-                    busyLabel="Disconnecting…"
-                    isBusy={shutdownMutation.isPending}
-                    errorMessage={shutdownError}
-                    onClose={closeShutdown}
-                    onConfirm={() => shutdownMutation.mutate()}
-                />
-            </section>
-        </div>
+                        Retry Start
+                    </Button>
+                    {disconnectButton}
+                </>
+            ) : phase === "connected" ? (
+                disconnectButton
+            ) : (
+                <Button
+                    type="button"
+                    size="lg"
+                    tooltip="Start the Redoor agent on the device"
+                    onClick={() => startMutation.mutate()}
+                    isLoading={startMutation.isPending}
+                >
+                    <Play className="h-4 w-4" aria-hidden="true" />
+                    Connect
+                </Button>
+            )}
+            <ConfirmationDialog
+                isOpen={isShutdownOpen}
+                title={`Disconnect ${props.agent.name}?`}
+                description="Stops the Redoor agent on the device and disables automatic reconnection. Active transfers and terminals for this device will end."
+                confirmLabel="Disconnect"
+                busyLabel="Disconnecting…"
+                isBusy={shutdownMutation.isPending}
+                errorMessage={shutdownError}
+                onClose={closeShutdown}
+                onConfirm={() => shutdownMutation.mutate()}
+            />
+        </>
     );
 }
 

@@ -151,6 +151,8 @@ export function CopyablePath(props: {
     /** Opens the path in the file browser; a typed route so the device name is encoded. */
     link?: ReturnType<typeof browserRoute>;
     linkAriaLabel?: string;
+    /** Names the shown value, so it can be found where the visible label is not linked to it. */
+    valueAriaLabel?: string;
 }) {
     const { isCopied, flashKey, copy } = useCopyFeedback(props.value);
 
@@ -178,7 +180,10 @@ export function CopyablePath(props: {
                     {props.value}
                 </Link>
             ) : (
-                <code className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-slate-200">
+                <code
+                    aria-label={props.valueAriaLabel}
+                    className="relative min-w-0 flex-1 overflow-x-auto whitespace-nowrap px-2.5 py-1.5 font-mono text-xs text-slate-200"
+                >
                     {props.value}
                 </code>
             )}

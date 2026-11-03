@@ -6,6 +6,7 @@ import { Trash2 } from "lucide-react";
 import { Button } from "#ui/components/button";
 
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { DeviceBreadcrumb } from "#ui/components/device-header";
 import {
     ManagedAgentForm,
     type ManagedAgentKind,
@@ -167,6 +168,9 @@ function EditManagedAgentPage() {
                 key={agent.id}
                 mode="edit"
                 configuration={configuration}
+                breadcrumb={
+                    <DeviceBreadcrumb agent={agent} current="Edit device" />
+                }
                 beforeForm={
                     configuration.kind === "ssh" ? (
                         <SshKeySection
