@@ -33,7 +33,7 @@ test.describe("Git branch tab", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("names the checked-out branch or detached commit on the Git tab", async ({
+    test("opens Git for a checked-out branch or detached commit", async ({
         page,
     }) => {
         await page.goto(
@@ -46,8 +46,8 @@ test.describe("Git branch tab", () => {
             exact: true,
         });
 
-        // A directory below the repository root still names the repository's branch.
-        await expect(branchTab).toHaveText("feature-x");
+        // The Git view keeps the same name for a directory below the repository root.
+        await expect(branchTab).toHaveText("Git");
 
         await branchTab.click();
         // The tab still opens the Git view, which then becomes the current page.
@@ -68,7 +68,7 @@ test.describe("Git branch tab", () => {
             exact: true,
         });
 
-        // Without a branch, the tab names the commit HEAD is on instead.
-        await expect(detachedTab).toHaveText(shortCommit);
+        // Detached checkouts still offer the same Git view.
+        await expect(detachedTab).toHaveText("Git");
     });
 });

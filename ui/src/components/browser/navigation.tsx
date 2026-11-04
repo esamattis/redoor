@@ -10,7 +10,6 @@ import {
     Pencil,
     RefreshCw,
     GitBranch,
-    GitCommitHorizontal,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -30,10 +29,7 @@ import { cn } from "#ui/utils/cn";
 /** Names the representations of a path that the view tabs switch between. */
 export type BrowserView = "files" | "details" | "view" | "sync" | "git";
 
-/**
- * What the Git tab names. The tab is already the sign that a path is in a repository, so it
- * also says where new commits would land, without opening the Git view to find out.
- */
+/** Supplies checkout context beside the path without requiring the Git view to be open. */
 export type GitTabHead =
     | { type: "branch"; name: string }
     /** No branch is checked out; the id is absent only if HEAD names no commit at all. */
@@ -59,6 +55,7 @@ function BrowserPageHeader(props: {
     agent: Agent;
     path: string;
     startEditingPath?: boolean;
+    gitHead: GitTabHead | null;
     navigation: React.ReactNode;
     /** Page-wide context shown under the breadcrumbs, such as the browsed Git revision. */
     banner?: React.ReactNode;
@@ -90,25 +87,31 @@ function BrowserPageHeader(props: {
                     aria-hidden="true"
                     className="mx-1 h-5 w-px shrink-0 bg-slate-700"
                 />
-                <PathBreadcrumbs
-                    // A new location resets the path editor, so it starts closed (or open for a path that needs correcting).
-                    key={`${props.path}:${props.startEditingPath === true}`}
-                    path={props.path}
-                    home={props.agent.cwd}
-                    startEditing={props.startEditingPath}
-                    renderLink={(link) => (
-                        <Link
-                            {...browserRoute(props.agent, link.path)}
-                            className={link.className}
-                        >
-                            {link.children}
-                        </Link>
-                    )}
-                    // The destination route decides whether the editor reopens for a missing path.
-                    onSubmitPath={(path) =>
-                        void navigate(browserRoute(props.agent, path))
-                    }
-                />
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                    <PathBreadcrumbs
+                        // A new location resets the path editor, so it starts closed (or open for a path that needs correcting).
+                        key={`${props.path}:${props.startEditingPath === true}`}
+                        path={props.path}
+                        home={props.agent.cwd}
+                        startEditing={props.startEditingPath}
+                        renderLink={(link) => (
+                            <Link
+                                {...browserRoute(props.agent, link.path)}
+                                className={link.className}
+                            >
+                                {link.children}
+                            </Link>
+                        )}
+                        // The destination route decides whether the editor reopens for a missing path.
+                        onSubmitPath={(path) =>
+                            void navigate(browserRoute(props.agent, path))
+                        }
+                    />
+                    {props.gitHead !== null &&
+                    props.gitHead.type !== "revision" ? (
+                        <GitHeadContext head={props.gitHead} />
+                    ) : null}
+                </div>
             </div>
             {props.banner ? <div className="mb-2">{props.banner}</div> : null}
             {props.viewToggle ? (
@@ -136,7 +139,7 @@ export function ViewToggle(props: {
     activeView: BrowserView;
     /** Names the content tab Edit only after the agent marks the file writable. */
     editable?: boolean;
-    /** What the Git tab names, or null to hide it outside a worktree. */
+    /** Checkout context, or null to hide Git outside a worktree. */
     gitHead: GitTabHead | null;
     /** Hides views that change files, and never names the content tab Edit. */
     readOnly?: boolean;
@@ -201,11 +204,42 @@ export function ViewToggle(props: {
     );
 }
 
-/**
- * Names the Git tab by the checked-out branch, or in amber by the commit of a detached HEAD,
- * which is not where new commits would go. The accessible name keeps "Git" first, so the
- * tab is still announced and found as the Git view when its visible text is a branch name.
- */
+/** Keeps checkout information beside the path while allowing long names to fit narrow columns. */
+function GitHeadContext(props: {
+    head: Exclude<GitTabHead, { type: "revision" }>;
+}) {
+    const head = props.head;
+    const label =
+        head.type === "branch"
+            ? head.name
+            : head.commitId === null
+              ? "Detached"
+              : shortCommitId(head.commitId);
+    const description =
+        head.type === "branch"
+            ? `Branch ${head.name}`
+            : `Detached HEAD: ${label}`;
+
+    return (
+        <Tooltip content={description} className="min-w-0 max-w-full">
+            <span
+                aria-label={description}
+                className={cn(
+                    "inline-flex max-w-full items-center px-2 py-1 text-xs",
+                    head.type === "detached"
+                        ? "text-amber-300"
+                        : "text-slate-400",
+                )}
+            >
+                <span className="max-w-48 truncate @max-xl/main:max-w-32">
+                    {label}
+                </span>
+            </span>
+        </Tooltip>
+    );
+}
+
+/** Keeps the view name stable while assistive technology can still announce checkout context. */
 function GitViewToggleLink(props: {
     agent: Agent;
     path: string;
@@ -213,61 +247,27 @@ function GitViewToggleLink(props: {
     active: boolean;
 }) {
     const head = props.head;
-    const branchIcon = <GitBranch className="h-4 w-4" aria-hidden="true" />;
-
-    if (head.type === "revision") {
-        return (
-            <ViewToggleLink
-                agent={props.agent}
-                path={props.path}
-                view="git"
-                label="Git"
-                icon={branchIcon}
-                active={props.active}
-            />
-        );
-    }
-
     const description =
         head.type === "branch"
             ? `branch ${head.name}`
-            : head.commitId === null
-              ? "detached HEAD"
-              : `detached at ${shortCommitId(head.commitId)}`;
+            : head.type === "revision"
+              ? null
+              : head.commitId === null
+                ? "detached HEAD"
+                : `detached at ${shortCommitId(head.commitId)}`;
 
     return (
         <ViewToggleLink
             agent={props.agent}
             path={props.path}
             view="git"
-            label={
-                // Long branch names would push the other tabs off a phone-narrow strip.
-                <span className="max-w-48 truncate @max-xl/main:max-w-32">
-                    {head.type === "branch"
-                        ? head.name
-                        : head.commitId === null
-                          ? "Detached"
-                          : shortCommitId(head.commitId)}
-                </span>
+            label="Git"
+            ariaLabel={description === null ? undefined : `Git, ${description}`}
+            tooltip={
+                description === null ? undefined : `Git view, on ${description}`
             }
-            ariaLabel={`Git, ${description}`}
-            tooltip={`Git view, on ${description}`}
-            icon={
-                head.type === "branch" ? (
-                    branchIcon
-                ) : (
-                    <GitCommitHorizontal
-                        className="h-4 w-4"
-                        aria-hidden="true"
-                    />
-                )
-            }
+            icon={<GitBranch className="h-4 w-4" aria-hidden="true" />}
             active={props.active}
-            className={
-                head.type === "detached"
-                    ? "text-amber-300 [&_svg]:text-amber-300"
-                    : undefined
-            }
         />
     );
 }
@@ -359,7 +359,7 @@ export function BrowserHeader(props: {
     activeView: BrowserView;
     /** Forwards the content-tab label so file chrome matches the editable gate. */
     editable?: boolean;
-    /** What the Git tab names, or null to hide it outside a worktree. */
+    /** Checkout context, or null to hide Git outside a worktree. */
     gitHead: GitTabHead | null;
     pathUnavailable?: boolean;
     startEditingPath?: boolean;
@@ -423,6 +423,7 @@ export function BrowserHeader(props: {
                 </IconLinkButton>
             }
             banner={props.banner}
+            gitHead={props.gitHead}
             viewToggle={
                 pathUnavailable ? null : (
                     <ViewToggle

@@ -246,7 +246,7 @@ test.describe.serial("Git browser", () => {
 
         const directoryView = page.getByLabel("Directory view");
 
-        // The Git tab names the checked-out branch, both visibly and in its accessible name.
+        // The Git tab keeps checkout context in its accessible name.
         const gitTab = directoryView.getByRole("link", {
             name: "Git, branch main",
             exact: true,
@@ -259,7 +259,7 @@ test.describe.serial("Git browser", () => {
             .allTextContents();
 
         // Git must follow Sync while remaining reachable in the phone-width tab strip.
-        expect(directoryTabs.slice(-2)).toEqual(["Sync", "main"]);
+        expect(directoryTabs.slice(-2)).toEqual(["Sync", "Git"]);
         await expect(gitTab).toHaveAttribute("aria-current", "page");
 
         const repositoryHeader = page.getByRole("region", {
@@ -384,7 +384,7 @@ test.describe.serial("Git browser", () => {
         const fileView = page.getByLabel("File view");
         const fileTabs = await fileView.getByRole("link").allTextContents();
         // File Git uses the same stable post-Sync tab position as directory Git.
-        expect(fileTabs.slice(-2)).toEqual(["Sync", "main"]);
+        expect(fileTabs.slice(-2)).toEqual(["Sync", "Git"]);
 
         const stagedOnly = page.getByRole("button", {
             name: "Staged only",
