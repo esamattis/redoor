@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.4.0
+
+_2026-11-04_
+
+### Breaking changes
+
+- After a server restart or upgrade, start SSH devices from the UI again; the server no longer restarts them or automatically supplies their vault-encrypted SSH keys. Their daemons and shells remain available for up to 24 hours. Surviving local daemons reconnect automatically. The server no longer reads `terminal-sessions.json` or `managed-running.json` in its data directory; you may delete these leftover files.
+
+### Features
+
+- Every file pick, drop and paste opens an Upload dialog where you can rename or remove items, choose encryption per item with an unlocked vault, and decide how to handle existing files. Drop or paste more items into the open dialog to add them to the same upload. Pasted text and images now appear in the upload queue and transfers pane.
+- Copy, Move and Sync share per-item conflict choices and a bulk choice for existing items.
+- Shift-click file checkboxes to select or deselect a range of visible files.
+- Markdown headings have shareable permalinks and support GitHub-style section links, including duplicate headings.
+- The device home provides file browsing, connect or disconnect, restart, edit and logs in every connection state. The edit page includes a breadcrumb back to the device.
+- Filter the Git changed-files list by path; navigating back restores the filter. Branch context appears beside the breadcrumbs while the Git tab keeps its name.
+
+### Fixes
+
+- Selecting a file in a diff no longer scrolls the side menus off screen in short windows.
+- Background directory refreshes no longer temporarily disable the upload button.
+- Open-file tooltips show the full path without a redundant prefix.
+
 ## v2.3.0
 
 _2026-11-02_
