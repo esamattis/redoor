@@ -727,14 +727,12 @@ function conflictDialogLabels(operation: TransferOperation | null) {
         return {
             closeAriaLabel: "Close move conflict dialog",
             confirmLabel: "Continue moving",
-            radioGroupName: "move-on-existing",
         };
     }
 
     return {
         closeAriaLabel: "Close copy conflict dialog",
         confirmLabel: "Continue copying",
-        radioGroupName: "copy-on-existing",
     };
 }
 
@@ -1067,7 +1065,6 @@ export function SyncView(props: {
                     description="The destination path already exists. Choose how to handle the existing destination."
                     closeAriaLabel={conflictLabels.closeAriaLabel}
                     confirmLabel={conflictLabels.confirmLabel}
-                    radioGroupName={conflictLabels.radioGroupName}
                     existingName={getBaseName(
                         workspace.destinationEndpoint?.path ?? "",
                     )}

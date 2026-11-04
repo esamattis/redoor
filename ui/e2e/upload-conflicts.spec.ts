@@ -6,6 +6,8 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    confirmUpload,
+    uploadDialog,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -124,29 +126,31 @@ test.describe.serial("Upload conflicts", () => {
             buffer: Buffer.from("uploaded"),
         });
 
-        const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+        const dialog = uploadDialog(page);
+
+        const resolution = dialog.getByRole("combobox", {
+            name: "If notes.txt exists",
         });
 
-        // An upload must stop before it would write over an existing file.
-        await expect(dialog).toBeVisible();
+        const newName = dialog.getByRole("textbox", {
+            name: "Name for notes.txt",
+        });
+
+        // An upload must stop and ask before it would write over an existing file.
+        await expect(resolution).toBeVisible();
         // Renaming keeps the existing file, so it is the safe default like for Copy and Move.
-        await expect(
-            dialog.getByRole("radio", { name: "Rename" }),
-        ).toBeChecked();
+        await expect(resolution).toHaveValue("rename");
+        // Rename starts from a free name, so confirming right away cannot fail.
+        await expect(newName).toHaveValue("notes_2.txt");
         // A file has nothing to merge into, so Merge would only duplicate Replace.
         await expect(
-            dialog.getByRole("radio", {
+            resolution.getByRole("option", {
                 name: "Merge directories and replace files",
             }),
         ).toHaveCount(0);
 
-        await dialog
-            .getByRole("textbox", { name: "New name for notes.txt" })
-            .fill("notes-uploaded.txt");
-        await dialog
-            .getByRole("button", { name: "Continue uploading" })
-            .click();
+        await newName.fill("notes-uploaded.txt");
+        await confirmUpload(page, 1);
 
         // The upload lands under the chosen name.
         await expect
@@ -172,20 +176,16 @@ test.describe.serial("Upload conflicts", () => {
             buffer: Buffer.from("uploaded"),
         });
 
-        const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
-        });
-
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await uploadDialog(page)
+            .getByRole("combobox", { name: "If notes.txt exists" })
+            .selectOption("override");
 
         const uploadRequest = page.waitForRequest(
             (request) =>
                 request.method() === "PUT" && request.url().includes("/raw/"),
         );
 
-        await dialog
-            .getByRole("button", { name: "Continue uploading" })
-            .click();
+        await confirmUpload(page, 1);
 
         // The server no longer replaces by default, so the choice must be sent explicitly.
         expect(
@@ -207,18 +207,11 @@ test.describe.serial("Upload conflicts", () => {
             "merge-directory",
         );
 
-        const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
-        });
-
-        await dialog
-            .getByRole("radio", {
-                name: "Merge directories and replace files",
-            })
-            .check();
-        await dialog
-            .getByRole("button", { name: "Continue uploading" })
-            .click();
+        // Merge is offered because a directory lands on a directory.
+        await uploadDialog(page)
+            .getByRole("combobox", { name: "If photos exists" })
+            .selectOption("merge");
+        await confirmUpload(page, 1);
 
         const photos = path.join(directoryPath, "photos");
 
@@ -244,14 +237,10 @@ test.describe.serial("Upload conflicts", () => {
         await interceptMacosTrashMove(page, photos);
         await uploadConflictingDirectory(page, "replace-directory");
 
-        const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
-        });
-
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
-        await dialog
-            .getByRole("button", { name: "Continue uploading" })
-            .click();
+        await uploadDialog(page)
+            .getByRole("combobox", { name: "If photos exists" })
+            .selectOption("override");
+        await confirmUpload(page, 1);
 
         await expect
             .poll(() => readWhenPresent(path.join(photos, "b.txt")))

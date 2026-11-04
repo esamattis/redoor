@@ -4,10 +4,12 @@ import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+    confirmUpload,
     deviceBrowserUrl,
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
+    uploadDialog,
     WEB_BASE_URL,
     type TestContext,
 } from "../helpers";
@@ -179,15 +181,30 @@ test.describe.serial("Vault", () => {
         );
 
         await page.goto(deviceBrowserUrl(ctx.agentName, ctx.testDirPath));
-        await page
-            .getByLabel("Choose files to encrypt and upload")
-            .setInputFiles({
-                name: "notes.txt",
-                mimeType: "text/plain",
-                buffer: Buffer.from("uploaded plaintext"),
-            });
-        // The reload locked the vault again, so the encrypted upload asks for it first.
+        await page.getByLabel("Choose files to upload").setInputFiles({
+            name: "notes.txt",
+            mimeType: "text/plain",
+            buffer: Buffer.from("uploaded plaintext"),
+        });
+
+        const upload = uploadDialog(page);
+
+        const encrypt = upload.getByRole("checkbox", {
+            name: "Encrypt notes.txt",
+        });
+
+        // The reload locked the vault again, so encryption cannot be chosen yet.
+        await expect(encrypt).toBeDisabled();
+        await upload.getByRole("button", { name: "Unlock vault" }).click();
         await unlockInDialog(page);
+        // Unlocking from the upload dialog makes encryption available in it.
+        await expect(encrypt).toBeEnabled();
+        await encrypt.click();
+        // The encrypted file gets the vault suffix, so the user sees the name it is saved under.
+        await expect(upload).toContainText(
+            "Saved as notes.txt.redoorencrypted",
+        );
+        await confirmUpload(page, 1);
 
         const uploaded = path.join(
             ctx.testDirPath,

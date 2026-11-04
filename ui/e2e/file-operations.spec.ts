@@ -7,6 +7,8 @@ import {
     teardownTestDir,
     encodeFilesystemPath,
     minimizeBottomDrawer,
+    confirmUpload,
+    uploadDialog,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -93,6 +95,8 @@ test.describe.serial("File Operations", () => {
             await page
                 .getByLabel("Choose files to upload")
                 .setInputFiles([firstUploadPath, secondUploadPath]);
+            // Nothing uploads until the dialog that names the items is confirmed.
+            await confirmUpload(page, 2);
             await uploadsCompleted;
 
             // Uploads remain in directory context instead of switching to a dedicated queue route.
@@ -191,6 +195,7 @@ test.describe.serial("File Operations", () => {
             mimeType: "text/plain",
             buffer: Buffer.from("single uploaded content"),
         });
+        await confirmUpload(page, 1);
 
         await uploadStarted;
         // A file that immediately claimed a scheduler slot never appears as waiting.
@@ -242,6 +247,8 @@ test.describe.serial("File Operations", () => {
             await page
                 .getByLabel("Choose directory to upload")
                 .setInputFiles(sourceDirectory);
+            // The whole tree is one item, named after the selected directory.
+            await confirmUpload(page, 1);
 
             // Directory uploads remain in the current file-list route.
             await expect(page).toHaveURL(directoryUrl);
@@ -295,6 +302,8 @@ test.describe.serial("File Operations", () => {
         await expect(
             page.getByText("Upload queues are limited to 100 files."),
         ).toBeVisible();
+        // A selection that can never be queued is refused before the dialog opens.
+        await expect(uploadDialog(page)).toHaveCount(0);
         // Staying in the file view confirms rejection does not redirect to an empty queue.
         await expect(page).toHaveURL(directoryUrl);
     });
@@ -336,6 +345,7 @@ test.describe.serial("File Operations", () => {
         }));
 
         await page.getByLabel("Choose files to upload").setInputFiles(files);
+        await confirmUpload(page, 6);
 
         // Five blocked requests prove the scheduler fills every available upload slot.
         await expect.poll(() => enteredUploads).toBe(5);
@@ -524,46 +534,6 @@ test.describe.serial("File Operations", () => {
         await expect(page.getByRole("tooltip")).toHaveText(
             "Pasted text or images are created as new files in this directory.",
         );
-    });
-
-    test("should preselect the pasted text filename before its extension", async ({
-        page,
-    }) => {
-        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(`${ctx.testDirPath}/subdir3`)}`;
-        await page.goto(directoryUrl);
-        await expect(
-            page.getByRole("button", { name: "Paste files or text" }),
-        ).toBeVisible();
-
-        await page.evaluate(() => {
-            const clipboardData = new DataTransfer();
-            clipboardData.setData("text/plain", "pasted content");
-            window.dispatchEvent(
-                new ClipboardEvent("paste", {
-                    bubbles: true,
-                    clipboardData,
-                }),
-            );
-        });
-
-        const dialog = page.getByRole("dialog", { name: "Save pasted text" });
-        const fileNameInput = dialog.getByRole("textbox", { name: "Filename" });
-        // Selecting only the stem lets typing replace the default name while preserving .txt.
-        await expect(fileNameInput).toBeFocused();
-        await expect
-            .poll(() =>
-                fileNameInput.evaluate((input) => ({
-                    start:
-                        input instanceof HTMLInputElement
-                            ? input.selectionStart
-                            : null,
-                    end:
-                        input instanceof HTMLInputElement
-                            ? input.selectionEnd
-                            : null,
-                })),
-            )
-            .toEqual({ start: 0, end: "pasted-text".length });
     });
 
     test("should rename a file inline without leaving the directory", async ({

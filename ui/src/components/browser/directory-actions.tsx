@@ -1,5 +1,5 @@
 import React from "react";
-import { isVaultPath, VAULT_SUFFIX } from "#ui/vault/vault-path";
+import { isVaultPath } from "#ui/vault/vault-path";
 import { newWriteKeys } from "#ui/vault/vault-keys";
 import { useMutation } from "@tanstack/react-query";
 import { getRouteApi, useNavigate } from "@tanstack/react-router";
@@ -9,7 +9,6 @@ import {
     EyeOff,
     FilePlus,
     FolderPlus,
-    LockKeyhole,
     Plus,
     RefreshCw,
     Upload,
@@ -37,48 +36,29 @@ import { useRefreshBrowserPath } from "#ui/components/browser/refresh";
 const rootRouteApi = getRouteApi("__root__");
 
 /**
- * Sends file and directory selections through the same conflict check and bounded global
- * queue as dropped files, which also report their errors.
+ * Sends file and directory selections through the same upload dialog as dropped and pasted
+ * files, where they are named, checked for conflicts and optionally encrypted.
  */
 function UploadFilesAction(props: {
     agent: Agent;
     directoryPath: string;
     disabled: boolean;
 }) {
-    const uploadFilesTo = useFileUpload();
-    const { vault } = rootRouteApi.useRouteContext();
+    const addToUpload = useFileUpload();
     const fileInputRef = React.useRef<FileInputHandle>(null);
     const directoryInputRef = React.useRef<FileInputHandle>(null);
-    const encryptedInputRef = React.useRef<FileInputHandle>(null);
 
-    /**
-     * Encrypts each picked file into `name.redoorencrypted`. The vault is unlocked after the pick
-     * and before the conflict check, so the check sees the encrypted names.
-     */
-    const handleEncryptedSelection = (selectedFiles: File[]) => {
-        void vault
-            .requestUnlock("Uploading encrypted files needs the vault key")
-            .then(() =>
-                uploadFilesTo(
-                    { agent: props.agent, path: props.directoryPath },
-                    selectedFiles.map((file) => ({
-                        file,
-                        relativePath: `${file.name}${VAULT_SUFFIX}`,
-                    })),
-                    { encrypt: true },
-                ),
-            )
-            .catch(() => undefined);
-    };
-
-    /** Queues the picked files, keeping directory structure when the browser reports it. */
+    /** Opens the dialog with the picked files, keeping directory structure when reported. */
     const handleFileSelection = (selectedFiles: File[]) => {
-        void uploadFilesTo(
+        addToUpload(
             { agent: props.agent, path: props.directoryPath },
-            selectedFiles.map((file) => ({
-                file,
-                relativePath: file.webkitRelativePath || file.name,
-            })),
+            {
+                origin: "picked",
+                files: selectedFiles.map((file) => ({
+                    file,
+                    relativePath: file.webkitRelativePath || file.name,
+                })),
+            },
         );
     };
 
@@ -94,11 +74,6 @@ function UploadFilesAction(props: {
                 label="Choose directory to upload"
                 directory
                 onSelect={handleFileSelection}
-            />
-            <FileInput
-                ref={encryptedInputRef}
-                label="Choose files to encrypt and upload"
-                onSelect={handleEncryptedSelection}
             />
             <ActionMenu
                 label="Upload"
@@ -125,15 +100,6 @@ function UploadFilesAction(props: {
                         >
                             <FolderPlus className="h-4 w-4 text-slate-400" />
                             Upload directory
-                        </ActionMenuButton>
-                        <ActionMenuButton
-                            onClick={() => {
-                                close();
-                                encryptedInputRef.current?.open();
-                            }}
-                        >
-                            <LockKeyhole className="h-4 w-4 text-slate-400" />
-                            Upload encrypted files
                         </ActionMenuButton>
                         <p className="border-t border-slate-800 px-3 pt-3 text-xs leading-relaxed text-slate-400">
                             You can also upload files by dragging and dropping

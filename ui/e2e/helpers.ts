@@ -310,6 +310,30 @@ export async function confirmSelectedTransfer(
         .click();
 }
 
+/** The dialog every pick, drop and paste opens before anything is uploaded. */
+export function uploadDialog(page: Page): Locator {
+    return page.getByRole("dialog", { name: "Upload files" });
+}
+
+/**
+ * Confirms the upload dialog with its suggested names and choices, waiting until it closes
+ * so the upload has been handed to the queue.
+ */
+export async function confirmUpload(
+    page: Page,
+    itemCount: number,
+): Promise<void> {
+    const dialog = uploadDialog(page);
+
+    await dialog
+        .getByRole("button", {
+            name: `Upload ${itemCount} ${itemCount === 1 ? "item" : "items"}`,
+            exact: true,
+        })
+        .click();
+    await expect(dialog).toHaveCount(0);
+}
+
 /**
  * Keeps the page's server event stream open but silent. Uploads and edits by specs running
  * in parallel broadcast `routes_changed` to every UI, which refetches all cached agent data,

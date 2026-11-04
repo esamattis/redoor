@@ -9,6 +9,7 @@ import {
     setupTestDir,
     teardownTestDir,
     encodeFilesystemPath,
+    confirmUpload,
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
@@ -114,6 +115,7 @@ test.describe.serial("Transfer Path Links", () => {
             await page
                 .getByLabel("Choose files to upload")
                 .setInputFiles(uploadFilePath);
+            await confirmUpload(page, 1);
 
             // The refreshed listing proves the single upload completed while retaining directory context.
             await expect(

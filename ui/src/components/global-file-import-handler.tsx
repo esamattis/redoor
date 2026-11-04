@@ -1,25 +1,18 @@
 import React from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ClipboardPaste, Upload } from "lucide-react";
 import { type Agent } from "#ui/api-client";
-import { ApiError } from "#ui/api-transport";
-import { joinBrowserPath } from "#ui/components/browser/utils";
 import {
-    type ConflictingUpload,
-    getTopLevelUploadItems,
-    type ResolvedUpload,
-    UploadConflictDialog,
-} from "#ui/components/browser/upload-conflict-dialog";
-import { isLsDirectoryResponse } from "#ui/ls-response";
-import { browserListingQueryOptions, invalidateAgentData } from "#ui/queries";
+    type PendingUpload,
+    UploadDialog,
+} from "#ui/components/browser/upload-dialog";
+import {
+    countUploadFiles,
+    createUploadItems,
+    type UploadDraftItem,
+    type UploadSource,
+} from "#ui/upload-plan";
 import { getErrorMessage } from "#ui/utils/error";
-import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
-import type { UploadSourceFile } from "#ui/upload-queue";
-import { useUploads } from "#ui/use-uploads";
-import { Button } from "./button";
-import { Dialog } from "./dialog";
-import { DialogActions } from "./dialog-actions";
-import { InputControl } from "./input-control";
+import { MAX_QUEUED_UPLOADS, type UploadSourceFile } from "#ui/upload-queue";
 import { Toast } from "./toast";
 
 /** Identifies the agent directory that can accept imported files. */
@@ -34,22 +27,27 @@ type ImportState =
     | { type: "success"; message: string }
     | { type: "error"; message: string };
 
-/** Starts an upload into one directory, asking first if it would collide with existing items. */
-type UploadFilesTo = (
-    destination: DirectoryDestination,
-    files: UploadSourceFile[],
-    options?: { directories?: string[]; encrypt?: boolean },
-) => Promise<void>;
+/**
+ * Adds a pick, drop or paste to the upload dialog, opening it for the destination when no
+ * upload is pending yet. Nothing is queued until the user confirms the dialog.
+ */
+type AddToUpload = (
+    destination: DirectoryDestination | null,
+    source: UploadSource,
+) => void;
+
+/** The name pasted text is offered under; it is replaced by a free name when taken. */
+const PASTED_TEXT_NAME = "pasted-text.txt";
 
 /**
  * Lets controls outside the handler, such as the toolbar's Paste and Upload buttons, start
- * the same imports as dropping and pasting. The handler owns the destination and the dialogs
- * an import may open, so it hands the control a direct call instead of the control signalling
+ * the same imports as dropping and pasting. The handler owns the destination and the dialog
+ * an import opens, so it hands the control a direct call instead of the control signalling
  * it through the window.
  */
 const FileImportContext = React.createContext<{
     importFromClipboard: () => void;
-    uploadFilesTo: UploadFilesTo;
+    addToUpload: AddToUpload;
 } | null>(null);
 
 /** Reads the handler's imports, failing loudly when a control is rendered outside of it. */
@@ -69,11 +67,11 @@ export function useClipboardImport(): () => void {
 }
 
 /**
- * Returns the upload entry point shared with drag and drop, so picked files get the same
- * conflict prompt instead of silently replacing existing items.
+ * Returns the upload entry point shared with drag and drop, so picked files go through the
+ * same dialog instead of silently replacing existing items.
  */
-export function useFileUpload(): UploadFilesTo {
-    return useFileImportContext().uploadFilesTo;
+export function useFileUpload(): AddToUpload {
+    return useFileImportContext().addToUpload;
 }
 
 /** Avoids replacing the browser's normal paste behavior while the user is editing. */
@@ -130,23 +128,6 @@ async function readClipboardFiles(items: ClipboardItem[]) {
     }
 
     return files;
-}
-
-/** Validates pasted-content names so imports cannot escape the current directory. */
-function getFileNameError(fileName: string) {
-    if (!fileName.trim()) {
-        return "Filename is required";
-    }
-
-    if (fileName === "." || fileName === "..") {
-        return "Filename must identify a file";
-    }
-
-    if (fileName.includes("/") || fileName.includes("\\")) {
-        return "Filename cannot contain path separators";
-    }
-
-    return null;
 }
 
 /** Reads every chunk because Chromium limits one directory-reader result batch. */
@@ -243,18 +224,57 @@ async function readDroppedFiles(dataTransfer: DataTransfer) {
     return manifest;
 }
 
-/** Enqueues source manifests, holding back the ones that collide with existing items. */
-function useFileUploader(props: { destination: DirectoryDestination | null }) {
-    const uploads = useUploads();
-    const queryClient = useQueryClient();
+/** Turns pasted text into a file item whose name the user can still change. */
+function pastedTextSource(text: string): UploadSource {
+    return {
+        origin: "pasted",
+        hasGeneratedName: true,
+        pastedText: text,
+        files: [
+            {
+                file: new File([text], PASTED_TEXT_NAME, {
+                    type: "text/plain",
+                }),
+                relativePath: PASTED_TEXT_NAME,
+            },
+        ],
+    };
+}
+
+/**
+ * Turns pasted files into upload sources. Clipboard images are named by the browser (such
+ * as `image.png`) rather than the user, so they get free names instead of a replace prompt;
+ * other pasted files keep the names they had where they were copied.
+ */
+function pastedFileSources(
+    files: File[],
+    hasGeneratedNames: boolean,
+): UploadSource[] {
+    const toSource = (selected: File[], hasGeneratedName: boolean) => ({
+        origin: "pasted" as const,
+        hasGeneratedName,
+        files: selected.map((file) => ({ file, relativePath: file.name })),
+    });
+
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    const others = files.filter((file) => !file.type.startsWith("image/"));
+
+    return [toSource(images, true), toSource(others, hasGeneratedNames)].filter(
+        (source) => source.files.length > 0,
+    );
+}
+
+/**
+ * Holds the upload waiting in the dialog and adds every pick, drop and paste to it. Items
+ * are only queued once the user confirms the dialog.
+ */
+function useUploadCollector() {
+    const [pendingUpload, setPendingUpload] =
+        React.useState<PendingUpload | null>(null);
 
     const [importState, setImportState] = React.useState<ImportState>({
         type: "idle",
     });
-
-    // An upload that would collide with existing entries waits here for the user's choice.
-    const [conflictingUpload, setConflictingUpload] =
-        React.useState<ConflictingUpload | null>(null);
 
     const showMissingDirectoryError = React.useCallback(() => {
         setImportState({
@@ -264,322 +284,123 @@ function useFileUploader(props: { destination: DirectoryDestination | null }) {
         });
     }, []);
 
-    /** Hands an upload whose conflict policy is settled to the page-wide queue. */
-    const enqueueUpload = React.useCallback(
-        (destination: DirectoryDestination, upload: ResolvedUpload) => {
-            const result = uploads.enqueue({
-                agentId: destination.agent.id,
-                destinationPath: destination.path,
-                ...upload,
-            });
+    const isDialogOpen = pendingUpload !== null;
 
-            if (!result.ok) {
-                setImportState({
-                    type: "error",
-                    message: result.message,
-                });
-
-                return;
-            }
-
-            setImportState({
-                type: "success",
-                message: `Queued ${result.fileCount} ${result.fileCount === 1 ? "file" : "files"}.`,
-            });
-        },
-        [uploads],
-    );
-
-    /**
-     * Reads the destination fresh, because the cached listing may predate a recent change,
-     * and asks before any upload would write over an entry that is already there.
-     */
-    const uploadFilesTo: UploadFilesTo = React.useCallback(
-        async (destination, files, options = {}) => {
-            const directories = options.directories ?? [];
-            const encrypt = options.encrypt ?? false;
-
-            if (files.length === 0 && directories.length === 0) {
-                return;
-            }
+    const addToUpload: AddToUpload = React.useCallback(
+        (destination, source) => {
+            let items: UploadDraftItem[];
 
             try {
-                const items = getTopLevelUploadItems(files, directories);
-
-                const listing = await queryClient.fetchQuery({
-                    ...browserListingQueryOptions(
-                        destination.agent,
-                        destination.path,
-                    ),
-                    staleTime: 0,
-                });
-
-                const destinationEntries = isLsDirectoryResponse(listing)
-                    ? listing.files
-                    : [];
-
-                const existingNames = new Set(
-                    destinationEntries.map((entry) => entry.name),
-                );
-
-                if (items.some((item) => existingNames.has(item.fileName))) {
-                    setConflictingUpload({
-                        agent: destination.agent,
-                        destinationPath: destination.path,
-                        files,
-                        directories,
-                        destinationEntries,
-                        encrypt,
-                    });
-
-                    return;
-                }
+                items = createUploadItems(source);
             } catch (error) {
                 setImportState({
                     type: "error",
                     message: getErrorMessage(
                         error,
-                        "The upload destination could not be checked.",
+                        "The upload paths are invalid.",
                     ),
                 });
 
                 return;
             }
 
-            enqueueUpload(destination, {
-                files,
-                directories,
-                onExisting: "error",
-                encrypt,
-            });
-        },
-        [queryClient, enqueueUpload],
-    );
+            if (items.length === 0) {
+                return;
+            }
 
-    /** Uploads dropped and pasted files into the directory on screen. */
-    const uploadFiles = React.useCallback(
-        async (files: UploadSourceFile[], directories: string[] = []) => {
-            if (!props.destination) {
+            if (destination === null && !isDialogOpen) {
                 showMissingDirectoryError();
 
                 return;
             }
 
-            await uploadFilesTo(props.destination, files, { directories });
-        },
-        [props.destination, showMissingDirectoryError, uploadFilesTo],
-    );
+            const limitMessage = `Upload queues are limited to ${MAX_QUEUED_UPLOADS} files.`;
 
-    return {
-        conflictingUpload,
-        closeConflictingUpload: () => setConflictingUpload(null),
-        /** Queues the held-back upload once the user chose how to treat existing entries. */
-        resolveConflictingUpload: (upload: ResolvedUpload) => {
-            if (conflictingUpload === null) {
+            // A selection that can never fit is refused whole, before any dialog opens.
+            if (countUploadFiles(items) > MAX_QUEUED_UPLOADS) {
+                setImportState({ type: "error", message: limitMessage });
+
                 return;
             }
 
-            setConflictingUpload(null);
-            enqueueUpload(
-                {
-                    agent: conflictingUpload.agent,
-                    path: conflictingUpload.destinationPath,
-                },
-                { ...upload, encrypt: conflictingUpload.encrypt },
-            );
+            const [onlyItem] = items;
+
+            // A single paste is usually named right away, so its name field takes focus.
+            const focusKey =
+                source.origin === "pasted" &&
+                items.length === 1 &&
+                onlyItem !== undefined
+                    ? onlyItem.key
+                    : null;
+
+            setPendingUpload((current) => {
+                if (current === null) {
+                    return destination === null
+                        ? null
+                        : {
+                              agent: destination.agent,
+                              destinationPath: destination.path,
+                              items,
+                              focusKey,
+                              addError: null,
+                          };
+                }
+
+                if (
+                    countUploadFiles(current.items) + countUploadFiles(items) >
+                    MAX_QUEUED_UPLOADS
+                ) {
+                    return { ...current, addError: limitMessage };
+                }
+
+                return {
+                    ...current,
+                    items: [...current.items, ...items],
+                    focusKey: focusKey ?? current.focusKey,
+                    addError: null,
+                };
+            });
+        },
+        [isDialogOpen, showMissingDirectoryError],
+    );
+
+    return {
+        pendingUpload,
+        addToUpload,
+        removeFromUpload: (key: string) =>
+            setPendingUpload((current) =>
+                current === null
+                    ? null
+                    : {
+                          ...current,
+                          items: current.items.filter(
+                              (item) => item.key !== key,
+                          ),
+                          addError: null,
+                      },
+            ),
+        closeUpload: () => setPendingUpload(null),
+        /** Closes the dialog once its items are queued and says how many files went. */
+        finishUpload: (fileCount: number) => {
+            setPendingUpload(null);
+            setImportState({
+                type: "success",
+                message: `Queued ${fileCount} ${fileCount === 1 ? "file" : "files"}.`,
+            });
         },
         importState,
         setImportState,
         showMissingDirectoryError,
-        uploadFiles,
-        uploadFilesTo,
-    };
-}
-
-type PastedContent = {
-    blob: Blob;
-    kind: "image" | "text";
-    suggestedName: string;
-};
-
-/** Owns filename confirmation so clipboard content is not uploaded implicitly. */
-function usePastedContentImport(props: {
-    destination: DirectoryDestination | null;
-    setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
-    showMissingDirectoryError: () => void;
-}) {
-    const queryClient = useQueryClient();
-
-    const [pastedContents, setPastedContents] = React.useState<PastedContent[]>(
-        [],
-    );
-
-    const [fileName, setFileName] = React.useState("");
-
-    const [fileNameError, setFileNameError] = React.useState<string | null>(
-        null,
-    );
-
-    // Queued clipboard content must not outlive the directory it was pasted for. Resetting
-    // while rendering (guarded, so it settles in one pass) avoids an effect and the stale
-    // frame it would render first.
-    if (!props.destination && pastedContents.length > 0) {
-        setPastedContents([]);
-    }
-
-    const pastedContent = pastedContents[0] ?? null;
-
-    const uploadMutation = useMutation({
-        mutationFn: async (request: {
-            content: PastedContent;
-            destination: DirectoryDestination;
-            fileName: string;
-        }) => {
-            const file = new File([request.content.blob], request.fileName, {
-                type: request.content.blob.type,
-            });
-
-            await request.destination.agent.upload(
-                joinBrowserPath(request.destination.path, request.fileName),
-                file,
-                { on_existing: "error" },
-            );
-
-            return request.destination;
-        },
-        onSuccess: (destination) => {
-            void invalidateAgentData(queryClient, destination.agent.id);
-        },
-    });
-
-    const openPastedContentDialog = React.useCallback(
-        (contents: PastedContent[]) => {
-            const firstContent = contents[0];
-
-            if (!firstContent) {
-                return;
-            }
-
-            if (!props.destination) {
-                props.showMissingDirectoryError();
-
-                return;
-            }
-
-            setPastedContents(contents);
-            setFileName(firstContent.suggestedName);
-            setFileNameError(null);
-        },
-        [props.destination, props.showMissingDirectoryError],
-    );
-
-    const closePastedContentDialog = React.useCallback(() => {
-        setPastedContents([]);
-        setFileNameError(null);
-    }, []);
-
-    const handleFileSubmit = React.useCallback(
-        async (event: React.FormEvent<HTMLFormElement>) => {
-            event.preventDefault();
-            const trimmedFileName = fileName.trim();
-            const validationError = getFileNameError(trimmedFileName);
-
-            if (validationError) {
-                setFileNameError(validationError);
-
-                return;
-            }
-
-            if (!pastedContent) {
-                return;
-            }
-
-            if (!props.destination) {
-                props.showMissingDirectoryError();
-
-                return;
-            }
-
-            try {
-                await uploadMutation.mutateAsync({
-                    content: pastedContent,
-                    destination: props.destination,
-                    fileName: trimmedFileName,
-                });
-                const remainingContents = pastedContents.slice(1);
-                setPastedContents(remainingContents);
-                setFileName(remainingContents[0]?.suggestedName ?? "");
-                setFileNameError(null);
-                props.setImportState({
-                    type: "success",
-                    message: `Uploaded ${trimmedFileName}.`,
-                });
-            } catch (cause) {
-                setFileNameError(
-                    cause instanceof ApiError && cause.status === 409
-                        ? `A file named ${trimmedFileName} already exists. Choose a different filename.`
-                        : getErrorMessage(
-                              cause,
-                              "The pasted content could not be uploaded.",
-                          ),
-                );
-            }
-        },
-        [
-            fileName,
-            pastedContent,
-            pastedContents,
-            props.destination,
-            props.setImportState,
-            props.showMissingDirectoryError,
-            uploadMutation,
-        ],
-    );
-
-    return {
-        closePastedContentDialog,
-        fileName,
-        fileNameError,
-        handleFileSubmit,
-        isUploading: uploadMutation.isPending,
-        openImageFileDialog: (images: File[]) =>
-            openPastedContentDialog(
-                images.map((image) => ({
-                    blob: image,
-                    kind: "image",
-                    suggestedName: image.name,
-                })),
-            ),
-        openTextFileDialog: (text: string) =>
-            openPastedContentDialog([
-                {
-                    blob: new Blob([text], { type: "text/plain" }),
-                    kind: "text",
-                    suggestedName: "pasted-text.txt",
-                },
-            ]),
-        pastedContent,
-        setFileName,
-        setFileNameError,
     };
 }
 
 /** Reads the permission-gated clipboard API for imports requested by toolbar controls. */
 function useClipboardImporter(props: {
     destination: DirectoryDestination | null;
-    openImageFileDialog: (images: File[]) => void;
-    openTextFileDialog: (text: string) => void;
+    addToUpload: AddToUpload;
     setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
-    showMissingDirectoryError: () => void;
-    uploadFiles: (files: UploadSourceFile[]) => Promise<void>;
 }) {
     return React.useCallback(async () => {
-        if (!props.destination) {
-            props.showMissingDirectoryError();
-
-            return;
-        }
-
         try {
             if (!navigator.clipboard) {
                 throw new Error(
@@ -592,25 +413,9 @@ function useClipboardImporter(props: {
                 const files = await readClipboardFiles(items);
 
                 if (files.length > 0) {
-                    const images = files.filter((file) =>
-                        file.type.startsWith("image/"),
-                    );
-
-                    const otherFiles = files.filter(
-                        (file) => !file.type.startsWith("image/"),
-                    );
-
-                    if (otherFiles.length > 0) {
-                        await props.uploadFiles(
-                            otherFiles.map((file) => ({
-                                file,
-                                relativePath: file.name,
-                            })),
-                        );
-                    }
-
-                    if (images.length > 0) {
-                        props.openImageFileDialog(images);
+                    // The Clipboard API gives blobs without names, so every name is made up.
+                    for (const source of pastedFileSources(files, true)) {
+                        props.addToUpload(props.destination, source);
                     }
 
                     return;
@@ -620,7 +425,7 @@ function useClipboardImporter(props: {
             const text = await navigator.clipboard.readText();
 
             if (text) {
-                props.openTextFileDialog(text);
+                props.addToUpload(props.destination, pastedTextSource(text));
 
                 return;
             }
@@ -638,29 +443,23 @@ function useClipboardImporter(props: {
                 ),
             });
         }
-    }, [
-        props.destination,
-        props.openImageFileDialog,
-        props.openTextFileDialog,
-        props.setImportState,
-        props.showMissingDirectoryError,
-        props.uploadFiles,
-    ]);
+    }, [props.destination, props.addToUpload, props.setImportState]);
 }
 
-/** Registers page-wide drag, drop, and paste handlers while tracking the drop overlay. */
+/**
+ * Registers page-wide drag, drop, and paste handlers while tracking the drop overlay. They
+ * stay active while the upload dialog is open, so more files can be dropped or pasted into it.
+ */
 function useGlobalImportEvents(props: {
     destination: DirectoryDestination | null;
-    openImageFileDialog: (images: File[]) => void;
-    openTextFileDialog: (text: string) => void;
+    /** True while the upload dialog is open, which accepts drops without a destination. */
+    isDialogOpen: boolean;
+    addToUpload: AddToUpload;
     showMissingDirectoryError: () => void;
-    uploadFiles: (
-        files: UploadSourceFile[],
-        directories?: string[],
-    ) => Promise<void>;
 }) {
     const dragDepthRef = React.useRef(0);
     const [isDraggingFiles, setIsDraggingFiles] = React.useState(false);
+    const canAccept = props.destination !== null || props.isDialogOpen;
 
     React.useEffect(() => {
         /** Keeps dragged files from being opened by the browser itself. */
@@ -672,12 +471,12 @@ function useGlobalImportEvents(props: {
             event.preventDefault();
             dragDepthRef.current += 1;
 
-            if (props.destination) {
+            if (canAccept) {
                 setIsDraggingFiles(true);
             }
         };
 
-        /** Marks the page as a valid file-drop surface while a directory is open. */
+        /** Marks the page as a valid file-drop surface while a directory or the dialog is open. */
         const handleDragOver = (event: DragEvent) => {
             if (!containsDraggedFiles(event.dataTransfer)) {
                 return;
@@ -686,9 +485,7 @@ function useGlobalImportEvents(props: {
             event.preventDefault();
 
             if (event.dataTransfer) {
-                event.dataTransfer.dropEffect = props.destination
-                    ? "copy"
-                    : "none";
+                event.dataTransfer.dropEffect = canAccept ? "copy" : "none";
             }
         };
 
@@ -705,7 +502,7 @@ function useGlobalImportEvents(props: {
             }
         };
 
-        /** Uploads dropped files immediately or explains why the current route cannot. */
+        /** Adds dropped files to the upload dialog or explains why the current route cannot. */
         const handleDrop = (event: DragEvent) => {
             if (!containsDraggedFiles(event.dataTransfer)) {
                 return;
@@ -715,7 +512,7 @@ function useGlobalImportEvents(props: {
             dragDepthRef.current = 0;
             setIsDraggingFiles(false);
 
-            if (!props.destination) {
+            if (!canAccept) {
                 props.showMissingDirectoryError();
 
                 return;
@@ -729,19 +526,28 @@ function useGlobalImportEvents(props: {
 
             void readDroppedFiles(dataTransfer)
                 .then((manifest) =>
-                    props.uploadFiles(manifest.files, manifest.directories),
+                    props.addToUpload(props.destination, {
+                        origin: "dropped",
+                        files: manifest.files,
+                        directories: manifest.directories,
+                    }),
                 )
                 .catch(() => props.showMissingDirectoryError());
         };
 
-        /** Imports pasted files, or asks for a name when plain text is pasted. */
+        /** Adds pasted files or text to the upload dialog, where they are named. */
         const handlePaste = (event: ClipboardEvent) => {
-            if (isEditableTarget(event.target)) {
-                return;
-            }
-
             const files = Array.from(event.clipboardData?.files ?? []);
             const text = event.clipboardData?.getData("text/plain") ?? "";
+
+            // Text pasted into a field stays there. Files cannot go into the dialog's name
+            // fields, which take focus after every paste, so they still join the upload.
+            if (
+                isEditableTarget(event.target) &&
+                !(props.isDialogOpen && files.length > 0)
+            ) {
+                return;
+            }
 
             if (files.length === 0 && !text) {
                 return;
@@ -749,38 +555,14 @@ function useGlobalImportEvents(props: {
 
             event.preventDefault();
 
-            if (!props.destination) {
-                props.showMissingDirectoryError();
+            const sources =
+                files.length > 0
+                    ? pastedFileSources(files, false)
+                    : [pastedTextSource(text)];
 
-                return;
+            for (const source of sources) {
+                props.addToUpload(props.destination, source);
             }
-
-            if (files.length > 0) {
-                const images = files.filter((file) =>
-                    file.type.startsWith("image/"),
-                );
-
-                const otherFiles = files.filter(
-                    (file) => !file.type.startsWith("image/"),
-                );
-
-                if (otherFiles.length > 0) {
-                    void props.uploadFiles(
-                        otherFiles.map((file) => ({
-                            file,
-                            relativePath: file.name,
-                        })),
-                    );
-                }
-
-                if (images.length > 0) {
-                    props.openImageFileDialog(images);
-                }
-
-                return;
-            }
-
-            props.openTextFileDialog(text);
         };
 
         window.addEventListener("dragenter", handleDragEnter);
@@ -797,90 +579,23 @@ function useGlobalImportEvents(props: {
             window.removeEventListener("paste", handlePaste);
         };
     }, [
+        canAccept,
+        props.isDialogOpen,
         props.destination,
-        props.openImageFileDialog,
-        props.openTextFileDialog,
+        props.addToUpload,
         props.showMissingDirectoryError,
-        props.uploadFiles,
     ]);
 
     React.useEffect(() => {
-        if (props.destination) {
+        if (canAccept) {
             return;
         }
 
         setIsDraggingFiles(false);
         dragDepthRef.current = 0;
-    }, [props.destination]);
+    }, [canAccept]);
 
     return isDraggingFiles;
-}
-
-/** Prompts for a safe filename before pasted clipboard content is uploaded. */
-function PastedContentFileDialog(props: {
-    closePastedContentDialog: () => void;
-    destination: DirectoryDestination | null;
-    fileName: string;
-    fileNameError: string | null;
-    handleFileSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
-    isUploading: boolean;
-    pastedContent: PastedContent | null;
-    setFileName: React.Dispatch<React.SetStateAction<string>>;
-    setFileNameError: React.Dispatch<React.SetStateAction<string | null>>;
-}) {
-    const kind = props.pastedContent?.kind ?? "text";
-
-    return (
-        <Dialog
-            isOpen={props.pastedContent !== null}
-            isBusy={props.isUploading}
-            title={`Save pasted ${kind}`}
-            description={
-                props.destination
-                    ? `Choose a filename for the ${kind} pasted into ${props.destination.path}.`
-                    : undefined
-            }
-            closeAriaLabel={`Close save pasted ${kind} dialog`}
-            errorMessage={props.fileNameError}
-            onClose={props.closePastedContentDialog}
-        >
-            <form onSubmit={props.handleFileSubmit} className="mt-4">
-                <label
-                    htmlFor="pasted-content-file-name"
-                    className="mb-2 block text-sm font-medium text-slate-300"
-                >
-                    Filename
-                </label>
-                <InputControl
-                    ref={focusAndSelectFileNameStem}
-                    id="pasted-content-file-name"
-                    type="text"
-                    value={props.fileName}
-                    disabled={props.isUploading}
-                    onChange={(event) => {
-                        props.setFileName(event.target.value);
-                        props.setFileNameError(null);
-                    }}
-                    autoFocus
-                    className="w-full rounded shadow-sm focus:ring-blue-500/30"
-                />
-                <DialogActions>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={props.closePastedContentDialog}
-                        disabled={props.isUploading}
-                    >
-                        Cancel
-                    </Button>
-                    <Button type="submit" isLoading={props.isUploading}>
-                        <ClipboardPaste className="h-4 w-4" />
-                        Upload {kind}
-                    </Button>
-                </DialogActions>
-            </form>
-        </Dialog>
-    );
 }
 
 /** Displays the active target while files are being dragged across the page. */
@@ -939,71 +654,53 @@ export function GlobalFileImportHandler(props: {
     destination: DirectoryDestination | null;
     children: React.ReactNode;
 }) {
-    const uploader = useFileUploader({ destination: props.destination });
-
-    const pastedContentImport = usePastedContentImport({
-        destination: props.destination,
-        setImportState: uploader.setImportState,
-        showMissingDirectoryError: uploader.showMissingDirectoryError,
-    });
+    const collector = useUploadCollector();
 
     const importFromClipboard = useClipboardImporter({
         destination: props.destination,
-        openImageFileDialog: pastedContentImport.openImageFileDialog,
-        openTextFileDialog: pastedContentImport.openTextFileDialog,
-        setImportState: uploader.setImportState,
-        showMissingDirectoryError: uploader.showMissingDirectoryError,
-        uploadFiles: uploader.uploadFiles,
+        addToUpload: collector.addToUpload,
+        setImportState: collector.setImportState,
     });
 
     const isDraggingFiles = useGlobalImportEvents({
         destination: props.destination,
-        openImageFileDialog: pastedContentImport.openImageFileDialog,
-        openTextFileDialog: pastedContentImport.openTextFileDialog,
-        showMissingDirectoryError: uploader.showMissingDirectoryError,
-        uploadFiles: uploader.uploadFiles,
+        isDialogOpen: collector.pendingUpload !== null,
+        addToUpload: collector.addToUpload,
+        showMissingDirectoryError: collector.showMissingDirectoryError,
     });
 
-    const uploadFilesTo = uploader.uploadFilesTo;
+    const addToUpload = collector.addToUpload;
 
     const fileImport = React.useMemo(
         () => ({
             importFromClipboard: () => void importFromClipboard(),
-            uploadFilesTo,
+            addToUpload,
         }),
-        [importFromClipboard, uploadFilesTo],
+        [importFromClipboard, addToUpload],
     );
 
     return (
         <FileImportContext value={fileImport}>
             {props.children}
-            {uploader.conflictingUpload !== null ? (
-                <UploadConflictDialog
-                    upload={uploader.conflictingUpload}
-                    onClose={uploader.closeConflictingUpload}
-                    onResolved={uploader.resolveConflictingUpload}
+            {collector.pendingUpload !== null ? (
+                <UploadDialog
+                    upload={collector.pendingUpload}
+                    isDraggingFiles={isDraggingFiles}
+                    onAdd={(source) => addToUpload(null, source)}
+                    onPasteFromClipboard={() => void importFromClipboard()}
+                    onRemove={collector.removeFromUpload}
+                    onClose={collector.closeUpload}
+                    onQueued={collector.finishUpload}
                 />
-            ) : null}
-            <FileImportDropOverlay
-                destination={props.destination}
-                isDraggingFiles={isDraggingFiles}
-            />
+            ) : (
+                <FileImportDropOverlay
+                    destination={props.destination}
+                    isDraggingFiles={isDraggingFiles}
+                />
+            )}
             <FileImportToast
-                importState={uploader.importState}
-                setImportState={uploader.setImportState}
-            />
-            <PastedContentFileDialog
-                closePastedContentDialog={
-                    pastedContentImport.closePastedContentDialog
-                }
-                destination={props.destination}
-                fileName={pastedContentImport.fileName}
-                fileNameError={pastedContentImport.fileNameError}
-                handleFileSubmit={pastedContentImport.handleFileSubmit}
-                isUploading={pastedContentImport.isUploading}
-                pastedContent={pastedContentImport.pastedContent}
-                setFileName={pastedContentImport.setFileName}
-                setFileNameError={pastedContentImport.setFileNameError}
+                importState={collector.importState}
+                setImportState={collector.setImportState}
             />
         </FileImportContext>
     );

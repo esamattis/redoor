@@ -2,11 +2,13 @@ import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, onTestFinished, test, vi } from "vitest";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
+import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { RawUploadResponse } from "#bindings/RawUploadResponse";
 import { ApiClient, type Agent } from "#ui/api-client";
 import {
     MAX_CONCURRENT_UPLOADS,
     MAX_QUEUED_UPLOADS,
+    type UploadBatchFile,
     UploadQueue,
 } from "#ui/upload-queue";
 
@@ -108,9 +110,17 @@ function createQueue() {
     };
 }
 
-/** Makes a small in-memory source file for a relative path. */
-function source(relativePath: string) {
-    return { file: new File(["x"], "f.txt"), relativePath };
+/** Makes a small in-memory plain file for a relative path that must not replace anything. */
+function source(
+    relativePath: string,
+    onExisting: CopyExistingMode = "error",
+): UploadBatchFile {
+    return {
+        file: new File(["x"], "f.txt"),
+        relativePath,
+        onExisting,
+        encrypt: false,
+    };
 }
 
 /** Counts rows by status so assertions read as queue states. */
@@ -126,7 +136,6 @@ describe("UploadQueue concurrency", () => {
         const result = queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: Array.from({ length: 8 }, (_, index) =>
                 source(`file-${index}.txt`),
             ),
@@ -158,7 +167,6 @@ describe("UploadQueue concurrency", () => {
         queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: [source("photos/a.jpg"), source("photos/b.jpg")],
         });
 
@@ -183,22 +191,22 @@ describe("UploadQueue concurrency", () => {
         expect(failed?.error).toBe("disk full");
     });
 
-    test("sends the batch's conflict policy with every file", async () => {
+    test("sends each file's own conflict policy", async () => {
         const { queue, uploads, uploadSpy } = createQueue();
 
         queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "merge",
-            files: [source("photos/a.jpg"), source("b.jpg")],
+            files: [source("photos/a.jpg", "merge"), source("b.jpg", "error")],
         });
 
         await vi.waitFor(() => expect(uploads).toHaveLength(2));
 
-        // Every request must carry the user's choice, since the server no longer replaces by default.
+        // Every request must carry the choice made for its item, since one upload can merge one
+        // item and refuse to replace another, and the server no longer replaces by default.
         expect(uploadSpy.mock.calls.map((call) => call[2])).toEqual([
             { on_existing: "merge" },
-            { on_existing: "merge" },
+            { on_existing: "error" },
         ]);
     });
 
@@ -208,7 +216,6 @@ describe("UploadQueue concurrency", () => {
         queue.enqueue({
             agentId: "gone",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: [source("a.txt")],
         });
 
@@ -228,7 +235,6 @@ describe("UploadQueue validation and lifetime", () => {
         const result = queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: Array.from({ length: MAX_QUEUED_UPLOADS + 1 }, (_, index) =>
                 source(`file-${index}.txt`),
             ),
@@ -245,7 +251,6 @@ describe("UploadQueue validation and lifetime", () => {
         const result = queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: [source("../outside.txt")],
         });
 
@@ -262,7 +267,6 @@ describe("UploadQueue validation and lifetime", () => {
         queue.enqueue({
             agentId: "agent-1",
             destinationPath: "/home/agent",
-            onExisting: "error",
             files: [source("a.txt")],
         });
 

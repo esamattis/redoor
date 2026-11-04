@@ -675,8 +675,10 @@ test.describe.serial("File Browser Navigation", () => {
             "href",
             `/agents/${ctx.agent2Name}/browser/${encodeFilesystemPath(destinationPath)}`,
         );
-        // Directory Sync must not expose on-page conflict radios before Copy is chosen.
-        await expect(page.getByRole("radio", { name: "Merge" })).toHaveCount(0);
+        // Directory Sync must not expose on-page conflict choices before Copy is chosen.
+        await expect(
+            page.getByRole("combobox", { name: /^If .* exists$/ }),
+        ).toHaveCount(0);
         await page.getByRole("button", { name: "Copy", exact: true }).click();
 
         const confirmation = page.getByRole("dialog", {
@@ -693,13 +695,9 @@ test.describe.serial("File Browser Navigation", () => {
             name: "Destination items already exist",
         });
 
-        // An existing directory must open the shared Keep / Replace / Merge prompt.
+        // An existing directory must open the shared Rename / Replace / Merge prompt.
         await expect(dialog).toBeVisible();
-        await dialog
-            .getByRole("radio", {
-                name: "Merge directories and replace files",
-            })
-            .check();
+        await dialog.getByRole("combobox").selectOption("merge");
         await dialog.getByRole("button", { name: "Continue copying" }).click();
 
         // A terminal success confirms the selected policy completed on the destination agent.
@@ -769,7 +767,7 @@ test.describe.serial("File Browser Navigation", () => {
 
         // The current directory already exists, so reverse mode must request a destination policy.
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("combobox").selectOption("override");
         await dialog.getByRole("button", { name: "Continue copying" }).click();
         await expect(page.getByRole("status")).toContainText(
             "Copy completed successfully",

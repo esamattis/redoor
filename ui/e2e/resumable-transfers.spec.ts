@@ -53,15 +53,13 @@ test.describe.serial("Resumable transfer workflow", () => {
             dialog.getByRole("radio", { name: /^Resume/ }),
         ).toBeChecked();
         await expect(
-            dialog.getByRole("radio", { name: /^Rename/ }),
-        ).toBeVisible();
+            dialog.getByRole("combobox", { name: "If file1.txt exists" }),
+        ).toHaveValue("rename");
         await dialog.getByRole("radio", { name: /^Start over/ }).click();
         await expect(
             dialog.getByRole("radio", { name: /^Start over/ }),
         ).toBeChecked();
-        await page
-            .getByRole("button", { name: "Close copy conflict dialog" })
-            .click();
+        await page.getByRole("button", { name: "Close copy dialog" }).click();
         await page.getByRole("button", { name: "Clear selection" }).click();
     });
 

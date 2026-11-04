@@ -994,7 +994,7 @@ test.describe.serial("Terminal panel lifecycle", () => {
         });
         // A paste while the selection is held must not become a file import.
         await expect(
-            page.getByRole("dialog", { name: "Save pasted text" }),
+            page.getByRole("dialog", { name: "Upload files" }),
         ).toHaveCount(0);
         await page.keyboard.press("Enter");
         // The pasted command must reach the shell, and Enter must follow it into the PTY.

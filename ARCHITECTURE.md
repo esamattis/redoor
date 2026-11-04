@@ -2739,9 +2739,18 @@ it.
   an encrypted file's buffer to the server (the server also refuses such keys), a `beforeunload`
   warning protects unsaved drafts, and highlighting uses the inner extension. Files on an
   older generation show a banner that rewraps them.
-- **Uploads and downloads.** "Upload encrypted files" queues files under `name.redoorencrypted`
-  with the unlocked vault; the queue encrypts each with a new file key through the vault
-  upload route, and the usual conflict check sees the encrypted names. "Download decrypted"
+- **Uploads and downloads.** Every pick, drop and paste opens one upload dialog
+  (`upload-dialog.tsx`, planning in `upload-plan.ts`) before anything is queued. Each top-level
+  item gets a row with its destination name, a Rename / Replace / Merge choice when that name
+  exists, and an Encrypt box, which is disabled while the vault is locked. The rows, the
+  "for every existing item" select and the naming rules (`destination-plan.ts`,
+  `DestinationRow`) are shared with the Copy / Move and Sync conflict dialogs, so every
+  transfer asks about existing items the same way and sends the chosen policy per item. Drops and pastes
+  while it is open add rows, and made-up names (pasted text, clipboard images) start from a
+  free name instead of a conflict prompt. Encrypted items are queued under
+  `name.redoorencrypted` (each file of a directory on its own), so the conflict check sees the
+  encrypted names; the queue keeps the policy and encryption per file and encrypts each with a
+  new file key through the vault upload route. "Download decrypted"
   posts a hidden form into a hidden frame, so the browser streams the plaintext to disk.
 - **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
   (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice

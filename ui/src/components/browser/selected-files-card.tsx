@@ -26,14 +26,12 @@ import {
 import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import type { Agent, ApiClient } from "#ui/api-client";
-import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { LsEntry } from "#bindings/LsEntry";
 import { invalidateAgentData } from "#ui/queries";
 import { waitForTransfers } from "#ui/transfer-wait";
 import {
     selectedFilesAtom,
     clearSelectedFilesAtom,
-    getSelectedFileKey,
     hasRevisionSelection,
     unselectFileAtom,
     type SelectedPath,
@@ -47,6 +45,7 @@ import {
     SelectedFilesTransferTrigger,
     type SelectedFilesTransferOperation,
     type SelectedFilesTransferTriggerApi,
+    type PlannedTransferItem,
 } from "#ui/components/browser/selected-files-transfer-dialog";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 import { useIsContentBelow } from "#ui/utils/use-breakpoint";
@@ -58,10 +57,6 @@ import {
 } from "#ui/utils/archive";
 
 /** A selection paired with the name it lands under, which differs only when renamed. */
-type TransferItem = {
-    file: SelectedPath;
-    destinationName: string;
-};
 
 type TransferSelectedFilesState =
     | { type: "idle" }
@@ -92,7 +87,7 @@ const transferActionMove = {
 async function waitForPendingTransfers(props: {
     queryClient: QueryClient;
     api: ApiClient;
-    pendingTransfers: Map<number, TransferItem>;
+    pendingTransfers: Map<number, PlannedTransferItem>;
     completedFiles: SelectedPath[];
     pausedFiles: SelectedPath[];
     destinationAgentId: string;
@@ -235,8 +230,7 @@ function useTransferStarts(props: {
 
     return useMutation({
         mutationFn: (request: {
-            itemsToTransfer: TransferItem[];
-            existingMode: CopyExistingMode;
+            itemsToTransfer: PlannedTransferItem[];
             resume: ResumeMode;
         }) => {
             const agentsById = new Map(
@@ -245,7 +239,7 @@ function useTransferStarts(props: {
 
             return Promise.allSettled(
                 request.itemsToTransfer.map(
-                    async ({ file, destinationName }) => {
+                    async ({ file, destinationName, existingMode }) => {
                         const sourceAgent = agentsById.get(file.agentId);
 
                         if (!sourceAgent) {
@@ -263,7 +257,7 @@ function useTransferStarts(props: {
                         };
 
                         const options = {
-                            on_existing: request.existingMode,
+                            on_existing: existingMode,
                             resume: request.resume,
                         };
 
@@ -350,25 +344,18 @@ function TransferSelectedFilesAction(props: {
     });
 
     /**
-     * Starts every selected transfer with one consistent destination conflict policy.
-     * Items the user renamed land under their new names; the rest keep their own.
+     * Starts every confirmed item under the name and conflict policy chosen for it in the
+     * dialog, so one item can replace an existing entry while another is renamed.
      */
     const transferSelectedFiles = async (
-        mode: CopyExistingMode,
+        itemsToTransfer: PlannedTransferItem[],
         resume: ResumeMode,
-        destinationNames: ReadonlyMap<string, string>,
     ) => {
-        if (selectedFiles.length === 0) {
+        if (itemsToTransfer.length === 0) {
             return;
         }
 
-        const filesToTransfer = [...selectedFiles];
-
-        const itemsToTransfer = filesToTransfer.map((file) => ({
-            file,
-            destinationName:
-                destinationNames.get(getSelectedFileKey(file)) ?? file.fileName,
-        }));
+        const filesToTransfer = itemsToTransfer.map((item) => item.file);
 
         const controller = new AbortController();
         activeTransferRef.current?.abort();
@@ -383,7 +370,6 @@ function TransferSelectedFilesAction(props: {
         try {
             const results = await transferStartsMutation.mutateAsync({
                 itemsToTransfer,
-                existingMode: mode,
                 resume,
             });
 
@@ -475,8 +461,8 @@ function TransferSelectedFilesAction(props: {
                 directoryPath={props.directoryPath}
                 destinationEntries={props.destinationEntries}
                 canTransfer={canTransfer}
-                onConfirm={(mode, resume, destinationNames) =>
-                    void transferSelectedFiles(mode, resume, destinationNames)
+                onConfirm={(items, resume) =>
+                    void transferSelectedFiles(items, resume)
                 }
             >
                 {props.children}

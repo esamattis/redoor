@@ -2,10 +2,12 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
+    confirmUpload,
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
     type TestContext,
+    uploadDialog,
     WEB_BASE_URL,
 } from "./helpers";
 
@@ -47,15 +49,19 @@ test.describe("Clipboard imports", () => {
             );
         }, suggestedName);
 
-        const dialog = page.getByRole("dialog", { name: "Save pasted image" });
-        const fileNameInput = dialog.getByRole("textbox", { name: "Filename" });
-        // The image remains pending locally until the filename dialog is submitted.
+        const dialog = uploadDialog(page);
+
+        const fileNameInput = dialog.getByRole("textbox", {
+            name: `Name for ${suggestedName}`,
+        });
+
+        // The image remains pending locally until the upload dialog is confirmed.
         await expect(dialog).toBeVisible();
         await expect(fs.access(suggestedPath)).rejects.toThrow();
         // The clipboard-provided extension remains available when choosing a clearer name.
         await expect(fileNameInput).toHaveValue(suggestedName);
         await fileNameInput.fill(savedName);
-        await dialog.getByRole("button", { name: "Upload image" }).click();
+        await confirmUpload(page, 1);
 
         // The confirmed name, rather than the clipboard suggestion, is used for the upload.
         await expect
@@ -90,31 +96,38 @@ test.describe("Clipboard imports", () => {
             );
         });
 
-        const dialog = page.getByRole("dialog", {
-            name: "Save pasted text",
+        const dialog = uploadDialog(page);
+
+        const fileNameInput = dialog.getByRole("textbox", {
+            name: `Name for ${existingName}`,
         });
 
-        const fileNameInput = dialog.getByRole("textbox", { name: "Filename" });
-        await dialog.getByRole("button", { name: "Upload text" }).click();
+        // The made-up name is taken, so the dialog starts from a free one instead.
+        await expect(fileNameInput).toHaveValue("pasted-text_2.txt");
+        // Pasted text was never named by the user, so replacing the file is not offered.
+        await expect(
+            dialog.getByRole("combobox", { name: `If ${existingName} exists` }),
+        ).toHaveCount(0);
 
-        // A collision must stay in the naming workflow instead of dismissing the dialog.
-        await expect(dialog).toBeVisible();
-        await expect(dialog.getByRole("alert")).toContainText(
-            "already exists. Choose a different filename.",
+        await fileNameInput.fill(existingName);
+
+        // Typing the taken name back must block the upload instead of replacing the file.
+        await expect(dialog.getByRole("alert")).toHaveText(
+            `${existingName} already exists in this directory`,
         );
-        // Strict server publication must preserve the file even if it appears during upload.
-        await expect
-            .poll(() => fs.readFile(existingPath, "utf8"))
-            .toBe("original text");
+        await expect(
+            dialog.getByRole("button", { name: "Upload 1 item" }),
+        ).toBeDisabled();
 
         await fileNameInput.fill(replacementName);
-        await dialog.getByRole("button", { name: "Upload text" }).click();
+        await confirmUpload(page, 1);
 
         // Choosing a non-conflicting name must save the originally pasted text.
         await expect
             .poll(() => fs.readFile(replacementPath, "utf8").catch(() => null))
             .toBe("new clipboard text");
-        await expect(dialog).not.toBeVisible();
+        // The existing file is left untouched.
+        expect(await fs.readFile(existingPath, "utf8")).toBe("original text");
     });
 
     test("requires a different filename when a pasted image would replace a file", async ({
@@ -145,30 +158,65 @@ test.describe("Clipboard imports", () => {
             );
         }, existingName);
 
-        const dialog = page.getByRole("dialog", {
-            name: "Save pasted image",
+        const fileNameInput = uploadDialog(page).getByRole("textbox", {
+            name: `Name for ${existingName}`,
         });
 
-        const fileNameInput = dialog.getByRole("textbox", { name: "Filename" });
-        await dialog.getByRole("button", { name: "Upload image" }).click();
-
-        // Images use the same inline collision path and must remain available for renaming.
-        await expect(dialog).toBeVisible();
-        await expect(dialog.getByRole("alert")).toContainText(
-            "already exists. Choose a different filename.",
+        // Clipboard images are named by the browser, so a taken name becomes a free one.
+        await expect(fileNameInput).toHaveValue(
+            existingName.replace(/\.png$/, "_2.png"),
         );
-        // Rejecting the upload must not alter the existing image bytes.
-        await expect
-            .poll(() => fs.readFile(existingPath, "utf8"))
-            .toBe("original image");
 
         await fileNameInput.fill(replacementName);
-        await dialog.getByRole("button", { name: "Upload image" }).click();
+        await confirmUpload(page, 1);
 
         // The pending image blob must survive the conflict and upload under the new name.
         await expect
             .poll(() => fs.readFile(replacementPath, "utf8").catch(() => null))
             .toBe("new image bytes");
-        await expect(dialog).not.toBeVisible();
+        // The existing image bytes are left untouched.
+        expect(await fs.readFile(existingPath, "utf8")).toBe("original image");
+    });
+
+    test("should preselect the pasted text filename before its extension", async ({
+        page,
+    }) => {
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, "subdir2", "deep"))}`;
+        await page.goto(directoryUrl);
+        await expect(
+            page.getByRole("button", { name: "Paste files or text" }),
+        ).toBeVisible();
+
+        await page.evaluate(() => {
+            const clipboardData = new DataTransfer();
+            clipboardData.setData("text/plain", "pasted content");
+            window.dispatchEvent(
+                new ClipboardEvent("paste", {
+                    bubbles: true,
+                    clipboardData,
+                }),
+            );
+        });
+
+        const fileNameInput = uploadDialog(page).getByRole("textbox", {
+            name: "Name for pasted-text.txt",
+        });
+
+        // Selecting only the stem lets typing replace the default name while preserving .txt.
+        await expect(fileNameInput).toBeFocused();
+        await expect
+            .poll(() =>
+                fileNameInput.evaluate((input) => ({
+                    start:
+                        input instanceof HTMLInputElement
+                            ? input.selectionStart
+                            : null,
+                    end:
+                        input instanceof HTMLInputElement
+                            ? input.selectionEnd
+                            : null,
+                })),
+            )
+            .toEqual({ start: 0, end: "pasted-text".length });
     });
 });

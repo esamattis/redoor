@@ -17,19 +17,20 @@ import {
     type SelectedPath,
     unselectFileAtom,
 } from "#ui/selected-files";
-import { AffectedPathsList } from "#ui/components/browser/affected-paths-list";
 import {
-    canMergeConflicts,
-    type ConflictCandidate,
-    describeDestinationEntries,
-    type ConflictResolution,
-    ExistingItemOptions,
-    findNameCollisions,
-    getEffectiveResolution,
-    NewNameFields,
-    planRenames,
-    toExistingMode,
+    ConflictBulkSelect,
+    DestinationRow,
+    EntryTypeIcon,
 } from "#ui/components/browser/destination-conflict";
+import { RevisionBadge } from "#ui/components/browser/git-parts";
+import {
+    type ConflictResolution,
+    describeDestinationEntries,
+    type DestinationChoice,
+    type DestinationItem,
+    type PlannedDestination,
+    planDestinationNames,
+} from "#ui/destination-plan";
 import type { LsEntry } from "#bindings/LsEntry";
 
 /**
@@ -40,9 +41,7 @@ const transferTriggerCopy = {
     buttonLabel: "Copy",
     buttonTooltip: "Copy selected items to this directory",
     buttonAriaLabel: "Copy selected items to this directory",
-    closeAriaLabel: "Close copy conflict dialog",
-    confirmLabel: "Continue copying",
-    radioGroupName: "copy-on-existing",
+    closeAriaLabel: "Close copy dialog",
     Icon: Copy,
 };
 
@@ -50,9 +49,7 @@ const transferTriggerMove = {
     buttonLabel: "Move",
     buttonTooltip: "Move selected items to this directory",
     buttonAriaLabel: "Move selected items to this directory",
-    closeAriaLabel: "Close move conflict dialog",
-    confirmLabel: "Continue moving",
-    radioGroupName: "move-on-existing",
+    closeAriaLabel: "Close move dialog",
     Icon: FolderInput,
 };
 
@@ -98,40 +95,76 @@ function ResumeOptions(props: {
     );
 }
 
+/** One selected item with the destination name and policy chosen for it in the dialog. */
+export type PlannedTransferItem = {
+    file: SelectedPath;
+    destinationName: string;
+    existingMode: CopyExistingMode;
+};
+
+/** A selected path as a destination item, so the shared planner can name it. */
+type SelectedDestinationItem = DestinationItem & { file: SelectedPath };
+
 /**
- * Words the dialog after what needs deciding: existing destination items take precedence,
- * then selected items that share a name, and otherwise a plain confirmation.
+ * Lists the selected items on the shared destination rows, with where each comes from and
+ * a Deselect button, plus one control that resolves every existing item at once.
  */
-function describeTransferDialog(props: {
+function TransferItemList(props: {
+    rows: readonly PlannedDestination<SelectedDestinationItem>[];
     operationLabel: string;
-    selectedCount: number;
-    conflictCount: number;
-    hasCollisions: boolean;
-    destination: string;
+    onChange: (key: string, change: DestinationChoice) => void;
+    onResolveAll: (resolutions: Record<string, ConflictResolution>) => void;
+    onDeselect: (file: SelectedPath) => void;
 }) {
-    const items = props.selectedCount === 1 ? "item" : "items";
-
-    if (props.conflictCount > 0) {
-        return {
-            title: "Destination items already exist",
-            description: `${props.conflictCount} selected ${props.conflictCount === 1 ? "item has" : "items have"} the same name as an item in this directory. Choose how to handle the existing destination.`,
-        };
-    }
-
-    if (props.hasCollisions) {
-        return {
-            title: "Selected items share a name",
-            description: `Some selected items have the same name. Give them distinct names in ${props.destination}.`,
-        };
-    }
-
-    return {
-        title: `${props.operationLabel} selected ${items}?`,
-        description: `${props.operationLabel} the selected ${items} to ${props.destination}.`,
-    };
+    return (
+        <>
+            <ConflictBulkSelect
+                rows={props.rows}
+                disabled={false}
+                onChange={props.onResolveAll}
+            />
+            <ul
+                aria-label={`Items to ${props.operationLabel.toLowerCase()}`}
+                className="mt-3 flex max-h-[min(30rem,55dvh)] flex-col gap-2 overflow-y-auto overscroll-y-contain"
+            >
+                {props.rows.map((row) => (
+                    <DestinationRow
+                        key={row.item.key}
+                        row={row}
+                        preview={
+                            <EntryTypeIcon entryType={row.item.entryType} />
+                        }
+                        meta={
+                            <>
+                                {row.item.file.agentName}:{row.item.file.path}
+                                {row.item.file.rev === undefined ? null : (
+                                    <RevisionBadge
+                                        commitId={row.item.file.rev}
+                                    />
+                                )}
+                            </>
+                        }
+                        remove={{
+                            label: `Deselect ${row.item.file.fileName}`,
+                            tooltip: "Deselect",
+                            onRemove: () => props.onDeselect(row.item.file),
+                        }}
+                        disabled={false}
+                        onChange={(change) =>
+                            props.onChange(row.item.key, change)
+                        }
+                    />
+                ))}
+            </ul>
+        </>
+    );
 }
 
-/** Always confirms selected paths and includes a conflict policy when needed. */
+/**
+ * Always confirms the selected paths in one dialog that lists every item with its name in
+ * this directory and, when that name is taken, what happens to the existing item. It uses
+ * the same rows as uploads, so the question is asked the same way everywhere.
+ */
 export function SelectedFilesTransferTrigger(props: {
     api: ApiClient;
     operation: SelectedFilesTransferOperation;
@@ -141,22 +174,14 @@ export function SelectedFilesTransferTrigger(props: {
     /** The destination listing, whose entry types decide whether Merge is offered. */
     destinationEntries: LsEntry[];
     canTransfer: boolean;
-    /** Renamed destinations are keyed by `getSelectedFileKey`; others keep their names. */
-    onConfirm: (
-        mode: CopyExistingMode,
-        resume: ResumeMode,
-        destinationNames: ReadonlyMap<string, string>,
-    ) => void;
+    onConfirm: (items: PlannedTransferItem[], resume: ResumeMode) => void;
     children: (trigger: SelectedFilesTransferTriggerApi) => React.ReactNode;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
 
-    const [chosenResolution, setResolution] =
-        React.useState<ConflictResolution>("rename");
-
-    // Only names the user edited are stored; the rest follow the current suggestion.
-    const [editedNames, setEditedNames] = React.useState<
-        Record<string, string>
+    // Only what the user changed is stored; everything else follows the suggestions.
+    const [choices, setChoices] = React.useState<
+        Record<string, DestinationChoice>
     >({});
 
     const [resumeMode, setResumeMode] = React.useState<ResumeMode>("auto");
@@ -196,71 +221,51 @@ export function SelectedFilesTransferTrigger(props: {
     const unselectFile = useSetAtom(unselectFileAtom);
     const copy = props.operation === "copy";
     const labels = copy ? transferTriggerCopy : transferTriggerMove;
-
-    const destination = describeDestinationEntries(props.destinationEntries);
-
-    const candidates: ConflictCandidate[] = props.selectedFiles.map((file) => ({
-        key: getSelectedFileKey(file),
-        fileName: file.fileName,
-        entryType: file.entryType,
-    }));
-
-    const conflictingFiles = props.selectedFiles.filter((file) => {
-        const destinationPath = joinBrowserPath(
-            props.directoryPath,
-            file.fileName,
-        );
-
-        // A revision is copied from a commit, so it conflicts even with its own working file.
-        const isSamePath =
-            file.rev === undefined &&
-            file.agentId === props.destinationAgent.id &&
-            file.path === destinationPath;
-
-        return !isSamePath && destination.fileNames.has(file.fileName);
-    });
-
-    const conflictingKeys = new Set(
-        conflictingFiles.map((file) => getSelectedFileKey(file)),
-    );
-
-    const conflicts = candidates.filter((candidate) =>
-        conflictingKeys.has(candidate.key),
-    );
-
-    const collidingKeys = findNameCollisions(candidates);
-
-    const canMerge = canMergeConflicts(conflicts, destination.directoryNames);
-    const resolution = getEffectiveResolution(chosenResolution, canMerge);
-
     const operationLabel = copy ? "Copy" : "Move";
-    const hasConflicts = conflictingFiles.length > 0;
-    const isRenaming = hasConflicts && resolution === "rename";
 
-    const renames = planRenames({
-        items: candidates,
-        conflicts: candidates.filter(
-            (candidate) =>
-                collidingKeys.has(candidate.key) ||
-                (isRenaming && conflictingKeys.has(candidate.key)),
-        ),
-        destinationFileNames: destination.fileNames,
-        editedNames,
+    const items: SelectedDestinationItem[] = props.selectedFiles.map(
+        (file) => ({
+            key: getSelectedFileKey(file),
+            name: file.fileName,
+            entryType: file.entryType,
+            // A revision is copied from a commit, so it conflicts even with its own working file.
+            isAtDestination:
+                file.rev === undefined &&
+                file.agentId === props.destinationAgent.id &&
+                file.path ===
+                    joinBrowserPath(props.directoryPath, file.fileName),
+            file,
+        }),
+    );
+
+    const rows = planDestinationNames({
+        items,
+        destination: describeDestinationEntries(props.destinationEntries),
+        choices,
     });
+
+    const conflictCount = rows.filter((row) => row.conflict !== null).length;
+    const selectedCount = props.selectedFiles.length;
+    const itemsLabel = selectedCount === 1 ? "item" : "items";
+    const destination = `${props.destinationAgent.name}:${props.directoryPath}`;
+
+    // A failed preflight must not block the transfer; the server still resumes a valid
+    // partial because the default mode is auto.
+    const canConfirm =
+        rows.length > 0 &&
+        !preflight.isPending &&
+        rows.every((row) => row.error === null);
 
     /** Opens one confirmation surface for both ordinary and conflicting transfers. */
     const handleStart = () => {
-        setResolution("rename");
-        setEditedNames({});
+        setChoices({});
         setResumeMode("auto");
         setIsOpen(true);
     };
 
-    const hasInvalidName = renames.some((rename) => rename.error !== null);
-
     // Clearing the selection dismisses the prompt. Resetting the state while rendering, rather
     // than hiding the dialog, keeps it from reappearing when something is selected again.
-    if (isOpen && props.selectedFiles.length === 0) {
+    if (isOpen && selectedCount === 0) {
         setIsOpen(false);
     }
 
@@ -274,88 +279,89 @@ export function SelectedFilesTransferTrigger(props: {
             <Dialog
                 isOpen={isOpen}
                 size="wide"
-                {...describeTransferDialog({
-                    operationLabel,
-                    selectedCount: props.selectedFiles.length,
-                    conflictCount: conflictingFiles.length,
-                    hasCollisions: collidingKeys.size > 0,
-                    destination: `${props.destinationAgent.name}:${props.directoryPath}`,
-                })}
+                title={`${operationLabel} selected ${itemsLabel}?`}
+                description={
+                    conflictCount > 0
+                        ? `${conflictCount} of the selected ${itemsLabel} already ${conflictCount === 1 ? "exists" : "exist"} in ${destination}. Choose what happens to ${conflictCount === 1 ? "it" : "each"}.`
+                        : `${operationLabel} the selected ${itemsLabel} to ${destination}.`
+                }
                 closeAriaLabel={labels.closeAriaLabel}
                 onClose={() => setIsOpen(false)}
             >
-                <AffectedPathsList
-                    paths={props.selectedFiles}
-                    onDeselect={(path) => unselectFile(path)}
-                />
-                {candidate ? (
-                    <ResumeOptions
-                        candidate={candidate}
-                        value={resumeMode}
-                        onChange={setResumeMode}
-                    />
-                ) : null}
-                {preflight.error ? (
-                    <p role="alert" className="mt-5 text-sm text-amber-300">
-                        Cannot check for an interrupted transfer:{" "}
-                        {preflight.error.message}
-                    </p>
-                ) : null}
-                {hasConflicts ? (
-                    <ExistingItemOptions
-                        radioGroupName={labels.radioGroupName}
-                        value={resolution}
-                        canMerge={canMerge}
-                        onChange={setResolution}
-                    />
-                ) : null}
-                {renames.length > 0 ? (
-                    <NewNameFields
-                        renames={renames}
-                        onChange={(key, value) =>
-                            setEditedNames((names) => ({
-                                ...names,
-                                [key]: value,
+                <form
+                    onSubmit={(event) => {
+                        event.preventDefault();
+
+                        if (!canConfirm) {
+                            return;
+                        }
+
+                        setIsOpen(false);
+                        props.onConfirm(
+                            rows.map((row) => ({
+                                file: row.item.file,
+                                destinationName: row.finalName,
+                                existingMode: row.onExisting,
+                            })),
+                            resumeMode,
+                        );
+                    }}
+                >
+                    {candidate ? (
+                        <ResumeOptions
+                            candidate={candidate}
+                            value={resumeMode}
+                            onChange={setResumeMode}
+                        />
+                    ) : null}
+                    {preflight.error ? (
+                        <p role="alert" className="mt-5 text-sm text-amber-300">
+                            Cannot check for an interrupted transfer:{" "}
+                            {preflight.error.message}
+                        </p>
+                    ) : null}
+                    <TransferItemList
+                        rows={rows}
+                        operationLabel={operationLabel}
+                        onChange={(key, change) =>
+                            setChoices((current) => ({
+                                ...current,
+                                [key]: { ...current[key], ...change },
                             }))
                         }
+                        onResolveAll={(resolutions) =>
+                            setChoices((current) => {
+                                const next = { ...current };
+
+                                for (const [key, resolution] of Object.entries(
+                                    resolutions,
+                                )) {
+                                    next[key] = { ...next[key], resolution };
+                                }
+
+                                return next;
+                            })
+                        }
+                        onDeselect={(file) => unselectFile(file)}
                     />
-                ) : null}
-                <DialogActions>
-                    <Button
-                        type="button"
-                        variant="secondary"
-                        onClick={() => setIsOpen(false)}
-                        className="rounded-md text-slate-300"
-                    >
-                        Cancel
-                    </Button>
-                    <Button
-                        type="button"
-                        // A failed check must not block the copy; the server still resumes
-                        // a valid partial because the default mode is auto.
-                        disabled={preflight.isPending || hasInvalidName}
-                        onClick={() => {
-                            setIsOpen(false);
-                            props.onConfirm(
-                                hasConflicts
-                                    ? toExistingMode(resolution)
-                                    : "error",
-                                resumeMode,
-                                new Map(
-                                    renames.map((rename) => [
-                                        rename.key,
-                                        rename.name,
-                                    ]),
-                                ),
-                            );
-                        }}
-                        className="rounded-md font-semibold"
-                    >
-                        {hasConflicts
-                            ? labels.confirmLabel
-                            : `${operationLabel} selected ${props.selectedFiles.length === 1 ? "item" : "items"}`}
-                    </Button>
-                </DialogActions>
+                    <DialogActions>
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            onClick={() => setIsOpen(false)}
+                            className="rounded-md text-slate-300"
+                        >
+                            Cancel
+                        </Button>
+                        <Button
+                            type="submit"
+                            disabled={!canConfirm}
+                            className="rounded-md font-semibold"
+                        >
+                            {`${operationLabel} selected ${itemsLabel}`}
+                        </Button>
+                    </DialogActions>
+                </form>
             </Dialog>
         </>
     );

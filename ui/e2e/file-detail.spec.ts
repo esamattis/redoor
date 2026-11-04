@@ -228,7 +228,7 @@ test.describe.serial("File Detail View", () => {
 
         // An existing destination must ask for a policy instead of starting the copy.
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("combobox").selectOption("override");
         await dialog.getByRole("button", { name: "Continue copying" }).click();
 
         // Final transfer progress, rather than copy acceptance, drives the success report.
@@ -467,7 +467,7 @@ test.describe.serial("File Detail View", () => {
 
         // Reverse conflict detection probes the current browser path, not the selected source.
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("combobox").selectOption("override");
         await dialog.getByRole("button", { name: "Continue copying" }).click();
         await expect(page.getByRole("status")).toContainText(
             "Copy completed successfully",
@@ -500,7 +500,7 @@ test.describe.serial("File Detail View", () => {
             .getByRole("button", { name: "Confirm move" })
             .click();
         await expect(dialog).toBeVisible();
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await dialog.getByRole("combobox").selectOption("override");
         await dialog.getByRole("button", { name: "Continue moving" }).click();
         // Endpoint order cannot change while the reverse move request is in flight.
         await expect(forwardDirection).toBeDisabled();
@@ -555,13 +555,11 @@ test.describe.serial("File Detail View", () => {
         });
 
         // An existing destination must offer the non-destructive rename by default.
-        await expect(
-            dialog.getByRole("radio", { name: "Rename" }),
-        ).toBeChecked();
+        await expect(dialog.getByRole("combobox")).toHaveValue("rename");
         // The suggestion is derived from the destination's name, not the source's.
         await expect(
             dialog.getByRole("textbox", {
-                name: `New name for ${destinationStem}.txt`,
+                name: `Name for ${destinationStem}.txt`,
             }),
         ).toHaveValue(`${destinationStem}_2.txt`);
         await dialog.getByRole("button", { name: "Continue copying" }).click();

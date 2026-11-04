@@ -19,28 +19,34 @@ export type UploadSourceFile = {
     relativePath: string;
 };
 
+/**
+ * One file of a batch with the choices the upload dialog made for it. They are per file
+ * because one upload can mix encrypted and plain items, and replace one existing item while
+ * renaming another.
+ */
+export type UploadBatchFile = UploadSourceFile & {
+    /** The conflict policy the user chose for this file, so uploads never replace silently. */
+    onExisting: CopyExistingMode;
+    /**
+     * Encrypts the file with the vault; the relative path already carries the
+     * `.redoorencrypted` suffix, so conflicts were checked against the encrypted name.
+     */
+    encrypt: boolean;
+};
+
 /** A complete selection, queued all at once or not at all. */
 export type UploadBatch = {
     agentId: string;
     destinationPath: string;
-    files: UploadSourceFile[];
+    files: UploadBatchFile[];
     directories?: string[];
-    /** The conflict policy the user chose for this batch, so uploads never replace silently. */
-    onExisting: CopyExistingMode;
-    /**
-     * Encrypts every file with the vault; the relative paths already carry the
-     * `.redoorencrypted` suffix, so conflicts are checked against the encrypted names.
-     */
-    encrypt?: boolean;
 };
 
 /** A queued file with its progress, kept after completion so the queue view can settle. */
-export type UploadQueueItem = UploadSourceFile & {
+export type UploadQueueItem = UploadBatchFile & {
     id: number;
     agentId: string;
     destinationPath: string;
-    onExisting: CopyExistingMode;
-    encrypt: boolean;
     status: "waiting" | "uploading" | "done";
     error: string | null;
 };
@@ -201,8 +207,6 @@ export class UploadQueue extends ExternalStore<UploadQueueSnapshot> {
                 id: this.takeId(),
                 agentId: batch.agentId,
                 destinationPath: batch.destinationPath,
-                onExisting: batch.onExisting,
-                encrypt: batch.encrypt ?? false,
                 status: "waiting" as const,
                 error: null,
             }));

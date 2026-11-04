@@ -98,16 +98,20 @@ test.describe.serial("Git history copies and downloads", () => {
             .click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+            name: "Copy selected item?",
+        });
+
+        const resolution = dialog.getByRole("combobox", {
+            name: "If app.ts exists",
         });
 
         // Restoring over the working file is a conflict, not copying a file onto itself.
-        await expect(dialog).toBeVisible();
+        await expect(resolution).toBeVisible();
         // The dialog names the commit the item is copied from.
         await expect(
             dialog.getByLabel(`At commit ${firstCommit.slice(0, 12)}`),
         ).toBeVisible();
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
+        await resolution.selectOption("override");
 
         const copyRequest = page.waitForRequest(
             (request) =>
@@ -115,7 +119,9 @@ test.describe.serial("Git history copies and downloads", () => {
                 request.method() === "POST",
         );
 
-        await dialog.getByRole("button", { name: "Continue copying" }).click();
+        await dialog
+            .getByRole("button", { name: "Copy selected item", exact: true })
+            .click();
         // The copy reads the commit the tag resolved to, not the moving tag name.
         expect((await copyRequest).postDataJSON().source_rev).toBe(firstCommit);
         // A finished copy unselects its item.
@@ -154,15 +160,17 @@ test.describe.serial("Git history copies and downloads", () => {
             .click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Selected items share a name",
+            name: "Copy selected items?",
+        });
+
+        const nameFields = dialog.getByRole("textbox", {
+            name: "Name for app.ts",
         });
 
         // Two versions of app.ts would land on one path in an empty directory.
-        await expect(dialog).toBeVisible();
+        await expect(nameFields).toHaveCount(2);
         // The second version gets a free name of its own instead of colliding.
-        await expect(
-            dialog.getByRole("textbox", { name: "New name for app.ts" }),
-        ).not.toHaveValue("app.ts");
+        await expect(nameFields.nth(1)).not.toHaveValue("app.ts");
         await dialog
             .getByRole("button", { name: "Copy selected items", exact: true })
             .click();

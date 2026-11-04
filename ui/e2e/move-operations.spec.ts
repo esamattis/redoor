@@ -291,28 +291,34 @@ test.describe.serial("Move Operations", () => {
         });
 
         const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+            name: "Move selected item?",
         });
 
-        // A same-named destination must interrupt the move before any request starts.
-        await expect(dialog).toBeVisible();
+        const resolution = dialog.getByRole("combobox", {
+            name: `If ${sourceName} exists`,
+        });
+
+        // A same-named destination must ask before any request starts.
+        await expect(resolution).toBeVisible();
         // Renaming keeps the destination intact, so it is the safe default policy.
-        await expect(
-            dialog.getByRole("radio", { name: "Rename" }),
-        ).toBeChecked();
+        await expect(resolution).toHaveValue("rename");
 
         const renamedName = `${stem}_2.txt`;
 
         // The suggested name keeps the extension so the moved file opens the same way.
         await expect(
             dialog.getByRole("textbox", {
-                name: `New name for ${sourceName}`,
+                name: `Name for ${sourceName}`,
             }),
         ).toHaveValue(renamedName);
+
+        const moveButton = dialog.getByRole("button", {
+            name: "Move selected item",
+            exact: true,
+        });
+
         // The shared dialog must use Move-specific confirm text.
-        await expect(
-            dialog.getByRole("button", { name: "Continue moving" }),
-        ).toBeVisible();
+        await expect(moveButton).toBeVisible();
 
         const moveRequest = page.waitForRequest(
             (request) =>
@@ -320,7 +326,7 @@ test.describe.serial("Move Operations", () => {
                 request.method() === "POST",
         );
 
-        await dialog.getByRole("button", { name: "Continue moving" }).click();
+        await moveButton.click();
 
         const requestBody = (await moveRequest).postDataJSON();
 

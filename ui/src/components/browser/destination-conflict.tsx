@@ -1,314 +1,244 @@
 import React from "react";
+import { File, Folder, X } from "lucide-react";
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
-import type { LsEntry } from "#bindings/LsEntry";
-import { validatePathComponent } from "#ui/utils/path";
-import { suggestAvailableFileName } from "#ui/utils/file-name";
 import { Button } from "#ui/components/button";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
-import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
-import { TextField } from "#ui/components/text-field";
+import { IconButton } from "#ui/components/icon-button";
+import { InputControl } from "#ui/components/input-control";
+import { Select } from "#ui/components/select";
+import {
+    type ConflictResolution,
+    type DestinationChoice,
+    type DestinationItem,
+    getSharedResolution,
+    type PlannedDestination,
+    planDestinationNames,
+    resolveAllConflicts,
+} from "#ui/destination-plan";
+import { cn } from "#ui/utils/cn";
+import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
 
-/**
- * What the user chooses for an existing destination. Rename is not a server policy: it is
- * sent as the error policy with a new destination name, so if that name got taken in the
- * meantime the transfer still fails instead of overwriting anything. Leaving the existing
- * item alone without transferring is what Cancel is for.
- */
-export type ConflictResolution = "rename" | "override" | "merge";
-
-/** Shared conflict choices so Copy, Move, Sync and Upload ask the same destination question. */
-const existingItemOptions: Array<{
-    value: ConflictResolution;
-    label: string;
-    description: string;
-}> = [
-    {
-        value: "rename",
-        label: "Rename",
-        description:
-            "Keep the existing item and give the transferred item a new name.",
-    },
-    {
-        value: "override",
-        label: "Replace existing",
-        description:
-            "Replace the entire existing file or directory with the source.",
-    },
-    {
-        value: "merge",
-        label: "Merge directories and replace files",
-        description: "Replace conflicts but preserve destination-only entries.",
-    },
+/** The conflict choices, worded the same in upload, copy, move and sync. */
+const resolutionOptions: Array<{ value: ConflictResolution; label: string }> = [
+    { value: "rename", label: "Rename" },
+    { value: "override", label: "Replace existing" },
+    { value: "merge", label: "Merge directories and replace files" },
 ];
 
-/** Maps the choice to the API policy, keeping renamed destinations non-overwriting. */
-export function toExistingMode(
-    resolution: ConflictResolution,
-): CopyExistingMode {
-    return resolution === "rename" ? "error" : resolution;
-}
-
-/**
- * Falls back to Rename when Merge is no longer offered, for example after the conflicting
- * directory was deselected, so a hidden choice is never submitted.
- */
-export function getEffectiveResolution(
-    resolution: ConflictResolution,
-    canMerge: boolean,
-): ConflictResolution {
-    return resolution === "merge" && !canMerge ? "rename" : resolution;
-}
-
-/** One item that may collide with an existing destination entry of the same name. */
-export type ConflictCandidate = {
-    key: string;
-    fileName: string;
-    entryType: "file" | "directory";
-};
-
-/** Names already taken in the destination, and which of them could be merged into. */
-export function describeDestinationEntries(entries: LsEntry[]) {
-    const fileNames = new Set<string>();
-    const directoryNames = new Set<string>();
-
-    for (const entry of entries) {
-        fileNames.add(entry.name);
-
-        if (entry.type === "directory") {
-            directoryNames.add(entry.name);
-        }
-    }
-
-    return { fileNames, directoryNames };
-}
-
-/**
- * Merge only differs from Replace when a directory lands on a directory, so it is offered
- * only when at least one conflict pairs two directories.
- */
-export function canMergeConflicts(
-    conflicts: ConflictCandidate[],
-    destinationDirectoryNames: ReadonlySet<string>,
-): boolean {
-    return conflicts.some(
-        (conflict) =>
-            conflict.entryType === "directory" &&
-            destinationDirectoryNames.has(conflict.fileName),
-    );
-}
-
-/**
- * Checks a replacement name before any request starts, so the rename cannot escape the
- * destination directory or land on another item that is already there.
- */
-function validateNewName(
-    name: string,
-    entryType: "file" | "directory",
-    takenNames: ReadonlySet<string>,
-): string | null {
-    const nameError = validatePathComponent(
-        name,
-        entryType === "file" ? "File" : "Directory",
-    );
-
-    if (nameError !== null) {
-        return nameError;
-    }
-
-    return takenNames.has(name)
-        ? `An item named ${name} already exists in the destination`
+/** Narrows a select value back to a resolution instead of trusting a cast. */
+function parseResolution(value: string): ConflictResolution | null {
+    return value === "rename" || value === "override" || value === "merge"
+        ? value
         : null;
 }
 
-/** Renders the conflict choices once so every conflict dialog stays identical. */
-export function ExistingItemOptions(props: {
-    radioGroupName: string;
-    value: ConflictResolution;
-    canMerge: boolean;
-    onChange: (value: ConflictResolution) => void;
-}) {
-    const options = props.canMerge
-        ? existingItemOptions
-        : existingItemOptions.filter((option) => option.value !== "merge");
-
-    return (
-        <RadioCardGroup
-            legend="Existing item action"
-            className="mt-5"
-            legendClassName="sr-only"
-        >
-            {options.map((option) => (
-                <RadioCardOption
-                    key={option.value}
-                    name={props.radioGroupName}
-                    value={option.value}
-                    label={option.label}
-                    description={option.description}
-                    checked={props.value === option.value}
-                    layout="descriptive"
-                    onChange={() => props.onChange(option.value)}
-                />
-            ))}
-        </RadioCardGroup>
+/** The file or directory icon for rows that have no richer preview. */
+export function EntryTypeIcon(props: { entryType: "file" | "directory" }) {
+    return props.entryType === "directory" ? (
+        <Folder className="h-5 w-5 text-blue-400" />
+    ) : (
+        <File className="h-5 w-5" />
     );
 }
 
-/** Pairs the new-name input with its validation message so each conflict explains itself. */
-function NewNameField(props: {
-    label: string;
-    originalName: string;
-    value: string;
-    error: string | null;
-    onChange: (value: string) => void;
+/**
+ * One item that is about to land in a destination directory: its name there, and what to
+ * do when that name is taken. Upload, copy, move and sync all use it, so the question is
+ * asked the same way everywhere. On phones the controls wrap below the name instead of
+ * squeezing it.
+ */
+export function DestinationRow(props: {
+    row: PlannedDestination<DestinationItem>;
+    /** A small picture of the item, such as an icon or a thumbnail. */
+    preview: React.ReactNode;
+    /** Says what the item is or where it comes from. */
+    meta: React.ReactNode;
+    /** Notes under the name, such as the name an encrypted file is saved under. */
+    notes?: React.ReactNode;
+    /** Controls next to the meta line, such as Encrypt. */
+    controls?: React.ReactNode;
+    /** Takes the item out of the operation; left out where it cannot be removed. */
+    remove?: { label: string; tooltip: string; onRemove: () => void };
+    /** Focuses the name with its stem selected, so a made-up name can be typed over. */
+    hasFocus?: boolean;
+    disabled: boolean;
+    onChange: (choice: DestinationChoice) => void;
 }) {
+    const item = props.row.item;
+    const conflict = props.row.conflict;
+    const keepsOwnName = conflict !== null && props.row.resolution !== "rename";
+
+    const resolutions = resolutionOptions.filter(
+        (option) => option.value !== "merge" || conflict?.canMerge === true,
+    );
+
     return (
-        <div>
-            <TextField
-                label={props.label}
-                value={props.value}
-                placeholder={props.originalName}
-                description={`The existing ${props.originalName} is kept.`}
-                required
-                disabled={false}
-                onChange={props.onChange}
-            />
-            {props.error !== null ? (
-                <p role="alert" className="mt-1.5 text-xs text-amber-300">
-                    {props.error}
+        <li
+            className={cn(
+                "flex flex-col gap-2 rounded-lg border p-3",
+                conflict !== null
+                    ? "border-amber-500/40 bg-amber-500/5"
+                    : "border-slate-800",
+            )}
+        >
+            <div className="flex items-center gap-3">
+                <div
+                    aria-hidden="true"
+                    className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-md border border-slate-700 bg-canvas text-slate-500"
+                >
+                    {props.preview}
+                </div>
+                <InputControl
+                    ref={
+                        props.hasFocus === true
+                            ? focusAndSelectFileNameStem
+                            : undefined
+                    }
+                    autoFocus={props.hasFocus}
+                    aria-label={`Name for ${item.name}`}
+                    aria-invalid={props.row.error !== null}
+                    value={props.row.value}
+                    disabled={props.disabled || keepsOwnName}
+                    onChange={(event) =>
+                        props.onChange({ name: event.target.value })
+                    }
+                    className={cn(
+                        "min-w-0 flex-1 disabled:opacity-60",
+                        props.row.error !== null &&
+                            "border-red-500/70 focus:border-red-500",
+                    )}
+                />
+                {props.remove !== undefined ? (
+                    <IconButton
+                        type="button"
+                        label={props.remove.label}
+                        tooltip={props.remove.tooltip}
+                        variant="ghost"
+                        size="xl"
+                        className="flex shrink-0 items-center justify-center"
+                        disabled={props.disabled}
+                        onClick={props.remove.onRemove}
+                    >
+                        <X className="h-4 w-4" />
+                    </IconButton>
+                ) : null}
+            </div>
+            {props.notes}
+            {conflict !== null ? (
+                <p className="text-xs text-amber-300 sm:pl-[3.25rem]">
+                    {props.row.resolution === "rename"
+                        ? `${conflict.existingName} already exists here and is kept.`
+                        : `${conflict.existingName} already exists here.`}
                 </p>
             ) : null}
-        </div>
+            {props.row.error !== null ? (
+                <p
+                    role="alert"
+                    className="text-xs text-red-300 sm:pl-[3.25rem]"
+                >
+                    {props.row.error}
+                </p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-2 sm:pl-[3.25rem]">
+                {conflict !== null ? (
+                    <Select
+                        aria-label={`If ${item.name} exists`}
+                        value={props.row.resolution}
+                        disabled={props.disabled}
+                        containerClassName="w-full sm:w-auto"
+                        className="text-sm"
+                        onChange={(event) =>
+                            props.onChange({
+                                resolution:
+                                    parseResolution(event.target.value) ??
+                                    "rename",
+                            })
+                        }
+                    >
+                        {resolutions.map((option) => (
+                            <option key={option.value} value={option.value}>
+                                {option.label}
+                            </option>
+                        ))}
+                    </Select>
+                ) : null}
+                <span className="min-w-0 flex-1 text-xs break-all text-slate-500">
+                    {props.meta}
+                </span>
+                {props.controls}
+            </div>
+        </li>
     );
 }
 
-/** Lists one name input per conflict, since each renamed item needs its own name. */
-export function NewNameFields(props: {
-    renames: PlannedRename[];
-    onChange: (key: string, value: string) => void;
+/**
+ * Sets the choice of every conflicting item at once, so ten existing items do not need ten
+ * selects. It only appears with more than one conflict and shows "Choose for each" while
+ * the items differ.
+ */
+export function ConflictBulkSelect(props: {
+    rows: readonly PlannedDestination<DestinationItem>[];
+    disabled: boolean;
+    onChange: (resolutions: Record<string, ConflictResolution>) => void;
 }) {
+    const conflicts = props.rows.filter((row) => row.conflict !== null);
+
+    if (conflicts.length < 2) {
+        return null;
+    }
+
+    const shared = getSharedResolution(props.rows);
+    const canMerge = conflicts.some((row) => row.conflict?.canMerge === true);
+
     return (
-        <div className="mt-5 grid gap-4">
-            {props.renames.map((rename) => (
-                <NewNameField
-                    key={rename.key}
-                    label={`New name for ${rename.item.fileName}`}
-                    originalName={rename.item.fileName}
-                    value={rename.value}
-                    error={rename.error}
-                    onChange={(value) => props.onChange(rename.key, value)}
-                />
-            ))}
-        </div>
-    );
-}
+        <label className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-sm text-amber-200">
+            <span className="min-w-0 flex-1">
+                {conflicts.length} items already exist here
+            </span>
+            <Select
+                aria-label="For every existing item"
+                value={shared ?? ""}
+                disabled={props.disabled}
+                containerClassName="w-full sm:w-auto"
+                className="text-sm"
+                onChange={(event) => {
+                    const resolution = parseResolution(event.target.value);
 
-/** One conflicting item with the name it will be transferred under. */
-export type PlannedRename = {
-    item: ConflictCandidate;
-    key: string;
-    /** The raw input, so typing whitespace does not jump the caret. */
-    value: string;
-    name: string;
-    error: string | null;
-};
-
-/**
- * Returns the keys of items that share a name with an earlier item. Selections can hold one
- * file at two revisions or same-named files from different directories, which would land on
- * one destination path: the first keeps its name and the rest must be renamed, whatever
- * happens to existing destination items.
- */
-export function findNameCollisions(
-    items: ConflictCandidate[],
-): ReadonlySet<string> {
-    const seenNames = new Set<string>();
-
-    return new Set(
-        items.flatMap((item) => {
-            const isRepeat = seenNames.has(item.fileName);
-
-            seenNames.add(item.fileName);
-
-            return isRepeat ? [item.key] : [];
-        }),
+                    if (resolution !== null) {
+                        props.onChange(
+                            resolveAllConflicts(props.rows, resolution),
+                        );
+                    }
+                }}
+            >
+                {shared === null ? (
+                    <option value="" disabled>
+                        Choose for each
+                    </option>
+                ) : null}
+                <option value="rename">Rename all</option>
+                <option value="override">Replace all existing</option>
+                {canMerge ? (
+                    <option value="merge">
+                        Merge directories and replace files
+                    </option>
+                ) : null}
+            </Select>
+        </label>
     );
 }
 
 /**
- * Prefills every conflicting item with a distinct free name and validates what the user
- * typed. Items without a conflict keep their own names, so renames must avoid those too,
- * as well as each other.
- */
-export function planRenames(props: {
-    items: ConflictCandidate[];
-    conflicts: ConflictCandidate[];
-    destinationFileNames: ReadonlySet<string>;
-    editedNames: Record<string, string>;
-}): PlannedRename[] {
-    const conflictingKeys = new Set(
-        props.conflicts.map((conflict) => conflict.key),
-    );
-
-    const reservedNames = new Set([
-        ...props.destinationFileNames,
-        ...props.items
-            .filter((item) => !conflictingKeys.has(item.key))
-            .map((item) => item.fileName),
-    ]);
-
-    const suggestionTakenNames = new Set([
-        ...reservedNames,
-        ...props.items.map((item) => item.fileName),
-    ]);
-
-    const renames = props.conflicts.map((item) => {
-        const value =
-            props.editedNames[item.key] ??
-            suggestAvailableFileName(
-                item.fileName,
-                item.entryType,
-                suggestionTakenNames,
-            );
-
-        suggestionTakenNames.add(value.trim());
-
-        return { item, key: item.key, value, name: value.trim() };
-    });
-
-    return renames.map((rename, index) => {
-        const isDuplicate = renames.some(
-            (other, otherIndex) =>
-                otherIndex !== index && other.name === rename.name,
-        );
-
-        return {
-            ...rename,
-            error:
-                validateNewName(
-                    rename.name,
-                    rename.item.entryType,
-                    reservedNames,
-                ) ??
-                (isDuplicate
-                    ? "Another selected item already uses this name"
-                    : null),
-        };
-    });
-}
-
-/**
- * Reuses one Rename / Replace / Merge prompt for the Sync workspace, where a single known
- * destination conflicts. Callers mount it only while a conflict is being resolved, so each
- * prompt starts from the safe default and a fresh suggested name instead of resetting them
- * in an effect.
+ * Asks the shared Rename / Replace / Merge question for the Sync workspace, where a single
+ * known destination exists. Callers mount it only while a conflict is being resolved, so
+ * each prompt starts from the safe default and a fresh suggested name.
  */
 export function DestinationConflictDialog(props: {
     title: string;
     description: string;
     closeAriaLabel: string;
     confirmLabel: string;
-    radioGroupName: string;
     /** The existing destination's name, which the suggested new name is derived from. */
     existingName: string;
     entryType: "file" | "directory";
@@ -318,82 +248,90 @@ export function DestinationConflictDialog(props: {
     /** Receives the new destination name when the user chose to rename, otherwise null. */
     onConfirm: (mode: CopyExistingMode, newName: string | null) => void;
 }) {
-    const [chosenResolution, setResolution] =
-        React.useState<ConflictResolution>("rename");
-
-    const resolution = getEffectiveResolution(chosenResolution, props.canMerge);
-
-    const [editedNames, setEditedNames] = React.useState<
-        Record<string, string>
+    const [choices, setChoices] = React.useState<
+        Record<string, DestinationChoice>
     >({});
 
-    const item = {
-        key: props.existingName,
-        fileName: props.existingName,
-        entryType: props.entryType,
-    };
-
-    // Sync cannot see the destination's siblings, so only the known conflict is rejected
+    // Sync cannot see the destination's siblings, so only the known conflict is checked
     // here; the error policy still fails safely if the new name is taken too.
-    const renames = planRenames({
-        items: [item],
-        conflicts: [item],
-        destinationFileNames: new Set([props.existingName]),
-        editedNames,
+    const [row] = planDestinationNames({
+        items: [
+            {
+                key: props.existingName,
+                name: props.existingName,
+                entryType: props.entryType,
+            },
+        ],
+        destination: {
+            names: new Set([props.existingName]),
+            directoryNames: new Set(props.canMerge ? [props.existingName] : []),
+        },
+        choices,
     });
-
-    const hasInvalidName =
-        resolution === "rename" &&
-        renames.some((rename) => rename.error !== null);
 
     return (
         <Dialog
             isOpen={true}
+            size="wide"
             title={props.title}
             description={props.description}
             closeAriaLabel={props.closeAriaLabel}
             onClose={props.onClose}
         >
-            <ExistingItemOptions
-                radioGroupName={props.radioGroupName}
-                value={resolution}
-                canMerge={props.canMerge}
-                onChange={setResolution}
-            />
-            {resolution === "rename" ? (
-                <NewNameFields
-                    renames={renames}
-                    onChange={(key, value) =>
-                        setEditedNames((names) => ({ ...names, [key]: value }))
+            <form
+                onSubmit={(event) => {
+                    event.preventDefault();
+
+                    if (row === undefined || row.error !== null) {
+                        return;
                     }
-                />
-            ) : null}
-            <DialogActions>
-                <Button
-                    type="button"
-                    variant="secondary"
-                    onClick={props.onClose}
-                    className="rounded-md text-slate-300"
-                >
-                    Cancel
-                </Button>
-                <Button
-                    type="button"
-                    disabled={hasInvalidName}
-                    onClick={() => {
-                        props.onClose();
-                        props.onConfirm(
-                            toExistingMode(resolution),
-                            resolution === "rename"
-                                ? (renames[0]?.name ?? null)
-                                : null,
-                        );
-                    }}
-                    className="rounded-md font-semibold"
-                >
-                    {props.confirmLabel}
-                </Button>
-            </DialogActions>
+
+                    props.onClose();
+                    props.onConfirm(
+                        row.onExisting,
+                        row.resolution === "rename" ? row.finalName : null,
+                    );
+                }}
+            >
+                {row !== undefined ? (
+                    <ul className="mt-4">
+                        <DestinationRow
+                            row={row}
+                            preview={
+                                <EntryTypeIcon entryType={props.entryType} />
+                            }
+                            meta={null}
+                            disabled={false}
+                            onChange={(change) =>
+                                setChoices((current) => ({
+                                    ...current,
+                                    [row.item.key]: {
+                                        ...current[row.item.key],
+                                        ...change,
+                                    },
+                                }))
+                            }
+                        />
+                    </ul>
+                ) : null}
+                <DialogActions>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={props.onClose}
+                        className="rounded-md text-slate-300"
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        type="submit"
+                        disabled={row === undefined || row.error !== null}
+                        className="rounded-md font-semibold"
+                    >
+                        {props.confirmLabel}
+                    </Button>
+                </DialogActions>
+            </form>
         </Dialog>
     );
 }

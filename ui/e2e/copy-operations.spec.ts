@@ -378,46 +378,49 @@ test.describe.serial("Copy Operations", () => {
         });
 
         const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+            name: "Copy selected item?",
         });
 
-        // A same-named destination must interrupt the copy before any request starts.
-        await expect(dialog).toBeVisible();
+        const resolution = dialog.getByRole("combobox", {
+            name: `If ${sourceName} exists`,
+        });
+
+        // A same-named destination must ask before any request starts.
+        await expect(resolution).toBeVisible();
         // Renaming keeps the destination intact, so it is the safe default policy.
-        await expect(
-            dialog.getByRole("radio", { name: "Rename" }),
-        ).toBeChecked();
+        await expect(resolution).toHaveValue("rename");
         // Doing nothing is what Cancel is for, so there is no separate keep option.
         await expect(
-            dialog.getByRole("radio", { name: /^Keep existing/ }),
+            resolution.getByRole("option", { name: /^Keep existing/ }),
         ).toHaveCount(0);
         // Merging a file into a file is just replacing it, so only directories offer Merge.
         await expect(
-            dialog.getByRole("radio", {
+            resolution.getByRole("option", {
                 name: "Merge directories and replace files",
             }),
         ).toHaveCount(0);
 
         const nameField = dialog.getByRole("textbox", {
-            name: `New name for ${sourceName}`,
+            name: `Name for ${sourceName}`,
         });
 
         // The hint must say the existing item survives, since Rename never overwrites.
         await expect(
-            dialog.getByText(`The existing ${sourceName} is kept.`),
+            dialog.getByText(`${sourceName} already exists here and is kept.`),
         ).toBeVisible();
 
         // The counter goes before the extension and skips names already in the directory.
         await expect(nameField).toHaveValue(`${stem}_3.txt`);
 
         const continueButton = dialog.getByRole("button", {
-            name: "Continue copying",
+            name: "Copy selected item",
+            exact: true,
         });
 
         await nameField.fill(sourceName);
         // Renaming onto the conflicting name would just conflict again, so it is refused.
         await expect(dialog.getByRole("alert")).toContainText(
-            "already exists in the destination",
+            `${sourceName} already exists in this directory`,
         );
         await expect(continueButton).toBeDisabled();
 
@@ -505,10 +508,12 @@ test.describe.serial("Copy Operations", () => {
             });
 
             const dialog = page.getByRole("dialog", {
-                name: "Destination items already exist",
+                name: "Copy selected item?",
             });
 
-            await dialog.getByRole("radio", { name: option.label }).check();
+            await dialog
+                .getByRole("combobox", { name: `If ${sourceName} exists` })
+                .selectOption({ label: option.label });
 
             const copyRequest = page.waitForRequest(
                 (request) =>
@@ -517,7 +522,10 @@ test.describe.serial("Copy Operations", () => {
             );
 
             await dialog
-                .getByRole("button", { name: "Continue copying" })
+                .getByRole("button", {
+                    name: "Copy selected item",
+                    exact: true,
+                })
                 .click();
             // Each dialog choice must reach the server as its matching copy policy.
             expect((await copyRequest).postDataJSON().on_existing).toBe(
@@ -580,13 +588,19 @@ test.describe.serial("Copy Operations", () => {
             .click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+            name: "Copy selected items?",
         });
 
         // The dialog must count only the conflicting member of the two-file batch.
-        await expect(dialog).toContainText("1 selected item has the same name");
-        await dialog.getByRole("radio", { name: "Replace existing" }).check();
-        await dialog.getByRole("button", { name: "Continue copying" }).click();
+        await expect(dialog).toContainText(
+            "1 of the selected items already exists",
+        );
+        await dialog
+            .getByRole("combobox", { name: `If ${conflictingName} exists` })
+            .selectOption("override");
+        await dialog
+            .getByRole("button", { name: "Copy selected items", exact: true })
+            .click();
         await expect(
             page.getByRole("button", { name: "Clear selection" }),
         ).toHaveCount(0, { timeout: 30_000 });
@@ -668,17 +682,19 @@ test.describe.serial("Copy Operations", () => {
             .click();
 
         const dialog = page.getByRole("dialog", {
-            name: "Destination items already exist",
+            name: "Copy selected items?",
         });
 
         // The dialog must count only the conflicting member of the directory batch.
-        await expect(dialog).toContainText("1 selected item has the same name");
+        await expect(dialog).toContainText(
+            "1 of the selected items already exists",
+        );
         await dialog
-            .getByRole("radio", {
-                name: "Merge directories and replace files",
-            })
-            .check();
-        await dialog.getByRole("button", { name: "Continue copying" }).click();
+            .getByRole("combobox", { name: `If ${conflictingName} exists` })
+            .selectOption("merge");
+        await dialog
+            .getByRole("button", { name: "Copy selected items", exact: true })
+            .click();
         await expect(
             page.getByRole("button", { name: "Clear selection" }),
         ).toHaveCount(0, { timeout: 30_000 });
