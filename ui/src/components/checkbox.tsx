@@ -5,7 +5,10 @@ import { cn } from "#ui/utils/cn";
 /** Keeps checkbox visuals consistent while supporting button and checkbox semantics. */
 export function Checkbox(props: {
     checked: boolean;
-    onCheckedChange: (checked: boolean) => void;
+    onCheckedChange: (
+        checked: boolean,
+        event: React.MouseEvent<HTMLButtonElement>,
+    ) => void;
     label?: string;
     title?: string | false;
     role?: "checkbox";
@@ -27,7 +30,7 @@ export function Checkbox(props: {
             aria-checked={props.role === "checkbox" ? props.checked : undefined}
             aria-pressed={props.role === undefined ? props.checked : undefined}
             tabIndex={props.tabIndex}
-            onClick={() => props.onCheckedChange(!props.checked)}
+            onClick={(event) => props.onCheckedChange(!props.checked, event)}
             disabled={props.disabled}
             className={cn(
                 "inline-flex items-center gap-2 rounded p-1 text-sm text-slate-300 hover:bg-tint-strong hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent disabled:hover:text-slate-300",

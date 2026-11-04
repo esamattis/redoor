@@ -32,7 +32,7 @@ import { cn } from "#ui/utils/cn";
 import {
     getSelectedFileKey,
     selectedFileKeysAtom,
-    toggleSelectedFileAtom,
+    setSelectedFilesAtom,
 } from "#ui/selected-files";
 import {
     compareFileEntries,
@@ -320,6 +320,11 @@ export function FileList(props: {
                 </label>
             </div>
             <FileTable
+                key={JSON.stringify([
+                    props.agent.id,
+                    props.directoryPath,
+                    props.revision?.commitId,
+                ])}
                 agent={props.agent}
                 directoryPath={props.directoryPath}
                 rows={displayedRows}
@@ -380,6 +385,59 @@ function FileTable(props: {
 }) {
     const gitColumn = props.gitColumn;
     const tableRef = React.useRef<HTMLTableElement>(null);
+    // A range anchor is a transient gesture in this listing, not navigation state.
+    const selectionAnchor = React.useRef<string | null>(null);
+    const setSelectedFiles = useSetAtom(setSelectedFilesAtom);
+
+    /** Uses the displayed order so hidden, pending, and non-transferable rows stay unselected. */
+    const handleSelection = (
+        name: string,
+        selected: boolean,
+        shiftKey: boolean,
+    ) => {
+        const selectableRows = props.rows.filter(
+            (row) =>
+                row.pending === null &&
+                !props.revision?.nonTransferableNames.has(row.name),
+        );
+
+        const targetIndex = selectableRows.findIndex(
+            (row) => row.name === name,
+        );
+
+        const anchorIndex = selectableRows.findIndex(
+            (row) => row.name === selectionAnchor.current,
+        );
+
+        if (targetIndex < 0) {
+            return;
+        }
+
+        const range =
+            shiftKey && anchorIndex >= 0
+                ? selectableRows.slice(
+                      Math.min(anchorIndex, targetIndex),
+                      Math.max(anchorIndex, targetIndex) + 1,
+                  )
+                : selectableRows.slice(targetIndex, targetIndex + 1);
+
+        if (!shiftKey || anchorIndex < 0) {
+            selectionAnchor.current = name;
+        }
+
+        setSelectedFiles({
+            selected,
+            files: range.map((row) => ({
+                agentId: props.agent.id,
+                agentName: props.agent.name,
+                path: joinBrowserPath(props.directoryPath, row.name),
+                fileName: row.name,
+                entryType:
+                    row.entry.type === "directory" ? "directory" : "file",
+                rev: props.revision?.commitId,
+            })),
+        });
+    };
 
     const getEntries = React.useEffectEvent(() =>
         Array.from(
@@ -465,6 +523,7 @@ function FileTable(props: {
                                 agent={props.agent}
                                 directoryPath={props.directoryPath}
                                 entry={row.entry}
+                                onSelection={handleSelection}
                                 revision={props.revision}
                                 gitState={
                                     gitColumn === null
@@ -827,8 +886,8 @@ function FileEntry(props: {
     revision: RevisionListing | undefined;
     /** The entry's Git state; undefined when the column is not shown, null when clean. */
     gitState: GitDirectoryEntryState | null | undefined;
+    onSelection: (name: string, selected: boolean, shiftKey: boolean) => void;
 }) {
-    const toggleSelectedFile = useSetAtom(toggleSelectedFileAtom);
     const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
     const entry = props.entry;
     const isDirectory = entry.type === "directory";
@@ -864,15 +923,9 @@ function FileEntry(props: {
                     }
                     checked={isSelected}
                     disabled={!selectable}
-                    onCheckedChange={() =>
-                        toggleSelectedFile({
-                            agentId: props.agent.id,
-                            agentName: props.agent.name,
-                            path: fullPath,
-                            fileName: entry.name,
-                            entryType,
-                            rev,
-                        })
+                    title="Select this item; Shift-click to select a range"
+                    onCheckedChange={(checked, event) =>
+                        props.onSelection(entry.name, checked, event.shiftKey)
                     }
                 />
             </td>

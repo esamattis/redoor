@@ -127,6 +127,23 @@ export const toggleSelectedFileAtom = atom(
     },
 );
 
+/** Updates a visible range in one write while preserving selections outside that range. */
+export const setSelectedFilesAtom = atom(
+    null,
+    (get, set, update: { files: SelectedPath[]; selected: boolean }) => {
+        const keys = new Set(update.files.map(getSelectedFileKey));
+
+        const remaining = get(selectedFilesAtom).filter(
+            (file) => !keys.has(getSelectedFileKey(file)),
+        );
+
+        set(
+            selectedFilesAtom,
+            update.selected ? [...remaining, ...update.files] : remaining,
+        );
+    },
+);
+
 /**
  * Removes all selected paths at once.
  */
