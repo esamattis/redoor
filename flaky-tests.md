@@ -10,3 +10,9 @@
 - Timed out after 10 s during the full `pn test` run alongside Playwright and the serial integration lane while validating Shift-click file selection.
 - Passed when rerunning `pn integration-test tests/managed-daemons.test.ts tests/resumable-transfers.test.ts` (all resumable-transfer tests passed).
 - Cause remains unconfirmed; the failure occurred under full-suite load. No transfer implementation or test changes were made for the file-selection feature.
+
+## 2026-11-04 `tests/managed-daemons.test.ts` › replaces the daemon when the server starts from another binary
+
+- Failed once in the full `pn test` run with `ApiError: Agent not found` from `openTerminal` (`tests/managed-daemons.test.ts:265`), so the terminal was requested before the replacement daemon's agent had registered with the server.
+- Passed when rerunning `pn integration-test tests/managed-daemons.test.ts` (all 8 tests passed).
+- Cause remains unconfirmed; the failing run only changed UI CSS classes for the shell scroll fix, which this test does not exercise.

@@ -602,9 +602,12 @@ function ChangedFiles(props: {
                         : "No files match the filter"}
                 </p>
             ) : (
+                // Positioned so the badges' absolutely placed screen reader labels are
+                // clipped by the list instead of hanging below the window, which would make
+                // the whole shell scrollable.
                 <ul
                     aria-label="Changed files"
-                    className="mt-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto"
+                    className="relative mt-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto"
                 >
                     {shownFiles.map((file) => (
                         <ChangedFileRow
@@ -742,10 +745,12 @@ function OpenFiles(props: { isCompact: boolean }) {
                     }
                     onMove={move}
                 >
+                    {/* Positioned so absolutely placed screen reader labels in the rows are
+                        clipped by the list instead of making the whole shell scrollable. */}
                     <ul
                         ref={listRef}
                         aria-label="Open files"
-                        className="mt-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto"
+                        className="relative mt-1 flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto"
                     >
                         {openFiles.map((file) => (
                             <OpenFileRow

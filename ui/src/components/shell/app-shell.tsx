@@ -41,7 +41,10 @@ export function AppShell() {
 
     return (
         <ShellFileImportHandler>
-            <div className="flex h-dvh overflow-hidden bg-canvas">
+            {/* Clipped rather than hidden: an overflow-hidden box can still be scrolled by
+                scrollIntoView and focus, which shifts both side menus off the top of the
+                window whenever anything inside sticks out past the bottom. */}
+            <div className="flex h-dvh overflow-clip bg-canvas">
                 <ThemeManager />
                 <DocumentTitle />
                 <RouteLoadingIndicator />
