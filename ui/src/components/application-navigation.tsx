@@ -24,6 +24,7 @@ import {
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
+import { ClearableInput } from "#ui/components/clearable-input";
 import { ChangePasswordFlow } from "#ui/components/change-password-dialog";
 import { SignedInUser, useCurrentUser } from "#ui/components/signed-in-user";
 import { AgentStatusDot } from "#ui/components/agent-status-dot";
@@ -35,6 +36,10 @@ import { SideMenu, SideMenuCloseButton } from "#ui/components/side-menu";
 import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import { useCloseSideMenu } from "#ui/side-menu-state";
+import {
+    HistoryEntryStore,
+    useHistoryEntryState,
+} from "#ui/history-entry-state";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
 import { useBeginServerRestart } from "#ui/use-server-restart";
@@ -535,6 +540,12 @@ function SidebarFiles(props: { isCompact: boolean; className?: string }) {
 }
 
 /**
+ * The changed files filter of each history entry, so going back to a diff shows the same
+ * narrowed list the reader left.
+ */
+const changedFilesFilters = new HistoryEntryStore<string>();
+
+/**
  * Lists the files of the diff on screen, so a long change set can be navigated by name
  * instead of scrolling past every patch. Picking one expands its diff and scrolls to it.
  */
@@ -544,6 +555,21 @@ function ChangedFiles(props: {
 }) {
     const closeMenu = useCloseSideMenu();
     const files = props.outline.files;
+
+    const [filter, setFilter] = useHistoryEntryState({
+        store: changedFilesFilters,
+        scope: "changed-files",
+        initial: (previous) => previous ?? "",
+    });
+
+    const needle = filter.trim().toLowerCase();
+
+    const shownFiles =
+        needle === ""
+            ? files
+            : files.filter((file) =>
+                  file.relativePath.toLowerCase().includes(needle),
+              );
 
     return (
         <section
@@ -559,16 +585,28 @@ function ChangedFiles(props: {
                     {files.length}
                 </span>
             </div>
-            {files.length === 0 ? (
+            {files.length === 0 ? null : (
+                <ClearableInput
+                    label="Filter changed files"
+                    clearLabel="Clear changed files filter"
+                    value={filter}
+                    placeholder="Filter"
+                    onChange={(value) => setFilter(() => value)}
+                    className="mt-1 shrink-0"
+                />
+            )}
+            {shownFiles.length === 0 ? (
                 <p className="mt-1 px-1 text-xs text-slate-500">
-                    No files to show
+                    {files.length === 0
+                        ? "No files to show"
+                        : "No files match the filter"}
                 </p>
             ) : (
                 <ul
                     aria-label="Changed files"
                     className="mt-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto"
                 >
-                    {files.map((file) => (
+                    {shownFiles.map((file) => (
                         <ChangedFileRow
                             key={file.path}
                             file={file}

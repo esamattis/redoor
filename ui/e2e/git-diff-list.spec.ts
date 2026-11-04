@@ -250,6 +250,28 @@ test.describe("Git diff list", () => {
         // The side menu names every file of the diff on screen.
         await expect(changedFiles.getByRole("listitem")).toHaveCount(3);
 
+        const filter = changedFiles.getByRole("textbox", {
+            name: "Filter changed files",
+        });
+
+        await filter.fill("HELPERS");
+
+        // The filter narrows the list by path, ignoring case.
+        await expect(changedFiles.getByRole("listitem")).toHaveCount(1);
+        await expect(
+            changedFiles.getByRole("button", {
+                name: "src/my-test/helpers.ts",
+            }),
+        ).toBeVisible();
+
+        await changedFiles
+            .getByRole("button", { name: "Clear changed files filter" })
+            .click();
+
+        // Clearing the filter brings every file back.
+        await expect(filter).toHaveValue("");
+        await expect(changedFiles.getByRole("listitem")).toHaveCount(3);
+
         await changedFiles
             .getByRole("button", { name: "src/my-test/helpers.ts" })
             .click();
