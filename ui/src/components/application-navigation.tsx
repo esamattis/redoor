@@ -817,7 +817,7 @@ function OpenFileRow(props: {
                         className="min-w-0 flex-1"
                         content={
                             props.agent
-                                ? `Open ${props.file.path}`
+                                ? props.file.path
                                 : `${deviceName} is not available`
                         }
                     >
