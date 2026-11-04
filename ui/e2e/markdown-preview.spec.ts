@@ -42,6 +42,9 @@ Preview body
 
 [Root target](/root-target.txt)
 [Relative target](../relative-target.txt)
+[Section target](#getting-started)
+
+## Getting *started*!
 
 ${"```typescript"}
 const highlighted = true;
@@ -123,6 +126,32 @@ ${"```"}
         // Relative links continue to use the Markdown document's own directory.
         await expect(page).toHaveURL(
             `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(repositoryPath, "relative-target.txt"))}`,
+        );
+    });
+
+    test("opens and reloads heading permalinks", async ({ page }) => {
+        await page.goto(markdownUrl);
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+
+        const heading = preview.getByRole("heading", {
+            name: "Getting started!",
+        });
+
+        // Authored fragments and generated permalinks must agree on GitHub-style IDs.
+        await expect(heading).toHaveAttribute("id", "getting-started");
+        await heading
+            .getByRole("link", { name: "Link to this heading" })
+            .click();
+        await expect(page).toHaveURL(
+            `${markdownUrl}?preview=true#getting-started`,
+        );
+        await page.reload();
+        // A shared permalink must still identify the heading after a fresh navigation.
+        await expect(heading).toHaveAttribute("id", "getting-started");
+        await page.goto(markdownUrl);
+        await preview.getByRole("link", { name: "Section target" }).click();
+        await expect(page).toHaveURL(
+            `${markdownUrl}?preview=true#getting-started`,
         );
     });
 

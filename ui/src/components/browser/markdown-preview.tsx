@@ -1,11 +1,20 @@
-import { useMemo, useState, type ComponentProps } from "react";
+import {
+    createElement,
+    useId,
+    useMemo,
+    useState,
+    type ComponentProps,
+} from "react";
 import { Link } from "@tanstack/react-router";
 import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSlug from "rehype-slug";
+import { LinkIcon } from "lucide-react";
 import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { browserRoute } from "#ui/browser-route";
 import { FoldingSection } from "#ui/components/folding-section";
 import { HighlightedLines } from "#ui/components/highlighted-tokens";
+import { Tooltip } from "#ui/components/tooltip";
 import {
     highlightLines,
     languageForName,
@@ -162,6 +171,26 @@ function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
     );
 }
 
+/** Keeps heading names intact while exposing a permalink beside their authored content. */
+function MarkdownHeading(props: ComponentProps<"h1"> & ExtraProps) {
+    const titleId = useId();
+
+    return createElement(
+        props.node?.tagName ?? "h2",
+        { id: props.id, "aria-labelledby": titleId },
+        <span id={titleId}>{props.children}</span>,
+        <Tooltip content="Link to this heading">
+            <a
+                href={`#${props.id ?? ""}`}
+                aria-label="Link to this heading"
+                className="ml-2 inline-flex min-h-6 min-w-6 items-center justify-center no-underline opacity-60 hover:opacity-100"
+            >
+                <LinkIcon aria-hidden="true" className="size-4" />
+            </a>
+        </Tooltip>,
+    );
+}
+
 /** Normalizes a remote POSIX path without allowing parent segments above filesystem root. */
 function normalizeFilesystemPath(path: string): string {
     const parts: string[] = [];
@@ -291,8 +320,15 @@ export function MarkdownPreview(props: {
             <div className="syntax-highlight prose prose-invert @max-xl:prose-sm max-w-none prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
                 <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeSlug]}
                     components={{
                         code: MarkdownCode,
+                        h1: MarkdownHeading,
+                        h2: MarkdownHeading,
+                        h3: MarkdownHeading,
+                        h4: MarkdownHeading,
+                        h5: MarkdownHeading,
+                        h6: MarkdownHeading,
                         a: (linkProps) => (
                             <MarkdownLink
                                 {...linkProps}

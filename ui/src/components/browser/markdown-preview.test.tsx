@@ -8,6 +8,66 @@ afterEach(() => {
     cleanup();
 });
 
+test("gives headings GitHub-style unique permalinks on every render", () => {
+    const content = `# Hello, *World*!
+## Hello, World!
+### Hello, World!-1
+#### Hello, World!
+##### Café 中文
+###### Use \`code\` & [links](https://example.com)
+`;
+
+    const view = render(
+        <MarkdownPreview
+            content={content}
+            deviceName="agent"
+            filePath="/repo/docs/README.md"
+            repositoryRoot="/repo"
+        />,
+    );
+
+    const expectedIds = [
+        "hello-world",
+        "hello-world-1",
+        "hello-world-1-1",
+        "hello-world-2",
+        "café-中文",
+        "use-code--links",
+    ];
+
+    // All six heading levels use rendered text and GitHub's collision handling.
+    expect(view.getAllByRole("heading").map((heading) => heading.id)).toEqual(
+        expectedIds,
+    );
+    // Permalinks expose each fragment without changing heading names or nesting links.
+    expect(
+        view
+            .getAllByRole("link", { name: "Link to this heading" })
+            .map((link) => link.getAttribute("href")),
+    ).toEqual(expectedIds.map((id) => `#${id}`));
+    expect(
+        view.getByRole("heading", { name: "Hello, World!", level: 1 }),
+    ).toBeTruthy();
+    expect(view.getByRole("link", { name: "links" }).getAttribute("href")).toBe(
+        "https://example.com",
+    );
+
+    view.rerender(
+        <MarkdownPreview
+            content={`${content}
+Extra prose`}
+            deviceName="agent"
+            filePath="/repo/docs/README.md"
+            repositoryRoot="/repo"
+        />,
+    );
+
+    // Editing the document must reset the slugger rather than accumulate duplicate suffixes.
+    expect(view.getAllByRole("heading").map((heading) => heading.id)).toEqual(
+        expectedIds,
+    );
+});
+
 test("highlights a labeled TypeScript fence", () => {
     const view = render(
         <MarkdownPreview
