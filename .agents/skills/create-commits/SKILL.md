@@ -35,6 +35,14 @@ The body must not merely restate the literal file or code changes. Prefer ration
 
 ## Flag Breaking Changes
 
-Prefix the title with `BREAKING: ` when the commit breaks something users or operators rely on, so the release changelog can find it. Examples are a config key that is removed or changes meaning, a default that changes behavior, a CLI or wire protocol change that older clients or agents cannot handle, and on-disk data that is no longer read without manual steps. The body must also say what users must do to upgrade. REST API changes are never breaking: the REST API is private to the UI, which ships in the same binary.
+Prefix the title with `BREAKING: ` only when upgrading needs manual work beyond installing the new release, so the release changelog lists exactly the upgrades that need attention. Only these count:
+
+- Agents must be upgraded too, because a wire protocol change means older agents cannot talk to the new server, or the new agent cannot talk to an older server.
+- A config file must be changed by hand to keep things working, such as a removed key, a key whose meaning changed, or a feature that now needs to be turned on in the config.
+- A state or data file on disk must be migrated, because the new release no longer reads it as it is.
+
+Other behavior changes are not breaking, even when a default changes or a search, listing or tool returns different results, because nothing has to be done to keep the app working. REST API changes are never breaking: the REST API is private to the UI, which ships in the same binary.
+
+The body of a breaking commit must say what users must do to upgrade.
 
 For example: `BREAKING: Make PAM login opt-in`.
