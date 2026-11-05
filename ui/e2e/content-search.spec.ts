@@ -569,7 +569,10 @@ last line`,
             dialog.getByRole("button", { name: "Use regular expressions" }),
         ).toHaveAttribute("aria-pressed", "false");
         await expect(page).not.toHaveURL(/regex=/);
-        await expect(dialog.getByText("0 results.")).toBeVisible();
+        // Content search reports the device-measured duration like path search does.
+        await expect(
+            dialog.getByText(/^Found 0 results in \d+ms\./),
+        ).toBeVisible();
 
         await dialog
             .getByRole("button", {
@@ -590,7 +593,9 @@ last line`,
             .getByRole("searchbox", { name: "Search file contents" })
             .fill("unique.search.value");
         // Literal mode is the URL default, so regex punctuation does not match content.
-        await expect(dialog.getByText("0 results.")).toBeVisible();
+        await expect(
+            dialog.getByText(/^Found 0 results in \d+ms\./),
+        ).toBeVisible();
         await dialog
             .getByRole("button", { name: "Use regular expressions" })
             .click();
@@ -604,7 +609,9 @@ last line`,
         await dialog
             .getByRole("searchbox", { name: "Search file contents" })
             .fill("ignored-search-value");
-        await expect(dialog.getByText("0 results.")).toBeVisible();
+        await expect(
+            dialog.getByText(/^Found 0 results in \d+ms\./),
+        ).toBeVisible();
         await dialog
             .getByRole("button", {
                 name: "Include files ignored by .gitignore",
@@ -638,7 +645,9 @@ last line`,
         await expect(gitRootButton).toHaveAttribute("aria-pressed", "false");
         await expect(dialog).toContainText(`Search in ${gitRootNestedPath}`);
         // Default scope stays on the browsed directory so sibling root files are excluded.
-        await expect(dialog.getByText("0 results.")).toBeVisible();
+        await expect(
+            dialog.getByText(/^Found 0 results in \d+ms\./),
+        ).toBeVisible();
 
         await gitRootButton.click();
         await expect(page).toHaveURL(/gitroot=true/);

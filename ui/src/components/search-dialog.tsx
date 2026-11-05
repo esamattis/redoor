@@ -763,9 +763,11 @@ function SearchStatus(props: {
         ].filter((notice): notice is string => notice !== null);
 
         return (
-            <p role="status" className="px-1 text-xs text-slate-500">
-                {data.results.length} results. {notices.join(" ")}
-            </p>
+            <SearchResultSummary
+                count={data.results.length}
+                durationMs={data.duration_ms}
+                notices={notices}
+            />
         );
     }
 
@@ -774,16 +776,40 @@ function SearchStatus(props: {
     if (!data) return null;
 
     return (
+        <SearchResultSummary
+            count={data.results.length}
+            countTooltip="100 is the maximum number of results a search can return."
+            durationMs={data.duration_ms}
+            notices={data.timed_out ? ["Search timed out."] : []}
+        />
+    );
+}
+
+/**
+ * Gives path and content search the same result line, so both tell how long the device spent
+ * searching and a slow search is noticed whichever mode found it.
+ */
+function SearchResultSummary(props: {
+    count: number;
+    countTooltip?: string;
+    durationMs: number;
+    notices: string[];
+}) {
+    const count = <span>{props.count}</span>;
+
+    return (
         <p role="status" className="px-1 text-xs text-slate-500">
             Found{" "}
-            <Tooltip content="100 is the maximum number of results a search can return.">
-                <span>{data.results.length}</span>
-            </Tooltip>{" "}
-            {data.results.length === 1 ? "result" : "results"} in{" "}
+            {props.countTooltip === undefined ? (
+                count
+            ) : (
+                <Tooltip content={props.countTooltip}>{count}</Tooltip>
+            )}{" "}
+            {props.count === 1 ? "result" : "results"} in{" "}
             <Tooltip content="Search duration was measured on the device.">
-                <span>{data.duration_ms}ms</span>
+                <span>{props.durationMs}ms</span>
             </Tooltip>
-            . {data.timed_out ? "Search timed out." : ""}
+            . {props.notices.join(" ")}
         </p>
     );
 }
