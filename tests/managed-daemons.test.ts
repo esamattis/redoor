@@ -93,6 +93,12 @@ async function waitForConnected(
                     entry.connectionId !== previousConnection,
             );
 
+            if (agent !== undefined) {
+                // Inventory can publish connected before the session finishes router registration.
+                // A successful command acknowledges that this connection can accept terminal work.
+                await agent.echo("daemon-ready");
+            }
+
             return agent;
         },
     });
@@ -260,7 +266,7 @@ describe("managed local agent daemons", () => {
     }, 90_000);
 
     it("replaces the daemon when the server starts from another binary", async () => {
-        const agent = await agentNamed(RUNNING_AGENT);
+        const agent = await waitForConnected(RUNNING_AGENT);
         const pidBefore = daemonPid(agent);
         const { session } = await openTerminal(api, agent, agentHome);
 

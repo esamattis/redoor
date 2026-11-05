@@ -529,7 +529,9 @@ describe("resumable transfers", () => {
         expect(destDigest, "MCP publication verifies the entire file").toBe(
             sourceDigest,
         );
-    });
+    // Prefix creation, the 30 s MCP operation budget and full-file hashing must all fit
+    // inside this test's deadline when integration and browser workers share the CPU.
+    }, 60_000);
 
     it("resumes a local copy after an agent crash", async () => {
         const run = await paused(true, false, {
