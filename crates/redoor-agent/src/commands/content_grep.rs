@@ -1,13 +1,14 @@
 //! Bounded content search (grep) over a directory tree for the file browser.
 
 use super::{
-    file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
+    file_search::{DirectoryIdentity, directory_identity, is_ignored, load_gitignore},
     metadata::has_common_binary_magic,
     search_stream::{MatchSink, SearchStream},
 };
 use crate::transfers::stream::StreamWriter;
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
+use ignore::gitignore::Gitignore;
 use redoor_protocol::wire::request::CommandError;
 use redoor_protocol::{
     api::search::{
@@ -18,11 +19,12 @@ use redoor_protocol::{
 };
 use std::{
     collections::{HashSet, VecDeque},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
 use tokio::{
+    fs::{DirEntry, ReadDir},
     io::{AsyncBufReadExt, BufReader},
     sync::Semaphore,
 };
@@ -156,16 +158,9 @@ async fn search(
                     "Content grep scan started: path={}",
                     request.path
                 );
-                collect_matches(
-                    root,
-                    root_entries,
-                    &matcher,
-                    request,
-                    context,
-                    &mut counts,
-                    &sink,
-                )
-                .await;
+                GrepWalk::new(&matcher, request, context, &mut counts, &sink)
+                    .run(root, root_entries)
+                    .await;
                 Ok::<(), CommandError>(())
             };
             let timed_out = tokio::select! {
@@ -196,109 +191,211 @@ struct ContextSize {
     after: usize,
 }
 
-/// Traverses incrementally with the same hidden, ignore, and symlink-cycle policy as filename search.
+/// One directory's `.gitignore`, linked to the nearest ancestor that had one.
 ///
-/// Stops at the result limit, or early when the writer is gone.
-async fn collect_matches(
-    root: &Path,
-    root_entries: tokio::fs::ReadDir,
-    matcher: &impl Matcher,
-    request: &ContentGrepRequest,
-    context: ContextSize,
-    output: &mut GrepOutput,
-    sink: &MatchSink<ContentGrepEvent>,
-) {
-    let ContentGrepRequest {
-        include_hidden,
-        respect_gitignore,
-        ..
-    } = *request;
-    let root_identity = tokio::fs::metadata(root)
-        .await
-        .ok()
-        .as_ref()
-        .map(directory_identity);
-    let mut active_directories = HashSet::new();
-    if let Some(identity) = root_identity {
-        active_directories.insert(identity);
-    }
-    let mut directories = vec![TraversedDirectory {
-        entries: root_entries,
-        identity: root_identity,
-        gitignore: load_gitignore(root, respect_gitignore).await,
-    }];
+/// A breadth-first walk leaves a directory long before it reaches that directory's children,
+/// so each queued directory carries its ancestors' rules instead of reading them off a stack
+/// of open directories. Children share their parent's chain, so it costs one node per
+/// `.gitignore` found, not one per queued directory.
+struct IgnoreRules {
+    gitignore: Gitignore,
+    parent: Option<Arc<IgnoreRules>>,
+}
 
-    while let Some(directory) = directories.last_mut() {
-        let entry = match directory.entries.next_entry().await {
-            Ok(Some(entry)) => entry,
-            Ok(None) => {
-                if let Some(identity) = directory.identity {
-                    active_directories.remove(&identity);
-                }
-                directories.pop();
+impl IgnoreRules {
+    /// Puts a directory's own rules in front of the inherited chain, or keeps the inherited
+    /// chain when the directory has none, so directories without rules add no nodes.
+    fn extend(
+        parent: Option<Arc<IgnoreRules>>,
+        gitignore: Option<Gitignore>,
+    ) -> Option<Arc<IgnoreRules>> {
+        match gitignore {
+            Some(gitignore) => Some(Arc::new(IgnoreRules { gitignore, parent })),
+            None => parent,
+        }
+    }
+
+    /// Lists the rules nearest first, because deeper `.gitignore` files override ancestors.
+    fn nearest_first(&self) -> impl Iterator<Item = &Gitignore> {
+        std::iter::successors(Some(self), |rules| rules.parent.as_deref())
+            .map(|rules| &rules.gitignore)
+    }
+}
+
+/// A directory waiting for the walk to reach its depth. It holds a path rather than an open
+/// handle, so a wide tree queues paths instead of file descriptors.
+struct PendingDirectory {
+    path: PathBuf,
+    ignore_rules: Option<Arc<IgnoreRules>>,
+}
+
+/// Walks the tree breadth-first and each directory in name order, with the same hidden and
+/// ignore policy as filename search.
+///
+/// Grep stops at its match cap, so the walk order decides which matches the user sees.
+/// Depth-first in raw `readdir` order let one deep subtree that happened to come first, such
+/// as vendored code, fill the cap before the files beside the search root were read, and the
+/// result changed between filesystems. Shallow files first and a stable order make the capped
+/// list predictable without scanning the whole tree to rank it.
+struct GrepWalk<'a, M> {
+    matcher: &'a M,
+    context: ContextSize,
+    include_hidden: bool,
+    respect_gitignore: bool,
+    output: &'a mut GrepOutput,
+    sink: &'a MatchSink<ContentGrepEvent>,
+    /// Every directory queued so far. A symlink maze offers exponentially many paths to the
+    /// same few directories, and a breadth-first queue would hold every one of them, so each
+    /// real directory is walked once, at the first path the walk meets it on. This also keeps
+    /// a directory reachable through a symlink from repeating its matches.
+    visited: HashSet<DirectoryIdentity>,
+    queue: VecDeque<PendingDirectory>,
+}
+
+impl<'a, M: Matcher> GrepWalk<'a, M> {
+    /// Prepares a walk that has visited nothing yet.
+    fn new(
+        matcher: &'a M,
+        request: &ContentGrepRequest,
+        context: ContextSize,
+        output: &'a mut GrepOutput,
+        sink: &'a MatchSink<ContentGrepEvent>,
+    ) -> Self {
+        Self {
+            matcher,
+            context,
+            include_hidden: request.include_hidden,
+            respect_gitignore: request.respect_gitignore,
+            output,
+            sink,
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+        }
+    }
+
+    /// Scans the root, then every queued directory in the order queued, until the tree is done,
+    /// the match cap is reached or the writer is gone.
+    ///
+    /// The root arrives already open, because opening it is validated before streaming starts.
+    async fn run(mut self, root: &Path, root_entries: ReadDir) {
+        if let Ok(metadata) = tokio::fs::metadata(root).await {
+            self.visited.insert(directory_identity(&metadata));
+        }
+        if !self.scan_directory(root, root_entries, None).await {
+            return;
+        }
+        while let Some(pending) = self.queue.pop_front() {
+            // An unreadable directory must not discard the matches of the rest of the tree.
+            let Ok(entries) = tokio::fs::read_dir(&pending.path).await else {
+                continue;
+            };
+            if !self
+                .scan_directory(&pending.path, entries, pending.ignore_rules)
+                .await
+            {
+                return;
+            }
+        }
+    }
+
+    /// Scans one directory's files in name order and queues its subdirectories behind every
+    /// directory already waiting, so they are only entered once the shallower level is done.
+    ///
+    /// Returns `false` when the walk should stop: the match cap was reached or the writer is
+    /// gone.
+    async fn scan_directory(
+        &mut self,
+        path: &Path,
+        entries: ReadDir,
+        inherited_rules: Option<Arc<IgnoreRules>>,
+    ) -> bool {
+        let ignore_rules = IgnoreRules::extend(
+            inherited_rules,
+            load_gitignore(path, self.respect_gitignore).await,
+        );
+        for entry in sorted_entries(entries).await {
+            let entry_path = entry.path();
+            let entry_name = entry.file_name();
+            if entry_name == ".git" {
                 continue;
             }
-            // One unreadable child must not discard useful results from its siblings.
-            Err(_) => continue,
-        };
-        let entry_path = entry.path();
-        let entry_name = entry.file_name();
-        if entry_name == ".git" {
-            continue;
-        }
-        if !include_hidden && entry_name.to_string_lossy().starts_with('.') {
-            // Dotfiles are hidden too, so the filter matches its label and path search.
-            continue;
-        }
-        let Ok(file_type) = entry.file_type().await else {
-            continue;
-        };
-        let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
-            tokio::fs::metadata(&entry_path).await.ok()
-        } else if file_type.is_file() {
-            entry.metadata().await.ok()
-        } else {
-            None
-        };
-        let is_directory = file_type.is_dir()
-            || followed_metadata
-                .as_ref()
-                .is_some_and(std::fs::Metadata::is_dir);
-        if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
-            continue;
-        }
+            if !self.include_hidden && entry_name.to_string_lossy().starts_with('.') {
+                // Dotfiles are hidden too, so the filter matches its label and path search.
+                continue;
+            }
+            let Ok(file_type) = entry.file_type().await else {
+                continue;
+            };
+            let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
+                tokio::fs::metadata(&entry_path).await.ok()
+            } else if file_type.is_file() {
+                entry.metadata().await.ok()
+            } else {
+                None
+            };
+            let is_directory = file_type.is_dir()
+                || followed_metadata
+                    .as_ref()
+                    .is_some_and(std::fs::Metadata::is_dir);
+            if ignore_rules
+                .as_deref()
+                .is_some_and(|rules| is_ignored(rules.nearest_first(), &entry_path, is_directory))
+            {
+                continue;
+            }
 
-        if !is_directory
-            && (file_type.is_file()
+            if is_directory {
+                // Without an identity the entry is a plain directory, which cannot form a cycle.
+                let first_visit = followed_metadata
+                    .as_ref()
+                    .map(directory_identity)
+                    .is_none_or(|identity| self.visited.insert(identity));
+                if first_visit {
+                    self.queue.push_back(PendingDirectory {
+                        path: entry_path,
+                        ignore_rules: ignore_rules.clone(),
+                    });
+                }
+            } else if (file_type.is_file()
                 || followed_metadata
                     .as_ref()
                     .is_some_and(std::fs::Metadata::is_file))
-            && followed_metadata
-                .as_ref()
-                .is_some_and(|metadata| metadata.len() <= MAX_SCANNED_FILE_BYTES)
-            && (!scan_file(&entry_path, matcher, context, output, sink).await || output.truncated)
-        {
-            break;
-        }
-
-        let child_identity = followed_metadata.as_ref().map(directory_identity);
-        let creates_cycle = child_identity
-            .as_ref()
-            .is_some_and(|identity| active_directories.contains(identity));
-        if is_directory
-            && !creates_cycle
-            && let Ok(child_directory) = tokio::fs::read_dir(&entry_path).await
-        {
-            if let Some(identity) = child_identity {
-                active_directories.insert(identity);
+                && followed_metadata
+                    .as_ref()
+                    .is_some_and(|metadata| metadata.len() <= MAX_SCANNED_FILE_BYTES)
+                && (!scan_file(
+                    &entry_path,
+                    self.matcher,
+                    self.context,
+                    self.output,
+                    self.sink,
+                )
+                .await
+                    || self.output.truncated)
+            {
+                return false;
             }
-            directories.push(TraversedDirectory {
-                entries: child_directory,
-                identity: child_identity,
-                gitignore: load_gitignore(&entry_path, respect_gitignore).await,
-            });
+        }
+        true
+    }
+}
+
+/// Reads one directory's whole listing and sorts it by name, so matches come in the same order
+/// on every filesystem instead of in `readdir` order.
+///
+/// Only the listing of the directory being scanned is held, never a whole level of the tree.
+async fn sorted_entries(mut entries: ReadDir) -> Vec<DirEntry> {
+    let mut sorted = Vec::new();
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => sorted.push(entry),
+            Ok(None) => break,
+            // One unreadable child must not discard useful results from its siblings.
+            Err(_) => continue,
         }
     }
+    sorted.sort_by_cached_key(DirEntry::file_name);
+    sorted
 }
 
 /// Buffers one bounded line and rejects binary prefixes before retaining any tentative matches.
@@ -810,18 +907,155 @@ mod tests {
     #[tokio::test]
     async fn timeout_still_ends_with_done() {
         let temp = TempDir::create();
-        // Nothing matches, so only the deadline can end the walk of the endless maze.
-        let root = symlink_maze(temp.path(), "maze.txt", b"nothing to find\n").await;
+        let root = temp.path().join("timeout-grep");
+        tokio::fs::create_dir(&root)
+            .await
+            .expect("root should be created");
         let mut request = test_request(root.to_string_lossy(), "absent-needle", true);
         request.timeout_seconds = 1;
+        // Holding the only grep slot keeps the walk waiting, so only the deadline can end it;
+        // the walk visits each directory once, so no tree is endless enough to rely on.
+        let slots = Arc::new(Semaphore::new(1));
+        let _held = Arc::clone(&slots)
+            .acquire_owned()
+            .await
+            .expect("the slot is free");
 
-        let (result, frames) = run(request, &CancellationToken::new()).await;
+        let (writer, recorder) = recording_writer();
+        let (writer, result) = execute(request, writer, &CancellationToken::new(), slots).await;
+        drop(writer);
+        let frames = recorder.await.expect("the recorder finishes");
 
         // Reaching the deadline is a normal end of a search.
         assert!(result.is_ok());
         // The stream is complete and its summary says it stopped at the deadline.
         assert!(frames.last().is_some_and(|frame| frame.is_last));
         assert!(reduce(&frames).timed_out);
+    }
+
+    /// Verifies the walk scans shallow files before deep ones and each directory in name
+    /// order, so a deep subtree cannot fill the match cap before the root's own files.
+    #[tokio::test]
+    async fn grep_walks_breadth_first_in_name_order() {
+        let temp = TempDir::create();
+        let root = temp.path().join("ordered-grep");
+        let deep = root.join("a-vendor").join("nested");
+        tokio::fs::create_dir_all(&deep)
+            .await
+            .expect("deep directory should be created");
+        // Enough matches deep down to fill the cap on their own.
+        tokio::fs::write(deep.join("many.txt"), "needle\n".repeat(RESULT_LIMIT + 50))
+            .await
+            .expect("deep fixture should be written");
+        tokio::fs::write(root.join("a-vendor").join("middle.txt"), "needle\n")
+            .await
+            .expect("middle fixture should be written");
+        tokio::fs::write(root.join("z-last.txt"), "needle\n")
+            .await
+            .expect("root fixture should be written");
+        tokio::fs::write(root.join("b-first.txt"), "needle\n")
+            .await
+            .expect("root fixture should be written");
+
+        let Ok(response) = grep(test_request(root.to_string_lossy(), "needle", true)).await else {
+            panic!("valid grep should return its dedicated response");
+        };
+
+        let relative: Vec<String> = response
+            .results
+            .iter()
+            .map(|entry| {
+                Path::new(&entry.path)
+                    .strip_prefix(&root)
+                    .expect("matches are under the root")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        // The root's files come first and sorted by name, although the subdirectory sorts
+        // before them and holds enough matches to fill the cap.
+        assert_eq!(relative[..2], ["b-first.txt", "z-last.txt"]);
+        // The next level is done before the walk goes deeper.
+        assert_eq!(relative[2], "a-vendor/middle.txt");
+        assert!(
+            relative[3..]
+                .iter()
+                .all(|path| path == "a-vendor/nested/many.txt")
+        );
+        // The deep file still fills the rest of the cap.
+        assert!(response.truncated);
+    }
+
+    /// Verifies queued directories keep their ancestors' ignore rules, nearest first, even
+    /// through a directory without a `.gitignore` of its own.
+    #[tokio::test]
+    async fn grep_applies_inherited_gitignore_rules() {
+        let temp = TempDir::create();
+        let root = temp.path().join("ignore-grep");
+        let deeper = root.join("sub").join("deeper");
+        tokio::fs::create_dir_all(&deeper)
+            .await
+            .expect("directories should be created");
+        tokio::fs::write(root.join(".gitignore"), "*.log\n")
+            .await
+            .expect("root rules should be written");
+        tokio::fs::write(root.join("sub").join(".gitignore"), "!keep.log\n")
+            .await
+            .expect("nested rules should be written");
+        for file in [
+            root.join("drop.log"),
+            root.join("sub").join("other.log"),
+            deeper.join("keep.log"),
+            deeper.join("plain.txt"),
+        ] {
+            tokio::fs::write(file, "needle\n")
+                .await
+                .expect("fixture should be written");
+        }
+
+        let Ok(response) = grep(test_request(root.to_string_lossy(), "needle", true)).await else {
+            panic!("valid grep should return its dedicated response");
+        };
+
+        let mut names: Vec<String> = response
+            .results
+            .iter()
+            .map(|entry| {
+                Path::new(&entry.path)
+                    .strip_prefix(&root)
+                    .expect("matches are under the root")
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        names.sort_unstable();
+        // The root rule hides logs two levels down, and the nearer whitelist re-includes only
+        // `keep.log` although `deeper` has no rules of its own.
+        assert_eq!(names, ["sub/deeper/keep.log", "sub/deeper/plain.txt"]);
+    }
+
+    /// Verifies a symlink maze ends after one visit per real directory instead of queueing
+    /// its exponentially many paths.
+    #[tokio::test]
+    async fn grep_walks_each_symlinked_directory_once() {
+        let temp = TempDir::create();
+        let root = symlink_maze(temp.path(), "maze.txt", b"needle\n").await;
+
+        let Ok(response) = grep(test_request(root.to_string_lossy(), "needle", true)).await else {
+            panic!("valid grep should return its dedicated response");
+        };
+
+        // The maze has 41 real directories with one matching file each.
+        assert_eq!(response.results.len(), 41);
+        // Each file is reported once, however many symlink paths lead to it.
+        let unique: HashSet<_> = response
+            .results
+            .iter()
+            .map(|entry| std::fs::canonicalize(&entry.path).expect("matched files exist"))
+            .collect();
+        assert_eq!(unique.len(), 41);
+        // The walk finished on its own rather than at the deadline.
+        assert!(!response.timed_out);
     }
 
     /// Proves metacharacters stay literal when callers opt out of regex compilation.

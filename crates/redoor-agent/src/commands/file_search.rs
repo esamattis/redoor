@@ -123,10 +123,10 @@ pub(super) struct DirectoryIdentity {
 }
 
 /// Keeps the identity with each open iterator so only active traversal cycles are suppressed.
-pub(super) struct TraversedDirectory {
-    pub(super) entries: tokio::fs::ReadDir,
-    pub(super) identity: Option<DirectoryIdentity>,
-    pub(super) gitignore: Option<Gitignore>,
+struct TraversedDirectory {
+    entries: tokio::fs::ReadDir,
+    identity: Option<DirectoryIdentity>,
+    gitignore: Option<Gitignore>,
 }
 
 /// Uses filesystem identity rather than path spelling because multiple symlinks can reach one directory.
@@ -282,7 +282,16 @@ async fn collect_matches(
             || followed_metadata
                 .as_ref()
                 .is_some_and(std::fs::Metadata::is_dir);
-        if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
+        if respect_gitignore
+            && is_ignored(
+                directories
+                    .iter()
+                    .rev()
+                    .filter_map(|directory| directory.gitignore.as_ref()),
+                &entry_path,
+                is_directory,
+            )
+        {
             // Ignored directories are pruned before opening them, matching Git traversal semantics.
             continue;
         }
@@ -397,16 +406,15 @@ pub(super) async fn load_gitignore(directory: &Path, enabled: bool) -> Option<Gi
 }
 
 /// Applies the nearest matching rule first because deeper `.gitignore` files override ancestors.
-pub(super) fn is_ignored(
-    directories: &[TraversedDirectory],
+///
+/// Takes the rules nearest first rather than a traversal stack, so path search's depth-first
+/// stack and content grep's breadth-first ancestor chain share one precedence rule.
+pub(super) fn is_ignored<'a>(
+    nearest_first: impl IntoIterator<Item = &'a Gitignore>,
     path: &Path,
     is_directory: bool,
 ) -> bool {
-    for gitignore in directories
-        .iter()
-        .rev()
-        .filter_map(|directory| directory.gitignore.as_ref())
-    {
+    for gitignore in nearest_first {
         let matched = gitignore.matched(path, is_directory);
         if matched.is_ignore() {
             return true;

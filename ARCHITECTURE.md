@@ -1454,6 +1454,15 @@ server:   passes the lines through as application/x-ndjson
   keeping 100 gives exactly the agent's final list, while the event count stays small (about
   `100·ln(N/100)` for `N` matching paths). Content grep sends every match as its file proved
   to be text, up to its 100-match cap.
+- **Content grep walks shallow first, in name order.** Grep has no relevance score and stops
+  at its cap, so the walk order decides which matches the user sees. It walks breadth-first
+  and sorts each directory's listing by name, so files beside the search root come before a
+  deep subtree such as vendored code, and the same tree gives the same matches on every
+  filesystem. Ranking like path search would mean reading every file to the end of the tree.
+  Queued directories hold a path and a shared chain of their ancestors' `.gitignore` rules,
+  not an open handle. Each real directory is walked once (a visited set of device and inode),
+  because a symlink maze would otherwise fill the queue with exponentially many paths; path
+  search walks depth-first and only skips directories already on its current path.
 - **Ending.** A deadline stops the walk, flushes, and ends with `done {timed_out: true}`;
   the `done` line rides on the `FIN` frame, which needs no credit. A cancel stops the walk
   wherever it waits and ends the stream without `FIN`, so it never looks finished. Dropping
