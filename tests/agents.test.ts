@@ -679,7 +679,7 @@ describe("Agents API", () => {
         });
     });
 
-    it("should search hidden directories only when requested and always skip .git", async () => {
+    it("should search hidden files and directories only when requested and always skip .git", async () => {
         const testAgent = await getConnectedTestAgent();
 
         const searchRoot = tempFiles.tempDirectory({
@@ -692,17 +692,19 @@ describe("Agents API", () => {
             "hidden-target.txt",
         );
 
+        const hiddenDotfile = path.join(searchRoot, ".hidden-target.txt");
         const gitTarget = path.join(searchRoot, ".git", "hidden-target.txt");
         await fs.mkdir(path.dirname(hiddenTarget));
         await fs.mkdir(path.dirname(gitTarget));
         await fs.writeFile(hiddenTarget, "hidden", "utf-8");
+        await fs.writeFile(hiddenDotfile, "hidden", "utf-8");
         await fs.writeFile(gitTarget, "git internals", "utf-8");
 
         const defaultResult = await searchAgentFiles(testAgent, searchRoot, {
             query: "hiddentarget",
         });
 
-        // Omission preserves the safe default and avoids traversing hidden directories.
+        // Omission hides dotfiles in visible directories as well as anything inside hidden directories.
         expect(defaultResult.results).toEqual([]);
 
         const includedResult = await searchAgentFiles(testAgent, searchRoot, {
@@ -711,10 +713,10 @@ describe("Agents API", () => {
             respectGitignore: false,
         });
 
-        // Hidden opt-in reaches ordinary dot-directories while `.git` remains excluded unconditionally.
-        expect(includedResult.results.map((entry) => entry.path)).toEqual([
-            hiddenTarget,
-        ]);
+        // Hidden opt-in reaches dotfiles and ordinary dot-directories while `.git` remains excluded unconditionally.
+        expect(
+            new Set(includedResult.results.map((entry) => entry.path)),
+        ).toEqual(new Set([hiddenTarget, hiddenDotfile]));
     });
 
     it("should respect gitignore files at every recursion depth by default", async () => {
@@ -793,6 +795,7 @@ describe("Agents API", () => {
         const grepRoot = tempFiles.tempDirectory({ suffix: "-content-grep" });
         const visible = path.join(grepRoot, "visible.txt");
         const hidden = path.join(grepRoot, ".cache", "hidden.txt");
+        const dotfile = path.join(grepRoot, ".hidden-dotfile");
         const ignored = path.join(grepRoot, "ignored.txt");
         const binary = path.join(grepRoot, "binary.bin");
         const magicBinary = path.join(grepRoot, "binary.pdf");
@@ -803,6 +806,7 @@ describe("Agents API", () => {
             `first Needle\r\n${"x".repeat(600)} Needle\nfinal`,
         );
         await fs.writeFile(hidden, "hidden Needle");
+        await fs.writeFile(dotfile, "dotfile Needle");
         await fs.writeFile(ignored, "ignored Needle");
         await fs.writeFile(binary, Buffer.from("early Needle\nlate\0binary"));
         await fs.writeFile(magicBinary, "%PDF-1.7 early Needle without nul");
@@ -821,7 +825,7 @@ describe("Agents API", () => {
             }),
         );
 
-        // Defaults must skip ignored, hidden-directory, and binary content while retaining visible matches.
+        // Defaults must skip ignored, hidden-file, hidden-directory, and binary content while retaining visible matches.
         expect(defaultResult.results.map((entry) => entry.path)).toEqual([
             visible,
             visible,
@@ -861,7 +865,7 @@ describe("Agents API", () => {
         // Explicit options expose ordinary hidden and ignored files but `.git` and binary files remain excluded.
         expect(
             new Set(inclusiveResult.results.map((entry) => entry.path)),
-        ).toEqual(new Set([visible, hidden, ignored]));
+        ).toEqual(new Set([visible, hidden, dotfile, ignored]));
     });
 
     it("should report grep result and oversized-line caps", async () => {

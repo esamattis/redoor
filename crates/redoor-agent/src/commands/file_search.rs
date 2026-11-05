@@ -260,7 +260,11 @@ async fn collect_matches(
             // Repository internals are never useful browser results and can make searches enormous.
             continue;
         }
-        let is_hidden = entry_name.to_string_lossy().starts_with('.');
+        if !include_hidden && entry_name.to_string_lossy().starts_with('.') {
+            // The hidden filter covers dotfiles too, like `rg` and `fd`, and rejecting before
+            // metadata ensures hidden directories, including symlinked ones, are never opened.
+            continue;
+        }
         let relative_path = entry_path
             .strip_prefix(root)
             .map(|path| path.to_string_lossy())
@@ -272,10 +276,6 @@ async fn collect_matches(
         let Ok(file_type) = entry.file_type().await else {
             continue;
         };
-        if is_hidden && !include_hidden && file_type.is_dir() {
-            // Rejecting direct hidden directories here ensures metadata and read_dir are never called.
-            continue;
-        }
         let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
             tokio::fs::metadata(&entry_path).await.ok()
         } else {
@@ -287,10 +287,6 @@ async fn collect_matches(
                 .is_some_and(std::fs::Metadata::is_dir);
         if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
             // Ignored directories are pruned before opening them, matching Git traversal semantics.
-            continue;
-        }
-        if is_hidden && !include_hidden && is_directory {
-            // Hidden symlink directories require metadata to identify, but are still never opened.
             continue;
         }
 
@@ -783,9 +779,9 @@ mod tests {
         assert_eq!(quoted_response.results[0].path, quoted.to_string_lossy());
     }
 
-    /// Verifies hidden directories are opt-in without hiding dotfiles in visible directories.
+    /// Verifies hidden files and directories are both opt-in, so the filter matches its label.
     #[tokio::test]
-    async fn hidden_directories_are_skipped_by_default() {
+    async fn hidden_entries_are_skipped_by_default() {
         let temp = TempDir::create();
         let root = temp.path().join("search-root");
         let hidden_target = root.join(".cache").join("hidden-target.txt");
@@ -822,9 +818,8 @@ mod tests {
         let Ok(default_response) = default_result else {
             panic!("a default hidden-directory search should succeed");
         };
-        // Dotfiles remain searchable because only traversal into hidden directories is disabled.
-        assert_eq!(default_response.results.len(), 1);
-        assert_eq!(default_response.results[0].path, dotfile.to_string_lossy());
+        // Dotfiles in visible directories are hidden too, not only the contents of hidden directories.
+        assert!(default_response.results.is_empty());
         let Ok(included_response) = included_result else {
             panic!("an opted-in hidden-directory search should succeed");
         };

@@ -220,13 +220,13 @@ async fn collect_matches(
         if entry_name == ".git" {
             continue;
         }
+        if !include_hidden && entry_name.to_string_lossy().starts_with('.') {
+            // Dotfiles are hidden too, so the filter matches its label and path search.
+            continue;
+        }
         let Ok(file_type) = entry.file_type().await else {
             continue;
         };
-        let is_hidden = entry_name.to_string_lossy().starts_with('.');
-        if is_hidden && !include_hidden && file_type.is_dir() {
-            continue;
-        }
         let followed_metadata = if file_type.is_dir() || file_type.is_symlink() {
             tokio::fs::metadata(&entry_path).await.ok()
         } else if file_type.is_file() {
@@ -239,9 +239,6 @@ async fn collect_matches(
                 .as_ref()
                 .is_some_and(std::fs::Metadata::is_dir);
         if respect_gitignore && is_ignored(&directories, &entry_path, is_directory) {
-            continue;
-        }
-        if is_hidden && !include_hidden && is_directory {
             continue;
         }
 

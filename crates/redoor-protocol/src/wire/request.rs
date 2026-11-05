@@ -192,7 +192,8 @@ pub struct FileSearch {
     pub query: String,
     /// Keeps the deadline agent-local so traversal stops even if the REST caller disconnects.
     pub timeout_seconds: u64,
-    /// Hidden directories are opt-in because they often contain large caches and metadata trees.
+    /// Hidden files and directories are opt-in like in `fd`, because dot-directories often hold
+    /// large caches and metadata trees and dotfiles are mostly configuration noise.
     pub include_hidden: bool,
     /// Git ignore rules are usually on so searches match repository expectations.
     pub respect_gitignore: bool,
@@ -211,7 +212,8 @@ pub struct ContentGrep {
     pub query: String,
     /// Keeps the whole operation, including exclusive-slot waiting, agent-local and bounded.
     pub timeout_seconds: u64,
-    /// Hidden directories are opt-in to avoid unexpectedly scanning cache trees.
+    /// Hidden files and directories are opt-in like in `rg`, to avoid unexpectedly scanning cache
+    /// trees and configuration dotfiles.
     pub include_hidden: bool,
     /// Repository ignore rules are usually on to match recursive filename search.
     pub respect_gitignore: bool,
