@@ -288,7 +288,7 @@ test.describe.serial("File Browser Navigation", () => {
         const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${ctx.testDirUrlPath}`;
         let pathSearchRequests = 0;
         page.on("request", (request) => {
-            if (new URL(request.url()).pathname.includes("/find/")) {
+            if (new URL(request.url()).pathname.includes("/find-stream/")) {
                 pathSearchRequests += 1;
             }
         });

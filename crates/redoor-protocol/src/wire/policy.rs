@@ -71,8 +71,7 @@ impl CommandPolicy {
         cancel_scope: CancelScope::Connection,
         exclusive: false,
     };
-    /// Request/response work that can run far longer than its caller cares (searches, status
-    /// walks), so an abandoned REST call must stop it on the agent instead of letting it hold
+    /// Request/response work that can run far longer than its caller cares (status walks), so an abandoned REST call must stop it on the agent instead of letting it hold
     /// CPU, disk and command slots until its own timeout.
     const CANCELABLE_CONTROL: Self = Self {
         lane: CommandLane::Control,
@@ -128,7 +127,10 @@ impl Command {
     /// Returns the single authoritative execution policy for this command.
     pub fn policy(&self) -> CommandPolicy {
         match self {
+            // Searches stream their matches so the browser shows them while the walk runs.
             Self::Exec { .. }
+            | Self::FileSearch { .. }
+            | Self::ContentGrep { .. }
             | Self::RawDownload { .. }
             | Self::TarDownload { .. }
             | Self::GitDownload { .. } => CommandPolicy::OUTPUT,
@@ -144,9 +146,7 @@ impl Command {
             // Restore is a move that reports progress and owns staging, so it stays cancelable.
             Self::RestoreTrash { .. } => CommandPolicy::trash_mutation(CancelScope::Request),
             Self::HashSegments(_) => CommandPolicy::LOCAL_TRANSFER,
-            Self::FileSearch { .. }
-            | Self::ContentGrep { .. }
-            | Self::GitStatus { .. }
+            Self::GitStatus { .. }
             | Self::GitDirectoryEntries { .. }
             | Self::GitFileBases { .. }
             | Self::GitWorktreeStatus { .. } => CommandPolicy::CANCELABLE_CONTROL,

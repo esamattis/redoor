@@ -37,6 +37,7 @@ const fileSearchResponseSchema: z.ZodType<FileSearchResponse> = z.object({
             name: z.string(),
             path: z.string(),
             type: z.string(),
+            score: z.number().int().nonnegative(),
         }),
     ),
     timed_out: z.boolean(),
@@ -505,6 +506,7 @@ describe("Agents API", () => {
             name: "file-search-target.txt",
             path: exactMatch,
             type: "file",
+            score: expect.any(Number),
         });
         // Nonmatching paths must not leak into a fuzzy result set.
         expect(

@@ -30,10 +30,11 @@ pub(crate) mod upgrade;
 pub(crate) use accounts::accounts_handler;
 pub(crate) use chmod::chmod_path_handler;
 pub(crate) use chown::chown_path_handler;
-pub(crate) use content_grep::content_grep_handler;
+pub(crate) use content_grep::{content_grep_handler, content_grep_stream_handler};
 pub(crate) use directory_size::directory_size_handler;
 pub(crate) use files::{
-    echo_agent_handler, file_search_agent_handler, ls_agent_handler, metadata_agent_handler,
+    echo_agent_handler, file_search_agent_handler, file_search_stream_handler, ls_agent_handler,
+    metadata_agent_handler,
 };
 pub(crate) use open_path::open_path_agent_handler;
 pub(crate) use upgrade::{

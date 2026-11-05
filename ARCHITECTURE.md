@@ -65,7 +65,7 @@ alignment drops below 64 again.
 The contract between all parties, with no runtime dependencies (no tokio).
 
 - `wire/`: the agent websocket protocol.
-  - `handshake` holds the upgrade contract: the `redoor.v5` subprotocol, the agent endpoint
+  - `handshake` holds the upgrade contract: the `redoor.v6` subprotocol, the agent endpoint
     path, the `426` body and the protocol-mismatch types the UI lists.
   - `agent_auth` holds the mutual proof of the agent token (see "Mutual token proof"): the
     nonces, the HMAC proofs of each step and their headers, shared by the agent and the
@@ -86,7 +86,9 @@ The contract between all parties, with no runtime dependencies (no tokio).
 - `ids`: the strongly typed identifiers. `AgentId` is the stable device id (see "Device
   identity"); `validate_device_name` holds the device name rules.
 - `api/`: REST request and response types grouped by domain (agents, auth, files,
-  transfers, git, tokens, ...). Git is a directory with one module per feature area
+  transfers, git, tokens, ...). `search` also holds the streamed search events and
+  `FileSearchRanking`, the top-100 path ranking the agent, the server and the browser share,
+  so the streamed matches reduce to the same list everywhere. Git is a directory with one module per feature area
   (`worktree`, `worktree_list`, `revision`, `commit`, `history`, `refs`), plus the vocabulary they share
   (including `GitPage`, the bounded offset and size every paged Git list uses), so later
   Git features (such as search) are added beside them rather than into one file.
@@ -231,8 +233,9 @@ The agent runtime and the implementation of every command.
     device Start (see "SSH device keys").
   - `git/`: Git REST handlers split by the same feature areas as the protocol, sharing
     path and revision validation in `git/mod.rs`.
-  - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec)
-    and `AgentUpload`. REST and MCP handlers are thin adapters over these.
+  - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec),
+    `AgentSearch` (path and content search) and `AgentUpload`. REST and MCP handlers are
+    thin adapters over these.
 - `actors/`:
   - `agent_ws` (in `http/`): the agent endpoint. It checks the bearer token and the
     subprotocol before accepting the upgrade, and remembers protocol-mismatched attempts
@@ -589,14 +592,14 @@ sequenceDiagram
     participant S as Session actor
     participant R as Router
 
-    A->>H: GET /api/v1/agent/ws<br/>X-Redoor-Agent-Nonce: a, X-Redoor-Agent-Proof: HMAC(token, a)<br/>Sec-WebSocket-Protocol: redoor.v5
+    A->>H: GET /api/v1/agent/ws<br/>X-Redoor-Agent-Nonce: a, X-Redoor-Agent-Proof: HMAC(token, a)<br/>Sec-WebSocket-Protocol: redoor.v6
     alt proof missing or made with another token
         H-->>A: 401 (no socket)
     else protocol not offered
         H-->>A: 426 + {server_protocol, server_version, message}
         Note over H: attempt kept in the mismatch list
     else accepted
-        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v5<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
+        H-->>A: 101, Sec-WebSocket-Protocol: redoor.v6<br/>X-Redoor-Server-Nonce: s, X-Redoor-Server-Proof: HMAC(token, a, s)
         Note over A: a wrong or missing server proof drops the socket before hello
         A->>S: hello {agent_id, agent_name, token_proof: HMAC(token, a, s), identity, capabilities, spec_hash?}
         Note over S: any other first frame, or a wrong token_proof, closes the socket
@@ -1321,14 +1324,15 @@ sequenceDiagram
   send and only spawns a task when the mailbox is full. A few commands, such as trash
   restore, run to completion on purpose: their execute request clears `cancel_on_abandon`,
   so an abandoned call is forgotten without a cancel frame.
-- File search, content grep, Git status (the Git view's change list) and Git worktree
-  status are cancellable on the agent (`CancelScope::Request`) even though they carry no
-  stream, because they can run for many seconds after their caller stopped caring. The
-  browser aborts a query when the search term changes or the view closes, and the agent then
-  stops the walk and frees its grep or status-walk slot at once, so newer searches do not
-  queue behind stale ones. This is per caller, not per user: parallel MCP or CLI searches do
-  not cancel each other. The agent logs each one at debug level (`File search canceled`,
-  `Content grep canceled`, `Git status canceled`, `Git worktree status canceled`).
+- Git status (the Git view's change list), Git directory entries, Git file bases and Git
+  worktree status are cancellable on the agent (`CancelScope::Request`) even though they
+  carry no stream, because they can run for many seconds after their caller stopped caring.
+  The browser aborts a query when the view closes, and the agent then stops the walk and
+  frees its status-walk slot at once. File search and content grep are cancelled the same
+  way, but they are output streams (see "Streaming search"). This is per caller, not per
+  user: parallel MCP or CLI searches do not cancel each other. The agent logs each one at
+  debug level (`File search canceled`, `Content grep canceled`, `Git status canceled`,
+  `Git worktree status canceled`).
 - Git status of a subdirectory hands gix a `:(top,literal)<dir>/` pathspec, so the walk
   covers only that directory instead of the whole checkout followed by a prefix filter. The
   trailing slash keeps a sibling such as `src-old` out of a walk of `src`, and `literal`
@@ -1345,7 +1349,7 @@ agent:  result {id, ok: <response>} or result {id, error: {kind, message}}   (ex
 ```
 
 - **Exactly one result per request, always after its data.** An output stream's result
-  (download, exec) is queued on the same agent lane as its data, behind `FIN`, so when the
+  (download, exec, search) is queued on the same agent lane as its data, behind `FIN`, so when the
   server sees the result the consumer already has every byte. An upload answers after its
   publication step, on the control lane. Flows therefore settle on the result alone; there is
   no separate "stream ended" event to reconcile with it. The agent's `ResultLedger` enforces
@@ -1358,7 +1362,7 @@ agent:  result {id, ok: <response>} or result {id, error: {kind, message}}   (ex
   streams have no result, so `FIN` is how they end: a terminal attachment always sends it
   (after the shell's exit or error event, or when it is detached), and a log stream sends it unless the server canceled it, because
   then nobody listens any more.
-- **Initial credit is in the command.** Output streams (downloads, exec) get their first
+- **Initial credit is in the command.** Output streams (downloads, exec, searches) get their first
   window (`credit: 4`) in the command frame, so output starts without a round trip. Uploads
   start with `credit: 0`; the agent grants the first window when its worker is ready, and
   that first grant is the readiness signal.
@@ -1417,6 +1421,56 @@ sequenceDiagram
   the last output line. A timeout or cancel stops the process even while output waits for
   credit, and the result follows at once.
 
+## Streaming search
+
+Path search and content grep stream their matches while the agent still walks, so the
+browser shows results long before a large tree is done.
+
+```
+browser:  POST /api/v1/agents/{agent}/find-stream/{*path}   (or grep-stream)
+server:   command {id, credit: 4, FileSearch}  → Output flow of kind Search
+agent:    validate, open the root → error result with no data, or an empty ready frame
+agent:    NDJSON batches {"type":"match",...}\n ...  last frame (FIN): ... {"type":"done",...}\n
+agent:    result {id, ok: null}   (or an error, after the data already sent)
+server:   passes the lines through as application/x-ndjson
+```
+
+- **Search is an output stream.** `FileSearch` and `ContentGrep` use the `OUTPUT` policy,
+  like exec and downloads, and travel on the agent's existing connection. The summary is the
+  `done` line, part of the data, so the result carries nothing; the router's `Search` flow
+  kind has no transfer history and only reads the result when it is an error, which fails
+  the consumer after the matches it already has.
+- **Validate before streaming.** The agent checks the query, the regex, the context limits
+  and opens the root before it sends anything, so those failures are the result alone and
+  the server (which waits for the first frame) answers them with a proper HTTP status. After
+  validation it sends one empty ready frame. A content grep sends it before it waits for one
+  of its four grep slots; the wait still counts against its timeout.
+- **Batched lines.** The walk hands its events through a bounded channel to a writer
+  beside it (`commands/search_stream.rs`), which sends a batch at 32 KiB or 100 ms after its
+  first line. A stream has only four frames of credit in flight, so a frame per match would
+  wait for a credit round trip every few matches on a slow link.
+- **Path search streams only rank changes.** The agent keeps its top 100 and sends a match
+  only when it enters that list. Re-ranking every received match (score, then path) and
+  keeping 100 gives exactly the agent's final list, while the event count stays small (about
+  `100·ln(N/100)` for `N` matching paths). Content grep sends every match as its file proved
+  to be text, up to its 100-match cap.
+- **Ending.** A deadline stops the walk, flushes, and ends with `done {timed_out: true}`;
+  the `done` line rides on the `FIN` frame, which needs no credit. A cancel stops the walk
+  wherever it waits and ends the stream without `FIN`, so it never looks finished. Dropping
+  the HTTP body cancels the search like any output stream.
+- **One implementation for JSON callers.** `POST .../find` and `.../grep`, MCP and the vault
+  scan get one JSON response, built by `AgentSearch::collect` from the same stream: it
+  reassembles lines across frames (at most 1 MiB per line), keeps the top 100 for path
+  search, requires the `done` line and gives up at the search timeout plus slack.
+- The streaming routes are named `find-stream` and `grep-stream` rather than
+  `find/stream`, which would also be the JSON search of a folder called `/stream`.
+- The browser reads the body with a stream reader (`streamNdjson`) and feeds the batches to
+  TanStack Query's `streamedQuery`, which reduces them into the same `FileSearchResponse` /
+  `ContentGrepResponse` shape the JSON routes return. Refetches use `refetchMode: "replace"`,
+  so an invalidation does not clear the list, and `keepPreviousData` keeps the previous
+  query's results until the first new event.
+
+## Upload
 ## Upload
 
 ```mermaid
@@ -1865,7 +1919,9 @@ The route tree separates the authenticated application from the public login for
   changes scope: the live location already points at the next entry while the old view is
   still on screen. A new visit to the same URL is a new entry and starts from the defaults.
   The search dialog keeps its results, scroll position and opened result per entry the same
-  way, so back from a result shows the search as it was without asking the agent again. It
+  way, so back from a result shows the search as it was without asking the agent again.
+  Only a finished search is kept, because results stream in and a partial list restored on
+  Back would look complete. It
   scrolls inside its own `<dialog>`, which the router cannot restore, and it mounts only
   while open, so its entry is the one it opened on and never the result's that follows.
 - **A view's toolbar shares the browser header's tab row.** `BrowserRouteShell` renders the

@@ -85,8 +85,8 @@ last line`,
             const url = new URL(request.url());
 
             if (
-                url.pathname.includes("/find/") ||
-                url.pathname.includes("/grep/")
+                url.pathname.includes("/find-stream/") ||
+                url.pathname.includes("/grep-stream/")
             ) {
                 requests.push(url);
                 requestBodies.set(url, request.postData());
@@ -143,12 +143,12 @@ last line`,
         ).toBeLessThan(60);
 
         const pathRequest = requests.find((request) =>
-            request.pathname.includes("/find/"),
+            request.pathname.includes("/find-stream/"),
         );
 
         // Agent and path belong to the resource URL rather than the find JSON contract.
         expect(pathRequest?.pathname).toBe(
-            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/find/${ctx.testDirUrlPath}`,
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/find-stream/${ctx.testDirUrlPath}`,
         );
         // The shared dialog forwards only search options in the path API JSON body.
         expect(pathRequest && requestBodies.get(pathRequest)).toBe(
@@ -163,7 +163,9 @@ last line`,
         );
         // Default mode enables only the fuzzy path endpoint.
         expect(
-            requests.some((request) => request.pathname.includes("/grep/")),
+            requests.some((request) =>
+                request.pathname.includes("/grep-stream/"),
+            ),
         ).toBe(false);
 
         const smartCaseButton = dialog.getByRole("button", {
@@ -218,11 +220,11 @@ last line`,
         );
 
         const searchRequestCount = requests.filter((request) =>
-            request.pathname.includes("/find/"),
+            request.pathname.includes("/find-stream/"),
         ).length;
 
         const grepRequestCount = requests.filter((request) =>
-            request.pathname.includes("/grep/"),
+            request.pathname.includes("/grep-stream/"),
         ).length;
 
         await dialog
@@ -252,7 +254,7 @@ last line`,
 
         // Content grep uses the same agent-and-path URL scope as filename search.
         expect(contentRequest?.pathname).toBe(
-            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep/${ctx.testDirUrlPath}`,
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep-stream/${ctx.testDirUrlPath}`,
         );
         // One context control maps to both grep context directions.
         expect(contentRequest && requestBodies.get(contentRequest)).toContain(
@@ -271,24 +273,29 @@ last line`,
             .toBe(true);
         // Content mode starts only grep requests while the path query remains disabled.
         expect(
-            requests.filter((request) => request.pathname.includes("/find/")),
+            requests.filter((request) =>
+                request.pathname.includes("/find-stream/"),
+            ),
         ).toHaveLength(searchRequestCount);
         expect(
-            requests.filter((request) => request.pathname.includes("/grep/"))
-                .length,
+            requests.filter((request) =>
+                request.pathname.includes("/grep-stream/"),
+            ).length,
         ).toBeGreaterThan(grepRequestCount);
 
         await dialog.getByRole("button", { name: "Search file paths" }).click();
 
         const grepRequestsAfterSwitch = requests.filter((request) =>
-            request.pathname.includes("/grep/"),
+            request.pathname.includes("/grep-stream/"),
         ).length;
 
         await pathInput.fill("nested-path-target");
         await expect(pathResult).toBeVisible();
         // Returning to path mode does not leak another request to the inactive grep endpoint.
         expect(
-            requests.filter((request) => request.pathname.includes("/grep/")),
+            requests.filter((request) =>
+                request.pathname.includes("/grep-stream/"),
+            ),
         ).toHaveLength(grepRequestsAfterSwitch);
         await pathResult.click();
         await expect(page).toHaveURL(/nested-path-target\.txt$/);
@@ -403,13 +410,13 @@ last line`,
 
         let firstRequestFailed = false;
         page.on("requestfailed", (request) => {
-            if (!request.url().includes("/grep/")) return;
+            if (!request.url().includes("/grep-stream/")) return;
 
             if (request.postData()?.includes('"query":"content1"') === true) {
                 firstRequestFailed = true;
             }
         });
-        await page.route("**/api/v1/agents/*/grep/**", async (route) => {
+        await page.route("**/api/v1/agents/*/grep-stream/**", async (route) => {
             if (
                 route.request().postData()?.includes('"query":"content1"') !==
                 true
@@ -701,8 +708,8 @@ last line`,
             const url = new URL(request.url());
 
             if (
-                url.pathname.includes("/find/") ||
-                url.pathname.includes("/grep/")
+                url.pathname.includes("/find-stream/") ||
+                url.pathname.includes("/grep-stream/")
             ) {
                 searchRequests += 1;
             }
@@ -743,6 +750,12 @@ last line`,
             });
 
             await expect(links).toHaveCount(60);
+            // Results stream in, and only a finished search is kept for Back.
+            await expect(
+                dialog
+                    .getByRole("status")
+                    .filter({ hasText: "Found 60 results" }),
+            ).toBeVisible();
 
             const opened = links.nth(40);
             await opened.scrollIntoViewIfNeeded();

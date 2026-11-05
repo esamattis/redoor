@@ -18,10 +18,11 @@ use super::{
     agent_ws::agent_websocket_handler,
     agents::{
         accounts_handler, agent_upgrade_status_handler, chmod_path_handler, chown_path_handler,
-        content_grep_handler, directory_size_handler, dismiss_agent_upgrade_handler,
-        echo_agent_handler, file_search_agent_handler, get_agent_details_handler,
-        list_agents_handler, ls_agent_handler, metadata_agent_handler, open_path_agent_handler,
-        restart_agent_handler, shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
+        content_grep_handler, content_grep_stream_handler, directory_size_handler,
+        dismiss_agent_upgrade_handler, echo_agent_handler, file_search_agent_handler,
+        file_search_stream_handler, get_agent_details_handler, list_agents_handler,
+        ls_agent_handler, metadata_agent_handler, open_path_agent_handler, restart_agent_handler,
+        shutdown_agent_handler, start_agent_handler, upgrade_agent_handler,
     },
     auth::{login_handler, logout_handler},
     copy::copy_file_handler,
@@ -295,6 +296,24 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/grep/{*path}",
             post(content_grep_handler),
+        )
+        // The streaming searches have their own names rather than `find/stream`, which is
+        // also the JSON search of a folder called `/stream`.
+        .route(
+            "/api/v1/agents/{agent}/find-stream",
+            post(file_search_stream_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/find-stream/{*path}",
+            post(file_search_stream_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/grep-stream",
+            post(content_grep_stream_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/grep-stream/{*path}",
+            post(content_grep_stream_handler),
         )
         .route(
             "/api/v1/agents/{agent}/metadata",

@@ -10,6 +10,7 @@ mod fs;
 pub(crate) mod git;
 mod host;
 mod metadata;
+mod search_stream;
 
 use crate::transfers::{
     download, edit::EditSession, raw_upload::RawFileSink, tar_upload::TarDirectorySink,
@@ -174,21 +175,28 @@ impl RunCommand for Command {
                 respect_gitignore,
                 case_sensitivity,
                 directories_only,
-            }) => Reply::of::<request::FileSearch>(
-                file_search::execute(
-                    file_search::FileSearchRequest {
-                        path,
-                        query,
-                        timeout_seconds,
-                        include_hidden,
-                        respect_gitignore,
-                        case_sensitivity,
-                        directories_only,
-                    },
-                    &ctx.cancel,
-                )
-                .await,
-            ),
+            }) => match ctx.into_output() {
+                Ok(output) => {
+                    let (stream, result) = file_search::execute(
+                        file_search::FileSearchRequest {
+                            path,
+                            query,
+                            timeout_seconds,
+                            include_hidden,
+                            respect_gitignore,
+                            case_sensitivity,
+                            directories_only,
+                        },
+                        output.stream,
+                        output.registration.token(),
+                    )
+                    .await;
+                    // Unregistered before the result, so a late cancel finds nothing to stop.
+                    drop(output.registration);
+                    Reply::stream::<request::FileSearch>(stream, result)
+                }
+                Err(error) => Reply::failure(error),
+            },
             Command::ContentGrep(request::ContentGrep {
                 path,
                 query,
@@ -199,24 +207,34 @@ impl RunCommand for Command {
                 case_sensitivity,
                 before_context,
                 after_context,
-            }) => Reply::of::<request::ContentGrep>(
-                content_grep::execute(
-                    content_grep::ContentGrepRequest {
-                        path,
-                        query,
-                        timeout_seconds,
-                        include_hidden,
-                        respect_gitignore,
-                        fixed_string,
-                        case_sensitivity,
-                        before_context,
-                        after_context,
-                    },
-                    &ctx.cancel,
-                    ctx.services.grep_slots.clone(),
-                )
-                .await,
-            ),
+            }) => {
+                let grep_slots = ctx.services.grep_slots.clone();
+                match ctx.into_output() {
+                    Ok(output) => {
+                        let (stream, result) = content_grep::execute(
+                            content_grep::ContentGrepRequest {
+                                path,
+                                query,
+                                timeout_seconds,
+                                include_hidden,
+                                respect_gitignore,
+                                fixed_string,
+                                case_sensitivity,
+                                before_context,
+                                after_context,
+                            },
+                            output.stream,
+                            output.registration.token(),
+                            grep_slots,
+                        )
+                        .await;
+                        // Unregistered before the result, so a late cancel finds nothing to stop.
+                        drop(output.registration);
+                        Reply::stream::<request::ContentGrep>(stream, result)
+                    }
+                    Err(error) => Reply::failure(error),
+                }
+            }
             Command::RawDownload(request::RawDownload {
                 expected_identity,
                 path,

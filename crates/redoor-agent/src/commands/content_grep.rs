@@ -3,13 +3,15 @@
 use super::{
     file_search::{TraversedDirectory, directory_identity, is_ignored, load_gitignore},
     metadata::has_common_binary_magic,
+    search_stream::{MatchSink, SearchStream},
 };
+use crate::transfers::stream::StreamWriter;
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
 use redoor_protocol::wire::request::CommandError;
 use redoor_protocol::{
     api::search::{
-        CaseSensitivity, ContentGrepContextLine, ContentGrepMatch, ContentGrepResponse,
+        CaseSensitivity, ContentGrepContextLine, ContentGrepEvent, ContentGrepMatch,
         MAX_GREP_CONTEXT_LINES,
     },
     wire::command::CommandErrorKind,
@@ -26,7 +28,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-/// Bounds the JSON response and all retained matching-line state.
+/// Bounds the matches one search streams and all retained matching-line state.
 const RESULT_LIMIT: usize = 100;
 /// Prevents one pathological physical line from growing an agent task without bound.
 const MAX_PHYSICAL_LINE_BYTES: usize = 1024 * 1024;
@@ -37,22 +39,13 @@ const MAX_QUERY_BYTES: usize = 4096;
 /// Avoids opening files whose scan cost is disproportionate to interactive grep.
 const MAX_SCANNED_FILE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Accumulates scan state that remains valid when a deadline interrupts traversal.
+/// What the walk streamed so far. It lives outside the walk, so the summary is still there
+/// when a deadline drops the walk.
+#[derive(Default)]
 struct GrepOutput {
-    results: Vec<ContentGrepMatch>,
+    sent: usize,
     truncated: bool,
     omitted_long_lines: u64,
-}
-
-impl GrepOutput {
-    /// Allocates only the documented result cap up front.
-    fn new() -> Self {
-        Self {
-            results: Vec::with_capacity(RESULT_LIMIT),
-            truncated: false,
-            omitted_long_lines: 0,
-        }
-    }
 }
 
 /// Bundles grep controls so dispatch stays under clippy's argument cap as options grow.
@@ -68,30 +61,52 @@ pub struct ContentGrepRequest {
     pub after_context: u64,
 }
 
-/// Includes exclusive-slot waiting in the deadline so queued requests always return promptly.
+/// Runs one content search and streams its matches on `stream`, returning the stream so the
+/// result can follow the data.
+///
+/// Waiting for a grep slot counts against the deadline, so a queued search still ends on
+/// time; it waits after the ready frame, because a full slot set is not an input error.
 pub(crate) async fn execute(
     request: ContentGrepRequest,
+    stream: StreamWriter,
     cancel: &CancellationToken,
     permit: Arc<Semaphore>,
-) -> Result<ContentGrepResponse, CommandError> {
-    let ContentGrepRequest {
-        path,
-        query,
-        timeout_seconds,
-        include_hidden,
-        respect_gitignore,
-        fixed_string,
-        case_sensitivity,
-        before_context,
-        after_context,
-    } = request;
-    if query.trim().is_empty() || query.len() > MAX_QUERY_BYTES {
+) -> (StreamWriter, Result<(), CommandError>) {
+    let started_at = Instant::now();
+    let mut output = SearchStream::new(stream, cancel, "Content grep");
+    let result = search(&request, &mut output, permit, started_at).await;
+    if let Err(CommandError {
+        kind: CommandErrorKind::Canceled,
+        ..
+    }) = &result
+    {
+        super::file_search::log_canceled_search(
+            "Content grep",
+            &request.path,
+            &request.query,
+            started_at,
+        );
+    }
+    (output.into_writer(), result)
+}
+
+/// Validates, builds the matcher and opens the root before it streams, so those failures
+/// are the result alone; then scans while matches stream.
+async fn search(
+    request: &ContentGrepRequest,
+    output: &mut SearchStream<'_>,
+    permit: Arc<Semaphore>,
+    started_at: Instant,
+) -> Result<(), CommandError> {
+    if request.query.trim().is_empty() || request.query.len() > MAX_QUERY_BYTES {
         return Err(CommandError::new(
             CommandErrorKind::InvalidInput,
             format!("Content grep query must be between 1 and {MAX_QUERY_BYTES} bytes"),
         ));
     }
-    if before_context > MAX_GREP_CONTEXT_LINES || after_context > MAX_GREP_CONTEXT_LINES {
+    if request.before_context > MAX_GREP_CONTEXT_LINES
+        || request.after_context > MAX_GREP_CONTEXT_LINES
+    {
         return Err(CommandError::new(
             CommandErrorKind::InvalidInput,
             format!(
@@ -99,94 +114,105 @@ pub(crate) async fn execute(
             ),
         ));
     }
-    let before_context = usize::try_from(before_context).unwrap_or(0);
-    let after_context = usize::try_from(after_context).unwrap_or(0);
+    let context = ContextSize {
+        before: usize::try_from(request.before_context).unwrap_or(0),
+        after: usize::try_from(request.after_context).unwrap_or(0),
+    };
+    let matcher = RegexMatcherBuilder::new()
+        .unicode(false)
+        .case_insensitive(matches!(
+            request.case_sensitivity,
+            CaseSensitivity::Insensitive
+        ))
+        .case_smart(matches!(request.case_sensitivity, CaseSensitivity::Smart))
+        .fixed_strings(request.fixed_string)
+        .build(&request.query)
+        .map_err(|error| {
+            CommandError::new(
+                CommandErrorKind::InvalidInput,
+                format!("Invalid content grep regular expression: {error}"),
+            )
+        })?;
+    let root = Path::new(&request.path);
+    let root_entries = tokio::fs::read_dir(root)
+        .await
+        .map_err(|error| CommandError::io("Failed to grep directory", error))?;
+    output.ready().await?;
 
-    let started_at = Instant::now();
-    let mut output = GrepOutput::new();
-    let (timed_out, cancelled, io_result) = {
-        let operation = async {
-            let _permit = permit
-                .acquire_owned()
-                .await
-                .map_err(|_| std::io::Error::other("Content grep coordinator is unavailable"))?;
-            let matcher = RegexMatcherBuilder::new()
-                .unicode(false)
-                .case_insensitive(matches!(case_sensitivity, CaseSensitivity::Insensitive))
-                .case_smart(matches!(case_sensitivity, CaseSensitivity::Smart))
-                .fixed_strings(fixed_string)
-                .build(&query)
-                .map_err(|error| {
-                    std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        format!("Invalid content grep regular expression: {error}"),
+    let deadline = started_at + Duration::from_secs(request.timeout_seconds);
+    output
+        .run(|sink| async move {
+            let mut counts = GrepOutput::default();
+            let walk = async {
+                let _permit = permit.acquire_owned().await.map_err(|_| {
+                    CommandError::new(
+                        CommandErrorKind::Internal,
+                        "Content grep coordinator is unavailable",
                     )
                 })?;
-            #[cfg(not(test))]
-            redoor_core::log!(
-                redoor_protocol::wire::log::Level::Info,
-                "Content grep scan started: path={path}"
-            );
-            collect_matches(
-                Path::new(&path),
-                &matcher,
-                include_hidden,
-                respect_gitignore,
-                before_context,
-                after_context,
-                &mut output,
-            )
-            .await
-        };
-        tokio::pin!(operation);
-        let deadline = tokio::time::sleep(Duration::from_secs(timeout_seconds));
-        tokio::pin!(deadline);
-
-        if cancel.is_cancelled() {
-            (false, true, None)
-        } else {
-            tokio::select! {
+                #[cfg(not(test))]
+                redoor_core::log!(
+                    redoor_protocol::wire::log::Level::Info,
+                    "Content grep scan started: path={}",
+                    request.path
+                );
+                collect_matches(
+                    root,
+                    root_entries,
+                    &matcher,
+                    request,
+                    context,
+                    &mut counts,
+                    &sink,
+                )
+                .await;
+                Ok::<(), CommandError>(())
+            };
+            let timed_out = tokio::select! {
                 biased;
-                _ = cancel.cancelled() => (false, true, None),
-                _ = &mut deadline => (true, false, None),
-                result = &mut operation => (false, false, Some(result)),
-            }
-        }
-    };
-    if cancelled {
-        super::file_search::log_canceled_search("Content grep", &path, &query, started_at);
-    }
-    if let Some(Err(error)) = io_result {
-        if error.kind() == std::io::ErrorKind::InvalidInput {
-            return Err(CommandError::new(
-                CommandErrorKind::InvalidInput,
-                error.to_string(),
-            ));
-        }
-        return Err(CommandError::io("Failed to grep directory", error));
-    }
+                result = walk => {
+                    result?;
+                    false
+                }
+                () = tokio::time::sleep_until(deadline.into()) => true,
+            };
+            Ok(ContentGrepEvent::Done {
+                timed_out,
+                // A canceled search ends without `done`; the flag stays so the summary keeps
+                // the shape of the JSON response.
+                cancelled: false,
+                truncated: counts.truncated,
+                omitted_long_lines: counts.omitted_long_lines,
+                duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            })
+        })
+        .await
+}
 
-    Ok(ContentGrepResponse {
-        results: output.results,
-        timed_out,
-        cancelled,
-        truncated: output.truncated,
-        omitted_long_lines: output.omitted_long_lines,
-        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-    })
+/// Physical lines kept before and after each match.
+#[derive(Clone, Copy)]
+struct ContextSize {
+    before: usize,
+    after: usize,
 }
 
 /// Traverses incrementally with the same hidden, ignore, and symlink-cycle policy as filename search.
+///
+/// Stops at the result limit, or early when the writer is gone.
 async fn collect_matches(
     root: &Path,
+    root_entries: tokio::fs::ReadDir,
     matcher: &impl Matcher,
-    include_hidden: bool,
-    respect_gitignore: bool,
-    before_context: usize,
-    after_context: usize,
+    request: &ContentGrepRequest,
+    context: ContextSize,
     output: &mut GrepOutput,
-) -> std::io::Result<()> {
-    let root_entries = tokio::fs::read_dir(root).await?;
+    sink: &MatchSink<ContentGrepEvent>,
+) {
+    let ContentGrepRequest {
+        include_hidden,
+        respect_gitignore,
+        ..
+    } = *request;
     let root_identity = tokio::fs::metadata(root)
         .await
         .ok()
@@ -250,11 +276,9 @@ async fn collect_matches(
             && followed_metadata
                 .as_ref()
                 .is_some_and(|metadata| metadata.len() <= MAX_SCANNED_FILE_BYTES)
+            && (!scan_file(&entry_path, matcher, context, output, sink).await || output.truncated)
         {
-            scan_file(&entry_path, matcher, before_context, after_context, output).await;
-            if output.truncated {
-                break;
-            }
+            break;
         }
 
         let child_identity = followed_metadata.as_ref().map(directory_identity);
@@ -275,19 +299,21 @@ async fn collect_matches(
             });
         }
     }
-    Ok(())
 }
 
 /// Buffers one bounded line and rejects binary prefixes before retaining any tentative matches.
+///
+/// A file's matches are streamed only once the whole file proved to be text. Returns `false`
+/// when the writer is gone and the walk should stop.
 async fn scan_file(
     path: &Path,
     matcher: &impl Matcher,
-    before_context: usize,
-    after_context: usize,
+    context: ContextSize,
     output: &mut GrepOutput,
-) {
+    sink: &MatchSink<ContentGrepEvent>,
+) -> bool {
     let Ok(file) = tokio::fs::File::open(path).await else {
-        return;
+        return true;
     };
     let mut reader = BufReader::with_capacity(8192, file);
     let mut line = Vec::new();
@@ -295,12 +321,12 @@ async fn scan_file(
     let mut oversized = false;
     let mut omitted_long_lines = 0_u64;
     let mut is_first_chunk = true;
-    let mut state = FileGrepState::new(path, matcher, before_context, after_context);
+    let mut state = FileGrepState::new(path, matcher, context.before, context.after);
 
     loop {
         let buffer = match reader.fill_buf().await {
             Ok(buffer) => buffer,
-            Err(_) => return,
+            Err(_) => return true,
         };
         if buffer.is_empty() {
             if oversized {
@@ -313,13 +339,13 @@ async fn scan_file(
         }
         if is_first_chunk {
             if has_common_binary_magic(buffer) {
-                return;
+                return true;
             }
             is_first_chunk = false;
         }
         if buffer.contains(&0) {
             // Any tentative matches belong to a binary file and must never enter the response.
-            return;
+            return true;
         }
         let consumed = buffer.len();
         for byte in buffer {
@@ -350,12 +376,21 @@ async fn scan_file(
 
     output.omitted_long_lines = output.omitted_long_lines.saturating_add(omitted_long_lines);
     for matched_line in state.matches {
-        if output.results.len() == RESULT_LIMIT {
+        if output.sent == RESULT_LIMIT {
             output.truncated = true;
             break;
         }
-        output.results.push(matched_line);
+        if !sink
+            .send(ContentGrepEvent::Match {
+                entry: matched_line,
+            })
+            .await
+        {
+            return false;
+        }
+        output.sent += 1;
     }
+    true
 }
 
 /// Keeps context queues private to one file so tentative binary-file matches remain discardable.
@@ -446,14 +481,58 @@ fn bounded_context_line(line_number: u64, line: &[u8]) -> ContentGrepContextLine
 mod tests {
     use super::*;
 
-    /// Runs an uncancelled grep with its own slot so cases stay independent.
+    use super::super::search_stream::test_support::{events, recording_writer, symlink_maze};
+    use redoor_protocol::api::search::ContentGrepResponse;
+    use redoor_protocol::wire::stream::StreamChunk;
+
+    /// Runs a grep with its own slot against a recording stream and returns its result with
+    /// the frames sent.
+    async fn run(
+        request: ContentGrepRequest,
+        cancel: &CancellationToken,
+    ) -> (Result<(), CommandError>, Vec<StreamChunk>) {
+        let (writer, recorder) = recording_writer();
+        let (writer, result) = execute(request, writer, cancel, Arc::new(Semaphore::new(1))).await;
+        drop(writer);
+        (result, recorder.await.expect("the recorder finishes"))
+    }
+
+    /// Rebuilds the response a client gets from the streamed events, like the server does.
+    fn reduce(frames: &[StreamChunk]) -> ContentGrepResponse {
+        let mut response = None;
+        let mut results = Vec::new();
+        for event in events::<ContentGrepEvent>(frames) {
+            // Nothing may follow the `done` line.
+            assert!(response.is_none(), "an event followed done");
+            match event {
+                ContentGrepEvent::Match { entry } => results.push(entry),
+                ContentGrepEvent::Done {
+                    timed_out,
+                    cancelled,
+                    truncated,
+                    omitted_long_lines,
+                    duration_ms,
+                } => {
+                    response = Some(ContentGrepResponse {
+                        results: Vec::new(),
+                        timed_out,
+                        cancelled,
+                        truncated,
+                        omitted_long_lines,
+                        duration_ms,
+                    })
+                }
+            }
+        }
+        let mut response = response.expect("a finished grep ends with done");
+        response.results = results;
+        response
+    }
+
+    /// Runs an uncancelled grep and rebuilds its response from the stream.
     async fn grep(request: ContentGrepRequest) -> Result<ContentGrepResponse, CommandError> {
-        execute(
-            request,
-            &CancellationToken::new(),
-            Arc::new(Semaphore::new(1)),
-        )
-        .await
+        let (result, frames) = run(request, &CancellationToken::new()).await;
+        result.map(|()| reduce(&frames))
     }
     use redoor_core::test_support::TempDir;
 
@@ -669,11 +748,17 @@ mod tests {
         );
     }
 
-    /// Ensures malformed and empty expressions fail before any filesystem access occurs.
+    /// Ensures malformed and empty expressions fail before any filesystem access occurs, and
+    /// that early errors are the result alone, so the server can still answer with an HTTP
+    /// error status.
     #[tokio::test]
     async fn invalid_expressions_are_invalid_input() {
         for query in ["", "(", &"x".repeat(MAX_QUERY_BYTES + 1)] {
-            let result = grep(test_request("/missing", query, false)).await;
+            let (result, frames) = run(
+                test_request("/missing", query, false),
+                &CancellationToken::new(),
+            )
+            .await;
             // Validation must win over the deliberately missing traversal root.
             assert!(matches!(
                 result,
@@ -682,25 +767,61 @@ mod tests {
                     ..
                 })
             ));
+            // Not even the ready frame went out.
+            assert!(frames.is_empty());
         }
-    }
-
-    /// Proves supersession has a distinct response flag rather than masquerading as a deadline.
-    #[tokio::test]
-    async fn cancellation_returns_bounded_partial_response() {
-        let cancel = CancellationToken::new();
-        cancel.cancel();
-        let result = execute(
-            test_request("/missing", "target", false),
-            &cancel,
-            Arc::new(Semaphore::new(1)),
+        let (result, frames) = run(
+            test_request("/missing", "valid", false),
+            &CancellationToken::new(),
         )
         .await;
-        let Ok(response) = result else {
-            panic!("cancellation should remain a grep response");
-        };
-        // Latest-wins cancellation is observable independently from a caller deadline.
-        assert!(response.cancelled && !response.timed_out);
+        // A root that cannot be opened is reported with its own kind, before any data.
+        assert_eq!(
+            result.map_err(|error| error.kind),
+            Err(CommandErrorKind::NotFound)
+        );
+        assert!(frames.is_empty());
+    }
+
+    /// Proves a canceled grep reports the cancel and never ends like a finished one.
+    #[tokio::test]
+    async fn cancellation_ends_without_done() {
+        let temp = TempDir::create();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let (result, frames) = run(
+            test_request(temp.path().to_string_lossy(), "target", false),
+            &cancel,
+        )
+        .await;
+        // The caller learns the grep was canceled, not that it found nothing.
+        assert!(matches!(
+            result,
+            Err(CommandError {
+                kind: CommandErrorKind::Canceled,
+                ..
+            })
+        ));
+        // No frame claims the stream is complete.
+        assert!(frames.iter().all(|frame| !frame.is_last));
+    }
+
+    /// Verifies a scan that runs into its deadline still ends with `done`, marked timed out.
+    #[tokio::test]
+    async fn timeout_still_ends_with_done() {
+        let temp = TempDir::create();
+        // Nothing matches, so only the deadline can end the walk of the endless maze.
+        let root = symlink_maze(temp.path(), "maze.txt", b"nothing to find\n").await;
+        let mut request = test_request(root.to_string_lossy(), "absent-needle", true);
+        request.timeout_seconds = 1;
+
+        let (result, frames) = run(request, &CancellationToken::new()).await;
+
+        // Reaching the deadline is a normal end of a search.
+        assert!(result.is_ok());
+        // The stream is complete and its summary says it stopped at the deadline.
+        assert!(frames.last().is_some_and(|frame| frame.is_last));
+        assert!(reduce(&frames).timed_out);
     }
 
     /// Proves metacharacters stay literal when callers opt out of regex compilation.

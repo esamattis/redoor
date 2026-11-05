@@ -199,13 +199,13 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v4, redoor.v5"),
+            HeaderValue::from_static("redoor.v5, redoor.v6"),
         );
         // An agent may offer older protocols too; the server picks its own.
         assert!(offers_protocol(&headers));
         headers.insert(
             header::SEC_WEBSOCKET_PROTOCOL,
-            HeaderValue::from_static("redoor.v6"),
+            HeaderValue::from_static("redoor.v7"),
         );
         // A different version alone must be refused.
         assert!(!offers_protocol(&headers));

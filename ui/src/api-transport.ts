@@ -166,3 +166,59 @@ export async function apiRequest<T>(
 
     return response.json();
 }
+
+/**
+ * Sends a request and yields the NDJSON lines of its streamed answer, one batch per chunk the
+ * network delivers, so callers can show results while the server still produces them.
+ *
+ * Lines may be split across chunks; only complete lines are yielded, and chunks that complete
+ * none yield nothing. A body that ends in the middle of a line fails, because it was cut off.
+ * A consumer that stops early cancels the body, which tells the server to stop too.
+ */
+export async function* streamNdjson<T>(
+    url: string,
+    options: RequestInit,
+    context: RequestContext = {},
+): AsyncGenerator<T[]> {
+    const response = await fetch(url, withAuthentication(options, context));
+    await requireSuccessfulResponse(response, context);
+
+    if (response.body === null) {
+        throw new Error("The streamed response has no body");
+    }
+
+    const reader = response.body
+        .pipeThrough(new TextDecoderStream())
+        .getReader();
+
+    let partial = "";
+
+    try {
+        for (;;) {
+            const chunk = await reader.read();
+
+            if (chunk.done) {
+                break;
+            }
+
+            const lines = (partial + chunk.value).split("\n");
+            partial = lines.pop() ?? "";
+
+            // The caller names the line type the route sends, as `apiRequest` does for JSON.
+            const batch: T[] = lines
+                .filter((line) => line !== "")
+                .map((line): T => JSON.parse(line));
+
+            if (batch.length > 0) {
+                yield batch;
+            }
+        }
+    } finally {
+        // Ends the request when the consumer stopped before the body did; a no-op otherwise.
+        await reader.cancel().catch(() => undefined);
+    }
+
+    if (partial !== "") {
+        throw new Error("The stream ended in the middle of a line");
+    }
+}

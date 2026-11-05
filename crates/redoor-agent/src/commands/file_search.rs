@@ -1,6 +1,8 @@
 //! Bounded fuzzy path search over a directory tree, honoring gitignore and hidden-file
 //! settings.
 
+use super::search_stream::{MatchSink, SearchStream};
+use crate::transfers::stream::StreamWriter;
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use nucleo_matcher::{
     Config, Matcher, Utf32Str,
@@ -10,7 +12,7 @@ use redoor_core::log;
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::request::CommandError;
 use redoor_protocol::{
-    api::search::{CaseSensitivity, FileSearchEntry, FileSearchResponse},
+    api::search::{CaseSensitivity, FileSearchEntry, FileSearchEvent, FileSearchRanking},
     wire::command::CommandErrorKind,
 };
 use std::{
@@ -22,8 +24,6 @@ use std::{
 use tokio::io::{AsyncReadExt, BufReader};
 use tokio_util::sync::CancellationToken;
 
-/// Bounds both response size and memory retained while traversing a large tree.
-const RESULT_LIMIT: usize = 100;
 /// Prevents repository-controlled ignore rules from allocating an unbounded physical line.
 const MAX_GITIGNORE_LINE_BYTES: usize = 64 * 1024;
 
@@ -115,13 +115,6 @@ impl SearchExpression {
     }
 }
 
-/// Retains the matcher score internally so the agent can rank a bounded result set.
-#[derive(Debug)]
-struct RankedEntry {
-    entry: FileSearchEntry,
-    score: u32,
-}
-
 /// Identifies directory targets so following user-navigable symlinks cannot create traversal cycles.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(super) struct DirectoryIdentity {
@@ -144,88 +137,92 @@ pub(super) fn directory_identity(metadata: &std::fs::Metadata) -> DirectoryIdent
     }
 }
 
-/// Traverses incrementally so timeout or cancellation returns useful partial results without
-/// retaining the tree.
+/// Runs one path search and streams its matches on `stream`, returning the stream so the
+/// result can follow the data.
+///
+/// The result is an error only for input that fails validation, a root that cannot be read,
+/// a cancel or a lost connection; a walk that reaches its deadline ends normally with
+/// `done { timed_out: true }`.
 pub(crate) async fn execute(
     request: FileSearchRequest,
+    stream: StreamWriter,
     cancel: &CancellationToken,
-) -> Result<FileSearchResponse, CommandError> {
-    let FileSearchRequest {
-        path,
-        query,
-        timeout_seconds,
-        include_hidden,
-        respect_gitignore,
-        case_sensitivity,
-        directories_only,
-    } = request;
-    if query.trim().is_empty() {
+) -> (StreamWriter, Result<(), CommandError>) {
+    let started_at = Instant::now();
+    let mut output = SearchStream::new(stream, cancel, "File search");
+    let result = search(&request, &mut output, started_at).await;
+    if let Err(CommandError {
+        kind: CommandErrorKind::Canceled,
+        ..
+    }) = &result
+    {
+        log_canceled_search("File search", &request.path, &request.query, started_at);
+    }
+    (output.into_writer(), result.map(|_| ()))
+}
+
+/// Validates, opens the root, then walks it while matches stream. Returns the agent's own
+/// final top list, which the streamed matches must reduce to.
+async fn search(
+    request: &FileSearchRequest,
+    output: &mut SearchStream<'_>,
+    started_at: Instant,
+) -> Result<Vec<FileSearchEntry>, CommandError> {
+    if request.query.trim().is_empty() {
         return Err(CommandError::new(
             CommandErrorKind::InvalidInput,
             "File search query must not be empty",
         ));
     }
+    let root = Path::new(&request.path);
+    let root_entries = tokio::fs::read_dir(root)
+        .await
+        .map_err(|error| CommandError::io("Failed to search directory", error))?;
+    output.ready().await?;
 
-    let started_at = Instant::now();
-    let expression = SearchExpression::parse(&query, case_sensitivity);
-    let mut matches = Vec::with_capacity(RESULT_LIMIT);
-    let result = {
-        let traversal = collect_matches(
-            Path::new(&path),
-            &expression,
-            include_hidden,
-            respect_gitignore,
-            directories_only,
-            &mut matches,
-        );
-        tokio::pin!(traversal);
-        let timeout = tokio::time::sleep(Duration::from_secs(timeout_seconds));
-        tokio::pin!(timeout);
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => {
-                log_canceled_search("File search", &path, &query, started_at);
-                None
-            }
-            result = &mut traversal => Some(result),
-            _ = &mut timeout => None,
-        }
-    };
-
-    let timed_out = match result {
-        Some(Ok(())) => false,
-        Some(Err(error)) => {
-            return Err(CommandError::io("Failed to search directory", error));
-        }
-        None => true,
-    };
-
-    matches.sort_unstable_by(|left, right| {
-        right
-            .score
-            .cmp(&left.score)
-            .then_with(|| left.entry.path.cmp(&right.entry.path))
-    });
-
-    Ok(FileSearchResponse {
-        results: matches.into_iter().map(|entry| entry.entry).collect(),
-        timed_out,
-        duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
-    })
+    let expression = SearchExpression::parse(&request.query, request.case_sensitivity);
+    let deadline = started_at + Duration::from_secs(request.timeout_seconds);
+    let mut ranking = FileSearchRanking::default();
+    // The walk borrows the ranking, so it is still here after a deadline dropped the walk.
+    let kept = &mut ranking;
+    output
+        .run(|sink| async move {
+            let walk = collect_matches(root, root_entries, &expression, request, kept, &sink);
+            let timed_out = tokio::select! {
+                biased;
+                () = walk => false,
+                () = tokio::time::sleep_until(deadline.into()) => true,
+            };
+            Ok(FileSearchEvent::Done {
+                timed_out,
+                duration_ms: u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+            })
+        })
+        .await?;
+    Ok(ranking.into_entries())
 }
 
 /// Walks depth-first with one open directory per depth so broad trees do not become an in-memory plan.
+///
+/// A match is streamed only when it enters the current top list, so the stream stays small
+/// on huge trees while the matches it carries still reduce to the final list. The walk stops
+/// early when the writer is gone.
 async fn collect_matches(
     root: &Path,
+    root_entries: tokio::fs::ReadDir,
     expression: &SearchExpression,
-    include_hidden: bool,
-    respect_gitignore: bool,
-    directories_only: bool,
-    matches: &mut Vec<RankedEntry>,
-) -> std::io::Result<()> {
+    request: &FileSearchRequest,
+    ranking: &mut FileSearchRanking,
+    sink: &MatchSink<FileSearchEvent>,
+) {
+    let FileSearchRequest {
+        include_hidden,
+        respect_gitignore,
+        directories_only,
+        ..
+    } = *request;
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
     let mut utf32_buffer = Vec::new();
-    let root_entries = tokio::fs::read_dir(root).await?;
     let root_identity = tokio::fs::metadata(root)
         .await
         .ok()
@@ -301,22 +298,24 @@ async fn collect_matches(
                         .score(haystack, &mut matcher)
                         .map(|term_score| score.saturating_add(term_score))
                 });
-            if let Some(score) = score {
-                retain_match(
-                    matches,
-                    RankedEntry {
-                        entry: FileSearchEntry {
-                            name: entry_name.to_string_lossy().into_owned(),
-                            path: entry_path.to_string_lossy().into_owned(),
-                            file_type: if is_directory {
-                                "directory".to_string()
-                            } else {
-                                "file".to_string()
-                            },
-                        },
-                        score,
+            if let Some(score) = score
+                && let Some(kept) = ranking.offer(FileSearchEntry {
+                    name: entry_name.to_string_lossy().into_owned(),
+                    path: entry_path.to_string_lossy().into_owned(),
+                    file_type: if is_directory {
+                        "directory".to_string()
+                    } else {
+                        "file".to_string()
                     },
-                );
+                    score,
+                })
+                && !sink
+                    .send(FileSearchEvent::Match {
+                        entry: kept.clone(),
+                    })
+                    .await
+            {
+                return;
             }
         }
 
@@ -338,8 +337,6 @@ async fn collect_matches(
             });
         }
     }
-
-    Ok(())
 }
 
 /// Loads one directory's rules asynchronously while tolerating missing or partially invalid files.
@@ -421,32 +418,6 @@ pub(super) fn is_ignored(
     false
 }
 
-/// Keeps only the globally strongest matches while traversal continues through arbitrary trees.
-fn retain_match(matches: &mut Vec<RankedEntry>, candidate: RankedEntry) {
-    if matches.len() < RESULT_LIMIT {
-        matches.push(candidate);
-        return;
-    }
-
-    let weakest_index = matches
-        .iter()
-        .enumerate()
-        .min_by(|(_, left), (_, right)| {
-            left.score
-                .cmp(&right.score)
-                .then_with(|| right.entry.path.cmp(&left.entry.path))
-        })
-        .map(|(index, _)| index);
-    if let Some(weakest_index) = weakest_index {
-        let weakest = &matches[weakest_index];
-        if candidate.score > weakest.score
-            || (candidate.score == weakest.score && candidate.entry.path < weakest.entry.path)
-        {
-            matches[weakest_index] = candidate;
-        }
-    }
-}
-
 /// Records a search stopped because its caller gave up, so an operator can confirm that
 /// abandoned UI searches free the agent instead of running until their timeout.
 pub(crate) fn log_canceled_search(kind: &str, path: &str, query: &str, started_at: Instant) {
@@ -463,6 +434,46 @@ mod tests {
     use redoor_core::test_support::TempDir;
     use std::os::unix::fs::PermissionsExt;
 
+    use super::super::search_stream::test_support::{events, recording_writer, symlink_maze};
+    use redoor_protocol::api::search::{FILE_SEARCH_RESULT_LIMIT, FileSearchResponse};
+    use redoor_protocol::wire::stream::StreamChunk;
+
+    /// Runs a search against a recording stream and returns its result with the frames sent.
+    async fn run(
+        request: FileSearchRequest,
+        cancel: &CancellationToken,
+    ) -> (Result<(), CommandError>, Vec<StreamChunk>) {
+        let (writer, recorder) = recording_writer();
+        let (writer, result) = execute(request, writer, cancel).await;
+        drop(writer);
+        (result, recorder.await.expect("the recorder finishes"))
+    }
+
+    /// Rebuilds the response a client gets from the streamed events, like the server does.
+    fn reduce(frames: &[StreamChunk]) -> FileSearchResponse {
+        let mut ranking = FileSearchRanking::default();
+        let mut done = None;
+        for event in events::<FileSearchEvent>(frames) {
+            // Nothing may follow the `done` line.
+            assert!(done.is_none(), "an event followed done");
+            match event {
+                FileSearchEvent::Match { entry } => {
+                    ranking.offer(entry);
+                }
+                FileSearchEvent::Done {
+                    timed_out,
+                    duration_ms,
+                } => done = Some((timed_out, duration_ms)),
+            }
+        }
+        let (timed_out, duration_ms) = done.expect("a finished search ends with done");
+        FileSearchResponse {
+            results: ranking.into_entries(),
+            timed_out,
+            duration_ms,
+        }
+    }
+
     /// Runs an uncancelled search with positional options to keep the cases readable.
     async fn search(
         path: String,
@@ -472,7 +483,7 @@ mod tests {
         respect_gitignore: bool,
         case_sensitivity: CaseSensitivity,
     ) -> Result<FileSearchResponse, CommandError> {
-        execute(
+        let (result, frames) = run(
             FileSearchRequest {
                 path,
                 query,
@@ -484,41 +495,131 @@ mod tests {
             },
             &CancellationToken::new(),
         )
-        .await
+        .await;
+        result.map(|()| reduce(&frames))
     }
     #[cfg(not(target_os = "macos"))]
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
 
-    /// Verifies superseded searches still return a terminal response to their original caller.
+    /// Builds a request for `path` with the default filters.
+    fn request(path: &Path, query: &str, timeout_seconds: u64) -> FileSearchRequest {
+        FileSearchRequest {
+            path: path.to_string_lossy().into_owned(),
+            query: query.to_string(),
+            timeout_seconds,
+            include_hidden: false,
+            respect_gitignore: true,
+            case_sensitivity: CaseSensitivity::Smart,
+            directories_only: false,
+        }
+    }
+
+    /// Verifies a canceled search reports the cancel and never ends like a finished one.
     #[tokio::test]
-    async fn canceled_search_returns_empty_partial_response() {
+    async fn canceled_search_ends_without_done() {
+        let temp = TempDir::create();
         let cancel = CancellationToken::new();
         // Pre-canceling makes this deterministic without sleeping or constructing a large tree.
         cancel.cancel();
 
-        let result = execute(
-            FileSearchRequest {
-                path: "/path-that-does-not-need-to-exist".to_string(),
-                query: "query".to_string(),
-                timeout_seconds: 5,
-                include_hidden: false,
-                respect_gitignore: true,
-                case_sensitivity: CaseSensitivity::Smart,
-                directories_only: false,
-            },
-            &cancel,
-        )
-        .await;
+        let (result, frames) = run(request(temp.path(), "query", 5), &cancel).await;
 
-        let Ok(response) = result else {
-            panic!("cancellation should return a file search response");
-        };
-        // No traversal work should occur after the cancellation signal is already visible.
-        assert!(response.results.is_empty());
-        // Existing response schema marks every incomplete traversal with the timeout flag.
+        // The caller learns the search was canceled, not that it found nothing.
+        assert!(matches!(
+            result,
+            Err(CommandError {
+                kind: CommandErrorKind::Canceled,
+                ..
+            })
+        ));
+        // No frame claims the stream is complete.
+        assert!(frames.iter().all(|frame| !frame.is_last));
+    }
+
+    /// Verifies validation and root errors are the result alone, with no data, so the server
+    /// can still answer them with an HTTP error status.
+    #[tokio::test]
+    async fn early_errors_send_no_data() {
+        let temp = TempDir::create();
+        for (path, query, kind) in [
+            (
+                temp.path().to_path_buf(),
+                " ",
+                CommandErrorKind::InvalidInput,
+            ),
+            (
+                temp.path().join("missing"),
+                "query",
+                CommandErrorKind::NotFound,
+            ),
+        ] {
+            let (result, frames) = run(request(&path, query, 5), &CancellationToken::new()).await;
+            // The failure keeps its kind, which decides the HTTP status.
+            assert_eq!(result.map_err(|error| error.kind), Err(kind));
+            // Not even the ready frame went out.
+            assert!(frames.is_empty());
+        }
+    }
+
+    /// Verifies the matches streamed on entering the top list reduce to exactly the agent's
+    /// own final list, so clients can rank streamed matches without the agent's help.
+    #[tokio::test]
+    async fn streamed_matches_reduce_to_the_agent_ranking() {
+        let temp = TempDir::create();
+        let root = temp.path().join("ranked");
+        for index in 0..300 {
+            // Varied lengths and depths give the matches different scores.
+            let directory = root
+                .join(format!("d{}", index % 7))
+                .join("x".repeat(index % 5));
+            tokio::fs::create_dir_all(&directory).await.unwrap();
+            tokio::fs::write(
+                directory.join(format!("{}rank-target-{index}.txt", "y".repeat(index % 11))),
+                b"",
+            )
+            .await
+            .unwrap();
+        }
+        let (writer, recorder) = recording_writer();
+        let cancel = CancellationToken::new();
+        let mut output = SearchStream::new(writer, &cancel, "File search");
+        let agent_list = super::search(
+            &request(&root, "ranktarget", 30),
+            &mut output,
+            Instant::now(),
+        )
+        .await
+        .expect("the search finishes");
+        drop(output.into_writer());
+        let frames = recorder.await.unwrap();
+
+        let streamed = reduce(&frames);
+        // The list is full, so ranking decided which matches were kept.
+        assert_eq!(agent_list.len(), FILE_SEARCH_RESULT_LIMIT);
+        // Reducing the stream gives the agent's list, in the same order.
+        assert_eq!(streamed.results, agent_list);
+        // Matches that never entered the top list were not streamed.
+        assert!(events::<FileSearchEvent>(&frames).len() < 300);
+    }
+
+    /// Verifies a walk that runs into its deadline still ends with `done`, marked timed out.
+    #[tokio::test]
+    async fn timeout_still_ends_with_done() {
+        let temp = TempDir::create();
+        // The maze has more paths than any walk can visit, so only the deadline ends it.
+        let root = symlink_maze(temp.path(), "maze-target.txt", b"").await;
+
+        let (result, frames) =
+            run(request(&root, "mazetarget", 1), &CancellationToken::new()).await;
+
+        // Reaching the deadline is a normal end of a search.
+        assert!(result.is_ok());
+        // The stream is complete and its summary says it stopped at the deadline.
+        assert!(frames.last().is_some_and(|frame| frame.is_last));
+        let response = reduce(&frames);
         assert!(response.timed_out);
-        // Even immediately cancelled searches report their agent-side execution duration.
-        assert!(response.duration_ms < 5_000);
+        // Matches found before the deadline were streamed.
+        assert!(!response.results.is_empty());
     }
 
     /// Verifies a directories-only search skips matching files but still finds directories
@@ -536,19 +637,10 @@ mod tests {
             .await
             .expect("matching file should be created");
 
-        let result = execute(
-            FileSearchRequest {
-                path: root.to_string_lossy().into_owned(),
-                query: "match".to_string(),
-                timeout_seconds: 5,
-                include_hidden: false,
-                respect_gitignore: true,
-                case_sensitivity: CaseSensitivity::Smart,
-                directories_only: true,
-            },
-            &CancellationToken::new(),
-        )
-        .await;
+        let mut directories = request(&root, "match", 5);
+        directories.directories_only = true;
+        let (result, frames) = run(directories, &CancellationToken::new()).await;
+        let result = result.map(|()| reduce(&frames));
 
         let Ok(response) = result else {
             panic!("a directories-only search should succeed");

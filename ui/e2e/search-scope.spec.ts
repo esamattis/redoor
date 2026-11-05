@@ -74,7 +74,7 @@ test.describe("Search scope", () => {
 
         const directoriesSearchAnswered = page.waitForResponse(
             (response) =>
-                new URL(response.url()).pathname.includes("/find/") &&
+                new URL(response.url()).pathname.includes("/find-stream/") &&
                 response
                     .request()
                     .postData()

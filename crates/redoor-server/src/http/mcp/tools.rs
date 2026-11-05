@@ -24,10 +24,11 @@ use uuid::Uuid;
 use super::{error::McpError, schema::server_metadata};
 use crate::http::{
     access::Principal,
-    agent_client::{CreateDirectory, Ls, Metadata, RawDelete, Trash, content_grep, file_search},
+    agent_client::{CreateDirectory, Ls, Metadata, RawDelete, Trash},
     error::ApiError,
     services::{
         output::OutputStream,
+        search::AgentSearch,
         transfer::{CopySpec, StartedCopy},
         upload::{AgentUpload, UploadStart},
     },
@@ -1140,7 +1141,9 @@ async fn search_paths(
         .and_then(Value::as_u64)
         .unwrap_or(10)
         .clamp(1, 60);
-    let call = file_search(
+    let search = AgentSearch::files(
+        &state.router_ref,
+        agent_id,
         root.to_string(),
         FindRequest {
             query: string(args, "query", id)?.to_string(),
@@ -1156,10 +1159,11 @@ async fn search_paths(
             case_sensitivity: case_sensitivity(args, id)?,
             directories_only: false,
         },
-    );
-    let mut result = state
-        .agents
-        .call(&agent_id, call)
+    )
+    .await
+    .map_err(|error| op(error.to_string(), id))?;
+    let mut result = search
+        .collect()
         .await
         .map_err(|error| op(error.to_string(), id))?;
     let omitted = result.results.len().saturating_sub(2000);
@@ -1210,10 +1214,10 @@ async fn search_contents(
             .unwrap_or(0)
             .min(20),
     };
-    let call = content_grep(root.to_string(), request);
-    let result = state
-        .agents
-        .call(&agent_id, call)
+    let result = AgentSearch::contents(&state.router_ref, agent_id, root.to_string(), request)
+        .await
+        .map_err(|error| op(error.to_string(), id))?
+        .collect()
         .await
         .map_err(|error| op(error.to_string(), id))?;
     serde_json::to_value(result).map_err(|error| op(error.to_string(), id))

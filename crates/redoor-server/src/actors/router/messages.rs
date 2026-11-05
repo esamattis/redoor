@@ -270,6 +270,22 @@ pub enum OutputStreamTracking {
         /// Independent terminal acknowledgement stays observable when output is saturated.
         terminal: tokio::sync::watch::Sender<Option<redoor_protocol::wire::exec::ExecEvent>>,
     },
+    /// Path and content searches stream NDJSON matches and have no history; their `done`
+    /// line is part of the data, so the result only matters when it is an error.
+    Search,
+}
+
+impl OutputStreamTracking {
+    /// Whether this tracking belongs to `command`, so process output or search matches can
+    /// never acquire file history and a download never loses it.
+    pub(crate) fn fits(&self, command: &redoor_protocol::wire::command::Command) -> bool {
+        use redoor_protocol::wire::command::Command;
+        match command {
+            Command::Exec(_) => matches!(self, Self::Execution { .. }),
+            Command::FileSearch(_) | Command::ContentGrep(_) => matches!(self, Self::Search),
+            _ => matches!(self, Self::Download { .. }),
+        }
+    }
 }
 
 /// Outcome of waiting for an upload destination to become ready.

@@ -856,7 +856,7 @@ gamma
         );
 
         const grepRequest = page.waitForRequest((request) =>
-            new URL(request.url()).pathname.includes("/grep/"),
+            new URL(request.url()).pathname.includes("/grep-stream/"),
         );
 
         await searchSelectionButton.click();
@@ -875,7 +875,7 @@ gamma
         const requestBody: unknown = (await grepRequest).postDataJSON();
         // Agent identity and repository root are carried by the scoped grep URL.
         expect(new URL((await grepRequest).url()).pathname).toContain(
-            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep/`,
+            `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep-stream/`,
         );
         // The grep POST body proves editor selection bypasses the default path mode.
         expect(requestBody).toMatchObject({ query: "search-selection-token" });

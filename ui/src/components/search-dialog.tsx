@@ -261,19 +261,29 @@ function useRestoredSearchView(options: {
     };
 }
 
-/** The results on screen, unless they are a previous query's shown while searching. */
+/**
+ * The results on screen once their search finished. A previous query's results shown while
+ * searching are not this query's, and a list still streaming in, or one whose stream failed,
+ * is partial: restoring it would show it as if the search had found nothing more.
+ */
 function shownSearchResults(
     isContentSearch: boolean,
     pathSearch: UseQueryResult<FileSearchResponse>,
     contentSearch: UseQueryResult<ContentGrepResponse>,
 ): SearchViewResults | undefined {
     if (isContentSearch) {
-        return contentSearch.data && !contentSearch.isPlaceholderData
+        return contentSearch.data &&
+            contentSearch.isSuccess &&
+            !contentSearch.isPlaceholderData &&
+            !contentSearch.isFetching
             ? { mode: "content", response: contentSearch.data }
             : undefined;
     }
 
-    return pathSearch.data && !pathSearch.isPlaceholderData
+    return pathSearch.data &&
+        pathSearch.isSuccess &&
+        !pathSearch.isPlaceholderData &&
+        !pathSearch.isFetching
         ? { mode: "path", response: pathSearch.data }
         : undefined;
 }
@@ -731,9 +741,22 @@ function SearchStatus(props: {
     }
 
     if (props.query !== props.debouncedQuery || activeSearch.isFetching) {
+        // Results stream in while the device searches, so the count tells the reader the
+        // list is still growing. It stays out of the live region, which would otherwise
+        // announce every batch.
+        const found =
+            props.query === props.debouncedQuery &&
+            activeSearch.data !== undefined &&
+            !activeSearch.isPlaceholderData
+                ? activeSearch.data.results.length
+                : null;
+
         return (
             <p role="status" className="px-1 text-xs text-slate-500">
                 Searching…
+                {found === null ? null : (
+                    <span aria-hidden="true"> {found} found</span>
+                )}
             </p>
         );
     }

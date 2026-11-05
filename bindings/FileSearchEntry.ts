@@ -3,4 +3,9 @@
 /**
  * Describes one matching remote path without requiring additional metadata calls.
  */
-export type FileSearchEntry = { name: string, path: string, type: string, };
+export type FileSearchEntry = { name: string, path: string, type: string, 
+/**
+ * Fuzzy match score, higher is better. Streamed matches arrive in walk order, so clients
+ * need the score to rank them the way the agent does.
+ */
+score: number, };

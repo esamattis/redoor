@@ -1,4 +1,5 @@
 import {
+    experimental_streamedQuery as streamedQuery,
     infiniteQueryOptions,
     keepPreviousData,
     queryOptions,
@@ -13,6 +14,11 @@ import { notFound } from "@tanstack/react-router";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { CaseSensitivity } from "#bindings/CaseSensitivity";
+import type { ContentGrepEvent } from "#bindings/ContentGrepEvent";
+import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
+import type { FileSearchEntry } from "#bindings/FileSearchEntry";
+import type { FileSearchEvent } from "#bindings/FileSearchEvent";
+import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitBranchScope } from "#bindings/GitBranchScope";
@@ -1017,7 +1023,112 @@ export function trashQueryOptions(agent: Agent) {
     });
 }
 
-/** Cancels obsolete recursive searches while retaining results during a new request. */
+/** Most paths a path search keeps, as on the device, so streamed matches reduce to its list. */
+const FILE_SEARCH_RESULT_LIMIT = 100;
+
+/**
+ * Orders better path matches first: higher score, then path, the same order the device
+ * keeps, so the list it ends with is exactly the device's own.
+ */
+function compareFileSearchEntries(
+    left: FileSearchEntry,
+    right: FileSearchEntry,
+) {
+    if (left.score !== right.score) {
+        return right.score - left.score;
+    }
+
+    return left.path < right.path ? -1 : left.path > right.path ? 1 : 0;
+}
+
+/**
+ * Folds a batch of streamed path search events into the response shape. Matches arrive in
+ * walk order and only while they rank among the device's best, so the list is re-ranked and
+ * cut to the limit; `done` fills the summary.
+ */
+export function reduceFileSearchEvents(
+    current: FileSearchResponse,
+    events: FileSearchEvent[],
+): FileSearchResponse {
+    const matches = events.flatMap((event) =>
+        event.type === "match" ? [event.entry] : [],
+    );
+
+    const done = events.find((event) => event.type === "done");
+
+    const next =
+        done === undefined
+            ? current
+            : {
+                  ...current,
+                  timed_out: done.timed_out,
+                  duration_ms: done.duration_ms,
+              };
+
+    if (matches.length === 0) {
+        return next;
+    }
+
+    return {
+        ...next,
+        results: [...next.results, ...matches]
+            .sort(compareFileSearchEntries)
+            .slice(0, FILE_SEARCH_RESULT_LIMIT),
+    };
+}
+
+/** Folds a batch of streamed content search events: matches in the order found, then `done`. */
+export function reduceContentGrepEvents(
+    current: ContentGrepResponse,
+    events: ContentGrepEvent[],
+): ContentGrepResponse {
+    const matches = events.flatMap((event) =>
+        event.type === "match" ? [event.entry] : [],
+    );
+
+    const done = events.find((event) => event.type === "done");
+
+    const results =
+        matches.length === 0
+            ? current.results
+            : [...current.results, ...matches];
+
+    if (done === undefined) {
+        return { ...current, results };
+    }
+
+    return {
+        results,
+        timed_out: done.timed_out,
+        cancelled: done.cancelled,
+        truncated: done.truncated,
+        omitted_long_lines: done.omitted_long_lines,
+        duration_ms: done.duration_ms,
+    };
+}
+
+/** What a path search shows before its first event. */
+const EMPTY_FILE_SEARCH: FileSearchResponse = {
+    results: [],
+    timed_out: false,
+    duration_ms: 0,
+};
+
+/** What a content search shows before its first event. */
+const EMPTY_CONTENT_GREP: ContentGrepResponse = {
+    results: [],
+    timed_out: false,
+    cancelled: false,
+    truncated: false,
+    omitted_long_lines: 0,
+    duration_ms: 0,
+};
+
+/**
+ * Streams a path search into the cache, so results show while the device still walks.
+ * Superseded searches are canceled, the previous query's results stay until the first new
+ * event, and a refetch (such as after an upload) keeps the list until it has a new one.
+ */
 export function fileSearchQueryOptions(
     agent: Agent,
     path: string,
@@ -1025,21 +1136,30 @@ export function fileSearchQueryOptions(
 ) {
     return queryOptions({
         queryKey: queryKeys.fileSearch(agent.id, path, search),
-        queryFn: ({ signal }) =>
-            agent.searchFiles(path, search.query, {
-                timeoutSeconds: search.timeoutSeconds,
-                includeHidden: search.includeHidden,
-                respectGitignore: search.respectGitignore,
-                caseSensitivity: search.caseSensitivity,
-                directoriesOnly: search.directoriesOnly,
-                signal,
-            }),
+        queryFn: streamedQuery({
+            streamFn: ({ signal }) =>
+                agent.streamFileSearch(path, search.query, {
+                    timeoutSeconds: search.timeoutSeconds,
+                    includeHidden: search.includeHidden,
+                    respectGitignore: search.respectGitignore,
+                    caseSensitivity: search.caseSensitivity,
+                    directoriesOnly: search.directoriesOnly,
+                    signal,
+                }),
+            reducer: reduceFileSearchEvents,
+            initialValue: EMPTY_FILE_SEARCH,
+            refetchMode: "replace",
+        }),
         enabled: search.query.trim() !== "",
         placeholderData: keepPreviousData,
     });
 }
 
-/** Cancels superseded content searches and keeps prior matches visible while replacing them. */
+/**
+ * Streams a content search into the cache, so matches show while the device still scans.
+ * Superseded searches are canceled, the previous query's matches stay until the first new
+ * event, and a refetch keeps the list until it has a new one.
+ */
 export function contentGrepQueryOptions(
     agent: Agent,
     path: string,
@@ -1047,17 +1167,22 @@ export function contentGrepQueryOptions(
 ) {
     return queryOptions({
         queryKey: queryKeys.contentGrep(agent.id, path, search),
-        queryFn: ({ signal }) =>
-            agent.grepContent(path, search.query, {
-                timeoutSeconds: search.timeoutSeconds,
-                includeHidden: search.includeHidden,
-                respectGitignore: search.respectGitignore,
-                fixedString: !search.regex,
-                caseSensitivity: search.caseSensitivity,
-                beforeContext: search.contextSize,
-                afterContext: search.contextSize,
-                signal,
-            }),
+        queryFn: streamedQuery({
+            streamFn: ({ signal }) =>
+                agent.streamContentGrep(path, search.query, {
+                    timeoutSeconds: search.timeoutSeconds,
+                    includeHidden: search.includeHidden,
+                    respectGitignore: search.respectGitignore,
+                    fixedString: !search.regex,
+                    caseSensitivity: search.caseSensitivity,
+                    beforeContext: search.contextSize,
+                    afterContext: search.contextSize,
+                    signal,
+                }),
+            reducer: reduceContentGrepEvents,
+            initialValue: EMPTY_CONTENT_GREP,
+            refetchMode: "replace",
+        }),
         enabled: search.query.trim() !== "",
         placeholderData: keepPreviousData,
     });

@@ -7,14 +7,13 @@
 //! its own partial result first; process control uses [`QUICK_TIMEOUT`].
 
 use super::AgentCall;
-use redoor_protocol::api::search::{FindRequest, GrepRequest};
 pub(crate) use redoor_protocol::wire::request::{
-    ChmodPath, ChownPath, ContentGrep, CreateDirectory, DeletePartial, DirectorySize, Echo,
-    EmptyTrash, FileSearch, GetAgentDetails, GetLoggingLevel, GitCommitDiff, GitCommitNeighbors,
-    GitContext, GitDiff, GitDirectoryEntries, GitFileBases, GitLog, GitRefList, GitRevisionContent,
-    GitRevisionStat, GitRevisionTree, GitStatus, GitWorktreeList, GitWorktreeStatus, ListAccounts,
-    ListPartials, ListTrash, Ls, Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete,
-    ReadPartial, RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
+    ChmodPath, ChownPath, CreateDirectory, DeletePartial, DirectorySize, Echo, EmptyTrash,
+    GetAgentDetails, GetLoggingLevel, GitCommitDiff, GitCommitNeighbors, GitContext, GitDiff,
+    GitDirectoryEntries, GitFileBases, GitLog, GitRefList, GitRevisionContent, GitRevisionStat,
+    GitRevisionTree, GitStatus, GitWorktreeList, GitWorktreeStatus, ListAccounts, ListPartials,
+    ListTrash, Ls, Metadata, MoveMetadata, OpenPath, ProbePartial, RawDelete, ReadPartial,
+    RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
 };
 use redoor_protocol::wire::request::{CloseTerminal, CreateTerminal};
 use std::time::Duration;
@@ -83,22 +82,6 @@ standard_calls! {
     GitRevisionStat => "inspecting a path at a git revision",
     GetAgentDetails => "fetching agent details",
     SelfExec => "starting the upgraded agent",
-}
-
-impl AgentCall for FileSearch {
-    const OPERATION: &'static str = "searching files";
-
-    fn timeout(&self) -> Option<Duration> {
-        agent_limited(self.timeout_seconds)
-    }
-}
-
-impl AgentCall for ContentGrep {
-    const OPERATION: &'static str = "searching file contents";
-
-    fn timeout(&self) -> Option<Duration> {
-        agent_limited(self.timeout_seconds)
-    }
 }
 
 impl AgentCall for DirectorySize {
@@ -193,33 +176,5 @@ impl AgentCall for Restart {
 
     fn timeout(&self) -> Option<Duration> {
         Some(QUICK_TIMEOUT)
-    }
-}
-
-/// Builds a file-name search below `path` from its REST request.
-pub(crate) fn file_search(path: String, request: FindRequest) -> FileSearch {
-    FileSearch {
-        path,
-        query: request.query,
-        timeout_seconds: request.timeout,
-        include_hidden: request.include_hidden,
-        respect_gitignore: request.respect_gitignore,
-        case_sensitivity: request.case_sensitivity,
-        directories_only: request.directories_only,
-    }
-}
-
-/// Builds a content search below `path` from its REST request.
-pub(crate) fn content_grep(path: String, request: GrepRequest) -> ContentGrep {
-    ContentGrep {
-        path,
-        query: request.query,
-        timeout_seconds: request.timeout,
-        include_hidden: request.include_hidden,
-        respect_gitignore: request.respect_gitignore,
-        fixed_string: request.fixed_string,
-        case_sensitivity: request.case_sensitivity,
-        before_context: request.before_context,
-        after_context: request.after_context,
     }
 }

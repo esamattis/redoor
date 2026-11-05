@@ -147,6 +147,16 @@ impl StreamWriter {
         true
     }
 
+    /// Sends one empty, non-final frame.
+    ///
+    /// A command that validates its input before it streams sends this once validation
+    /// passed, so the server can answer its HTTP client with a success status before the
+    /// first data exists, while an early failure still becomes a proper error status.
+    pub(crate) async fn send_ready(&mut self) -> bool {
+        self.send_chunk(StreamChunk::data(self.request_id, Vec::new(), false))
+            .await
+    }
+
     /// The lane this stream's frames use, so its result can follow its data.
     pub(crate) fn lane(&self) -> &ControlSender {
         &self.lane

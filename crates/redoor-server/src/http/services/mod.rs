@@ -5,5 +5,6 @@
 //! surfaces cannot drift (MCP reads once lacked the cancel-on-drop REST downloads had).
 
 pub(crate) mod output;
+pub(crate) mod search;
 pub(crate) mod transfer;
 pub(crate) mod upload;

@@ -25,7 +25,7 @@ use crate::api::git::worktree::{
 };
 use crate::api::git::worktree_list::GitWorktreeListResponse;
 use crate::api::git::worktree_status::GitWorktreeStatusResponse;
-use crate::api::search::{CaseSensitivity, ContentGrepResponse, FileSearchResponse};
+use crate::api::search::CaseSensitivity;
 use crate::api::transfers::CopyExistingMode;
 use crate::api::trash::TrashListResponse;
 use crate::ids::TerminalSessionId;
@@ -185,7 +185,8 @@ pub struct Ls {
     pub path: Option<String>,
 }
 
-/// Searches path names below a root.
+/// Searches path names below a root. Matches stream as NDJSON `FileSearchEvent` lines ending
+/// with `done`, so the result itself carries nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSearch {
     pub path: String,
@@ -205,7 +206,8 @@ pub struct FileSearch {
     pub directories_only: bool,
 }
 
-/// Searches physical file lines without making the server read remote content.
+/// Searches physical file lines without making the server read remote content. Matches stream
+/// as NDJSON `ContentGrepEvent` lines ending with `done`, so the result itself carries nothing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentGrep {
     pub path: String,
@@ -658,8 +660,8 @@ agent_requests! {
     HashSegments => String,
     Exec => ExecEvent,
     Ls => LsResponse,
-    FileSearch => FileSearchResponse,
-    ContentGrep => ContentGrepResponse,
+    FileSearch => (),
+    ContentGrep => (),
     RawDownload => (),
     TarDownload => (),
     RawUpload => (),
@@ -751,12 +753,9 @@ mod tests {
         assert_round_trip::<Ls>(json!({"kind": "file", "size": 3, "path": "/tmp/a",
             "owner": "me", "group": "us", "uid": 1, "gid": 1, "permissions": 420}));
         assert_round_trip::<Exec>(json!({"type": "exit", "code": 0, "signal": null}));
-        assert_round_trip::<FileSearch>(json!({"results": [], "timed_out": false,
-            "duration_ms": 4}));
-        assert_round_trip::<ContentGrep>(json!({"results": [],
-            "timed_out": false, "cancelled": false, "truncated": false,
-            "omitted_long_lines": 0, "duration_ms": 4}));
         for unit in [
+            through_result_frame::<FileSearch>(Value::Null),
+            through_result_frame::<ContentGrep>(Value::Null),
             through_result_frame::<RawDownload>(Value::Null),
             through_result_frame::<TarDownload>(Value::Null),
             through_result_frame::<GitDownload>(Value::Null),

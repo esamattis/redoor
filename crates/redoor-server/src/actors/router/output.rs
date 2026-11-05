@@ -1,4 +1,5 @@
-//! Agent-to-consumer output streams: file downloads (with transfer history) and exec output.
+//! Agent-to-consumer output streams: file downloads (with transfer history), exec output and
+//! search matches.
 //!
 //! The router admits the stream and opens its inbound slot; frames then flow from the
 //! connection reader to the consumer's [`OutputReceiver`](super::streams::OutputReceiver)
@@ -17,9 +18,7 @@ use redoor_protocol::wire::request::{
 use redoor_protocol::{
     api::transfers::TransferProgressState,
     wire::{
-        command::{Command, CommandErrorKind},
-        exec::ExecEvent,
-        policy::CommandLane,
+        command::CommandErrorKind, exec::ExecEvent, policy::CommandLane,
         stream::STREAM_CREDIT_WINDOW_FRAMES,
     },
 };
@@ -41,11 +40,11 @@ fn exec_event(result: CommandOutcome) -> ExecEvent {
 }
 
 impl RouterState {
-    /// Admits an exec or download stream.
+    /// Admits an exec, search or download stream.
     ///
     /// Ownership is validated from the command policy before anything is admitted, so process
-    /// output can never acquire file history. The inbound slot opens before the command is
-    /// queued, so no frame can arrive unroutable.
+    /// output and search matches can never acquire file history. The inbound slot opens before
+    /// the command is queued, so no frame can arrive unroutable.
     pub(crate) fn start_output(&mut self, request: ExecuteStreamRequest) {
         let ExecuteStreamRequest {
             agent_id,
@@ -53,10 +52,7 @@ impl RouterState {
             tracking,
             reply,
         } = request;
-        let is_exec = matches!(command, Command::Exec(request::Exec { .. }));
-        if command.policy().lane != CommandLane::Output
-            || is_exec != matches!(tracking, OutputStreamTracking::Execution { .. })
-        {
+        if command.policy().lane != CommandLane::Output || !tracking.fits(&command) {
             let _ = reply.send(Err(RouterError::UnexpectedResponseType {
                 operation: "registering output command ownership",
             }));
@@ -104,6 +100,7 @@ impl RouterState {
                 }
             }
             OutputStreamTracking::Execution { terminal } => OutputKind::Execution { terminal },
+            OutputStreamTracking::Search => OutputKind::Search,
         };
         self.flows.insert(
             id,
@@ -192,6 +189,14 @@ impl RouterState {
                 }
                 self.notify_transfer_refresh();
             }
+            OutputKind::Search if canceling => {}
+            // A search's summary is its `done` line, already queued as data, so only a failure
+            // needs the consumer's attention: it ends the stream after the matches it has.
+            OutputKind::Search => {
+                if let CommandOutcome::Error(error) = response.result {
+                    flow.lease.fail(error);
+                }
+            }
         }
         if let Some(connection) = self.agents.by_id.get(&flow.agent_id) {
             // Store a typed failure before closing the queue, or a concurrent consumer
@@ -273,6 +278,7 @@ mod tests {
     use crate::actors::lanes::{ControlLanes, QueuedCommand};
     use redoor_protocol::ids::{AgentId, RequestId};
     use redoor_protocol::wire::ServerToAgent;
+    use redoor_protocol::wire::command::Command;
     use redoor_protocol::wire::stream::StreamChunk;
     use tokio::sync::{mpsc, oneshot, watch};
 
@@ -614,6 +620,104 @@ mod tests {
         // The history row carries the agent's reason.
         assert!(matches!(entry.state, TransferProgressState::Errored));
         assert_eq!(entry.error.as_deref(), Some("disk gone"));
+    }
+
+    /// The path search used by the search stream tests.
+    fn file_search() -> Command {
+        Command::FileSearch(request::FileSearch {
+            path: "/tmp".into(),
+            query: "q".into(),
+            timeout_seconds: 5,
+            include_hidden: false,
+            respect_gitignore: true,
+            case_sensitivity: Default::default(),
+            directories_only: false,
+        })
+    }
+
+    /// A search that fails mid-stream ends after the matches it sent with the agent's
+    /// error, and it never creates a transfer history row.
+    #[tokio::test]
+    async fn failing_search_stream_delivers_matches_then_the_error() {
+        let mut fixture = Fixture::new();
+        let mut output = fixture
+            .start(file_search(), OutputStreamTracking::Search)
+            .await
+            .unwrap();
+        let id = output.request_id();
+        fixture.deliver(id, false, b"{\"type\":\"match\"}\n".to_vec());
+        fixture.respond(
+            id,
+            request::FileSearch::encode(Err(CommandError::new(
+                CommandErrorKind::Internal,
+                "disk gone",
+            ))),
+        );
+        // The matches queued before the failure still reach the consumer.
+        assert_eq!(
+            output.recv().await.unwrap().unwrap().data,
+            b"{\"type\":\"match\"}\n"
+        );
+        // The failure follows them instead of an end that looks complete.
+        assert_eq!(
+            output.recv().await,
+            Some(Err(CommandError::new(
+                CommandErrorKind::Internal,
+                "disk gone"
+            )))
+        );
+        // Searches are not transfers, so they never show up in the transfer history.
+        assert!(fixture.state.progress.entries.is_empty());
+        // The result settled the flow.
+        assert!(fixture.state.flows.id_for(&fixture.agent, id).is_none());
+    }
+
+    /// A finished search ends with its own `FIN` and a plain success result.
+    #[tokio::test]
+    async fn finished_search_stream_ends_without_an_error() {
+        let mut fixture = Fixture::new();
+        let mut output = fixture
+            .start(file_search(), OutputStreamTracking::Search)
+            .await
+            .unwrap();
+        let id = output.request_id();
+        fixture.deliver(id, true, b"{\"type\":\"done\"}\n".to_vec());
+        fixture.respond(id, request::FileSearch::encode(Ok(())));
+        // The final frame, carrying `done`, completes the stream.
+        assert!(output.recv().await.unwrap().unwrap().is_last);
+        // Nothing follows it, not even an error.
+        assert!(output.recv().await.is_none());
+    }
+
+    /// Search tracking only fits search commands, and searches only take search tracking.
+    #[tokio::test]
+    async fn search_tracking_must_match_a_search_command() {
+        let mut fixture = Fixture::new();
+        let exec_as_search = fixture
+            .start(Fixture::exec_command(), OutputStreamTracking::Search)
+            .await;
+        let search_as_download = fixture
+            .start(
+                file_search(),
+                OutputStreamTracking::Download {
+                    path: "/tmp".into(),
+                    total_bytes: 0,
+                    full_size: None,
+                    resume_offset: None,
+                },
+            )
+            .await;
+        // Process output must keep its terminal lane, and matches must never become a
+        // download with a history row.
+        assert!(matches!(
+            exec_as_search,
+            Err(RouterError::UnexpectedResponseType { .. })
+        ));
+        assert!(matches!(
+            search_as_download,
+            Err(RouterError::UnexpectedResponseType { .. })
+        ));
+        assert!(fixture.state.progress.entries.is_empty());
     }
 
     /// A credit violation fails only the violating stream and stops its agent worker.

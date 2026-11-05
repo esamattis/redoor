@@ -64,6 +64,8 @@ import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { FindRequest } from "#bindings/FindRequest";
 import type { GrepRequest } from "#bindings/GrepRequest";
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
+import type { ContentGrepEvent } from "#bindings/ContentGrepEvent";
+import type { FileSearchEvent } from "#bindings/FileSearchEvent";
 import type { DiffEndpoint } from "#bindings/DiffEndpoint";
 import type { DiffFilesRequest } from "#bindings/DiffFilesRequest";
 import type { DiffFilesResponse } from "#bindings/DiffFilesResponse";
@@ -151,6 +153,7 @@ import {
     apiRequest,
     authenticationHeaders,
     requireSuccessfulResponse,
+    streamNdjson,
     withAuthentication,
     type RequestContext,
 } from "#ui/api-transport";
@@ -183,6 +186,83 @@ function vaultWriteHeaders(keys: VaultWriteKeys) {
         "Redoor-Vault-Wrap-Iv": keys.wrap.iv,
         "Redoor-Vault-Wrap-Ct": keys.wrap.ct,
     };
+}
+
+/** Options of a path search, shared by its JSON and streaming forms. */
+type FileSearchOptions = {
+    timeoutSeconds: number;
+    includeHidden: boolean;
+    respectGitignore: boolean;
+    caseSensitivity?: FindRequest["case_sensitivity"];
+    directoriesOnly?: boolean;
+    signal?: AbortSignal;
+};
+
+/** Options of a content search, shared by its JSON and streaming forms. */
+type ContentGrepOptions = {
+    timeoutSeconds: number;
+    includeHidden: boolean;
+    respectGitignore: boolean;
+    fixedString: boolean;
+    caseSensitivity?: GrepRequest["case_sensitivity"];
+    beforeContext?: number;
+    afterContext?: number;
+    signal?: AbortSignal;
+};
+
+/** Builds the body of a path search, so both forms send the same defaults. */
+function findRequest(query: string, options: FileSearchOptions): FindRequest {
+    return {
+        query,
+        timeout: options.timeoutSeconds,
+        include_hidden: options.includeHidden,
+        respect_gitignore: options.respectGitignore,
+        case_sensitivity: options.caseSensitivity ?? "smart",
+        directories_only: options.directoriesOnly ?? false,
+    };
+}
+
+/** Builds the body of a content search, so both forms send the same defaults. */
+function grepRequest(query: string, options: ContentGrepOptions): GrepRequest {
+    return {
+        query,
+        timeout: options.timeoutSeconds,
+        include_hidden: options.includeHidden,
+        respect_gitignore: options.respectGitignore,
+        fixed_string: options.fixedString,
+        case_sensitivity: options.caseSensitivity ?? "smart",
+        before_context: options.beforeContext ?? 0,
+        after_context: options.afterContext ?? 0,
+    };
+}
+
+/** The request of a search: a JSON POST that a superseded search can abort. */
+function searchInit(body: FindRequest | GrepRequest, signal?: AbortSignal) {
+    return {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal,
+    };
+}
+
+/**
+ * Passes search event batches through and fails a stream that ended without its `done`
+ * line, so a search cut off on the way never looks finished.
+ */
+async function* requireSearchDone<T extends { type: string }>(
+    batches: AsyncIterable<T[]>,
+): AsyncGenerator<T[]> {
+    let done = false;
+
+    for await (const batch of batches) {
+        done ||= batch.some((event) => event.type === "done");
+        yield batch;
+    }
+
+    if (!done) {
+        throw new Error("The search ended before it was complete");
+    }
 }
 
 export class Agent {
@@ -716,75 +796,67 @@ export class Agent {
         );
     }
 
-    /** Searches below one directory while allowing superseded UI requests to be cancelled. */
+    /** Searches below one directory and answers once the search ended. */
     async searchFiles(
         path: string,
         query: string,
-        options: {
-            timeoutSeconds: number;
-            includeHidden: boolean;
-            respectGitignore: boolean;
-            caseSensitivity?: FindRequest["case_sensitivity"];
-            directoriesOnly?: boolean;
-            signal?: AbortSignal;
-        },
+        options: FileSearchOptions,
     ): Promise<FileSearchResponse> {
-        const request: FindRequest = {
-            query,
-            timeout: options.timeoutSeconds,
-            include_hidden: options.includeHidden,
-            respect_gitignore: options.respectGitignore,
-            case_sensitivity: options.caseSensitivity ?? "smart",
-            directories_only: options.directoriesOnly ?? false,
-        };
-
         return apiRequest<FileSearchResponse>(
             this.filesystemUrl("find", path),
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(request),
-                signal: options.signal,
-            },
+            searchInit(findRequest(query, options), options.signal),
             this.requestContext,
         );
     }
 
-    /** Greps physical lines below one directory while allowing callers to abandon the REST wait. */
+    /**
+     * Searches below one directory and yields the events while the device still walks, so
+     * results can be shown as they are found. Aborting the signal stops the search on the
+     * device.
+     */
+    streamFileSearch(
+        path: string,
+        query: string,
+        options: FileSearchOptions,
+    ): AsyncGenerator<FileSearchEvent[]> {
+        return requireSearchDone(
+            streamNdjson<FileSearchEvent>(
+                this.filesystemUrl("find-stream", path),
+                searchInit(findRequest(query, options), options.signal),
+                this.requestContext,
+            ),
+        );
+    }
+
+    /** Greps physical lines below one directory and answers once the search ended. */
     async grepContent(
         path: string,
         query: string,
-        options: {
-            timeoutSeconds: number;
-            includeHidden: boolean;
-            respectGitignore: boolean;
-            fixedString: boolean;
-            caseSensitivity?: GrepRequest["case_sensitivity"];
-            beforeContext?: number;
-            afterContext?: number;
-            signal?: AbortSignal;
-        },
+        options: ContentGrepOptions,
     ): Promise<ContentGrepResponse> {
-        const request: GrepRequest = {
-            query,
-            timeout: options.timeoutSeconds,
-            include_hidden: options.includeHidden,
-            respect_gitignore: options.respectGitignore,
-            fixed_string: options.fixedString,
-            case_sensitivity: options.caseSensitivity ?? "smart",
-            before_context: options.beforeContext ?? 0,
-            after_context: options.afterContext ?? 0,
-        };
-
         return apiRequest<ContentGrepResponse>(
             this.filesystemUrl("grep", path),
-            {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(request),
-                signal: options.signal,
-            },
+            searchInit(grepRequest(query, options), options.signal),
             this.requestContext,
+        );
+    }
+
+    /**
+     * Greps physical lines below one directory and yields the events while the device still
+     * scans, so matches can be shown as they are found. Aborting the signal stops the search
+     * on the device.
+     */
+    streamContentGrep(
+        path: string,
+        query: string,
+        options: ContentGrepOptions,
+    ): AsyncGenerator<ContentGrepEvent[]> {
+        return requireSearchDone(
+            streamNdjson<ContentGrepEvent>(
+                this.filesystemUrl("grep-stream", path),
+                searchInit(grepRequest(query, options), options.signal),
+                this.requestContext,
+            ),
         );
     }
 

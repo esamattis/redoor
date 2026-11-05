@@ -26,6 +26,7 @@ nix.workspace = true
 nucleo-matcher.workspace = true
 pty-process.workspace = true
 rustls.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 similar.workspace = true
