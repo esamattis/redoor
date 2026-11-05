@@ -60,12 +60,18 @@ function toArrayBuffer(source: BufferSource): ArrayBuffer {
     return view.slice().buffer;
 }
 
-/** Requests an assertion from exactly the given credentials with a PRF evaluation. */
+/**
+ * Requests an assertion from exactly the given credentials with a PRF evaluation. The signal
+ * lets the user give up on a prompt that never settles, such as one a password manager
+ * cannot show.
+ */
 async function assert(
     credentialIds: string[],
     salt: Uint8Array<ArrayBuffer>,
+    signal?: AbortSignal,
 ): Promise<PublicKeyCredential> {
     const credential = await navigator.credentials.get({
+        signal,
         publicKey: {
             challenge: randomBytes(32),
             rpId: currentRpId(),
@@ -99,10 +105,12 @@ export async function registerPasskey(options: {
     vaultId: string;
     slotId: string;
     label: string;
+    signal?: AbortSignal;
 }): Promise<{ credentialId: string; rpId: string; kek: CryptoKey }> {
     const salt = await prfSalt(options.vaultId);
 
     const created = await navigator.credentials.create({
+        signal: options.signal,
         publicKey: {
             challenge: randomBytes(32),
             rp: { name: "redoor vault", id: currentRpId() },
@@ -137,7 +145,7 @@ export async function registerPasskey(options: {
     let output = prfOutput(created);
 
     if (output === null) {
-        output = prfOutput(await assert([credentialId], salt));
+        output = prfOutput(await assert([credentialId], salt, options.signal));
     }
 
     if (output === null) {
@@ -167,6 +175,7 @@ export function usablePasskeySlots(
 export async function derivePasskeyKek(
     material: Pick<VaultUnlockMaterialResponse, "vault_id">,
     slots: VaultSlot[],
+    signal?: AbortSignal,
 ): Promise<{ slot: VaultSlot; kek: CryptoKey }> {
     const ids = slots.flatMap((slot) =>
         slot.type === "passkey" ? [slot.credential_id] : [],
@@ -178,7 +187,12 @@ export async function derivePasskeyKek(
         );
     }
 
-    const credential = await assert(ids, await prfSalt(material.vault_id));
+    const credential = await assert(
+        ids,
+        await prfSalt(material.vault_id),
+        signal,
+    );
+
     const usedId = toBase64Url(credential.rawId);
 
     const slot = slots.find(
@@ -205,9 +219,16 @@ export async function derivePasskeyKek(
 export async function newPasskeySlot(
     vaultId: string,
     label: string,
+    signal?: AbortSignal,
 ): Promise<{ id: string; kek: SlotKek }> {
     const slotId = newSlotId();
-    const registered = await registerPasskey({ vaultId, slotId, label });
+
+    const registered = await registerPasskey({
+        vaultId,
+        slotId,
+        label,
+        signal,
+    });
 
     return {
         id: slotId,

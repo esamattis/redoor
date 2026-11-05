@@ -396,6 +396,63 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
     });
 
+    test("cancels a passkey unlock whose prompt never settles", async ({
+        page,
+    }) => {
+        await addVirtualAuthenticator(page);
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        const create = page.getByRole("dialog", { name: "Create vault" });
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passkey" })
+            .click();
+        await create.getByLabel("Passkey name").fill("Virtual key");
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passphrase" })
+            .click();
+        await create.getByRole("button", { name: "Create vault" }).click();
+        await expect(create).toBeHidden({ timeout: 30_000 });
+
+        // Stands in for a password manager whose passkey prompt cannot show: the request
+        // only ends when the page aborts it, and records that it did.
+        await page.evaluate(() => {
+            navigator.credentials.get = (options) =>
+                new Promise<Credential | null>((_resolve, reject) => {
+                    const signal = options?.signal;
+
+                    signal?.addEventListener("abort", () => {
+                        document.body.dataset.passkeyAborted = "true";
+                        reject(signal.reason);
+                    });
+                });
+        });
+
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await page.getByRole("button", { name: "Unlock", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Unlock vault" });
+
+        const passkey = dialog.getByRole("button", {
+            name: "Unlock with passkey",
+        });
+
+        await passkey.click();
+        // The passkey request is pending, so this is the state that used to lock Cancel.
+        await expect(passkey).toBeDisabled();
+        const cancel = dialog.getByRole("button", { name: "Cancel" });
+        // Cancel stays usable while only the passkey prompt is pending.
+        await expect(cancel.last()).toBeEnabled();
+
+        await cancel.last().click();
+        await expect(dialog).toBeHidden();
+        // Cancelling aborted the hanging passkey request instead of leaving it behind.
+        await expect(page.locator("body")).toHaveAttribute(
+            "data-passkey-aborted",
+            "true",
+        );
+        // The vault was not unlocked by the abandoned prompt.
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
+    });
+
     test("hides a dialog while the vault unlock it asks for is open", async ({
         page,
     }) => {

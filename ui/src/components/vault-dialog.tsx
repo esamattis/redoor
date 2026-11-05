@@ -49,6 +49,61 @@ const rootRouteApi = getRouteApi("__root__");
  */
 const vaultDialogMutationKey = ["vault-dialog"] as const;
 
+/**
+ * The passkey prompt the dialog may be waiting on. Unlike key derivation, the prompt can be
+ * given up safely, and it may never settle on its own: a password manager that draws its
+ * prompt into the page can be blocked by its own other notifications, which the modal dialog
+ * makes impossible to dismiss. So cancelling stays possible while only the prompt is pending.
+ */
+type PasskeyPrompt = {
+    /** Whether a passkey prompt is pending, so cancelling would abort it. */
+    isWaiting: boolean;
+    /** Runs a passkey prompt that `abort` can cancel. */
+    run: <T>(prompt: (signal: AbortSignal) => Promise<T>) => Promise<T>;
+    /** Aborts the pending passkey prompt, if any. */
+    abort: () => void;
+};
+
+/**
+ * Tracks the pending passkey prompt of the dialog. It lives in the dialog rather than in each
+ * form, because the dialog's close button, Escape and backdrop cancel too.
+ */
+function usePasskeyPrompt(): PasskeyPrompt {
+    const controllerRef = React.useRef<AbortController | null>(null);
+    const [isWaiting, setIsWaiting] = React.useState(false);
+
+    const run = React.useCallback(
+        async <T,>(prompt: (signal: AbortSignal) => Promise<T>) => {
+            const controller = new AbortController();
+            controllerRef.current = controller;
+            setIsWaiting(true);
+
+            try {
+                const result = await prompt(controller.signal);
+
+                // A prompt that settles just as the user cancels must not go on to unlock
+                // the vault for flows that have already failed.
+                controller.signal.throwIfAborted();
+
+                return result;
+            } finally {
+                if (controllerRef.current === controller) {
+                    controllerRef.current = null;
+                }
+
+                setIsWaiting(false);
+            }
+        },
+        [],
+    );
+
+    const abort = React.useCallback(() => {
+        controllerRef.current?.abort();
+    }, []);
+
+    return { isWaiting, run, abort };
+}
+
 /** Reads the vault session from the router context with its current lock state. */
 export function useVaultSession() {
     const { vault } = rootRouteApi.useRouteContext();
@@ -100,7 +155,10 @@ function KeepUnlockedOption(props: {
  * Creates the vault with a passkey, a passphrase or both. Every slot wraps the same key, so
  * either alone unlocks; without a passphrase the warning names what can go wrong.
  */
-function CreateVaultForm(props: { onCancel: () => void }) {
+function CreateVaultForm(props: {
+    passkeyPrompt: PasskeyPrompt;
+    onCancel: () => void;
+}) {
     const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
     const passkeysSupported = isPasskeySupported();
@@ -129,9 +187,12 @@ function CreateVaultForm(props: { onCancel: () => void }) {
 
                     if (withPasskey) {
                         slots.push(
-                            await newPasskeySlot(
-                                vaultId,
-                                passkeyLabel.trim() || "Passkey",
+                            await props.passkeyPrompt.run((signal) =>
+                                newPasskeySlot(
+                                    vaultId,
+                                    passkeyLabel.trim() || "Passkey",
+                                    signal,
+                                ),
                             ),
                         );
                     }
@@ -258,7 +319,9 @@ function CreateVaultForm(props: { onCancel: () => void }) {
                     type="button"
                     variant="secondary"
                     onClick={props.onCancel}
-                    disabled={create.isPending}
+                    disabled={
+                        create.isPending && !props.passkeyPrompt.isWaiting
+                    }
                 >
                     Cancel
                 </Button>
@@ -277,6 +340,7 @@ function CreateVaultForm(props: { onCancel: () => void }) {
  */
 function UnlockVaultForm(props: {
     summary: VaultSummary;
+    passkeyPrompt: PasskeyPrompt;
     onCancel: () => void;
 }) {
     const { api, vault } = rootRouteApi.useRouteContext();
@@ -340,7 +404,9 @@ function UnlockVaultForm(props: {
                 throw new Error("The vault is still loading");
             }
 
-            const { slot, kek } = await derivePasskeyKek(material, passkeys);
+            const { slot, kek } = await props.passkeyPrompt.run((signal) =>
+                derivePasskeyKek(material, passkeys, signal),
+            );
 
             await finish(await openPasskeySlot(material, slot, kek));
         },
@@ -424,7 +490,7 @@ function UnlockVaultForm(props: {
                     type="button"
                     variant="secondary"
                     onClick={props.onCancel}
-                    disabled={isBusy}
+                    disabled={isBusy && !props.passkeyPrompt.isWaiting}
                 >
                     Cancel
                 </Button>
@@ -452,10 +518,15 @@ export function VaultDialog() {
     const { session, state } = useVaultSession();
     const isOpen = state.pendingReason !== null;
 
-    // While a passkey prompt or key derivation runs, Escape, the back gesture or a stray
-    // backdrop tap must not cancel the waiting flows: the unlock would then succeed with
-    // nobody waiting for it, and the flow would already have failed.
-    const isBusy = useIsMutating({ mutationKey: vaultDialogMutationKey }) > 0;
+    // While key derivation runs, Escape, the back gesture or a stray backdrop tap must not
+    // cancel the waiting flows: the unlock would then succeed with nobody waiting for it, and
+    // the flow would already have failed. A pending passkey prompt is aborted instead, so
+    // cancelling stays possible while only the prompt is pending.
+    const passkeyPrompt = usePasskeyPrompt();
+
+    const isBusy =
+        useIsMutating({ mutationKey: vaultDialogMutationKey }) > 0 &&
+        !passkeyPrompt.isWaiting;
 
     const statusQuery = useQuery({
         ...vaultStatusQueryOptions(api),
@@ -467,7 +538,11 @@ export function VaultDialog() {
     }
 
     const summary = statusQuery.data?.vault;
-    const cancel = () => session.cancelPending();
+
+    const cancel = () => {
+        passkeyPrompt.abort();
+        session.cancelPending();
+    };
 
     return (
         <Dialog
@@ -488,9 +563,16 @@ export function VaultDialog() {
             ) : summary === undefined ? (
                 <p className="mt-4 text-sm text-slate-400">Loading vault…</p>
             ) : summary === null ? (
-                <CreateVaultForm onCancel={cancel} />
+                <CreateVaultForm
+                    passkeyPrompt={passkeyPrompt}
+                    onCancel={cancel}
+                />
             ) : (
-                <UnlockVaultForm summary={summary} onCancel={cancel} />
+                <UnlockVaultForm
+                    summary={summary}
+                    passkeyPrompt={passkeyPrompt}
+                    onCancel={cancel}
+                />
             )}
         </Dialog>
     );
