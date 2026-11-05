@@ -209,12 +209,14 @@ function GitHeadContext(props: {
     head: Exclude<GitTabHead, { type: "revision" }>;
 }) {
     const head = props.head;
+
     const label =
         head.type === "branch"
             ? head.name
             : head.commitId === null
               ? "Detached"
               : shortCommitId(head.commitId);
+
     const description =
         head.type === "branch"
             ? `Branch ${head.name}`
@@ -247,6 +249,7 @@ function GitViewToggleLink(props: {
     active: boolean;
 }) {
     const head = props.head;
+
     const description =
         head.type === "branch"
             ? `branch ${head.name}`
