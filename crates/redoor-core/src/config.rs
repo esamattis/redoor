@@ -74,11 +74,6 @@ pub enum ConfigError {
 /// Configuration for one SSH-backed agent, independent of any specific CLI
 /// surface so both `redoor agent relay` and `redoor server --agents` can construct it
 /// without depending on clap.
-///
-/// `remote_bin` is optional so callers that want the versioned default
-/// (`${XDG_DATA_HOME:-$HOME/.local/share}/<app-name>/binaries/<version>/redoor`)
-/// don't have to compute it themselves;
-/// `start_relay` fills it in when `None`.
 #[derive(Clone)]
 pub struct SshBackedAgentConfig {
     /// Stable device id the remote agent registers with (`id` in `[[agents]]`, `agent_id` in
@@ -94,11 +89,11 @@ pub struct SshBackedAgentConfig {
     /// Name the remote agent registers with on the server. When `None`,
     /// defaults to the host portion of `target`.
     pub name: Option<String>,
-    /// Path to the redoor binary on the remote host. When `None`, defaults to
-    /// the versioned install layout.
-    pub remote_bin: Option<String>,
-    /// Default UI home directory; when absent the remote process user's home is published.
-    pub home: Option<String>,
+    /// Directory on the device that replaces `${XDG_DATA_HOME:-$HOME/.local/share}` as the
+    /// root of the managed binary installs (`<install_dir>/<app-name>/binaries/...`). Some
+    /// systems, such as TrueNAS, mount the home directory `noexec`, so nothing installed
+    /// below it can run; this moves the installs to a filesystem that allows running them.
+    pub install_dir: Option<String>,
     /// Remote ssh target in `user@host` form.
     pub target: String,
     /// Relay log file, which the relay forwards its ssh process's stdout and stderr into,
@@ -126,8 +121,7 @@ impl std::fmt::Debug for SshBackedAgentConfig {
             .field("username", &self.username)
             .field("ssh_port", &self.ssh_port)
             .field("name", &self.name)
-            .field("remote_bin", &self.remote_bin)
-            .field("home", &self.home)
+            .field("install_dir", &self.install_dir)
             .field("target", &self.target)
             .field("log", &self.log)
             .field("password", &self.password.as_ref().map(|_| "***"))
@@ -459,6 +453,11 @@ pub struct RelayConfig {
     pub binary_source: Option<PathBuf>,
     /// Optional remote process namespace; defaults to one derived from the local app and relay ID.
     pub agent_app_name: Option<String>,
+    /// Operator-installed redoor binary on the remote host, run as-is instead of the
+    /// managed install. Relay-only: server-managed devices always use the managed install.
+    pub remote_bin: Option<String>,
+    /// Default UI home directory; when absent the remote process user's home is published.
+    pub home: Option<String>,
     /// Size limit of the relay log, shared by the relay's own output and its SSH session;
     /// `None` uses the default limit.
     pub log_max_size: Option<u64>,
@@ -513,6 +512,20 @@ impl RedoorConfig {
             }
         })
     }
+}
+
+/// Checks an SSH device's `install_dir` before it is saved or used. The path ends up inside
+/// the single-line `sh -c` scripts sent to the device, which csh-family login shells reject
+/// when a quoted word spans lines, so control characters are refused along with a blank
+/// value, which would install to the filesystem root.
+pub fn validate_install_dir(dir: &str) -> std::result::Result<(), String> {
+    if dir.trim().is_empty() {
+        return Err("install_dir must be a non-empty path when set".to_string());
+    }
+    if dir.chars().any(char::is_control) {
+        return Err("install_dir must not contain control characters such as newlines".to_string());
+    }
+    Ok(())
 }
 
 /// Returns the named relay or an actionable error listing the missing identity.
@@ -601,8 +614,7 @@ impl From<SshBackedAgentConfig>
             username: config.username,
             ssh_port: config.ssh_port,
             name: config.name,
-            remote_bin: config.remote_bin,
-            home: config.home,
+            install_dir: config.install_dir,
             password: None,
             has_password: config.password.is_some(),
             has_managed_ssh_key: config.managed_ssh_key,
@@ -702,13 +714,11 @@ target = "user@example.com"
         assert_eq!(agent.target, "user@example.com");
         // An omitted port must defer to OpenSSH host configuration rather than force port 22.
         assert_eq!(agent.ssh_port, None);
-        // username, name, remote_bin and home are None so the SSH launcher can
-        // derive them (default name from target, default remote_bin from
-        // versioned layout, default home from the remote process user).
+        // username, name and install_dir are None so the SSH launcher can derive them
+        // (default name from target, default install root from the remote data directory).
         assert!(agent.username.is_none());
         assert!(agent.name.is_none());
-        assert!(agent.remote_bin.is_none());
-        assert!(agent.home.is_none());
+        assert!(agent.install_dir.is_none());
     }
 
     /// Verifies that every supported field is read from the toml file so
@@ -722,8 +732,7 @@ target = "prod-db"
 username = "deploy"
 ssh_port = 2222
 name = "db-agent"
-remote_bin = "/usr/local/bin/redoor"
-home = "/srv/app"
+install_dir = "/mnt/tank/apps"
 
 [[agents]]
 target = "web-1"
@@ -741,8 +750,7 @@ target = "web-1"
         assert_eq!(first.username.as_deref(), Some("deploy"));
         assert_eq!(first.ssh_port, Some(2222));
         assert_eq!(first.name.as_deref(), Some("db-agent"));
-        assert_eq!(first.remote_bin.as_deref(), Some("/usr/local/bin/redoor"));
-        assert_eq!(first.home.as_deref(), Some("/srv/app"));
+        assert_eq!(first.install_dir.as_deref(), Some("/mnt/tank/apps"));
 
         // The second entry defers to OpenSSH while the first overrides its port explicitly.
         let second = match &config.agents[1] {
@@ -927,7 +935,7 @@ target = "host"
     /// field rather than a single vague "config error".
     #[tokio::test]
     async fn test_parse_config_file_rejects_local_with_ssh_fields() {
-        for field in ["username", "ssh_port", "remote_bin", "password"] {
+        for field in ["username", "ssh_port", "install_dir", "password"] {
             let (_directory, temp) = test_config_path();
             write_test_config(
                 &temp,
@@ -965,6 +973,42 @@ local = true
 
             // The parse error names the removed key so the operator knows what to delete.
             assert!(format!("{error:#}").contains("log"), "{error:#}");
+        }
+    }
+
+    /// SSH entries written before `remote_bin` and `home` were removed fail with an error
+    /// that names the key and its replacement instead of serde's bare unknown-field error.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_removed_ssh_keys() {
+        for (line, replacement) in [
+            ("remote_bin = \"/opt/redoor\"", "install_dir"),
+            ("home = \"/srv/app\"", "home directory"),
+        ] {
+            let (_directory, temp) = test_config_path();
+            let content = format!("[[agents]]\ntarget = \"prod-db\"\n{line}\n");
+            write_test_config(&temp, &content).unwrap();
+
+            let error = format!("{:#}", parse_config_file(&temp).await.unwrap_err());
+
+            // The operator learns which key to delete and what to use instead.
+            assert!(error.contains("no longer"), "{error}");
+            assert!(error.contains(replacement), "{error}");
+        }
+    }
+
+    /// A blank or multi-line `install_dir` is refused at load time, because it would install
+    /// to the filesystem root or break the single-line remote scripts.
+    #[tokio::test]
+    async fn test_parse_config_file_rejects_unusable_install_dir() {
+        for value in ["\"  \"", "\"/mnt/a\\nb\""] {
+            let (_directory, temp) = test_config_path();
+            let content = format!("[[agents]]\ntarget = \"prod-db\"\ninstall_dir = {value}\n");
+            write_test_config(&temp, &content).unwrap();
+
+            let error = format!("{:#}", parse_config_file(&temp).await.unwrap_err());
+
+            // The error names the key so the operator knows which value to fix.
+            assert!(error.contains("install_dir"), "{error}");
         }
     }
 
@@ -1375,6 +1419,9 @@ insecure = true
         // Identity and connection fields prove lifecycle and transport settings stay associated.
         assert_eq!(relay.id, "production");
         assert_eq!(relay.agent.target, "user@example.com");
+        // Relays keep their operator-installed binary and home after SSH devices lost them.
+        assert_eq!(relay.remote_bin.as_deref(), Some("/opt/redoor"));
+        assert_eq!(relay.home.as_deref(), Some("/srv/app"));
         assert_eq!(relay.agent.ssh_port, Some(2200));
         assert!(relay.insecure);
         assert_eq!(

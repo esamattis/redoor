@@ -3,7 +3,7 @@
 //!
 //! # How SSH-backed agent spawning works
 //!
-//! A server-managed agent at the default install path is started by a launch script
+//! A server-managed agent at its managed install path is started by a launch script
 //! that probes the binary and `exec`s it only when it matches this server, so a device
 //! with a current binary needs a single SSH session per start. When the binary is
 //! missing or stale, the script exits without starting anything, the server installs the
@@ -179,7 +179,10 @@ impl ProvisionContext {
         )?
         .connection_host()
         .await?;
-        let candidates = device.stop_binaries(&self.app_name, config.remote_bin.as_deref());
+        let candidates = device.stop_binaries(&provision::InstallLayout::new(
+            &self.app_name,
+            config.install_dir.as_deref(),
+        ));
         Ok(std::sync::Arc::new(move || {
             let host = host.clone();
             let candidates = candidates.clone();
@@ -331,13 +334,12 @@ impl ManagedSshDevice {
         *self.remote_bin.lock().expect("remote bin poisoned") = Some(remote_bin);
     }
 
-    /// Binaries to stop the daemon with, best first: the one the last session ran, an
-    /// operator's path, and this server's release install.
-    fn stop_binaries(&self, app_name: &str, configured: Option<&str>) -> Vec<String> {
+    /// Binaries to stop the daemon with, best first: the one the last session ran and this
+    /// server's release install in the device's `layout`.
+    fn stop_binaries(&self, layout: &provision::InstallLayout) -> Vec<String> {
         let mut candidates = Vec::new();
         candidates.extend(self.remote_bin.lock().expect("remote bin poisoned").clone());
-        candidates.extend(configured.map(str::to_string));
-        candidates.push(provision::default_remote_bin(app_name));
+        candidates.push(layout.release_bin());
         candidates.dedup();
         candidates
     }
@@ -391,15 +393,13 @@ mod tests {
     #[test]
     fn stop_binaries_prefer_the_last_session() {
         let device = ManagedSshDevice::new("redoor-dev_x".to_string());
-        // Before any session only the release path is known.
-        assert_eq!(
-            device.stop_binaries("redoor", None),
-            [provision::default_remote_bin("redoor")]
-        );
+        let layout = provision::InstallLayout::new("redoor", Some("/mnt/tank/apps"));
+        // Before any session only the release path is known, in the device's install directory.
+        assert_eq!(device.stop_binaries(&layout), [layout.release_bin()]);
         device.set_remote_bin("/home/u/.local/share/redoor/binaries/debug-1/redoor".to_string());
         // The binary of the last session comes first.
         assert_eq!(
-            device.stop_binaries("redoor", None)[0],
+            device.stop_binaries(&layout)[0],
             "/home/u/.local/share/redoor/binaries/debug-1/redoor"
         );
     }

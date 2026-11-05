@@ -1020,11 +1020,23 @@ sequenceDiagram
   and sshd configurations that forbid stream-local forwarding are not supported.
 - **SSH provisioning runs on every attempt**, so the UI always shows current results. The
   session is started by a launch script that first reports the OS, architecture and version
-  of the binary at the default install path, and `exec`s it only when the version matches
+  of the binary at the managed install path, and `exec`s it only when the version matches
   this server. A device with a current binary therefore starts in one SSH session.
   Otherwise the script exits without starting anything, the server uploads the matching
   release from the local cache and starts again, and that second report verifies the
-  upload.
+  upload. Server-managed devices always use the managed install: an operator-installed
+  `remote_bin` (and a configured `home`) exists only for relays.
+- **Install directory and `noexec` mounts.** Installs live in
+  `<root>/<app-name>/binaries`, where the root is `${XDG_DATA_HOME:-$HOME/.local/share}`
+  unless the device sets `install_dir`. That setting exists because some systems, TrueNAS
+  for one, mount the home directory `noexec`: the upload succeeds and the mode bits say
+  executable, but the kernel refuses to run the file with a bare "Permission denied". So
+  whenever the probe gets no version, it also looks up the mount of the binary's directory
+  (or its nearest existing parent) in `/proc/self/mounts` and reports the mount point when
+  it is `noexec`. The installer then fails before uploading, naming the mount and the
+  install directory setting, because every install path of the device shares that
+  directory and no retry or release fallback could run either. The lookup is Linux-only
+  and skipped when a version came out, so a normal start pays nothing for it.
 - **Install paths identify the bytes, so devices never hash binaries.** Hashing a debug
   build of hundreds of megabytes on the device (Perl `shasum` on macOS, phones and boards
   without hashing instructions) made every start slow, and the hash only has to tell

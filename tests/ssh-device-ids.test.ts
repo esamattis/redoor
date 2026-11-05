@@ -49,7 +49,6 @@ async function startManagedSshFixture(options: {
 target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${name}"
-home = "${options.remoteRoot}"
 `,
         )
         .join("\n");

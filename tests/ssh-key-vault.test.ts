@@ -611,8 +611,7 @@ describe("managed SSH key vault access", () => {
             username: "nobody",
             ssh_port: null,
             name: `ssh-vault-token-${fixture.suffix}`,
-            remote_bin: null,
-            home: null,
+            install_dir: null,
             password: null,
             clear_password: null,
         });

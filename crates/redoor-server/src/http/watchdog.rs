@@ -279,7 +279,7 @@ impl ManagedLauncher {
     fn ssh_backed_spawn_fn(&self, agent_id: &AgentId, config: SshBackedAgentConfig) -> SpawnFn {
         log!(
             Level::Debug,
-            "Creating managed SSH session closure: agent_id={}, target={}, ssh_server_port={}, name={:?}, remote_bin={:?}, home={:?}, username={:?}",
+            "Creating managed SSH session closure: agent_id={}, target={}, ssh_server_port={}, name={:?}, install_dir={:?}, username={:?}",
             agent_id,
             config.target,
             config
@@ -287,8 +287,7 @@ impl ManagedLauncher {
                 .map(|port| port.to_string())
                 .unwrap_or_else(|| "ssh-config".to_string()),
             config.name,
-            config.remote_bin,
-            config.home,
+            config.install_dir,
             config.username
         );
         let config = Arc::new(config);
@@ -302,7 +301,8 @@ impl ManagedLauncher {
             let agent_id = agent_id.clone();
             async move {
                 let name = AgentConfig::SshBacked((*config).clone()).effective_name();
-                let launch = launcher.launch(&agent_id, name, config.home.clone(), &request);
+                // SSH devices open the remote user's home, which only the daemon knows.
+                let launch = launcher.launch(&agent_id, name, None, &request);
                 launcher
                     .provision
                     .start_managed(
@@ -433,10 +433,11 @@ fn supersede_projection(router: RouterHandle, agent_id: AgentId) -> SupersedeCal
     })
 }
 
-/// Extracts only the configured browser directory, leaving unknown SSH defaults nullable.
+/// Extracts only the configured browser directory. SSH devices have none: they open the
+/// remote user's home, which is unknown until the daemon connects.
 fn configured_directory(config: &AgentConfig) -> Option<String> {
     match config {
         AgentConfig::Local(config) => config.home.clone(),
-        AgentConfig::SshBacked(config) => config.home.clone(),
+        AgentConfig::SshBacked(_) => None,
     }
 }

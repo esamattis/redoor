@@ -121,7 +121,10 @@ struct RawAgentEntry {
     username: Option<String>,
     ssh_port: Option<u16>,
     name: Option<String>,
+    /// TEMPORARY MIGRATION: read only to reject it with a pointer to `install_dir`; see
+    /// [`RawAgentEntry::reject_removed_keys`].
     remote_bin: Option<String>,
+    install_dir: Option<String>,
     home: Option<String>,
     password: Option<String>,
     managed_ssh_key: Option<bool>,
@@ -584,12 +587,31 @@ impl RawAgentSection {
 impl RawAgentEntry {
     /// Splits the row into the SSH or local model selected by `local`.
     fn validate(mut self, index: usize) -> Result<AgentConfig, Invalid> {
+        self.reject_removed_keys(index)?;
         let home = self.home.take();
         if self.local {
             self.validate_local(index, home)
         } else {
-            self.validate_ssh(index, home)
+            self.validate_ssh(index)
         }
+    }
+
+    /// TEMPORARY MIGRATION: SSH entries lost `remote_bin` and `home` after 2.4.0. Without
+    /// this the server would refuse to start with serde's bare "unknown field" error, so it
+    /// names the replacement instead. Can go once configs from 2.4.0 and earlier have been
+    /// updated, a few releases after the change.
+    fn reject_removed_keys(&self, index: usize) -> Result<(), Invalid> {
+        if self.remote_bin.is_some() {
+            return Err(invalid(format!(
+                "agents entry #{index} has 'remote_bin', which is no longer supported; remove it. The server installs its own binary on the device, and 'install_dir' chooses where"
+            )));
+        }
+        if !self.local && self.home.is_some() {
+            return Err(invalid(format!(
+                "agents entry #{index} has 'home', which SSH devices no longer support; remove it. The device opens the remote user's home directory"
+            )));
+        }
+        Ok(())
     }
 
     /// Rejects SSH-only keys so a pasted SSH row with `local = true` fails clearly instead of
@@ -603,7 +625,7 @@ impl RawAgentEntry {
         let ssh_only = [
             ("username", self.username.is_some()),
             ("ssh_port", self.ssh_port.is_some()),
-            ("remote_bin", self.remote_bin.is_some()),
+            ("install_dir", self.install_dir.is_some()),
             ("password", self.password.is_some()),
             ("managed_ssh_key", self.managed_ssh_key.is_some()),
         ];
@@ -620,7 +642,7 @@ impl RawAgentEntry {
     }
 
     /// Requires the SSH destination; every other field defers to OpenSSH or agent defaults.
-    fn validate_ssh(self, index: usize, home: Option<String>) -> Result<AgentConfig, Invalid> {
+    fn validate_ssh(self, index: usize) -> Result<AgentConfig, Invalid> {
         let target = self.target.ok_or_else(|| {
             invalid(format!(
                 "agents entry #{index} is missing a 'target' string"
@@ -630,6 +652,10 @@ impl RawAgentEntry {
             return Err(invalid(format!(
                 "agents entry #{index} 'password' must be non-empty when set"
             )));
+        }
+        if let Some(install_dir) = &self.install_dir {
+            crate::config::validate_install_dir(install_dir)
+                .map_err(|error| invalid(format!("agents entry #{index}: {error}")))?;
         }
         let managed_ssh_key = self.managed_ssh_key.unwrap_or(false);
         if managed_ssh_key {
@@ -651,8 +677,7 @@ impl RawAgentEntry {
             username: self.username,
             ssh_port: self.ssh_port,
             name: self.name,
-            remote_bin: self.remote_bin,
-            home,
+            install_dir: self.install_dir,
             target,
             log: None,
             password: self.password,
@@ -701,13 +726,15 @@ impl RawRelay {
             insecure: self.insecure,
             binary_source: non_blank(self.binary_source, "binary_source")?.map(PathBuf::from),
             agent_app_name,
+            remote_bin: non_blank(self.remote_bin, "remote_bin")?,
+            home: non_blank(self.home, "home")?,
             agent: SshBackedAgentConfig {
                 id: agent_id,
                 username: non_blank(self.username, "username")?,
                 ssh_port: self.ssh_port,
                 name: non_blank(self.name, "name")?,
-                remote_bin: non_blank(self.remote_bin, "remote_bin")?,
-                home: non_blank(self.home, "home")?,
+                // Relays have `remote_bin` for operator-installed binaries instead.
+                install_dir: None,
                 target,
                 log: non_blank(self.log, "log")?,
                 password: non_blank(self.password, "password")?,

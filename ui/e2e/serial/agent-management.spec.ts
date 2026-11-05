@@ -260,8 +260,7 @@ test.describe.serial("Agent management", () => {
                     username: null,
                     ssh_port: null,
                     name: originalName,
-                    remote_bin: null,
-                    home: null,
+                    install_dir: null,
                     password: null,
                 },
             },
@@ -290,6 +289,7 @@ test.describe.serial("Agent management", () => {
         ).toBeVisible();
         await page.getByLabel("SSH target").fill("edit-updated-host");
         await page.getByLabel("Device name").fill(EDITED_AGENT);
+        await page.getByLabel("Install directory").fill("/mnt/tank/apps");
         await page.getByRole("button", { name: "Save device" }).click();
 
         // Renaming replaces the tab identity and keeps the user on the editable entry.
@@ -299,6 +299,11 @@ test.describe.serial("Agent management", () => {
         await expect(
             page.getByRole("link", { name: `Edit ${EDITED_AGENT}` }),
         ).toBeVisible();
+        await page.reload();
+        // The install directory is saved with the entry and shown again for the next edit.
+        await expect(page.getByLabel("Install directory")).toHaveValue(
+            "/mnt/tank/apps",
+        );
         await page.getByRole("button", { name: "Remove device" }).click();
 
         const confirmation = page.getByRole("dialog", {
@@ -429,8 +434,7 @@ test.describe.serial("Agent management", () => {
                     username: "redoor",
                     ssh_port: null,
                     name: originalName,
-                    remote_bin: null,
-                    home: null,
+                    install_dir: null,
                     password: null,
                 },
             },
@@ -638,8 +642,7 @@ test.describe.serial("Agent management", () => {
                     username: "redoor-password",
                     ssh_port: null,
                     name: CREATED_SSH_PASSWORD_CHANGE_AGENT,
-                    remote_bin: null,
-                    home: null,
+                    install_dir: null,
                     password: `wrong-${process.pid}-password`,
                     clear_password: false,
                 },
@@ -697,8 +700,7 @@ test.describe.serial("Agent management", () => {
                     username: "redoor-password",
                     ssh_port: null,
                     name: CREATED_SSH_MISSING_PASSWORD_AGENT,
-                    remote_bin: null,
-                    home: null,
+                    install_dir: null,
                     password: null,
                 },
             },

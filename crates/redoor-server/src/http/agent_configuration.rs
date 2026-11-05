@@ -155,7 +155,7 @@ async fn create_ssh_agent(
     Ok(stopped_agent_response(
         registered_id,
         name,
-        config.home,
+        None,
         Some(config.target),
     ))
 }
@@ -244,7 +244,7 @@ async fn update_ssh_agent(
     Ok(stopped_agent_response(
         agent_id.clone(),
         name,
-        config.home,
+        None,
         Some(config.target),
     ))
 }
@@ -653,14 +653,17 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
         ));
     }
     let name = validated_name(request.name)?;
+    let install_dir = optional_text(request.install_dir);
+    if let Some(install_dir) = &install_dir {
+        redoor_core::config::validate_install_dir(install_dir).map_err(ApiError::bad_request)?;
+    }
     let config = SshBackedAgentConfig {
         id: None,
         target,
         username: optional_text(request.username),
         ssh_port: request.ssh_port,
         name,
-        remote_bin: optional_text(request.remote_bin),
-        home: optional_text(request.home),
+        install_dir,
         log: None,
         password: optional_password(request.password),
         // Never part of a request: only enrollment sets it and edits copy it over.
@@ -681,8 +684,7 @@ fn validate_update_request(
         username: request.username,
         ssh_port: request.ssh_port,
         name: request.name,
-        remote_bin: request.remote_bin,
-        home: request.home,
+        install_dir: request.install_dir,
         password: request.password,
         clear_password: request.clear_password,
     })

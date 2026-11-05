@@ -18,6 +18,7 @@ export const SERIAL_INTEGRATION_TEST_FILES = [
     "tests/real-ssh.test.ts",
     "tests/ssh-debug-provisioning.test.ts",
     "tests/ssh-device-ids.test.ts",
+    "tests/ssh-install-dir.test.ts",
     "tests/ssh-key-vault.test.ts",
     "tests/ssh-keys.test.ts",
     "tests/ssh-tls.test.ts",

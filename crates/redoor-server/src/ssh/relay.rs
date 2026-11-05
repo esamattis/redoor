@@ -89,6 +89,8 @@ pub async fn run_relay(
         },
         config: relay.agent,
         binary_source: relay.binary_source,
+        remote_bin: relay.remote_bin,
+        home: relay.home,
         agent_app_name,
         token,
         provision,
@@ -114,6 +116,10 @@ struct Relay {
     secure_server: Option<SecureServer>,
     /// Local binary uploaded before the first launch, when configured.
     binary_source: Option<PathBuf>,
+    /// Operator-installed remote binary run as-is, when configured.
+    remote_bin: Option<String>,
+    /// Directory the UI opens first, when configured.
+    home: Option<String>,
     /// Remote namespace isolating this relay's agent state.
     agent_app_name: String,
     /// Agent registration secret.
@@ -227,6 +233,8 @@ impl Relay {
                 monitor_forward_failure: true,
                 binary_source: self.binary_source.as_deref(),
                 agent_app_name: Some(self.agent_app_name.clone()),
+                remote_bin: self.remote_bin.as_deref(),
+                home: self.home.as_deref(),
             },
             provision: &self.provision,
             status: &ProvisioningStatusSink::noop(),

@@ -21,8 +21,9 @@ const REMOTE_TEMP_CLEANUP_TIMEOUT: Duration = Duration::from_secs(30);
 /// by a shell startup file, for example) is not mistaken for probe fields.
 const PROBE_MARKER: &str = "redoor-probe";
 
-/// Lines of a probe report: the marker, os, arch, path, presence, version and run error.
-pub(super) const PROBE_REPORT_LINES: usize = 7;
+/// Lines of a probe report: the marker, os, arch, path, presence, version, run error and
+/// noexec mount.
+pub(super) const PROBE_REPORT_LINES: usize = 8;
 
 /// Presence line of a probe report when a file exists at the probed path.
 const PROBE_PRESENT: &str = "present";
@@ -127,32 +128,61 @@ async fn remove_remote_temp(host: &SshHost, path: &str) -> bool {
     }
 }
 
-/// Default remote redoor binary path when the user does not override it
-/// via `--remote-bin` or `REDOOR_REMOTE_BIN`.
-pub(super) fn default_remote_bin(app_name: &str) -> String {
-    format!(
-        "${{XDG_DATA_HOME:-$HOME/.local/share}}/{app_name}/binaries/{}/redoor",
-        env!("CARGO_PKG_VERSION")
-    )
-}
+/// Install root of a device without an `install_dir`: its data directory, expanded on the
+/// device by [`path_word`].
+const DEFAULT_INSTALL_ROOT: &str = "${XDG_DATA_HOME:-$HOME/.local/share}";
 
-/// Directory holding every install of `app_name` on a device: the versioned releases and
-/// the content-addressed debug builds. Stale debug builds are only ever removed below it.
-fn remote_binaries_dir(app_name: &str) -> String {
-    format!("${{XDG_DATA_HOME:-$HOME/.local/share}}/{app_name}/binaries")
-}
-
-/// Content-addressed remote path for an upload of the local debug build with `hash`.
+/// Where a device keeps the binaries of one server namespace: the versioned release
+/// installs and the content-addressed debug builds, all in `<root>/<app-name>/binaries`.
 ///
-/// Debug rebuilds keep the same `--version`, so the version cannot tell them apart. Naming
-/// the directory after the build's content hash makes the path itself the identity: a
-/// binary there that runs and reports the expected version is the build, and the device
-/// never has to hash hundreds of megabytes (slow with Perl `shasum` on macOS or on phones
-/// and boards without hashing instructions). It also keeps debug deploys from overwriting
-/// a versioned release install on the same host.
-fn debug_remote_bin(app_name: &str, hash: &str) -> String {
-    format!("{}/debug-{hash}/redoor", remote_binaries_dir(app_name))
+/// The root is the device's data directory unless the device sets `install_dir`, which
+/// exists for systems whose home is mounted `noexec` (TrueNAS, for one). The `<app-name>`
+/// level stays either way, so servers of different namespaces sharing one root never
+/// remove each other's debug builds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct InstallLayout {
+    /// `<root>/<app-name>/binaries`, unexpanded; stale debug builds are only ever removed
+    /// below it.
+    binaries_dir: String,
 }
+
+impl InstallLayout {
+    /// The layout of `app_name` under `install_dir`, or under the data directory without one.
+    pub(super) fn new(app_name: &str, install_dir: Option<&str>) -> Self {
+        let root = install_dir.map_or(DEFAULT_INSTALL_ROOT, |dir| dir.trim_end_matches('/'));
+        Self {
+            binaries_dir: format!("{root}/{app_name}/binaries"),
+        }
+    }
+
+    /// Versioned install of this server's release.
+    pub(super) fn release_bin(&self) -> String {
+        format!("{}/{}/redoor", self.binaries_dir, env!("CARGO_PKG_VERSION"))
+    }
+
+    /// Content-addressed install of the local debug build with `hash`.
+    ///
+    /// Debug rebuilds keep the same `--version`, so the version cannot tell them apart.
+    /// Naming the directory after the build's content hash makes the path itself the
+    /// identity: a binary there that runs and reports the expected version is the build,
+    /// and the device never has to hash hundreds of megabytes (slow with Perl `shasum` on
+    /// macOS or on phones and boards without hashing instructions). It also keeps debug
+    /// deploys from overwriting a versioned release install on the same host.
+    fn debug_bin(&self, hash: &str) -> String {
+        format!("{}/debug-{hash}/redoor", self.binaries_dir)
+    }
+}
+
+/// Prints the mount point of the filesystem holding the directory in `REDOOR_PROBE_DIR` when
+/// that filesystem is mounted `noexec`, reading `/proc/self/mounts` on its input.
+///
+/// The kernel refuses to run any program from such a mount with a bare "Permission denied",
+/// whatever its mode bits say, which looks like a broken upload. The longest mount point
+/// containing the directory wins, and the last entry for one mount point, because a later
+/// mount hides the earlier ones. `\040` is how the file writes a space in a mount point.
+/// The directory comes through the environment because `awk -v` would interpret
+/// backslashes in it.
+const NOEXEC_MOUNT_AWK: &str = r#"{ m = $2; gsub(/\\040/, " ", m); d = ENVIRON["REDOOR_PROBE_DIR"]; if ((m == "/" || d == m || index(d, m "/") == 1) && length(m) >= length(best)) { best = m; opts = $4 } } END { if (index("," opts ",", ",noexec,")) print best }"#;
 
 /// Result of probing a remote host: which OS/arch it runs and what its existing redoor
 /// binary reports for `--version` (empty when there is no runnable binary at the path).
@@ -175,6 +205,11 @@ pub(super) struct RemoteSniff {
     pub(super) run_error: String,
     /// Shell-expanded remote path so status lines can show the real file.
     pub(super) remote_bin: String,
+    /// Mount point of the `noexec` filesystem the binary is (or would be) installed on.
+    /// Only probed when no version came out, so a working start never pays for it. Linux
+    /// only, through `/proc/self/mounts`; elsewhere a refused binary still shows its run
+    /// error.
+    pub(super) noexec_mount: Option<String>,
 }
 
 /// Builds the probe statements shared by the standalone probe and the launch script.
@@ -189,18 +224,28 @@ pub(super) struct RemoteSniff {
 /// The binary only runs a second time, to capture its stderr, when the first run printed
 /// no version. Keeping stderr out of the first run means a working binary that warns on
 /// stderr still reports a clean version line.
+///
+/// Without a version the probe also checks whether the binary's directory, or its nearest
+/// existing parent when the binary was never installed, sits on a `noexec` mount (see
+/// [`NOEXEC_MOUNT_AWK`]), so the installer can stop before uploading a binary that could
+/// never run. The `-n` test ends the parent walk even if `dirname` is missing.
 fn probe_statements(remote_bin: &str) -> String {
     format!(
         "bin={bin}; os=$(uname); arch=$(uname -m); \
-         present={PROBE_MISSING}; version=; error=; \
+         present={PROBE_MISSING}; version=; error=; noexec=; \
          if [ -e \"$bin\" ]; then present={PROBE_PRESENT}; \
          version=$(\"$bin\" --version 2>/dev/null | head -n 1); \
          if [ -z \"$version\" ]; then error=$(\"$bin\" --version 2>&1 >/dev/null); code=$?; \
          error=$(printf '%s\\n' \"$error\" | head -n 1); \
          if [ -z \"$error\" ]; then error=\"--version printed nothing (exit status $code)\"; fi; \
          fi; fi; \
-         printf '%s\\n' {PROBE_MARKER} \"$os\" \"$arch\" \"$bin\" \"$present\" \"$version\" \"$error\"",
-        bin = path_word(remote_bin)
+         if [ -z \"$version\" ] && [ -r /proc/self/mounts ]; then dir=$(dirname \"$bin\"); \
+         while [ -n \"$dir\" ] && [ ! -d \"$dir\" ]; do dir=$(dirname \"$dir\"); done; \
+         dir=$(cd \"$dir\" 2>/dev/null && pwd -P || printf '%s' \"$dir\"); \
+         noexec=$(REDOOR_PROBE_DIR=\"$dir\" awk {awk} /proc/self/mounts 2>/dev/null); fi; \
+         printf '%s\\n' {PROBE_MARKER} \"$os\" \"$arch\" \"$bin\" \"$present\" \"$version\" \"$error\" \"$noexec\"",
+        bin = path_word(remote_bin),
+        awk = quote(NOEXEC_MOUNT_AWK),
     )
 }
 
@@ -222,6 +267,7 @@ impl RemoteSniff {
             present,
             version_output,
             run_error,
+            noexec_mount,
         ] = report
         else {
             return Err(Self::unexpected(target, report));
@@ -263,7 +309,21 @@ impl RemoteSniff {
             version_output: version_output.trim().to_string(),
             run_error: run_error.trim().chars().take(RUN_ERROR_MAX_CHARS).collect(),
             remote_bin: remote_bin.to_string(),
+            noexec_mount: Some(noexec_mount.trim())
+                .filter(|mount| !mount.is_empty())
+                .map(str::to_string),
         })
+    }
+
+    /// The error for a binary on a `noexec` mount, which no upload or retry can fix: only
+    /// another install directory can. Checked before uploading, so the device does not
+    /// receive hundreds of megabytes it can never run.
+    pub(super) fn noexec_error(&self) -> Option<ProvisionError> {
+        let mount = self.noexec_mount.as_ref()?;
+        Some(ProvisionError::Remote(format!(
+            "{} is on {mount}, which is mounted noexec, so the device cannot run a redoor binary installed there. Set the device's install directory to a directory on a filesystem that allows running programs.",
+            self.remote_bin
+        )))
     }
 
     /// A file exists at the path but reports no version, so it cannot run here. At a
@@ -276,14 +336,18 @@ impl RemoteSniff {
     /// Describes the probed version for status lines and errors, including why a present
     /// binary did not run.
     fn version_description(&self) -> String {
+        let noexec = match &self.noexec_mount {
+            Some(mount) => format!("; {mount} is mounted noexec"),
+            None => String::new(),
+        };
         if !self.version_output.is_empty() {
             format!("'{}'", self.version_output)
         } else if !self.present {
-            "(not installed)".to_string()
+            format!("(not installed{noexec})")
         } else if self.run_error.is_empty() {
-            "(fails to run)".to_string()
+            format!("(fails to run{noexec})")
         } else {
-            format!("(fails to run: {})", self.run_error)
+            format!("(fails to run: {}{noexec})", self.run_error)
         }
     }
 
@@ -296,7 +360,7 @@ impl RemoteSniff {
             report
         );
         ProvisionError::Remote(format!(
-            "unexpected probe output from {target}: {report:?}; expected '{PROBE_MARKER}' followed by os, arch, path, presence, version and run error lines"
+            "unexpected probe output from {target}: {report:?}; expected '{PROBE_MARKER}' followed by os, arch, path, presence, version, run error and noexec mount lines"
         ))
     }
 
@@ -349,7 +413,7 @@ pub(super) async fn sniff_remote(
     let sniff = RemoteSniff::parse(host.target(), &report)?;
     log!(
         Level::Info,
-        "Remote sniff complete: target={}, remote_bin={}, os={}, arch={}, present={}, version_output='{}', run_error='{}', elapsed={:?}",
+        "Remote sniff complete: target={}, remote_bin={}, os={}, arch={}, present={}, version_output='{}', run_error='{}', noexec_mount={:?}, elapsed={:?}",
         host.target(),
         sniff.remote_bin,
         sniff.os,
@@ -357,6 +421,7 @@ pub(super) async fn sniff_remote(
         sniff.present,
         sniff.version_output,
         sniff.run_error,
+        sniff.noexec_mount,
         sniff_start.elapsed()
     );
     Ok(sniff)
@@ -684,13 +749,16 @@ impl InstallTarget {
 
 /// Makes sure a device runs a binary matching this server, installing one when needed.
 ///
-/// Only the default install locations are managed here; an operator-provided path is
-/// used as-is by the caller. A debug server prefers its local debug build at a path named
-/// after the build's content hash, because the version does not change between rebuilds,
-/// and falls back to the versioned release install when the device's platform differs.
+/// Only the managed install locations are handled here; a relay's operator-provided path
+/// is used as-is by the caller. A debug server prefers its local debug build at a path
+/// named after the build's content hash, because the version does not change between
+/// rebuilds, and falls back to the versioned release install when the device's platform
+/// differs.
 pub(super) struct Installer<'a> {
     /// Host to install on.
     pub(super) host: &'a SshHost,
+    /// Where the device keeps the binaries.
+    pub(super) layout: &'a InstallLayout,
     /// Local namespace and release cache.
     pub(super) provision: &'a super::ProvisionContext,
     /// Progress lines for the lifecycle UI.
@@ -755,6 +823,18 @@ impl Installer<'_> {
                     uploaded
                 );
                 return Ok(ready);
+            }
+            if let Some(error) = sniff.noexec_error() {
+                // Every install path shares the directory, so neither the release build nor
+                // another upload could run either.
+                redoor_core::log_failure!(
+                    Level::Error,
+                    "Remote install directory is on a noexec mount: target={}, remote_bin={}, mount={:?}",
+                    self.host.target(),
+                    sniff.remote_bin,
+                    sniff.noexec_mount
+                );
+                return Err(error);
             }
             if let InstallSource::Debug { build, .. } = &target.source
                 && sniff.unrunnable()
@@ -895,7 +975,7 @@ impl Installer<'_> {
     async fn debug_target(&self, path: PathBuf) -> Result<InstallTarget, ProvisionError> {
         let build = self.provision.local_build.get(&path).await?;
         Ok(InstallTarget {
-            remote_bin: debug_remote_bin(&self.provision.app_name, &build.hash),
+            remote_bin: self.layout.debug_bin(&build.hash),
             source: InstallSource::Debug { path, build },
         })
     }
@@ -903,7 +983,7 @@ impl Installer<'_> {
     /// The versioned release install of this server's version.
     fn release_target(&self) -> InstallTarget {
         InstallTarget {
-            remote_bin: default_remote_bin(&self.provision.app_name),
+            remote_bin: self.layout.release_bin(),
             source: InstallSource::Release,
         }
     }
@@ -942,7 +1022,7 @@ impl Installer<'_> {
     /// a stop requested right after it should wait for, or cancel, the cleanup.
     fn spawn_stale_debug_cleanup(&self, keep_hash: &str) {
         let host = self.host.clone();
-        let script = stale_debug_cleanup_script(&self.provision.app_name, keep_hash);
+        let script = stale_debug_cleanup_script(&self.layout.binaries_dir, keep_hash);
         let keep_hash = keep_hash.to_string();
         tokio::spawn(async move {
             remove_stale_debug_installs(&host, &script, &keep_hash).await;
@@ -981,19 +1061,19 @@ async fn remove_stale_debug_installs(host: &SshHost, script: &str, keep_hash: &s
     }
 }
 
-/// Builds the single-line script that deletes every debug install of `app_name` except the
-/// one named after `keep_hash`, including the `debug/` directory older servers used.
+/// Builds the single-line script that deletes every debug install in `binaries_dir` except
+/// the one named after `keep_hash`, including the `debug/` directory older servers used.
 ///
 /// It only touches `debug-*` and `debug` entries directly inside the binaries directory,
 /// so versioned release installs and anything else stay untouched; the pattern is
 /// expanded by the remote shell, and an unmatched pattern is skipped by the `-d` test.
-fn stale_debug_cleanup_script(app_name: &str, keep_hash: &str) -> String {
+fn stale_debug_cleanup_script(binaries_dir: &str, keep_hash: &str) -> String {
     format!(
         "base={base}; keep={keep}; \
          for dir in \"$base\"/debug-* \"$base\"/debug; do \
          if [ \"$dir\" != \"$base/$keep\" ] && [ -d \"$dir\" ]; then rm -rf \"$dir\"; fi; \
          done",
-        base = path_word(&remote_binaries_dir(app_name)),
+        base = path_word(binaries_dir),
         keep = quote(&format!("debug-{keep_hash}")),
     )
 }
@@ -1030,6 +1110,9 @@ pub(super) async fn force_upload_binary(
     let size = local_file_size(local_path).await?;
     upload_binary(host, local_path, remote_bin, size, status).await?;
     let uploaded = sniff_remote(host, remote_bin).await?;
+    if let Some(error) = uploaded.noexec_error() {
+        return Err(error);
+    }
     if uploaded.version_output.is_empty() {
         redoor_core::log_failure!(
             Level::Error,
@@ -1215,9 +1298,9 @@ async fn upload_binary(
 #[cfg(test)]
 mod tests {
     use super::{
-        BinaryExpectation, DEBUG_HASH_LEN, LAUNCH_NEEDS_INSTALL, LAUNCH_READY, LocalBuild,
-        LocalBuildCache, PROBE_REPORT_LINES, RemoteSniff, debug_binary_candidate, debug_remote_bin,
-        default_remote_bin, remote_sniff_script, remote_upload_tmp_path,
+        BinaryExpectation, DEBUG_HASH_LEN, InstallLayout, LAUNCH_NEEDS_INSTALL, LAUNCH_READY,
+        LocalBuild, LocalBuildCache, NOEXEC_MOUNT_AWK, PROBE_REPORT_LINES, RemoteSniff,
+        debug_binary_candidate, remote_sniff_script, remote_upload_tmp_path,
         stale_debug_cleanup_script, upload_script,
     };
     use crate::ssh::shell::{quote, sh_command};
@@ -1400,6 +1483,8 @@ printf 'agent:%s|' "$@"
         assert!(!sniff.present);
         assert!(!sniff.unrunnable());
         assert_eq!(sniff.run_error, "");
+        // The test's home allows running programs, so no noexec mount is reported.
+        assert_eq!(sniff.noexec_mount, None);
     }
 
     /// A binary that exists but cannot run is reported as present with the first line of
@@ -1488,6 +1573,7 @@ echo 'redoor 1.2.3'
             "x86_64",
             "/bin/redoor",
             "maybe",
+            "",
             "",
             "",
         ]
@@ -1678,7 +1764,10 @@ echo uploaded
         fake_binary(&other_app.join("redoor"), "redoor 1.2.3").await;
 
         let command = sh_command(
-            &stale_debug_cleanup_script("redoor-dev", "2222222222222222"),
+            &stale_debug_cleanup_script(
+                &InstallLayout::new("redoor-dev", None).binaries_dir,
+                "2222222222222222",
+            ),
             &[],
         );
         let output = run_remote(&command, b"", home.path()).await;
@@ -1715,6 +1804,7 @@ echo uploaded
             version_output: version.to_string(),
             run_error: String::new(),
             remote_bin: "/bin/redoor".to_string(),
+            noexec_mount: None,
         };
         let expect = BinaryExpectation::this_version();
         // The release install of this server's version is used as is.
@@ -1742,6 +1832,7 @@ echo uploaded
             version_output: "redoor 999.0.0".to_string(),
             run_error: String::new(),
             remote_bin: "/bin/redoor".to_string(),
+            noexec_mount: None,
         };
         // An upload of the build verifies even though this server reports another version.
         assert!(expect.matches(&sniff));
@@ -1763,9 +1854,9 @@ echo uploaded
     /// Verifies remote releases mirror the local versioned binary hierarchy
     /// while using the persistent XDG data location on the target host.
     #[test]
-    fn default_remote_bin_uses_versioned_data_hierarchy() {
+    fn release_bin_uses_versioned_data_hierarchy() {
         assert_eq!(
-            default_remote_bin("redoor-dev"),
+            InstallLayout::new("redoor-dev", None).release_bin(),
             format!(
                 "${{XDG_DATA_HOME:-$HOME/.local/share}}/redoor-dev/binaries/{}/redoor",
                 env!("CARGO_PKG_VERSION")
@@ -1777,11 +1868,124 @@ echo uploaded
     /// Verifies debug uploads target a content-addressed install path beside, not over,
     /// the versioned release layout, so each build has its own path that identifies it.
     #[test]
-    fn debug_remote_bin_is_named_after_the_build_hash() {
+    fn debug_bin_is_named_after_the_build_hash() {
         assert_eq!(
-            debug_remote_bin("redoor-dev", "0123456789abcdef"),
+            InstallLayout::new("redoor-dev", None).debug_bin("0123456789abcdef"),
             "${XDG_DATA_HOME:-$HOME/.local/share}/redoor-dev/binaries/debug-0123456789abcdef/redoor",
             "the debug install path should use the namespace and the build's hash"
+        );
+    }
+
+    /// A device's install directory replaces only the data directory root, so the
+    /// namespace level that keeps servers from removing each other's builds stays.
+    #[test]
+    fn install_dir_replaces_the_data_directory_root() {
+        let layout = InstallLayout::new("redoor-dev", Some("/mnt/tank/apps/"));
+        // The trailing slash must not double up in the path.
+        assert_eq!(
+            layout.release_bin(),
+            format!(
+                "/mnt/tank/apps/redoor-dev/binaries/{}/redoor",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(
+            layout.debug_bin("0123456789abcdef"),
+            "/mnt/tank/apps/redoor-dev/binaries/debug-0123456789abcdef/redoor"
+        );
+    }
+
+    /// The mount lookup reports the innermost mount holding a directory, and only when that
+    /// mount is `noexec`.
+    #[tokio::test]
+    async fn noexec_mount_lookup_finds_the_innermost_mount() {
+        let directory = redoor_core::test_support::TempDir::create();
+        let mounts = directory.path().join("mounts");
+        // Shaped like TrueNAS, plus the cases the matching must get right.
+        tokio::fs::write(
+            &mounts,
+            r"rootfs / ext4 rw,relatime 0 0
+boot-pool/ROOT/25.04.2.6/home /home zfs rw,nosuid,nodev,noexec,relatime,xattr 0 0
+tank /mnt/tank zfs rw,relatime 0 0
+tank/my\040apps /mnt/tank/my\040apps zfs rw,noexec 0 0
+tmpfs /run/lock tmpfs rw,nosuid,noexec 0 0
+tmpfs /run/lock tmpfs rw,nosuid 0 0
+",
+        )
+        .await
+        .unwrap();
+        let cases = [
+            ("/home/truenas_admin/.local/share", "/home"),
+            ("/home", "/home"),
+            // Sharing a prefix is not being below the mount point.
+            ("/homework", ""),
+            // A mount below a noexec one decides for itself.
+            ("/mnt/tank/apps", ""),
+            // An escaped space in the mount point is matched as a space.
+            ("/mnt/tank/my apps/redoor", "/mnt/tank/my apps"),
+            // A later mount on the same point hides the earlier noexec one.
+            ("/run/lock/redoor", ""),
+            ("/usr/bin", ""),
+        ];
+        for (dir, expected) in cases {
+            let output = tokio::process::Command::new("awk")
+                .arg(NOEXEC_MOUNT_AWK)
+                .arg(&mounts)
+                .env("REDOOR_PROBE_DIR", dir)
+                .output()
+                .await
+                .unwrap();
+            // The lookup must run with the system awk the device would use.
+            assert!(output.status.success(), "awk failed for {dir}");
+            // Only a noexec mount is printed, and it is the one that holds the directory.
+            assert_eq!(
+                String::from_utf8_lossy(&output.stdout).trim_end(),
+                expected,
+                "directory {dir}"
+            );
+        }
+    }
+
+    /// A binary on a noexec mount fails with an error that names the mount and the setting
+    /// that fixes it, instead of the kernel's bare "Permission denied".
+    #[test]
+    fn noexec_error_points_at_the_install_directory() {
+        let report = [
+            "redoor-probe",
+            "Linux",
+            "x86_64",
+            "/home/admin/.local/share/redoor/binaries/1.0.0/redoor",
+            "present",
+            "",
+            "sh: 1: /home/admin/.local/share/redoor/binaries/1.0.0/redoor: Permission denied",
+            "/home",
+        ]
+        .map(str::to_string);
+        let sniff = RemoteSniff::parse("test", &report).unwrap();
+        let error = sniff
+            .noexec_error()
+            .expect("a noexec mount is an error")
+            .to_string();
+        // The message names the binary, the mount and the setting to change.
+        assert!(error.contains(&sniff.remote_bin), "{error}");
+        assert!(error.contains("/home, which is mounted noexec"), "{error}");
+        assert!(error.contains("install directory"), "{error}");
+        // The sniff status line explains the run error as well.
+        assert!(
+            sniff
+                .status_message()
+                .ends_with("Permission denied; /home is mounted noexec)"),
+            "{}",
+            sniff.status_message()
+        );
+        // A binary on a mount that allows running programs is no such error.
+        let mut allowed = report.clone();
+        allowed[7] = String::new();
+        assert!(
+            RemoteSniff::parse("test", &allowed)
+                .unwrap()
+                .noexec_error()
+                .is_none()
         );
     }
 

@@ -159,8 +159,7 @@ export function updateRequest(
 ): UpdateSshAgentRequest {
     return {
         ssh_port: null,
-        remote_bin: null,
-        home: null,
+        install_dir: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -192,8 +191,7 @@ export async function createDevice(
         username: options.user,
         ssh_port: null,
         name: options.name,
-        remote_bin: null,
-        home: null,
+        install_dir: null,
         password: options.password ?? null,
         clear_password: null,
     });

@@ -110,7 +110,6 @@ port = ${VITEST_SERVER_PORT}
 target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
     );
 

@@ -1006,8 +1006,7 @@ describe("managed SSH key access", () => {
             username: null,
             ssh_port: null,
             name: `ssh-keys-options-${fixture.suffix}`,
-            remote_bin: null,
-            home: null,
+            install_dir: null,
             password: null,
             clear_password: null,
         });
@@ -1030,8 +1029,7 @@ describe("managed SSH key access", () => {
             username: "nobody",
             ssh_port: null,
             name: `ssh-keys-token-${fixture.suffix}`,
-            remote_bin: null,
-            home: null,
+            install_dir: null,
             password: null,
             clear_password: null,
         });

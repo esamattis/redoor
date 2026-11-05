@@ -118,10 +118,9 @@ pub struct CreateSshAgentRequest {
     /// Editable display name; defaults to the target hostname when omitted. The device id is
     /// created by the server and never part of this body.
     pub name: Option<String>,
-    /// Optional path where the remote Redoor binary is installed.
-    pub remote_bin: Option<String>,
-    /// Optional initial browser directory advertised before the first connection.
-    pub home: Option<String>,
+    /// Optional directory on the device under which redoor installs its binaries, for devices
+    /// whose home directory does not allow running programs.
+    pub install_dir: Option<String>,
     /// New password to persist; omit or send empty on update to keep the existing secret.
     pub password: Option<String>,
     /// When true, drop any stored password so key or ssh-agent auth is used.
@@ -137,8 +136,7 @@ pub struct UpdateSshAgentRequest {
     pub username: Option<String>,
     pub ssh_port: Option<u16>,
     pub name: Option<String>,
-    pub remote_bin: Option<String>,
-    pub home: Option<String>,
+    pub install_dir: Option<String>,
     pub password: Option<String>,
     /// Distinguishes keeping an omitted password from deleting the stored secret.
     pub clear_password: Option<bool>,
@@ -164,10 +162,8 @@ pub struct ManagedSshAgentConfigurationResponse {
     /// Editable display name; defaults to the target hostname when omitted. The device id is
     /// created by the server and never part of this body.
     pub name: Option<String>,
-    /// Optional path where the remote Redoor binary is installed.
-    pub remote_bin: Option<String>,
-    /// Optional initial browser directory advertised before the first connection.
-    pub home: Option<String>,
+    /// Optional directory on the device under which redoor installs its binaries.
+    pub install_dir: Option<String>,
     /// Always null on GET so the stored SSH password is never sent to the browser.
     pub password: Option<String>,
     /// Reports whether a password is stored so the edit form can choose the matching auth radio.

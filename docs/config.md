@@ -218,19 +218,20 @@ Every device has a stable **id** (`dev_` followed by 20 lowercase letters and di
 
 Default when `local` is omitted or `false`. The server SSHes to the host, ensures a matching binary, and keeps the device's agent daemon running behind a Unix socket reverse forward (see [Managed agent daemons](#managed-agent-daemons)). The device's sshd must allow stream-local forwarding (`AllowStreamLocalForwarding`, `DisableForwarding`).
 
-| Key          | Type          | Required | Description                                                                                                                                                                  |
-| ------------ | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `target`     | string        | yes      | SSH destination (`host` or `user@host`).                                                                                                                                     |
-| `id`         | string        | no       | Stable device id. Written by the server; see [Device ids and names](#device-ids-and-names).                                                                                  |
-| `local`      | bool          | no       | Must be absent or `false`.                                                                                                                                                   |
-| `username`   | string        | no       | SSH login via `ssh -l`. When omitted, OpenSSH config or `user@host` supplies it.                                                                                             |
-| `ssh_port`   | integer (u16) | no       | SSH port. When omitted, OpenSSH host config / default applies (not forced to 22).                                                                                            |
-| `name`       | string        | no       | Device name. Defaults to the host portion of `target`.                                                                                                                       |
-| `remote_bin` | string        | no       | Path to the redoor binary on the remote host. When omitted, uses the versioned install layout under `${XDG_DATA_HOME:-$HOME/.local/share}/redoor/binaries/<version>/redoor`. |
-| `home`       | string        | no       | Home directory opened on the remote device. When omitted, the remote process user's home directory is published.                                                             |
-| `password`   | string        | no       | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible.                                              |
+| Key           | Type          | Required | Description                                                                                                                                                      |
+| ------------- | ------------- | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `target`      | string        | yes      | SSH destination (`host` or `user@host`).                                                                                                                         |
+| `id`          | string        | no       | Stable device id. Written by the server; see [Device ids and names](#device-ids-and-names).                                                                      |
+| `local`       | bool          | no       | Must be absent or `false`.                                                                                                                                       |
+| `username`    | string        | no       | SSH login via `ssh -l`. When omitted, OpenSSH config or `user@host` supplies it.                                                                                 |
+| `ssh_port`    | integer (u16) | no       | SSH port. When omitted, OpenSSH host config / default applies (not forced to 22).                                                                                |
+| `name`        | string        | no       | Device name. Defaults to the host portion of `target`.                                                                                                           |
+| `install_dir` | string        | no       | Directory on the device under which the server installs the redoor binary, as `<install_dir>/<app-name>/binaries/<version>/redoor`. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}`. |
+| `password`    | string        | no       | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible.                                  |
 
-`remote_bin` and `home` are used literally on the device, except that a leading `~/`, `$HOME/` or `${HOME}/` is expanded to the remote user's home directory. Other shell syntax such as variables or `$(...)` is not interpreted.
+The server always installs and updates the binary itself, and the device opens the remote user's home directory. Set `install_dir` when programs cannot run from the home directory because it is mounted `noexec`, as on TrueNAS: the server then stops before uploading and says which mount refuses to run programs. `install_dir` is used literally on the device, except that a leading `~/`, `$HOME/` or `${HOME}/` is expanded to the remote user's home directory. Other shell syntax such as variables or `$(...)` is not interpreted.
+
+`[[agents]]` SSH entries no longer accept `remote_bin` or `home`; remove them from older configs.
 
 ```toml
 [[agents]]
@@ -238,14 +239,13 @@ target = "user@example.com"
 # username = "deploy"
 # ssh_port = 22
 # name = "prod-server"
-# remote_bin = "/home/deploy/.local/share/redoor/binaries/<version>/redoor"
-# home = "/srv/app"
+# install_dir = "/mnt/tank/apps"
 # password = "plaintext-ssh-password"
 ```
 
 ### Local agent
 
-Runs on the same machine as the server. The server reuses its own binary (`std::env::current_exe`); no `remote_bin` is needed. Like an SSH-backed agent it runs as a daemon (see [Managed agent daemons](#managed-agent-daemons)).
+Runs on the same machine as the server. The server reuses its own binary (`std::env::current_exe`), so nothing is installed. Like an SSH-backed agent it runs as a daemon (see [Managed agent daemons](#managed-agent-daemons)).
 
 | Key     | Type   | Required | Description                                                                                          |
 | ------- | ------ | -------- | ---------------------------------------------------------------------------------------------------- |
@@ -254,7 +254,7 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | `name`  | string | no       | Device name. Defaults to the system hostname.                                                        |
 | `home`  | string | no       | Home directory opened in the UI. Defaults to the spawned process user's home directory.              |
 
-SSH-only keys (`target`, `username`, `ssh_port`, `remote_bin`, `password`) are rejected on local entries.
+SSH-only keys (`target`, `username`, `ssh_port`, `install_dir`, `password`) are rejected on local entries.
 
 ```toml
 [[agents]]
@@ -351,7 +351,6 @@ home = "/home/me/projects"
 [[agents]]
 target = "user@example.com"
 name = "prod-server"
-home = "/srv/app"
 
 [[relays]]
 id = "production"

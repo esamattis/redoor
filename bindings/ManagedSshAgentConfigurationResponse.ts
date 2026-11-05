@@ -22,13 +22,9 @@ ssh_port: number | null,
  */
 name: string | null, 
 /**
- * Optional path where the remote Redoor binary is installed.
+ * Optional directory on the device under which redoor installs its binaries.
  */
-remote_bin: string | null, 
-/**
- * Optional initial browser directory advertised before the first connection.
- */
-home: string | null, 
+install_dir: string | null, 
 /**
  * Always null on GET so the stored SSH password is never sent to the browser.
  */

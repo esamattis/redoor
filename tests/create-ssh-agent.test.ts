@@ -40,8 +40,7 @@ function sshRequest(
         username: null,
         ssh_port: null,
         name: null,
-        remote_bin: null,
-        home: null,
+        install_dir: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -57,8 +56,7 @@ function sshUpdateRequest(
         username: null,
         ssh_port: null,
         name: null,
-        remote_bin: null,
-        home: null,
+        install_dir: null,
         password: null,
         clear_password: null,
         ...overrides,
@@ -112,8 +110,7 @@ describe("SSH agent configuration API", () => {
             username: "deploy",
             ssh_port: 2222,
             name: AGENT_NAME,
-            remote_bin: "/opt/redoor",
-            home: "/srv/app",
+            install_dir: "/mnt/tank/apps",
             password: "ssh-secret",
             clear_password: null,
         });
@@ -123,7 +120,8 @@ describe("SSH agent configuration API", () => {
             // The server creates an opaque id for the new device; the name stays separate.
             id: expect.stringMatching(DEVICE_ID_REGEXP),
             name: AGENT_NAME,
-            cwd: "/srv/app",
+            // SSH devices open the remote user's home, unknown until the daemon connects.
+            cwd: null,
             managed: true,
             configuration_editable: true,
             ssh_target: "example-host",
@@ -158,6 +156,7 @@ describe("SSH agent configuration API", () => {
         expect(editedConfig).toContain('username = "deploy"');
         expect(editedConfig).toContain("ssh_port = 2222");
         expect(editedConfig).toContain(`name = "${AGENT_NAME}"`);
+        expect(editedConfig).toContain('install_dir = "/mnt/tank/apps"');
         expect(editedConfig).toContain('password = "ssh-secret"');
         // The id is created on add and stored with the entry, so it survives restarts.
         expect(editedConfig).toContain(`id = "${response.agent.id}"`);
@@ -185,8 +184,7 @@ describe("SSH agent configuration API", () => {
                 username: null,
                 ssh_port: null,
                 name: null,
-                remote_bin: null,
-                home: null,
+                install_dir: null,
                 password: null,
                 clear_password: null,
             }),
@@ -200,12 +198,24 @@ describe("SSH agent configuration API", () => {
                 username: null,
                 ssh_port: null,
                 name: AGENT_NAME,
-                remote_bin: null,
-                home: null,
+                install_dir: null,
                 password: null,
                 clear_password: null,
             }),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
+        // A line break would end up inside the single-line scripts run on the device.
+        await expect(
+            apiClient.createSshAgent(
+                sshRequest({
+                    target: "another-host",
+                    install_dir: "/mnt/tank\napps",
+                }),
+            ),
+        ).rejects.toMatchObject({
+            status: 400,
+            message:
+                "install_dir must not contain control characters such as newlines",
+        } satisfies Partial<ApiError>);
         // Rejected submissions must not modify the durable source of truth.
         expect(readFileSync(configPath, "utf8")).toBe(before);
     });
@@ -220,6 +230,8 @@ describe("SSH agent configuration API", () => {
             username: "deploy",
             ssh_port: 2222,
             name: AGENT_NAME,
+            // The edit form shows the saved install directory.
+            install_dir: "/mnt/tank/apps",
             password: null,
             has_password: true,
         });
@@ -238,8 +250,7 @@ describe("SSH agent configuration API", () => {
             username: "operator",
             ssh_port: 2200,
             name: renamed,
-            remote_bin: null,
-            home: "/srv/updated",
+            install_dir: null,
             password: "updated-secret",
             clear_password: false,
         };
@@ -254,7 +265,7 @@ describe("SSH agent configuration API", () => {
         expect(update.agent).toMatchObject({
             id: configuredAgent.id,
             name: renamed,
-            cwd: "/srv/updated",
+            cwd: null,
             status: "stopped",
         });
         const inventory = await apiClient.listAgents();
@@ -264,7 +275,7 @@ describe("SSH agent configuration API", () => {
         expect(inventory.some((agent) => agent.name === renamed)).toBe(true);
         const afterUpdate = await apiClient.getSshAgentConfiguration(renamed);
         // Clearing optional paths on PUT must persist as omitted settings, not leftover values.
-        expect(afterUpdate.remote_bin).toBeNull();
+        expect(afterUpdate.install_dir).toBeNull();
         // GET must keep omitting the secret after an update that replaces it.
         expect(afterUpdate.password).toBeNull();
         expect(afterUpdate.has_password).toBe(true);
@@ -316,7 +327,6 @@ describe("SSH agent configuration API", () => {
                 name,
                 username: "operator",
                 ssh_port: 2022,
-                home: "/srv/after",
             }),
         );
 

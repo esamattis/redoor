@@ -3,7 +3,7 @@
 /**
  * Describes replacement SSH settings separately from the create contract.
  */
-export type UpdateSshAgentRequest = { target: string, username: string | null, ssh_port: number | null, name: string | null, remote_bin: string | null, home: string | null, password: string | null, 
+export type UpdateSshAgentRequest = { target: string, username: string | null, ssh_port: number | null, name: string | null, install_dir: string | null, password: string | null, 
 /**
  * Distinguishes keeping an omitted password from deleting the stored secret.
  */

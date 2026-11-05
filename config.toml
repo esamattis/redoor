@@ -29,8 +29,6 @@ password = "secret"
 [[agents]]
 id = "dev_yodi2scru76alla7zonb"
 target = "devbox"
-#remote_bin = "/home/esamatti/code/redoor/target/debug/redoor"
-#home = "/home"
 
 [[agents]]
 id = "dev_4i73pjgczdvbsek7nysw"

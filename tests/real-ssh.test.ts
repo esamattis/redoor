@@ -452,7 +452,6 @@ port = ${VITEST_SERVER_PORT}
 target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
             );
 
@@ -507,7 +506,8 @@ home = "${remoteRoot}"
             // TOML registration must remain dormant until an explicit REST lifecycle request.
             expect(configuredAgent.managed).toBe(true);
             expect(configuredAgent.status).toBe("stopped");
-            expect(configuredAgent.cwd).toBe(remoteRoot);
+            // SSH devices open the remote user's home, unknown until the daemon connects.
+            expect(configuredAgent.cwd).toBeNull();
 
             await configuredAgent.start();
             const seenProvisioning = new Set<string>();
@@ -802,7 +802,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_PASSWORD_USER}"
 password = ${JSON.stringify(sshPassword)}
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
         );
 
@@ -918,7 +917,6 @@ target = "${SSH_TEST_HOST}"
 username = "${SSH_ROOT_USER}"
 password = ${JSON.stringify(sshPassword)}
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
         );
 
@@ -1118,7 +1116,6 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const suffix = `${process.pid}-${Date.now()}`;
             const appName = `redoor-managed-ssh-no-password-${suffix}`;
             const agentName = `managed-ssh-no-password-${suffix}`;
-            const remoteRoot = `/tmp/redoor-managed-ssh-no-password-${suffix}`;
             const configPath = join(home, "config.toml");
             writeFileSync(
                 configPath,
@@ -1133,7 +1130,6 @@ port = ${VITEST_SERVER_PORT}
 target = "${SSH_TEST_HOST}"
 username = "${SSH_PASSWORD_USER}"
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
             );
 

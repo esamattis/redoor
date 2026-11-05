@@ -16,7 +16,7 @@ type FormState = Record<
     | "username"
     | "sshPort"
     | "name"
-    | "remoteBin"
+    | "installDir"
     | "home"
     | "password",
     string
@@ -93,7 +93,7 @@ function initialForm(configuration?: ManagedAgentFormConfiguration): FormState {
             username: "",
             sshPort: "",
             name: configuration.value.name ?? "",
-            remoteBin: "",
+            installDir: "",
             home: configuration.value.home ?? "",
             password: "",
         };
@@ -104,8 +104,8 @@ function initialForm(configuration?: ManagedAgentFormConfiguration): FormState {
         username: configuration?.value.username ?? "",
         sshPort: configuration?.value.ssh_port?.toString() ?? "",
         name: configuration?.value.name ?? "",
-        remoteBin: configuration?.value.remote_bin ?? "",
-        home: configuration?.value.home ?? "",
+        installDir: configuration?.value.install_dir ?? "",
+        home: "",
         password: "",
     };
 }
@@ -206,8 +206,7 @@ function sshSubmitRequest(
             username: optional(form.username),
             ssh_port: sshPort,
             name: optional(form.name),
-            remote_bin: optional(form.remoteBin),
-            home: optional(form.home),
+            install_dir: optional(form.installDir),
             password: authMode === "password" ? form.password || null : null,
             clear_password: authMode === "key",
         },
@@ -913,7 +912,11 @@ function AuthModeFields(props: {
     );
 }
 
-/** Groups optional remote process settings beneath the primary connection fields. */
+/**
+ * Groups rarely needed device settings beneath the primary connection fields. The install
+ * directory exists for systems such as TrueNAS that mount the home directory noexec, where
+ * the default install location can hold the binary but never run it.
+ */
 function AdvancedFields(props: {
     form: FormState;
     disabled: boolean;
@@ -924,22 +927,14 @@ function AdvancedFields(props: {
             <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-300">
                 Advanced
             </h2>
-            <div className="mt-4 grid gap-5 @xl:grid-cols-2">
+            <div className="mt-4">
                 <TextField
-                    label="Remote binary"
-                    value={props.form.remoteBin}
-                    placeholder="Use managed default"
-                    description="Path to redoor on the remote host. Leave empty for the managed versioned install."
+                    label="Install directory"
+                    value={props.form.installDir}
+                    placeholder="~/.local/share"
+                    description="Directory on the device where redoor installs its binary. Change it when programs cannot run from the home directory (it is mounted noexec, as on TrueNAS). A leading ~/ means the remote user's home."
                     disabled={props.disabled}
-                    onChange={(value) => props.onChange("remoteBin", value)}
-                />
-                <TextField
-                    label="Home directory"
-                    value={props.form.home}
-                    placeholder="Discover from remote user"
-                    description="Directory opened in the UI. Leave empty to use the remote user's home."
-                    disabled={props.disabled}
-                    onChange={(value) => props.onChange("home", value)}
+                    onChange={(value) => props.onChange("installDir", value)}
                 />
             </div>
         </section>

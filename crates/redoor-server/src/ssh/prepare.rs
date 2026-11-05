@@ -16,8 +16,8 @@ use redoor_protocol::wire::log::Level;
 
 use super::managed_keys::ManagedKeyDevice;
 use super::provision::{
-    BinaryCheck, BinaryCheckResult, BinaryExpectation, Installer, LAUNCH_NEEDS_INSTALL,
-    LAUNCH_READY, PROBE_REPORT_LINES, ProbeCheck, RemoteSniff, default_remote_bin,
+    BinaryCheck, BinaryCheckResult, BinaryExpectation, InstallLayout, Installer,
+    LAUNCH_NEEDS_INSTALL, LAUNCH_READY, PROBE_REPORT_LINES, ProbeCheck, RemoteSniff,
     force_upload_binary,
 };
 use super::shell::path_word;
@@ -92,6 +92,10 @@ pub(super) struct RelayOptions<'a> {
     pub(super) binary_source: Option<&'a Path>,
     /// Isolates a standalone relay's remote PID and application data namespace.
     pub(super) agent_app_name: Option<String>,
+    /// Operator-installed binary run as-is instead of the managed install.
+    pub(super) remote_bin: Option<&'a str>,
+    /// Directory the UI opens first, passed to the agent with `--home`.
+    pub(super) home: Option<&'a str>,
 }
 
 /// Resolved values for one SSH-backed agent: the prepared host and the
@@ -299,7 +303,7 @@ impl Preparation<'_> {
             prepared.agent_name,
             prepared.agent_id,
             prepared.remote_bin,
-            self.config.home,
+            prepared.home,
             self.config.log,
             started.elapsed()
         );
@@ -307,8 +311,8 @@ impl Preparation<'_> {
     }
 
     /// Starts a server-managed agent's session: `redoor agent managed` behind a Unix socket
-    /// forward, with `launch` on its stdin. A binary at the default install path is probed in
-    /// the same SSH session that starts it, so a device with a current binary needs one
+    /// forward, with `launch` on its stdin. The binary at the managed install path is probed
+    /// in the same SSH session that starts it, so a device with a current binary needs one
     /// session; only a missing or stale binary costs an upload and a second start.
     ///
     /// A failed forward means sshd refuses stream-local forwarding or the directory went
@@ -364,32 +368,18 @@ impl Preparation<'_> {
         daemon_may_run: &crate::watchdog::DaemonMayRun,
     ) -> Result<ManagedSession, ProvisionError> {
         launch.connect = ManagedConnect::Unix(sockets.stable());
-        let (mut child, remote_bin) = if self.config.remote_bin.is_some() {
-            self.trust_operator_binary(&prepared.remote_bin);
-            self.status.report(format!(
-                "Starting the agent session with {}",
-                prepared.remote_bin
-            ));
-            let session_socket = sockets.next_session();
-            let argv = prepared.managed_argv(&session_socket);
-            let argv_refs: Vec<&str> = argv.iter().map(String::as_str).collect();
-            let script = format!("exec {} \"$@\"", path_word(&prepared.remote_bin));
-            let options = prepared.managed_session_options(&session_socket);
-            let child = prepared.host.spawn(&script, &argv_refs, &options).await?;
-            (child, prepared.remote_bin.clone())
-        } else {
-            Installer {
-                host: &prepared.host,
-                provision: self.provision,
-                status: self.status,
-            }
-            .ensure(&mut LaunchCheck {
-                prepared,
-                sockets,
-                status: self.status,
-            })
-            .await?
-        };
+        let (mut child, remote_bin) = Installer {
+            host: &prepared.host,
+            layout: &self.layout(),
+            provision: self.provision,
+            status: self.status,
+        }
+        .ensure(&mut LaunchCheck {
+            prepared,
+            sockets,
+            status: self.status,
+        })
+        .await?;
         device.set_remote_bin(remote_bin);
         let mut stdin = child.stdin.take().ok_or_else(|| {
             ProvisionError::Remote("the agent session's stdin is not piped".to_string())
@@ -446,7 +436,7 @@ impl Preparation<'_> {
                 .clone()
                 .unwrap_or_else(|| self.provision.app_name.clone()),
             remote_bin: self.requested_remote_bin(),
-            home: self.config.home.clone(),
+            home: self.relay.home.map(str::to_string),
             destination: self.destination.clone(),
             random_remote_port: RandomRemotePort::default(),
             secure_server: self.secure_server.clone(),
@@ -466,26 +456,30 @@ impl Preparation<'_> {
         .await
     }
 
-    /// Operator-chosen path, or the versioned default under the local namespace.
+    /// Where the device keeps this server's binaries, under its `install_dir` when it has one.
+    fn layout(&self) -> InstallLayout {
+        InstallLayout::new(&self.provision.app_name, self.config.install_dir.as_deref())
+    }
+
+    /// A relay's operator-chosen path, or the versioned release install.
     fn requested_remote_bin(&self) -> String {
-        self.config
+        self.relay
             .remote_bin
-            .clone()
-            .unwrap_or_else(|| default_remote_bin(&self.provision.app_name))
+            .map_or_else(|| self.layout().release_bin(), str::to_string)
     }
 
     /// Makes sure a usable binary exists remotely and returns the path to run.
     ///
-    /// A relay `binary_source` always uploads. Otherwise an operator-supplied
-    /// `remote_bin` is trusted as-is (probing and reinstalling would clobber a binary
-    /// placed there on purpose), and only the default path is sniffed and provisioned,
-    /// so a fresh host works without a manual install.
+    /// A relay `binary_source` always uploads. Otherwise a relay's `remote_bin` is
+    /// trusted as-is (probing and reinstalling would clobber a binary placed there on
+    /// purpose), and only the managed install is sniffed and provisioned, so a fresh host
+    /// works without a manual install.
     async fn install_binary(&self, host: &SshHost) -> Result<String, ProvisionError> {
         let remote_bin = self.requested_remote_bin();
         if let Some(binary_source) = self.relay.binary_source {
             return self.force_upload(host, binary_source, &remote_bin).await;
         }
-        if self.config.remote_bin.is_some() {
+        if self.relay.remote_bin.is_some() {
             self.trust_operator_binary(&remote_bin);
             return Ok(remote_bin);
         }
@@ -497,6 +491,7 @@ impl Preparation<'_> {
         );
         Installer {
             host,
+            layout: &self.layout(),
             provision: self.provision,
             status: self.status,
         }

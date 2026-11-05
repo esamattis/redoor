@@ -52,7 +52,6 @@ self_signed = true
 target = "${SSH_TEST_HOST}"
 username = "${SSH_TEST_USER}"
 name = "${agentName}"
-home = "${remoteRoot}"
 `,
             );
 

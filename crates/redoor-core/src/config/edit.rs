@@ -194,8 +194,7 @@ fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
         table.insert("ssh_port", value(i64::from(ssh_port)));
     }
     insert_optional_string(&mut table, "name", &config.name);
-    insert_optional_string(&mut table, "remote_bin", &config.remote_bin);
-    insert_optional_string(&mut table, "home", &config.home);
+    insert_optional_string(&mut table, "install_dir", &config.install_dir);
     insert_optional_string(&mut table, "password", &config.password);
     // Omitted when false, so devices without a managed key keep their entry unchanged.
     if config.managed_ssh_key {
