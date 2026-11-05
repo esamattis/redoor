@@ -723,7 +723,8 @@ function SshAuthFields(props: {
                     value={props.form.password}
                     placeholder="Leave empty to try this server's SSH keys"
                     description="Used once to install the dedicated key, then discarded. Leave empty when this server can already log in with its own SSH keys or ssh-agent."
-                    autoComplete="current-password"
+                    autoComplete="off"
+                    ignoreIn1Password
                     className="@xl:col-span-2"
                     required={false}
                     disabled={props.disabled}

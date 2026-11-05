@@ -17,6 +17,12 @@ export function Password(props: {
     description?: string;
     required?: boolean;
     className?: string;
+    /**
+     * Keeps 1Password from offering to save the value. Set it on passwords that are used
+     * once and never stored: the save prompt is pointless there, and it cannot be dismissed
+     * while a modal dialog such as the vault unlock makes the rest of the page inert.
+     */
+    ignoreIn1Password?: boolean;
     onChange: (value: string) => void;
 }) {
     const inputId = React.useId();
@@ -44,6 +50,7 @@ export function Password(props: {
                     id={inputId}
                     type={isVisible ? "text" : "password"}
                     autoComplete={props.autoComplete}
+                    data-1p-ignore={props.ignoreIn1Password || undefined}
                     value={props.value}
                     placeholder={props.placeholder}
                     required={props.required}

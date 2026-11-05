@@ -224,7 +224,8 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                         value={password}
                         placeholder="Leave empty to try without a password"
                         description="Needed only when this server cannot log in yet. Redoor first tries a password stored for the device and this server's own SSH keys."
-                        autoComplete="current-password"
+                        autoComplete="off"
+                        ignoreIn1Password
                         required={false}
                         disabled={enrollMutation.isPending}
                         onChange={(value) => {
