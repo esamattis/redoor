@@ -520,14 +520,15 @@ last line`,
         );
 
         const gitignoreToggle = dialog.getByRole("button", {
-            name: "Respect .gitignore files",
+            name: "Include files ignored by .gitignore",
         });
 
-        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
+        // The preference stops respecting .gitignore, which is the pressed state of the chip that adds ignored files.
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "true");
         await gitignoreToggle.hover();
-        // An unpressed option must advertise the filter the next click enables.
+        // A pressed option must advertise turning it off, like the hidden files chip.
         await expect(page.getByRole("tooltip")).toHaveText(
-            "Respect .gitignore files",
+            "Exclude files ignored by .gitignore",
         );
 
         await page.goto(
@@ -543,8 +544,10 @@ last line`,
             }),
         ).toHaveAttribute("aria-pressed", "false");
         await expect(
-            dialog.getByRole("button", { name: "Respect .gitignore files" }),
-        ).toHaveAttribute("aria-pressed", "true");
+            dialog.getByRole("button", {
+                name: "Include files ignored by .gitignore",
+            }),
+        ).toHaveAttribute("aria-pressed", "false");
     });
 
     test("uses file-parent scope and URL-backed grep options", async ({
@@ -603,7 +606,9 @@ last line`,
             .fill("ignored-search-value");
         await expect(dialog.getByText("0 results.")).toBeVisible();
         await dialog
-            .getByRole("button", { name: "Respect .gitignore files" })
+            .getByRole("button", {
+                name: "Include files ignored by .gitignore",
+            })
             .click();
         // Disabling ignore handling makes the ignored fixture searchable.
         await expect(

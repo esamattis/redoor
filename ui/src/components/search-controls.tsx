@@ -273,13 +273,14 @@ export function SearchFilters(props: {
                     )}
                     Hidden files
                 </ToggleButton>
+                {/* Pressed adds files like the hidden files chip does, so every pressed chip widens the search. */}
                 <ToggleButton
-                    label="Respect .gitignore files"
-                    pressed={props.respectGitignore}
+                    label="Include files ignored by .gitignore"
+                    pressed={!props.respectGitignore}
                     tooltip={
                         props.respectGitignore
                             ? "Include files ignored by .gitignore"
-                            : "Respect .gitignore files"
+                            : "Exclude files ignored by .gitignore"
                     }
                     size="sm"
                     className={filterChipClassName}
@@ -294,7 +295,7 @@ export function SearchFilters(props: {
                     }
                 >
                     <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />
-                    .gitignore
+                    Ignored files
                 </ToggleButton>
                 {props.isContentSearch ? null : (
                     <ToggleButton

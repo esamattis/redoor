@@ -142,7 +142,7 @@ test.describe.serial("User state", () => {
         });
 
         const gitignoreToggle = dialog.getByRole("button", {
-            name: "Respect .gitignore files",
+            name: "Include files ignored by .gitignore",
         });
 
         await timeoutInput.fill("23");
@@ -165,7 +165,8 @@ test.describe.serial("User state", () => {
         // Reload restores each option in the URL-owned path-search dialog.
         await expect(timeoutInput).toHaveValue("23");
         await expect(hiddenToggle).toHaveAttribute("aria-pressed", "true");
-        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "false");
+        // Including ignored files is the pressed state of the gitignore chip.
+        await expect(gitignoreToggle).toHaveAttribute("aria-pressed", "true");
     });
 
     test("should follow the system theme and persist an override", async ({
