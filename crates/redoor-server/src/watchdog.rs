@@ -553,8 +553,13 @@ impl WatchdogHandle {
                 self.key
             );
             self.set_daemon_may_run(true);
-            if self.start().await.is_err() {
-                return ConnectVerdict::Stopped;
+            match self.adopt(&socket_id, &daemon).await {
+                Ok(Some(attempt_generation)) => {
+                    return ConnectVerdict::Accepted(attempt_generation);
+                }
+                // Someone started or stopped the device meanwhile; judge it like any `hello`.
+                Ok(None) => {}
+                Err(_) => return ConnectVerdict::Stopped,
             }
         }
         let Ok(permit) = self.reserve().await else {
@@ -577,6 +582,46 @@ impl WatchdogHandle {
             daemon,
         });
         ConnectVerdict::Accepted(attempt_generation)
+    }
+
+    /// Starts an untouched device with the daemon that reconnected by itself as its current
+    /// connection, returning the new attempt, or `None` when the device is no longer untouched.
+    ///
+    /// The socket is published and `Start` and `Connected` are queued under one lock, so the
+    /// adopting cycle already sees the connection. A cycle that saw none would have its ensure
+    /// step wake the kept daemon to reconnect, which drops the connection and every terminal a
+    /// client reattached to it after the server restart.
+    async fn adopt(
+        &self,
+        socket_id: &SocketId,
+        daemon: &ConnectingDaemon,
+    ) -> Result<Option<u64>, WatchdogError> {
+        let start = self.reserve().await?;
+        let connected = self.reserve().await?;
+        self.record_requester();
+        let snapshot = {
+            let mut snapshot = self.snapshot.lock().expect("watchdog snapshot poisoned");
+            if snapshot.desired_running || snapshot.attempt_generation != 0 {
+                return Ok(None);
+            }
+            snapshot.attempt_generation = snapshot.attempt_generation.wrapping_add(1);
+            let attempt_generation = snapshot.attempt_generation;
+            start.send(SupervisorCommand::Start);
+            connected.send(SupervisorCommand::Connected {
+                socket_id: socket_id.clone(),
+                attempt_generation,
+                daemon: daemon.clone(),
+            });
+            snapshot.desired_running = true;
+            snapshot.status = AgentConnectionStatus::Connected;
+            snapshot.connection_issue = None;
+            snapshot.provisioning_status.clear();
+            snapshot.socket_id = Some(socket_id.clone());
+            snapshot.clone()
+        };
+        let attempt_generation = snapshot.attempt_generation;
+        (self.callback)(snapshot);
+        Ok(Some(attempt_generation))
     }
 
     /// Whether nobody started or stopped the device in this server process: every Start,
@@ -2855,6 +2900,9 @@ mod tests {
         assert!(matches!(verdict, ConnectVerdict::Accepted(_)));
         assert!(adopted.snapshot().desired_running);
         wait_until(|| recorder.count() == 1).await;
+        // The adopting cycle knows the daemon is connected, so its ensure step does not wake
+        // the daemon to reconnect, which would drop the connection and its open terminals.
+        assert_eq!(recorder.requests(), vec![(false, true)]);
 
         stopped.start().await.unwrap();
         stopped.shutdown(None).await.unwrap();

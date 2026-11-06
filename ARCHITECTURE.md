@@ -957,7 +957,10 @@ sequenceDiagram
   nobody chose. A local daemon that outlived the previous server process needs no tunnel,
   though, and reconnects by itself; its device is **adopted**: the `hello` starts it as if
   the user had pressed Start, and the cycle's ensure step keeps or replaces the daemon like
-  any start. Refusing it as `stopped` would end the daemon and its shells. Only a device
+  any start. The adopting `hello` publishes its socket and queues `Start` and `Connected`
+  under one lock, so the cycle sends `server_connected = true`; otherwise the ensure step
+  would `SIGUSR1` the kept daemon into a reconnect that drops the terminals clients reattach
+  after the restart. Refusing it as `stopped` would end the daemon and its shells. Only a device
   nobody started or stopped in this server process (its first attempt generation is still
   current) is adopted, so a Stop is never undone. An SSH daemon cannot connect without the
   session's tunnel, so an SSH device stays `Stopped`, its daemon and shells waiting on the
