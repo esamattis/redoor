@@ -480,6 +480,33 @@ describe("Agents API", () => {
         }
     });
 
+    it("reports whether the agent's user may run a file", async () => {
+        const testAgent = await getConnectedTestAgent();
+        const directory = tempFiles.tempDirectory({ suffix: "-executable" });
+        const scriptPath = path.join(directory, "run.sh");
+        await fs.writeFile(scriptPath, "#!/bin/sh\necho ran\n", "utf-8");
+        await fs.chmod(scriptPath, 0o644);
+
+        const plain = await testAgent.ls(scriptPath);
+
+        if (!isLsFileResponse(plain)) {
+            throw new Error("Expected a file response for run.sh");
+        }
+
+        // Without an execute bit the file view must not offer to run the file.
+        expect(plain.executable).toBe(false);
+
+        await fs.chmod(scriptPath, 0o755);
+        const runnable = await testAgent.ls(scriptPath);
+
+        if (!isLsFileResponse(runnable)) {
+            throw new Error("Expected a file response for run.sh");
+        }
+
+        // The agent re-checks on every lookup, so a chmod shows up on the next read.
+        expect(runnable.executable).toBe(true);
+    });
+
     it("should recursively fuzzy search paths on connected agent", async () => {
         const testAgent = await getConnectedTestAgent();
         const searchRoot = tempFiles.tempDirectory({ suffix: "-file-search" });

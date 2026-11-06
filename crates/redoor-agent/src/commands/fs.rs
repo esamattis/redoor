@@ -116,6 +116,8 @@ pub(super) async fn ls(path: Option<String>) -> Result<LsResponse, CommandError>
                     .flatten()
                     .map(|g| g.name);
 
+                let executable = is_executable(&path).await;
+
                 Ok(LsResponse::File(LsFileResult {
                     size,
                     path,
@@ -124,6 +126,7 @@ pub(super) async fn ls(path: Option<String>) -> Result<LsResponse, CommandError>
                     uid,
                     gid,
                     permissions,
+                    executable,
                 }))
             }
         }
@@ -132,6 +135,20 @@ pub(super) async fn ls(path: Option<String>) -> Result<LsResponse, CommandError>
             error,
         )),
     }
+}
+
+/// Asks the kernel whether the agent's user may run the file. Mode bits alone would say yes
+/// for a file only another user or group may run, or one on a `noexec` mount such as
+/// Android shared storage, where the shell then refuses it.
+async fn is_executable(path: &str) -> bool {
+    let path = path.to_string();
+
+    // `access` is a blocking syscall that can stall on a slow network mount.
+    redoor_core::logging::spawn_blocking_in_user_scope(move || {
+        nix::unistd::access(path.as_str(), nix::unistd::AccessFlags::X_OK).is_ok()
+    })
+    .await
+    .unwrap_or(false)
 }
 
 /// Keeps direct REST-backed deletion within its short control-command deadline.

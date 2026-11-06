@@ -130,6 +130,10 @@ pub struct LsFileResponse {
     pub uid: u32,
     pub gid: u32,
     pub permissions: u32,
+    /// Whether the agent's user may run the file, so the file view offers running it only
+    /// when the shell would not refuse. Mode bits alone cannot tell: they ignore the user's
+    /// groups and `noexec` mounts.
+    pub executable: bool,
 }
 
 /// Reports the written path and byte count so clients can confirm the upload landed intact.

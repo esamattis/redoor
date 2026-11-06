@@ -46,7 +46,7 @@ const archiveSuffixes: ReadonlyArray<{
 ];
 
 /** Avoids sending terminal control bytes that bypass shell argument quoting. */
-function isTerminalSafeFileName(fileName: string): boolean {
+export function isTerminalSafeFileName(fileName: string): boolean {
     return !Array.from(fileName).some((character) => {
         const codePoint = character.codePointAt(0) ?? 0;
 

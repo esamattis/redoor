@@ -22,6 +22,7 @@ import {
 } from "#ui/components/copyable-code-row";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
+import { RunInTerminalButton } from "#ui/components/browser/run-in-terminal-button";
 import { getErrorMessage } from "#ui/utils/error";
 import { getDirectoryArchiveName } from "#ui/utils/archive";
 import { formatSize } from "#ui/utils/path";
@@ -822,6 +823,11 @@ export function FileDetailView(props: {
     fileName: string;
     lsResult: LsFileResponse;
     downloadUrl: string;
+    /**
+     * Offers running the file. Files the editor opens get it from the editor toolbar instead,
+     * which knows about unsaved edits that running the device copy here would ignore.
+     */
+    canRun: boolean;
 }) {
     const queryClient = useQueryClient();
 
@@ -869,6 +875,15 @@ export function FileDetailView(props: {
                         view="details"
                         downloadUrl={props.downloadUrl}
                         downloadName={props.fileName}
+                        afterDownload={
+                            props.canRun ? (
+                                <RunInTerminalButton
+                                    agent={props.agent}
+                                    filePath={props.lsResult.path}
+                                    className="rounded-md"
+                                />
+                            ) : null
+                        }
                     />
                 }
             />

@@ -886,6 +886,7 @@ function FileBrowserPage(props: {
                 agent={agent}
                 fileName={fileName}
                 filePath={lsResult.path}
+                executable={lsResult.executable}
                 {...worktreeEditorProps(props.gitContext)}
                 mimeType={metadata.mime_type}
                 downloadUrl={agent.getRawUrl(lsResult.path, {
@@ -917,6 +918,7 @@ function FileBrowserPage(props: {
                 fileName={fileName}
                 lsResult={lsResult}
                 downloadUrl={downloadUrl}
+                canRun={lsResult.executable && !editable}
             />
         );
 

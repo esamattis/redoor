@@ -824,7 +824,7 @@ mod tests {
             "owner": null, "group": null, "uid": 1, "gid": 1, "permissions": 493});
         assert_round_trip::<Ls>(ls_entry_free_directory);
         assert_round_trip::<Ls>(json!({"kind": "file", "size": 3, "path": "/tmp/a",
-            "owner": "me", "group": "us", "uid": 1, "gid": 1, "permissions": 420}));
+            "owner": "me", "group": "us", "uid": 1, "gid": 1, "permissions": 420, "executable": false}));
         assert_round_trip::<Exec>(json!({"type": "exit", "code": 0, "signal": null}));
         for unit in [
             through_result_frame::<FileSearch>(Value::Null),

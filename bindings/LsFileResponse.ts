@@ -3,4 +3,10 @@
 /**
  * Exposes remote file metadata needed by clients to present a useful detail view.
  */
-export type LsFileResponse = { size: number, path: string, owner: string | null, group: string | null, uid: number, gid: number, permissions: number, };
+export type LsFileResponse = { size: number, path: string, owner: string | null, group: string | null, uid: number, gid: number, permissions: number, 
+/**
+ * Whether the agent's user may run the file, so the file view offers running it only
+ * when the shell would not refuse. Mode bits alone cannot tell: they ignore the user's
+ * groups and `noexec` mounts.
+ */
+executable: boolean, };

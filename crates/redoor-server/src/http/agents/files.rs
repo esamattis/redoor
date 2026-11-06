@@ -50,6 +50,7 @@ pub(crate) async fn ls_agent_handler(
             uid: file.uid,
             gid: file.gid,
             permissions: file.permissions,
+            executable: file.executable,
         })
         .into_response(),
     })

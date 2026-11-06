@@ -26,6 +26,7 @@ import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import type { EditorSelection } from "#ui/components/browser/code-editor";
 import type { FilePreviewKind } from "#ui/utils/sandboxed-preview-document";
 import { SelectPathMenuButton } from "#ui/components/browser/path-actions";
+import { RunInTerminalButton } from "#ui/components/browser/run-in-terminal-button";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { ViewToolbar } from "#ui/components/browser/view-toolbar-slot";
 import { Checkbox } from "#ui/components/checkbox";
@@ -70,6 +71,9 @@ function FileEditActions(props: {
         entryType: "file";
     };
     selection: EditorSelection | null;
+    /** Offers running the file in a terminal; the caller already excludes Git revisions. */
+    executable: boolean;
+    agent: Agent;
     preview?: boolean;
     previewKind: FilePreviewKind | null;
     isSearchOpen: boolean;
@@ -111,6 +115,19 @@ ${props.selection.text}
                     <Save className="h-4 w-4" aria-hidden="true" />
                 </Button>
             )}
+            {props.executable ? (
+                <RunInTerminalButton
+                    agent={props.agent}
+                    filePath={props.bookmark.path}
+                    // The terminal runs the file on the device, which lacks unsaved edits.
+                    disabledReason={
+                        props.isDirty
+                            ? "Save the file before running it in a terminal"
+                            : null
+                    }
+                    className={toolbarButtonClassName}
+                />
+            ) : null}
             {props.readOnly ? null : <ToolbarDivider />}
             {props.preview !== undefined &&
             props.previewKind !== null &&
@@ -445,6 +462,7 @@ export function FileEditHeader(props: {
     isSaving: boolean;
     agent: Agent;
     filePath: string;
+    executable: boolean;
     selection: EditorSelection | null;
     preview: boolean | undefined;
     previewKind: FilePreviewKind | null;
@@ -495,6 +513,8 @@ export function FileEditHeader(props: {
                                 entryType: "file",
                             }}
                             selection={props.selection}
+                            executable={props.executable}
+                            agent={props.agent}
                             preview={props.preview}
                             previewKind={props.previewKind}
                             isSearchOpen={props.isSearchOpen}

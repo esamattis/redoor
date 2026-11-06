@@ -365,6 +365,8 @@ type FileEditViewProps = {
      * from the route's Git context, so the gutter's space is there before its marks load.
      */
     showGitGutter?: boolean;
+    /** The agent's user may run the working file, so the toolbar offers running it. */
+    executable?: boolean;
 };
 
 /**
@@ -736,6 +738,7 @@ export function FileEditView(props: FileEditViewProps) {
                     isSaving={saveMutation.isPending}
                     agent={props.agent}
                     filePath={props.filePath}
+                    executable={props.executable === true && !buffer.readOnly}
                     selection={selection}
                     preview={previewKind === null ? undefined : props.preview}
                     previewKind={previewKind}

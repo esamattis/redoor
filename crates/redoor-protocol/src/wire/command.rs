@@ -298,6 +298,9 @@ pub struct LsFileResult {
     pub uid: u32,
     pub gid: u32,
     pub permissions: u32,
+    /// Whether the agent's user may run the file. The agent answers it because only the
+    /// device knows the user's groups and whether the mount allows execution.
+    pub executable: bool,
 }
 
 /// Identifies one filesystem object strongly enough to refuse deletion after path replacement.
