@@ -10,6 +10,7 @@ import {
     Pencil,
     RefreshCw,
     GitBranch,
+    ServerCog,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -27,7 +28,8 @@ import { isPlainKey } from "#ui/utils/keyboard";
 import { cn } from "#ui/utils/cn";
 
 /** Names the representations of a path that the view tabs switch between. */
-export type BrowserView = "files" | "details" | "view" | "sync" | "git";
+export type BrowserView =
+    "files" | "details" | "view" | "sync" | "git" | "systemd";
 
 /** Supplies checkout context beside the path without requiring the Git view to be open. */
 export type GitTabHead =
@@ -143,9 +145,15 @@ export function ViewToggle(props: {
     gitHead: GitTabHead | null;
     /** Hides views that change files, and never names the content tab Edit. */
     readOnly?: boolean;
+    /** Shows the Systemd tab, for a unit file or drop-in a systemd manager loads. */
+    showSystemd?: boolean;
 }) {
     const isDirectory = props.entryType === "directory";
     const readOnly = props.readOnly === true;
+    const showSystemd = props.showSystemd === true;
+    // Five labelled tabs overflow a phone-narrow column, so then only the active tab keeps
+    // its label there and the others show their icon.
+    const compact = showSystemd;
 
     // A directory's default tab is its listing; a file's is its content, named by what it allows.
     const contentLabel = isDirectory
@@ -173,6 +181,7 @@ export function ViewToggle(props: {
                 label={contentLabel}
                 icon={contentIcon}
                 active={props.activeView === (isDirectory ? "files" : "view")}
+                compact={compact}
             />
             <ViewToggleLink
                 agent={props.agent}
@@ -181,6 +190,7 @@ export function ViewToggle(props: {
                 label="Details"
                 icon={<Info className="h-4 w-4" aria-hidden="true" />}
                 active={props.activeView === "details"}
+                compact={compact}
             />
             {readOnly ? null : (
                 <ViewToggleLink
@@ -190,6 +200,7 @@ export function ViewToggle(props: {
                     label="Sync"
                     icon={<RefreshCw className="h-4 w-4" aria-hidden="true" />}
                     active={props.activeView === "sync"}
+                    compact={compact}
                 />
             )}
             {props.gitHead === null ? null : (
@@ -198,8 +209,21 @@ export function ViewToggle(props: {
                     path={props.path}
                     head={props.gitHead}
                     active={props.activeView === "git"}
+                    compact={compact}
                 />
             )}
+            {showSystemd ? (
+                <ViewToggleLink
+                    agent={props.agent}
+                    path={props.path}
+                    view="systemd"
+                    label="Systemd"
+                    tooltip="Status, actions and journal of this file's systemd unit"
+                    icon={<ServerCog className="h-4 w-4" aria-hidden="true" />}
+                    active={props.activeView === "systemd"}
+                    compact={compact}
+                />
+            ) : null}
         </ViewSwitch>
     );
 }
@@ -247,6 +271,7 @@ function GitViewToggleLink(props: {
     path: string;
     head: GitTabHead;
     active: boolean;
+    compact: boolean;
 }) {
     const head = props.head;
 
@@ -271,6 +296,7 @@ function GitViewToggleLink(props: {
             }
             icon={<GitBranch className="h-4 w-4" aria-hidden="true" />}
             active={props.active}
+            compact={props.compact}
         />
     );
 }
@@ -280,7 +306,7 @@ function ViewToggleLink(props: {
     agent: Agent;
     path: string;
     /** Leaves the default representation, the listing or content, when omitted. */
-    view?: "details" | "sync" | "git";
+    view?: "details" | "sync" | "git" | "systemd";
     label: React.ReactNode;
     /** Names the tab for assistive technology when the visible label alone is not its name. */
     ariaLabel?: string;
@@ -288,18 +314,32 @@ function ViewToggleLink(props: {
     tooltip?: string;
     icon: React.ReactNode;
     active: boolean;
+    /** Hides the label of an inactive tab in phone-narrow columns, keeping it for screen readers. */
+    compact?: boolean;
     className?: string;
 }) {
     const link = (
         <Link
             {...browserRoute(props.agent, props.path)}
-            search={{ view: props.view }}
+            // The systemd manager and instance belong to the file, not to one tab, so switching
+            // tabs keeps them; otherwise a shared unit file falls back to its owner's manager.
+            search={(previous) => ({
+                view: props.view,
+                systemdScope: previous.systemdScope,
+                unit: previous.unit,
+            })}
             aria-current={props.active ? "page" : undefined}
             aria-label={props.ariaLabel}
-            className={cn(getPageViewTabClass(props.active), props.className)}
+            className={cn(
+                getPageViewTabClass(props.active),
+                props.compact === true &&
+                    !props.active &&
+                    "@max-xl/main:px-2.5 @max-xl/main:[&>span]:sr-only",
+                props.className,
+            )}
         >
             {props.icon}
-            {props.label}
+            <span>{props.label}</span>
         </Link>
     );
 
@@ -370,6 +410,8 @@ export function BrowserHeader(props: {
     banner?: React.ReactNode;
     /** Hides views that change files, for read-only history browsing. */
     readOnly?: boolean;
+    /** Shows the Systemd tab of a file a systemd manager loads. */
+    showSystemd?: boolean;
 }) {
     const navigate = useNavigate();
     const pathUnavailable = props.pathUnavailable === true;
@@ -437,6 +479,7 @@ export function BrowserHeader(props: {
                         editable={props.editable}
                         gitHead={props.gitHead}
                         readOnly={props.readOnly}
+                        showSystemd={props.showSystemd}
                     />
                 )
             }

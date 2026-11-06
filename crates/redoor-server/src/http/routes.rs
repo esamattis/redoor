@@ -249,6 +249,58 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/vault/ssh-keys",
             get(super::vault_ssh_keys::list_handler),
         )
+        .route(
+            "/api/v1/agents/{agent}/systemd",
+            get(super::systemd::systemd_overview_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/path-status",
+            get(super::systemd::path_status_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/system/units",
+            get(super::systemd::system_units_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/system/units/{unit}",
+            get(super::systemd::system_unit_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/system/units/{unit}/actions",
+            post(super::systemd::system_unit_action_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/system/units/{unit}/journal",
+            get(super::systemd::system_unit_journal_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/system/daemon-reload",
+            post(super::systemd::system_daemon_reload_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/units",
+            get(super::systemd::user_units_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}",
+            get(super::systemd::user_unit_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}/actions",
+            post(super::systemd::user_unit_action_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}/journal",
+            get(super::systemd::user_unit_journal_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/daemon-reload",
+            post(super::systemd::user_daemon_reload_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/systemd/user/{user}/linger",
+            put(super::systemd::user_linger_handler),
+        )
         .route("/api/v1/local-agents", post(create_local_agent_handler))
         .route(
             "/api/v1/local-agents/{agent}",

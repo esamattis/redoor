@@ -34,15 +34,15 @@ import {
     remoteProcessAlive,
     shellQuote,
     sshCommandWithPassword,
+    sshRootTestCommand,
     sshTestCommand,
+    startRootSshAgent,
     terminalShellPid,
     waitForReconnect,
 } from "./ssh-test-utils";
 import { openTerminal } from "./terminal-test-utils";
 
 const execFileAsync = promisify(execFile);
-
-const SSH_ROOT_USER = "root";
 
 type RelayPidMetadata = {
     pid: number;
@@ -77,11 +77,6 @@ async function relayCommand(options: {
 /** Runs a command as the password-only user so cleanup can reach that user's home. */
 async function sshPasswordTestCommand(command: string): Promise<string> {
     return sshCommandWithPassword(SSH_PASSWORD_USER, command);
-}
-
-/** Runs a command as root for ownership behavior that cannot be exercised by local non-root agents. */
-async function sshRootTestCommand(command: string): Promise<string> {
-    return sshCommandWithPassword(SSH_ROOT_USER, command);
 }
 
 /** Kills one remote relay agent so the owning local SSH process must reconnect it. */
@@ -896,29 +891,6 @@ describe.skipIf(
         const agentName = `root-ownership-${suffix}`;
         const remoteRoot = `/tmp/redoor-root-ownership-${suffix}`;
         const parentPath = `${remoteRoot}/parent`;
-        const configPath = join(home, "config.toml");
-        const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
-
-        if (sshPassword === undefined) {
-            throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
-        }
-
-        writeFileSync(
-            configPath,
-            `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
-username = "${TEST_USERNAME}"
-password = "${TEST_PASSWORD}"
-port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_ROOT_USER}"
-password = ${JSON.stringify(sshPassword)}
-name = "${agentName}"
-`,
-        );
 
         onTestFinished(async () => {
             await processManager.killAll();
@@ -943,52 +915,11 @@ name = "${agentName}"
             `install -d -o ${SSH_TEST_USER} -g ${SSH_TEST_USER} ${shellQuote(parentPath)}`,
         );
 
-        const serverPid = processManager.spawn(
-            SERVER_PATH,
-            ["server", "--config", configPath],
-            {
-                env: {
-                    ...process.env,
-                    HOME: home,
-                    REDOOR_APP_NAME: appName,
-                },
-            },
-        );
-
-        await waitForPort(VITEST_SERVER_PORT);
-
-        const apiClient = new ApiClient(
-            `http://127.0.0.1:${VITEST_SERVER_PORT}`,
-        );
-
-        await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
-
-        const configuredAgent = await waitForValue({
-            predicate: async () =>
-                (await apiClient.listAgents()).find(
-                    (agent) => agent.name === agentName,
-                ),
-            description: "root SSH agent inventory registration",
-        });
-
-        await configuredAgent.start();
-
-        const connected = await waitForValue({
-            predicate: async () => {
-                const agent = (await apiClient.listAgents()).find(
-                    (entry) => entry.name === agentName,
-                );
-
-                if (agent?.connectionId) {
-                    return agent;
-                }
-
-                throw new Error(
-                    `status=${agent?.status ?? "missing"}, issue=${agent?.connectionIssue ?? "none"}, server=${processManager.getStdout(serverPid)}`,
-                );
-            },
-            timeoutMs: 60_000,
-            description: "root SSH agent to connect",
+        const connected = await startRootSshAgent({
+            processManager,
+            home,
+            appName,
+            agentName,
         });
 
         await connected.createDirectory(`${parentPath}/inherited-directory`);

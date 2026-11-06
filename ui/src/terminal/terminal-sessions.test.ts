@@ -103,6 +103,7 @@ function agentInfo(id: string, name: string): AgentInfoResponse {
         supports_upload_preconditions: false,
         uid: null,
         is_root: false,
+        systemd: null,
         duplicate_id: null,
     };
 }

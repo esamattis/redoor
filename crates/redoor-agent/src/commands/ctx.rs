@@ -50,14 +50,17 @@ pub(crate) struct AgentServices {
     pub(crate) results: ResultLedger,
     /// TOML file this process loaded, reported by `GetAgentDetails`; empty for CLI/env-only runs.
     pub(crate) loaded_config_path: Arc<str>,
+    /// Whether the host runs systemd, decided once at startup, and the systemd commands.
+    pub(crate) systemd: crate::commands::systemd::Systemd,
 }
 
 impl AgentServices {
-    /// Bundles the startup-selected trash provider, partial store and config origin with fresh
-    /// shared state.
+    /// Bundles the startup-selected trash provider, partial store, systemd support and config
+    /// origin with fresh shared state.
     pub(crate) fn new(
         trash: Trash,
         partial_store: redoor_core::partials::PartialStore,
+        systemd: crate::commands::systemd::Systemd,
         loaded_config_path: Option<&std::path::Path>,
     ) -> Self {
         Self {
@@ -74,6 +77,7 @@ impl AgentServices {
                 .map(|path| path.display().to_string())
                 .unwrap_or_default()
                 .into(),
+            systemd,
         }
     }
 
@@ -208,6 +212,7 @@ impl CommandCtx {
                 services: AgentServices::new(
                     Trash::unsupported(),
                     redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
+                    crate::commands::systemd::Systemd::unsupported(),
                     None,
                 ),
             },

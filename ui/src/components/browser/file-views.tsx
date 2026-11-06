@@ -58,6 +58,7 @@ import {
 } from "#ui/components/browser/vault-file-editor";
 import { vaultFileContentQueryOptions } from "#ui/vault/vault-files";
 import { isVaultPath } from "#ui/vault/vault-path";
+import { useSystemdReloadOffer } from "#ui/components/browser/systemd-reload-offer";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -240,7 +241,7 @@ function FileEditorSurface(props: {
                     bufferKey={props.bufferKey}
                     deviceContent={props.deviceContent}
                     stored={props.stored}
-                    fileName={props.fileName}
+                    filePath={props.filePath}
                     editable={props.editable}
                     vimMode={props.vimMode}
                     wrapLines={props.wrapLines}
@@ -415,6 +416,13 @@ function useFileBuffer(props: FileEditViewProps) {
         editor.setOpenKeys(openFiles.map((file) => getOpenFileKey(file)));
     }, [editor, openFiles]);
 
+    const systemdReload = useSystemdReloadOffer({
+        agent: props.agent,
+        filePath: props.filePath,
+        // An encrypted file is ciphertext on the device, which systemd cannot load.
+        enabled: !readOnly && !isVault,
+    });
+
     const saveMutation = useMutation({
         mutationFn: async (nextContent: string) => {
             if (isVault) {
@@ -445,6 +453,9 @@ function useFileBuffer(props: FileEditViewProps) {
             } else {
                 vaultFile.adopt(saved.nextContent, saved.revision);
             }
+
+            // Not awaited: the save is done, and the reload offer may follow a moment later.
+            systemdReload.checkAfterSave();
         },
     });
 
@@ -462,6 +473,7 @@ function useFileBuffer(props: FileEditViewProps) {
         isStoredReady: readOnly || isVault || !storedQuery.isPending,
         isVault,
         vaultFile,
+        systemdReload,
     };
 }
 
@@ -750,6 +762,8 @@ export function FileEditView(props: FileEditViewProps) {
                     buffer={buffer}
                     onSave={handleSave}
                 />
+                {/* Inside the article, so it stays above the full-window editor. */}
+                {buffer.systemdReload.toast}
 
                 <div className="flex min-h-0 flex-1 flex-col">
                     {buffer.vaultFile.isLocked ? (

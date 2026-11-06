@@ -11,6 +11,7 @@ export type AgentViewContext =
     | { kind: "logs"; agent: Agent }
     | { kind: "configuration"; agent: Agent }
     | { kind: "trash"; agent: Agent }
+    | { kind: "systemd"; agent: Agent }
     | { kind: "directory"; agent: Agent; path: string }
     | { kind: "file"; agent: Agent; path: string }
     | null;
@@ -70,7 +71,11 @@ export function useAgentViewContext(): AgentViewContext {
                 ? { kind: "trash", agent: activeAgent }
                 : null;
         default:
-            return null;
+            // Every systemd page, including disconnected and unsupported explanations, keeps
+            // the device tabs, so the reader can always switch back to the other views.
+            return leafRouteId?.startsWith("/_app/agents/$deviceName/systemd")
+                ? { kind: "systemd", agent: activeAgent }
+                : null;
     }
 }
 

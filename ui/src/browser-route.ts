@@ -1,8 +1,11 @@
+import type { SystemdScope } from "#bindings/SystemdScope";
+
 /** The device sub-pages a device link can open, besides the file browser. */
 type DevicePage =
     | "/agents/$deviceName"
     | "/agents/$deviceName/edit"
     | "/agents/$deviceName/logs"
+    | "/agents/$deviceName/systemd"
     | "/agents/$deviceName/trash";
 
 /**
@@ -56,6 +59,39 @@ export function deviceRoute(
 ) {
     return {
         to,
+        params: { deviceName: device.name },
+        state: deviceSelection(device),
+    } as const;
+}
+
+/**
+ * Describes a link to the unit list of one systemd manager, carrying the device's id like
+ * `deviceRoute`. The system manager and a user's manager are separate routes, because a
+ * user's units live below that user's own page with its linger state.
+ */
+export function systemdScopeRoute(
+    device: { id: string; name: string },
+    scope: SystemdScope,
+) {
+    if (scope.type === "system") {
+        return {
+            to: "/agents/$deviceName/systemd/system",
+            params: { deviceName: device.name },
+            state: deviceSelection(device),
+        } as const;
+    }
+
+    return {
+        to: "/agents/$deviceName/systemd/user/$user",
+        params: { deviceName: device.name, user: scope.name },
+        state: deviceSelection(device),
+    } as const;
+}
+
+/** Describes a link to a root agent's list of user managers, like `systemdScopeRoute`. */
+export function systemdUsersRoute(device: { id: string; name: string }) {
+    return {
+        to: "/agents/$deviceName/systemd/user",
         params: { deviceName: device.name },
         state: deviceSelection(device),
     } as const;

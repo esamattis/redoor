@@ -133,7 +133,9 @@ impl Command {
             | Self::ContentGrep { .. }
             | Self::RawDownload { .. }
             | Self::TarDownload { .. }
-            | Self::GitDownload { .. } => CommandPolicy::OUTPUT,
+            | Self::GitDownload { .. }
+            // The journal follows until its reader goes away, so it streams like exec output.
+            | Self::SystemdJournal(_) => CommandPolicy::OUTPUT,
             Self::RawUpload { .. } => CommandPolicy::upload(UploadKind::RawUpload),
             Self::TarUpload { .. } => CommandPolicy::upload(UploadKind::TarUpload),
             Self::EditFile { .. } => CommandPolicy::upload(UploadKind::EditFile),
@@ -150,6 +152,16 @@ impl Command {
             | Self::GitDirectoryEntries { .. }
             | Self::GitFileBases { .. }
             | Self::GitWorktreeStatus { .. } => CommandPolicy::CANCELABLE_CONTROL,
+            // Systemd commands run `systemctl` and friends, and actions wait for their systemd
+            // job; an abandoned call kills the child (the job itself keeps running in systemd)
+            // instead of holding a command slot until the job ends.
+            Self::SystemdOverview(_)
+            | Self::SystemdListUnits(_)
+            | Self::SystemdUnitDetails(_)
+            | Self::SystemdUnitAction(_)
+            | Self::SystemdDaemonReload(_)
+            | Self::SystemdSetLinger(_)
+            | Self::SystemdPathStatus(_) => CommandPolicy::CANCELABLE_CONTROL,
             Self::ListPartials(_)
             | Self::ProbePartial(_)
             | Self::ReadPartial(_)
@@ -199,6 +211,7 @@ mod tests {
     use crate::api::git::refs::{GitBranchScope, GitRefListKind, GitRefSort};
     use crate::api::git::worktree::GitDiffMode;
     use crate::api::search::CaseSensitivity;
+    use crate::api::systemd::{SystemdScope, SystemdUnitAction};
     use crate::api::transfers::CopyExistingMode;
     use crate::wire::command::MoveSourceIdentity;
     use crate::wire::exec::ExecRequest;
@@ -265,11 +278,19 @@ mod tests {
             Command::GitFileBases(request::GitFileBases { .. }) => 53,
             Command::CreateTerminal(request::CreateTerminal { .. }) => 54,
             Command::CloseTerminal(request::CloseTerminal { .. }) => 55,
+            Command::SystemdOverview(request::SystemdOverview {}) => 56,
+            Command::SystemdListUnits(request::SystemdListUnits { .. }) => 57,
+            Command::SystemdUnitDetails(request::SystemdUnitDetails { .. }) => 58,
+            Command::SystemdUnitAction(request::SystemdUnitAction { .. }) => 59,
+            Command::SystemdDaemonReload(request::SystemdDaemonReload { .. }) => 60,
+            Command::SystemdSetLinger(request::SystemdSetLinger { .. }) => 61,
+            Command::SystemdPathStatus(request::SystemdPathStatus { .. }) => 62,
+            Command::SystemdJournal(request::SystemdJournal { .. }) => 63,
         }
     }
 
     /// Number of variants covered by `variant_index`.
-    const VARIANT_COUNT: usize = 56;
+    const VARIANT_COUNT: usize = 64;
 
     /// Builds one instance of every command variant for table-wide policy checks.
     fn every_command() -> Vec<Command> {
@@ -483,6 +504,37 @@ mod tests {
             Command::CloseTerminal(request::CloseTerminal {
                 id: crate::ids::TerminalSessionId::new(),
             }),
+            Command::SystemdOverview(request::SystemdOverview {}),
+            Command::SystemdListUnits(request::SystemdListUnits {
+                scope: SystemdScope::System,
+            }),
+            Command::SystemdUnitDetails(request::SystemdUnitDetails {
+                scope: SystemdScope::System,
+                unit: "a.service".to_string(),
+            }),
+            Command::SystemdUnitAction(request::SystemdUnitAction {
+                scope: SystemdScope::User {
+                    name: "me".to_string(),
+                },
+                unit: "a.service".to_string(),
+                action: SystemdUnitAction::Restart,
+            }),
+            Command::SystemdDaemonReload(request::SystemdDaemonReload {
+                scope: SystemdScope::System,
+            }),
+            Command::SystemdSetLinger(request::SystemdSetLinger {
+                user: "me".to_string(),
+                enabled: true,
+            }),
+            Command::SystemdPathStatus(request::SystemdPathStatus {
+                path: path(),
+                user: None,
+            }),
+            Command::SystemdJournal(request::SystemdJournal {
+                scope: SystemdScope::System,
+                unit: "a.service".to_string(),
+                lines: 10,
+            }),
         ]
     }
 
@@ -538,6 +590,23 @@ mod tests {
                     "{} cannot be canceled by request id",
                     command.summary()
                 );
+            }
+        }
+    }
+
+    /// Verifies systemd actions stop their `systemctl` when the REST caller gives up.
+    #[test]
+    fn systemd_actions_are_request_cancelable() {
+        for command in every_command() {
+            if matches!(
+                command,
+                Command::SystemdUnitAction(_)
+                    | Command::SystemdDaemonReload(_)
+                    | Command::SystemdSetLinger(_)
+            ) {
+                // An action waits for its systemd job, which can take minutes; an abandoned
+                // call must not hold a command slot that long.
+                assert_eq!(command.policy().cancel_scope, CancelScope::Request);
             }
         }
     }

@@ -102,7 +102,11 @@ function editorSelectionFromState(state: EditorState): EditorSelection | null {
 type CodeEditorProps = {
     /** Identifies the file's buffer, the same key as its entry in the open files list. */
     bufferKey: string;
-    fileName: string;
+    /**
+     * The file's full path rather than its name, because the language of some files, such as
+     * systemd drop-ins, depends on the directory they are in.
+     */
+    filePath: string;
     /** The device text; a clean buffer follows it, a dirty one only reports a conflict. */
     deviceContent: string;
     /** The buffer stored on the server, which restores unsaved edits after a reload. */
@@ -227,7 +231,7 @@ export function CodeEditor(props: CodeEditorProps) {
         const shown = workspace.activate({
             container,
             key: current.bufferKey,
-            fileName: current.fileName,
+            fileName: current.filePath,
             deviceContent: current.deviceContent,
             stored: current.stored,
             settings: settingsRef.current,

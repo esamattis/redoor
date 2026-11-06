@@ -170,6 +170,30 @@ export const queryKeys = {
         [...queryKeys.agent(agentId), "file-search", path, search] as const,
     contentGrep: (agentId: string, path: string, search: ContentGrepParams) =>
         [...queryKeys.agent(agentId), "content-grep", path, search] as const,
+    /** Prefix of an agent's systemd state, which a daemon-reload can change all of. */
+    systemd: (agentId: string) =>
+        [...queryKeys.agent(agentId), "systemd"] as const,
+    /**
+     * Whether systemd has loaded a saved unit file, asked after each save in the editor. The
+     * user manager asked about is part of the key, since naming another user changes which
+     * managers match.
+     */
+    systemdPathStatus: (agentId: string, path: string, user?: string) =>
+        [
+            ...queryKeys.systemd(agentId),
+            "path-status",
+            path,
+            user ?? null,
+        ] as const,
+    /** Who the agent is to systemd, its own linger and, for root agents, every user manager. */
+    systemdOverview: (agentId: string) =>
+        [...queryKeys.systemd(agentId), "overview"] as const,
+    /** The units of one manager; the scope key is `system` or `user/<name>`. */
+    systemdUnits: (agentId: string, scopeKey: string) =>
+        [...queryKeys.systemd(agentId), "units", scopeKey] as const,
+    /** The status of one unit of one manager. */
+    systemdUnit: (agentId: string, scopeKey: string, unit: string) =>
+        [...queryKeys.systemd(agentId), "unit", scopeKey, unit] as const,
     transfers: () => [...queryKeys.all, "transfers"] as const,
     /** Resumable partials, rediscovered from the connected destination agents. */
     partials: () => [...queryKeys.all, "partials"] as const,

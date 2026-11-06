@@ -100,6 +100,7 @@ export async function createToxiproxyAgent(options: {
                 options.agent.supportsUploadPreconditions,
             uid: options.agent.uid,
             is_root: options.agent.isRoot,
+            systemd: options.agent.systemd,
             // The proxy only reroutes traffic; clone warnings are irrelevant to it.
             duplicate_id: null,
         },

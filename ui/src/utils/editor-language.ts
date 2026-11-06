@@ -23,6 +23,7 @@ import { properties } from "@codemirror/legacy-modes/mode/properties";
 import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
+import { isSystemdUnitPath, systemd } from "#ui/utils/systemd-language";
 
 export type SupportedSyntaxLanguage =
     | "cpp"
@@ -42,6 +43,7 @@ export type SupportedSyntaxLanguage =
     | "ruby"
     | "rust"
     | "shell"
+    | "systemd"
     | "toml"
     | "tsx"
     | "typescript"
@@ -135,6 +137,8 @@ export function syntaxLanguageSupport(
             return StreamLanguage.define(perl);
         case "properties":
             return StreamLanguage.define(properties);
+        case "systemd":
+            return StreamLanguage.define(systemd);
         case "cpp":
         case "csharp":
             return cpp();
@@ -152,6 +156,7 @@ const SYNTAX_LANGUAGE_NAMES = new Map<string, SupportedSyntaxLanguage>([
     ["ruby", "ruby"],
     ["rust", "rust"],
     ["shell", "shell"],
+    ["systemd", "systemd"],
     ["typescript", "typescript"],
 ]);
 
@@ -170,7 +175,10 @@ export function syntaxLanguageFromName(
     );
 }
 
-/** Identifies syntax once so editors and rendered diffs support the same files. */
+/**
+ * Identifies syntax once so editors and rendered diffs support the same files. Pass the full
+ * path when it is known: systemd drop-ins are only recognisable by their parent directory.
+ */
 export function syntaxLanguageFromFileName(
     fileName: string,
     content = "",
@@ -189,6 +197,11 @@ export function syntaxLanguageFromFileName(
 
     if (lowerName === ".editorconfig") {
         return "properties";
+    }
+
+    // Checked before the extension switch, which would take a drop-in `.conf` as properties.
+    if (isSystemdUnitPath(lowerName, fileName.toLowerCase())) {
+        return "systemd";
     }
 
     const lastDot = lowerName.lastIndexOf(".");

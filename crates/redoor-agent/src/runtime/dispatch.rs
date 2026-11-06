@@ -301,6 +301,7 @@ mod tests {
             let services = AgentServices::new(
                 Trash::unsupported(),
                 redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
+                crate::commands::systemd::Systemd::unsupported(),
                 None,
             );
             let (control, frames) = mpsc::channel(8);

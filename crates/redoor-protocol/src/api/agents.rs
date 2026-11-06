@@ -296,6 +296,9 @@ pub struct AgentInfoResponse {
     pub uid: Option<u32>,
     /// Whether the latest session's effective UID is root; false until first connect.
     pub is_root: bool,
+    /// Whether the device runs systemd, as the latest session reported it, so the UI only
+    /// offers the systemd view where it works; absent until first connect.
+    pub systemd: Option<crate::api::systemd::SystemdSupport>,
     /// Set while several machines are using this device's id (usually a cloned data dir) and
     /// the router is refusing the newcomers, so the UI can explain why one of them is offline.
     pub duplicate_id: Option<DuplicateIdWarning>,

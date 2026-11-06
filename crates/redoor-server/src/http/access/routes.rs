@@ -68,6 +68,28 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("GET" | "PUT", "/api/v1/agents/{agent}/logging-level")
         | ("POST", "/api/v1/agents/{agent}/echo") => Access::SessionOnly,
 
+        // Systemd unit management is a UI feature; tokens and MCP manage units through exec,
+        // whose permission already covers running systemctl.
+        (
+            "GET",
+            "/api/v1/agents/{agent}/systemd"
+            | "/api/v1/agents/{agent}/systemd/path-status"
+            | "/api/v1/agents/{agent}/systemd/system/units"
+            | "/api/v1/agents/{agent}/systemd/system/units/{unit}"
+            | "/api/v1/agents/{agent}/systemd/system/units/{unit}/journal"
+            | "/api/v1/agents/{agent}/systemd/user/{user}/units"
+            | "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}"
+            | "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}/journal",
+        )
+        | (
+            "POST",
+            "/api/v1/agents/{agent}/systemd/system/units/{unit}/actions"
+            | "/api/v1/agents/{agent}/systemd/system/daemon-reload"
+            | "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}/actions"
+            | "/api/v1/agents/{agent}/systemd/user/{user}/daemon-reload",
+        )
+        | ("PUT", "/api/v1/agents/{agent}/systemd/user/{user}/linger") => Access::SessionOnly,
+
         // Changing the login password: a token must never be able to take over the account.
         ("PUT", "/api/v1/auth/password") => Access::SessionOnly,
 
@@ -366,6 +388,22 @@ mod tests {
             (
                 Method::POST,
                 "/api/v1/tokens/{token_id}/rotate",
+                Access::SessionOnly,
+            ),
+            // Systemd management is a browser feature; tokens use exec instead.
+            (
+                Method::GET,
+                "/api/v1/agents/{agent}/systemd/system/units/{unit}/journal",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/systemd/user/{user}/units/{unit}/actions",
+                Access::SessionOnly,
+            ),
+            (
+                Method::PUT,
+                "/api/v1/agents/{agent}/systemd/user/{user}/linger",
                 Access::SessionOnly,
             ),
             (Method::POST, "/api/v1/copy", Access::Handler),

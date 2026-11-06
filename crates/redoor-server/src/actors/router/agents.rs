@@ -201,7 +201,7 @@ impl RouterState {
         known.connection_issue = None;
         known.socket_id = Some(connection.socket_id.clone());
         known.identity = Some(connection.identity.clone());
-        known.capabilities = connection.capabilities;
+        known.capabilities = connection.capabilities.clone();
         self.agents.by_id.insert(agent_id, connection);
         self.notify_agents_changed();
 
@@ -614,7 +614,7 @@ impl RouterState {
                 connection_issue: info.connection_issue.clone(),
                 provisioning_status: info.provisioning_status.clone(),
                 identity: info.identity.clone(),
-                capabilities: info.capabilities,
+                capabilities: info.capabilities.clone(),
                 duplicate_id: info.duplicate_id.clone(),
             })
             .collect()

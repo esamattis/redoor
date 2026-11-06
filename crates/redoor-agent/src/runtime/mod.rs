@@ -1060,6 +1060,8 @@ impl AgentRuntime {
                 supports_move_to_trash: trash.supports_move,
                 // Vault writes depend on the publication check in `RawFileSink`.
                 supports_upload_preconditions: true,
+                // Decided once at startup, so the UI hides the systemd view on hosts without it.
+                systemd: self.dispatcher.services().systemd.support().clone(),
             },
             spec_hash: match &self.profile.role {
                 AgentRole::ManagedDaemon { spec_hash, .. } => Some(spec_hash.clone()),
@@ -1168,6 +1170,7 @@ mod tests {
                 Trash::unsupported(),
                 // Never created: these tests do not write partials.
                 redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
+                crate::commands::systemd::Systemd::unsupported(),
                 None,
             ),
             None,

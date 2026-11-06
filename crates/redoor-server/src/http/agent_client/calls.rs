@@ -16,6 +16,10 @@ pub(crate) use redoor_protocol::wire::request::{
     RenamePath, Restart, RestoreTrash, SelfExec, SetLoggingLevel, Trash,
 };
 use redoor_protocol::wire::request::{CloseTerminal, CreateTerminal};
+pub(crate) use redoor_protocol::wire::request::{
+    SystemdDaemonReload, SystemdJournal, SystemdListUnits, SystemdOverview, SystemdPathStatus,
+    SystemdSetLinger, SystemdUnitAction, SystemdUnitDetails,
+};
 use std::time::Duration;
 
 /// Deadline for ordinary filesystem, git and inventory commands.
@@ -32,6 +36,11 @@ pub(crate) const GIT_WORKTREE_STATUS_TIMEOUT: Duration = Duration::from_secs(120
 pub(crate) const GIT_DIRECTORY_ENTRIES_TIMEOUT: Duration = Duration::from_secs(45);
 /// Deadline for permanently deleting every trash entry, which can touch many files.
 pub(crate) const EMPTY_TRASH_TIMEOUT: Duration = Duration::from_secs(300);
+/// Deadline for a systemd unit action or daemon-reload, which waits for its systemd job.
+/// systemd's default start and stop timeouts are 90 seconds, so a slow but working unit
+/// still answers; past this the call is abandoned and the agent kills `systemctl`, while the
+/// job itself keeps running in systemd.
+pub(crate) const SYSTEMD_JOB_TIMEOUT: Duration = Duration::from_secs(120);
 /// Extra wait beyond an agent-enforced limit so the agent's own timeout result arrives first.
 pub(crate) const AGENT_LIMIT_MARGIN: Duration = Duration::from_secs(2);
 
@@ -82,6 +91,29 @@ standard_calls! {
     GitRevisionStat => "inspecting a path at a git revision",
     GetAgentDetails => "fetching agent details",
     SelfExec => "starting the upgraded agent",
+    SystemdOverview => "reading the systemd overview",
+    SystemdListUnits => "listing systemd units",
+    SystemdUnitDetails => "reading a systemd unit",
+    SystemdSetLinger => "changing systemd linger",
+    SystemdPathStatus => "reading the systemd status of a path",
+}
+
+impl AgentCall for SystemdUnitAction {
+    const OPERATION: &'static str = "running a systemd unit action";
+
+    /// The agent waits for the unit's job, which can take as long as the unit's own timeout.
+    fn timeout(&self) -> Option<Duration> {
+        Some(SYSTEMD_JOB_TIMEOUT)
+    }
+}
+
+impl AgentCall for SystemdDaemonReload {
+    const OPERATION: &'static str = "reloading systemd";
+
+    /// Reloading regenerates every unit, which is slow on large hosts.
+    fn timeout(&self) -> Option<Duration> {
+        Some(SYSTEMD_JOB_TIMEOUT)
+    }
 }
 
 impl AgentCall for DirectorySize {

@@ -6,10 +6,10 @@
 //! implementation, and the JSON shape is just the stream folded up.
 
 use super::output::{AgentStreamError, OutputStream};
-use crate::actors::router::{OutputStreamTracking, RouterHandle};
+use crate::actors::router::RouterHandle;
 use crate::http::agent_client::AGENT_LIMIT_MARGIN;
 use crate::http::error::ApiError;
-use axum::{body::Body, http::header, response::Response};
+use axum::response::Response;
 use redoor_protocol::{
     api::search::{
         ContentGrepEvent, ContentGrepResponse, FileSearchEvent, FileSearchRanking,
@@ -150,11 +150,8 @@ const SEARCHING_FILES: &str = "searching files";
 const SEARCHING_CONTENTS: &str = "searching file contents";
 
 impl<E: DeserializeOwned> AgentSearch<E> {
-    /// Admits the search and waits for the agent's first frame.
-    ///
-    /// The agent validates the query and opens the root before it sends anything, so an
-    /// early failure arrives here as the stream's error and becomes a proper HTTP status
-    /// instead of a body that breaks off after a `200`.
+    /// Admits the search and waits for the agent's first frame, so validation failures
+    /// (an empty query, a missing root) become HTTP statuses.
     async fn open(
         router: &RouterHandle,
         agent_id: AgentId,
@@ -163,39 +160,23 @@ impl<E: DeserializeOwned> AgentSearch<E> {
     ) -> Result<Self, ApiError> {
         let timeout = Duration::from_secs(timeout_seconds) + AGENT_LIMIT_MARGIN;
         let deadline = Instant::now() + timeout;
-        let mut output =
-            OutputStream::open(router, agent_id, command, OutputStreamTracking::Search).await?;
-        let first = tokio::time::timeout_at(deadline, output.peek())
-            .await
-            .map_err(|_| ApiError::Timeout(timeout))?;
-        match first {
-            Some(Ok(_)) => Ok(Self {
-                output,
-                deadline,
-                timeout,
-                events: PhantomData,
-            }),
-            Some(Err(AgentStreamError(error))) => Err(ApiError::Command {
-                kind: error.kind.clone(),
-                message: error.message.clone(),
-            }),
-            None => Err(ApiError::internal("Search ended before it started")),
-        }
+        let output =
+            OutputStream::open_events(router, agent_id, command, timeout, "Search").await?;
+        Ok(Self {
+            output,
+            deadline,
+            timeout,
+            events: PhantomData,
+        })
     }
 
     /// Answers with the agent's NDJSON lines as they arrive.
     ///
-    /// The body ends with an error when the agent fails mid-search, so a client never takes a
-    /// partial list for a finished one; it has no `done` line then either. Dropping the body
-    /// cancels the search on the agent.
+    /// A search that fails mid-way has no `done` line and its body ends with an error, so a
+    /// client never takes a partial list for a finished one. Dropping the body cancels the
+    /// search on the agent.
     pub(crate) fn into_response(self) -> Response {
-        Response::builder()
-            .header(header::CONTENT_TYPE, "application/x-ndjson")
-            // Reverse proxies such as nginx would otherwise hold matches back until the
-            // search ends, which defeats streaming them.
-            .header("X-Accel-Buffering", "no")
-            .body(Body::from_stream(self.output))
-            .unwrap_or_else(|_| Response::new(Body::empty()))
+        self.output.into_ndjson_response()
     }
 
     /// Feeds every event to `apply` until it reports `done`, which must be the last line.

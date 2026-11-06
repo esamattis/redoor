@@ -341,7 +341,7 @@ mod tests {
     /// Verifies flattening keeps the flat hello JSON that agents and fixtures send.
     #[test]
     fn hello_round_trips_its_flat_json() {
-        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","token_proof":"p","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false,"supports_upload_preconditions":true}"#;
+        let json = r#"{"type":"hello","agent_id":"a","agent_name":"n","token_proof":"p","os":"linux","arch":"x86_64","hostname":"h","username":"u","cwd":"/home/u","binary":{"version":"0.0.0","git_rev":"r","git_dirty":false,"version_dirty":false,"build_mode":"debug","build_date":"d"},"uid":1000,"is_root":false,"supports_native_open":false,"supports_trash":true,"supports_move_to_trash":false,"supports_upload_preconditions":true,"systemd":{"status":"available"}}"#;
         let hello: AgentToServer = serde_json::from_str(json).unwrap();
         let AgentToServer::Hello {
             identity,
@@ -356,6 +356,10 @@ mod tests {
         assert_eq!(identity.uid, 1000);
         assert!(capabilities.supports_trash);
         assert!(capabilities.supports_upload_preconditions);
+        assert_eq!(
+            capabilities.systemd,
+            crate::api::systemd::SystemdSupport::Available
+        );
         let older = json.replace(r#","supports_upload_preconditions":true"#, "");
         let AgentToServer::Hello { capabilities, .. } = serde_json::from_str(&older).unwrap()
         else {
@@ -363,6 +367,16 @@ mod tests {
         };
         // An older agent omits the capability, so vault writes to it are refused.
         assert!(!capabilities.supports_upload_preconditions);
+        let scripted = json.replace(r#","systemd":{"status":"available"}"#, "");
+        let AgentToServer::Hello { capabilities, .. } = serde_json::from_str(&scripted).unwrap()
+        else {
+            panic!("expected a hello");
+        };
+        // A scripted agent without the field never gets systemd commands.
+        assert!(matches!(
+            capabilities.systemd,
+            crate::api::systemd::SystemdSupport::Unavailable { .. }
+        ));
         // Serializing yields the same flat object the fake agents build by hand.
         assert_eq!(
             serde_json::to_value(&hello).unwrap(),

@@ -384,6 +384,7 @@ describe("Raw Download API", () => {
                 supports_upload_preconditions: false,
                 uid: null,
                 is_root: false,
+                systemd: null,
                 duplicate_id: null,
             },
             {

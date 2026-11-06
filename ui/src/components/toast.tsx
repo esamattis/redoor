@@ -20,6 +20,11 @@ export function Toast(props: {
     tone: ToastTone;
     icon?: React.ReactNode;
     children: React.ReactNode;
+    /**
+     * Buttons that act on the message, such as "Reload systemd". They sit inside the toast,
+     * so using them does not count as an outside interaction that dismisses it.
+     */
+    action?: React.ReactNode;
     dismissAriaLabel?: string;
     onDismiss: () => void;
 }) {
@@ -74,7 +79,17 @@ export function Toast(props: {
                     {props.icon}
                 </span>
             ) : null}
-            <div className="min-w-0">{props.children}</div>
+            {props.action ? (
+                // Wraps the actions below the message when a phone-narrow toast cannot fit both.
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+                    <div className="min-w-0">{props.children}</div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                        {props.action}
+                    </div>
+                </div>
+            ) : (
+                <div className="min-w-0">{props.children}</div>
+            )}
             <IconButton
                 type="button"
                 label={props.dismissAriaLabel ?? "Dismiss notification"}

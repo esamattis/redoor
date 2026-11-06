@@ -100,7 +100,7 @@ impl RouterState {
                 }
             }
             OutputStreamTracking::Execution { terminal } => OutputKind::Execution { terminal },
-            OutputStreamTracking::Search => OutputKind::Search,
+            OutputStreamTracking::Events => OutputKind::Events,
         };
         self.flows.insert(
             id,
@@ -189,10 +189,11 @@ impl RouterState {
                 }
                 self.notify_transfer_refresh();
             }
-            OutputKind::Search if canceling => {}
-            // A search's summary is its `done` line, already queued as data, so only a failure
-            // needs the consumer's attention: it ends the stream after the matches it has.
-            OutputKind::Search => {
+            OutputKind::Events if canceling => {}
+            // An event stream's summary (a search's `done` line) is already queued as data, so
+            // only a failure needs the consumer's attention: it ends the stream after the
+            // events it has.
+            OutputKind::Events => {
                 if let CommandOutcome::Error(error) = response.result {
                     flow.lease.fail(error);
                 }
@@ -641,7 +642,7 @@ mod tests {
     async fn failing_search_stream_delivers_matches_then_the_error() {
         let mut fixture = Fixture::new();
         let mut output = fixture
-            .start(file_search(), OutputStreamTracking::Search)
+            .start(file_search(), OutputStreamTracking::Events)
             .await
             .unwrap();
         let id = output.request_id();
@@ -677,7 +678,7 @@ mod tests {
     async fn finished_search_stream_ends_without_an_error() {
         let mut fixture = Fixture::new();
         let mut output = fixture
-            .start(file_search(), OutputStreamTracking::Search)
+            .start(file_search(), OutputStreamTracking::Events)
             .await
             .unwrap();
         let id = output.request_id();
@@ -694,7 +695,7 @@ mod tests {
     async fn search_tracking_must_match_a_search_command() {
         let mut fixture = Fixture::new();
         let exec_as_search = fixture
-            .start(Fixture::exec_command(), OutputStreamTracking::Search)
+            .start(Fixture::exec_command(), OutputStreamTracking::Events)
             .await;
         let search_as_download = fixture
             .start(

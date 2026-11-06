@@ -71,9 +71,9 @@ pub(crate) enum OutputKind {
     Execution {
         terminal: tokio::sync::watch::Sender<Option<ExecEvent>>,
     },
-    /// NDJSON search matches ending with a `done` line; no history, and the result is only
-    /// read for a failure.
-    Search,
+    /// NDJSON events (search matches ending with a `done` line, journal entries); no history,
+    /// and the result is only read for a failure.
+    Events,
 }
 
 /// Lifecycle of an output stream.
@@ -313,7 +313,7 @@ impl Flow {
             Self::Command(_) => None,
             Self::Output(flow) => match flow.kind {
                 OutputKind::Download { progress_id, .. } => Some(progress_id),
-                OutputKind::Execution { .. } | OutputKind::Search => None,
+                OutputKind::Execution { .. } | OutputKind::Events => None,
             },
             Self::Upload(flow) => Some(flow.request_id.as_transfer_id()),
             Self::Copy(flow) => Some(flow.progress_id),

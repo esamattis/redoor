@@ -11,6 +11,7 @@ pub(crate) mod git;
 mod host;
 mod metadata;
 mod search_stream;
+pub(crate) mod systemd;
 
 use crate::transfers::{
     download, edit::EditSession, raw_upload::RawFileSink, tar_upload::TarDirectorySink,
@@ -488,6 +489,63 @@ impl RunCommand for Command {
                     .terminal_sessions
                     .close(id)
                     .await))
+            }
+            Command::SystemdOverview(_) => {
+                Reply::of::<request::SystemdOverview>(ctx.services.systemd.overview().await)
+            }
+            Command::SystemdListUnits(request::SystemdListUnits { scope }) => {
+                Reply::of::<request::SystemdListUnits>(
+                    ctx.services.systemd.list_units(&scope, &ctx.cancel).await,
+                )
+            }
+            Command::SystemdUnitDetails(request::SystemdUnitDetails { scope, unit }) => {
+                Reply::of::<request::SystemdUnitDetails>(
+                    ctx.services
+                        .systemd
+                        .unit_details(&scope, &unit, &ctx.cancel)
+                        .await,
+                )
+            }
+            Command::SystemdUnitAction(request::SystemdUnitAction {
+                scope,
+                unit,
+                action,
+            }) => Reply::of::<request::SystemdUnitAction>(
+                ctx.services
+                    .systemd
+                    .unit_action(&scope, &unit, action, &ctx.cancel)
+                    .await,
+            ),
+            Command::SystemdDaemonReload(request::SystemdDaemonReload { scope }) => {
+                Reply::of::<request::SystemdDaemonReload>(
+                    ctx.services
+                        .systemd
+                        .daemon_reload(&scope, &ctx.cancel)
+                        .await,
+                )
+            }
+            Command::SystemdSetLinger(request::SystemdSetLinger { user, enabled }) => {
+                Reply::of::<request::SystemdSetLinger>(
+                    ctx.services
+                        .systemd
+                        .set_linger(&user, enabled, &ctx.cancel)
+                        .await,
+                )
+            }
+            Command::SystemdPathStatus(request::SystemdPathStatus { path, user }) => {
+                Reply::of::<request::SystemdPathStatus>(
+                    ctx.services
+                        .systemd
+                        .path_status(&path, user.as_deref(), &ctx.cancel)
+                        .await,
+                )
+            }
+            Command::SystemdJournal(request) => {
+                let systemd = ctx.services.systemd.clone();
+                match ctx.into_output() {
+                    Ok(output) => systemd.journal(request, output).await,
+                    Err(error) => Reply::failure(error),
+                }
             }
             Command::SelfExec(request::SelfExec { path }) => match host::self_exec(path) {
                 Ok(path) => Reply::Reexec {

@@ -9,8 +9,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "zx";
 import { z } from "zod";
-import type { Agent, ApiClient } from "#ui/api-client";
-import { waitForValue } from "./test-utils";
+import { type Agent, ApiClient } from "#ui/api-client";
+import {
+    type ProcessManager,
+    SERVER_PATH,
+    TEST_AGENT_TOKEN,
+    TEST_PASSWORD,
+    TEST_USERNAME,
+    VITEST_SERVER_PORT,
+    waitForPort,
+    waitForValue,
+} from "./test-utils";
 import { TEST_TERMINAL_SIZE, TerminalViewer } from "./terminal-test-utils";
 
 // Every SSH test file shares the one remote test host and its `authorized_keys`, so they must
@@ -102,6 +111,98 @@ printf '%s' "$REDOOR_SSH_TEST_PASSWORD"
     } finally {
         rmSync(askpassDir, { recursive: true, force: true });
     }
+}
+
+/** Root account on the SSH test host; it logs in with the shared fixture password. */
+export const SSH_ROOT_USER = "root";
+
+/** Runs a command as root for behavior that cannot be exercised by local non-root agents. */
+export async function sshRootTestCommand(command: string): Promise<string> {
+    return sshCommandWithPassword(SSH_ROOT_USER, command);
+}
+
+/**
+ * Starts a server whose TOML-managed agent logs in to the SSH test host as root with the
+ * fixture password, and resolves once that agent is connected. Root-only behavior (ownership,
+ * other users' systemd managers) cannot be exercised by the local non-root test agents.
+ * Callers register their own cleanup first, so a failed start still cleans up.
+ */
+export async function startRootSshAgent(options: {
+    processManager: ProcessManager;
+    home: string;
+    appName: string;
+    agentName: string;
+}): Promise<Agent> {
+    const sshPassword = process.env.REDOOR_SSH_TEST_PASSWORD;
+
+    if (sshPassword === undefined) {
+        throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+    }
+
+    const configPath = join(options.home, "config.toml");
+
+    writeFileSync(
+        configPath,
+        `agent_token = "${TEST_AGENT_TOKEN}"
+
+[server]
+username = "${TEST_USERNAME}"
+password = "${TEST_PASSWORD}"
+port = ${VITEST_SERVER_PORT}
+
+[[agents]]
+target = "${SSH_TEST_HOST}"
+username = "${SSH_ROOT_USER}"
+password = ${JSON.stringify(sshPassword)}
+name = "${options.agentName}"
+`,
+    );
+
+    const serverPid = options.processManager.spawn(
+        SERVER_PATH,
+        ["server", "--config", configPath],
+        {
+            env: {
+                ...process.env,
+                HOME: options.home,
+                REDOOR_APP_NAME: options.appName,
+            },
+        },
+    );
+
+    await waitForPort(VITEST_SERVER_PORT);
+
+    const apiClient = new ApiClient(`http://127.0.0.1:${VITEST_SERVER_PORT}`);
+
+    await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
+
+    const configuredAgent = await waitForValue({
+        predicate: async () =>
+            (await apiClient.listAgents()).find(
+                (agent) => agent.name === options.agentName,
+            ),
+        description: "root SSH agent inventory registration",
+    });
+
+    await configuredAgent.start();
+
+    return waitForValue({
+        predicate: async () => {
+            const agent = (await apiClient.listAgents()).find(
+                (entry) => entry.name === options.agentName,
+            );
+
+            if (agent?.connectionId) {
+                return agent;
+            }
+
+            throw new Error(
+                `status=${agent?.status ?? "missing"}, issue=${agent?.connectionIssue ?? "none"}, server=${options.processManager.getStdout(serverPid)}`,
+            );
+        },
+        timeoutMs: 60_000,
+        description: "root SSH agent to connect",
+    });
 }
 
 /** Stops any orphaned remote agent and removes only this test's isolated files. */

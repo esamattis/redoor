@@ -681,6 +681,7 @@ mod tests {
                     supports_trash: true,
                     supports_move_to_trash: true,
                     supports_upload_preconditions: false,
+                    systemd: redoor_protocol::api::systemd::SystemdSupport::Available,
                 },
                 duplicate_id: None,
             }]

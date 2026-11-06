@@ -6,6 +6,7 @@ import {
     PanelRightOpen,
     ScrollText,
     Settings,
+    ServerCog,
     Trash2,
 } from "lucide-react";
 import { useAtom } from "jotai";
@@ -175,6 +176,15 @@ function ContextualViewSwitch(props: { context: AgentViewContext }) {
                 >
                     <Settings className="h-4 w-4" aria-hidden="true" />
                     <span>Configuration</span>
+                </ViewSwitchLink>
+            ) : null}
+            {agent.systemd?.status === "available" ? (
+                <ViewSwitchLink
+                    {...deviceRoute(agent, "/agents/$deviceName/systemd")}
+                    active={kind === "systemd"}
+                >
+                    <ServerCog className="h-4 w-4" aria-hidden="true" />
+                    <span>Systemd</span>
                 </ViewSwitchLink>
             ) : null}
             {canBrowse ? (

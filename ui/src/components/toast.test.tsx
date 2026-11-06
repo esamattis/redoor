@@ -8,6 +8,7 @@ import {
     screen,
 } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { Button } from "./button";
 import { Toast } from "./toast";
 
 afterEach(() => {
@@ -46,4 +47,29 @@ test("dismisses on an outside pointer interaction but not an inside one", () => 
     fireEvent.pointerDown(document.body);
     // Any pointer interaction elsewhere dismisses the transient feedback.
     expect(onDismiss).toHaveBeenCalledTimes(1);
+});
+
+test("renders an action that does not dismiss the toast", () => {
+    const onDismiss = vi.fn();
+    const onAction = vi.fn();
+    render(
+        <Toast
+            tone="info"
+            onDismiss={onDismiss}
+            action={
+                <Button type="button" onClick={onAction}>
+                    Reload
+                </Button>
+            }
+        >
+            Changed
+        </Toast>,
+    );
+
+    const action = screen.getByRole("button", { name: "Reload" });
+    fireEvent.pointerDown(action);
+    fireEvent.click(action);
+    // The action is part of the toast, so using it runs it instead of closing the toast.
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(onDismiss).not.toHaveBeenCalled();
 });

@@ -147,6 +147,10 @@ impl From<AgentListEntry> for AgentInfoResponse {
             provisioning_status: agent.provisioning_status,
             uid: identity.as_ref().map(|identity| identity.uid),
             is_root: identity.as_ref().is_some_and(|identity| identity.is_root),
+            // Unknown until the agent first registers; retained afterwards like the identity.
+            systemd: identity
+                .as_ref()
+                .map(|_| agent.capabilities.systemd.clone()),
             duplicate_id: agent.duplicate_id,
             binary: identity.map(|identity| identity.binary),
             supports_native_open: agent.capabilities.supports_native_open,
@@ -270,19 +274,22 @@ pub enum OutputStreamTracking {
         /// Independent terminal acknowledgement stays observable when output is saturated.
         terminal: tokio::sync::watch::Sender<Option<redoor_protocol::wire::exec::ExecEvent>>,
     },
-    /// Path and content searches stream NDJSON matches and have no history; their `done`
-    /// line is part of the data, so the result only matters when it is an error.
-    Search,
+    /// NDJSON event streams (path and content searches, unit journals) have no history; their
+    /// summary, if any, is a line of the data, so the result only matters when it is an
+    /// error.
+    Events,
 }
 
 impl OutputStreamTracking {
-    /// Whether this tracking belongs to `command`, so process output or search matches can
+    /// Whether this tracking belongs to `command`, so process output or NDJSON events can
     /// never acquire file history and a download never loses it.
     pub(crate) fn fits(&self, command: &redoor_protocol::wire::command::Command) -> bool {
         use redoor_protocol::wire::command::Command;
         match command {
             Command::Exec(_) => matches!(self, Self::Execution { .. }),
-            Command::FileSearch(_) | Command::ContentGrep(_) => matches!(self, Self::Search),
+            Command::FileSearch(_) | Command::ContentGrep(_) | Command::SystemdJournal(_) => {
+                matches!(self, Self::Events)
+            }
             _ => matches!(self, Self::Download { .. }),
         }
     }
@@ -602,6 +609,7 @@ impl RegisterAgentRequest {
                 supports_trash: true,
                 supports_move_to_trash: true,
                 supports_upload_preconditions: false,
+                systemd: redoor_protocol::api::systemd::SystemdSupport::Available,
             },
             watchdog: None,
             watchdog_attempt_generation: None,
@@ -655,6 +663,10 @@ mod tests {
         assert!(info.binary.is_some());
         // Capability gates the UI uses survive the projection.
         assert!(info.supports_trash && info.supports_move_to_trash);
+        assert_eq!(
+            info.systemd,
+            Some(redoor_protocol::api::systemd::SystemdSupport::Available)
+        );
         // The JSON keeps the established flat field names, with no nested objects.
         let json = serde_json::to_value(&info).unwrap();
         assert_eq!(json["supports_native_open"], true);
@@ -667,6 +679,8 @@ mod tests {
         let info = AgentInfoResponse::from(never_connected);
         // Agents that never registered expose no identity and no capabilities.
         assert!(info.binary.is_none() && info.uid.is_none() && !info.supports_trash);
+        // Systemd support is unknown rather than "unavailable" before the first hello.
+        assert_eq!(info.systemd, None);
     }
 
     /// Agent-reported details are overridden by the registration the router trusts.

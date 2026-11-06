@@ -82,13 +82,15 @@ The contract between all parties, with no runtime dependencies (no tokio).
   - `stream` defines the binary frame (stream id, `FIN` flag, up to 64 KiB of payload)
     and the credit windows. `exec`, `log` and `terminal` hold the feature-specific wire types.
   - `registration` holds `AgentIdentity` and `AgentCapabilities`, which are flattened into
-    the `hello` frame.
+    the `hello` frame. The capabilities include `SystemdSupport` (available, or unavailable
+    with a reason), which the REST agent projection exposes as `systemd`.
 - `ids`: the strongly typed identifiers. `AgentId` is the stable device id (see "Device
   identity"); `validate_device_name` holds the device name rules.
 - `api/`: REST request and response types grouped by domain (agents, auth, files,
   transfers, git, tokens, ...). `search` also holds the streamed search events and
   `FileSearchRanking`, the top-100 path ranking the agent, the server and the browser share,
-  so the streamed matches reduce to the same list everywhere. Git is a directory with one module per feature area
+  so the streamed matches reduce to the same list everywhere. `systemd` holds the systemd
+  unit management bodies and the journal's NDJSON `SystemdJournalEvent`. Git is a directory with one module per feature area
   (`worktree`, `worktree_list`, `revision`, `commit`, `history`, `refs`), plus the vocabulary they share
   (including `GitPage`, the bounded offset and size every paged Git list uses), so later
   Git features (such as search) are added beside them rather than into one file.
@@ -156,7 +158,7 @@ The agent runtime and the implementation of every command.
   - `responder`: typed outbound frames, including actions that must run after a frame was
     written (for example, re-exec after a restart response), and the `ResultLedger` that
     lets each request send exactly one result.
-- `commands/`: filesystem, git, file search, content grep, metadata and host commands.
+- `commands/`: filesystem, git, file search, content grep, metadata, host and systemd commands.
   - `git/`: one module per Git feature area on top of shared plumbing in `git/mod.rs` (the
     failure type, the blocking runner that interrupts gix when the request is dropped, path
     validation and repository discovery). `status` and `diff` read the worktree; `revision`
@@ -179,6 +181,10 @@ The agent runtime and the implementation of every command.
     8 MiB patch budget and only the extra unchanged lines to a separate 4 MiB context
     budget. Sending files whole therefore never turns a later file into `too_large`; a
     file whose whole patch does not fit falls back to default context.
+  - `systemd/`: systemd unit management (see "Systemd units"): `scope` resolves and
+    authorizes the requested manager and validates unit and user names, `process` builds and
+    runs the systemd tools with a fixed environment, `parse` reads their text output and
+    `journal` streams a unit's journal.
 - `transfers/`: shared upload and download drivers.
   - `UploadSink` covers raw files, tar directories and file edits. `ByteSource` covers file
     ranges and tar archives.
@@ -233,8 +239,11 @@ The agent runtime and the implementation of every command.
     device Start (see "SSH device keys").
   - `git/`: Git REST handlers split by the same feature areas as the protocol, sharing
     path and revision validation in `git/mod.rs`.
-  - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec),
-    `AgentSearch` (path and content search) and `AgentUpload`. REST and MCP handlers are
+  - `systemd`: the session-only systemd routes, thin adapters over the agent's systemd
+    commands and, for the journal, an NDJSON `OutputStream` (see "Systemd units").
+  - `services/`: `TransferService` (copy and move), `OutputStream` (downloads, diffs, exec
+    and NDJSON event streams such as searches and journals), `AgentSearch` (path and content
+    search) and `AgentUpload`. REST and MCP handlers are
     thin adapters over these.
 - `actors/`:
   - `agent_ws` (in `http/`): the agent endpoint. It checks the bearer token and the
@@ -1443,7 +1452,7 @@ browser shows results long before a large tree is done.
 
 ```
 browser:  POST /api/v1/agents/{agent}/find-stream/{*path}   (or grep-stream)
-server:   command {id, credit: 4, FileSearch}  → Output flow of kind Search
+server:   command {id, credit: 4, FileSearch}  → Output flow of kind Events
 agent:    validate, open the root → error result with no data, or an empty ready frame
 agent:    NDJSON batches {"type":"match",...}\n ...  last frame (FIN): ... {"type":"done",...}\n
 agent:    result {id, ok: null}   (or an error, after the data already sent)
@@ -1452,9 +1461,9 @@ server:   passes the lines through as application/x-ndjson
 
 - **Search is an output stream.** `FileSearch` and `ContentGrep` use the `OUTPUT` policy,
   like exec and downloads, and travel on the agent's existing connection. The summary is the
-  `done` line, part of the data, so the result carries nothing; the router's `Search` flow
-  kind has no transfer history and only reads the result when it is an error, which fails
-  the consumer after the matches it already has.
+  `done` line, part of the data, so the result carries nothing; the router's `Events` flow
+  kind (shared with unit journals) has no transfer history and only reads the result when it
+  is an error, which fails the consumer after the matches it already has.
 - **Validate before streaming.** The agent checks the query, the regex, the context limits
   and opens the root before it sends anything, so those failures are the result alone and
   the server (which waits for the first frame) answers them with a proper HTTP status. After
@@ -1785,6 +1794,142 @@ sequenceDiagram
   `sh` without login profiles or `ENV` startup files. A fixed prompt lets command tests wait
   for shell readiness after PTY attachment, and keeps user prompt plugins from scrolling
   rows while browser selection gestures are in progress.
+
+## Systemd units
+
+The UI manages the systemd units of a device: unit lists and status, start, stop, restart,
+reload, enable and disable, the unit's journal, daemon-reload and user linger. The REST
+routes under `/api/v1/agents/{agent}/systemd` are session-only; access tokens and MCP manage
+units through exec, whose permission already covers running `systemctl`.
+
+```
+browser:  GET  .../systemd/{system | user/{user}}/units[/{unit}]       → one-shot commands
+browser:  POST .../units/{unit}/actions, .../daemon-reload; PUT .../user/{user}/linger
+browser:  GET  .../units/{unit}/journal?lines=N                       → NDJSON stream
+agent:    systemctl / journalctl / loginctl / systemd-analyze, never through a shell
+```
+
+- **Command line tools, not D-Bus.** The agent runs `systemctl`, `journalctl`, `loginctl`
+  and `systemd-analyze` (`commands/systemd/`). They are on every systemd host, add no
+  dependency, and reaching another user's manager as root needs only that user's UID and
+  runtime directory instead of the bus policy of the user's session. Every run gets a cleared
+  environment with `LC_ALL=C`, `TZ=UTC` and `SYSTEMD_COLORS=0` (so the parsers read stable
+  text and a root agent leaks nothing into another user's tools), `--no-pager`,
+  `--no-ask-password` (polkit never waits for a password nobody can type) and `--` before
+  unit names. Output is the `--plain --no-legend --full` tables and `show -p` key=value
+  lines, because `-o json` needs systemd 246 and Ubuntu 20.04 ships 245. Unit names are
+  validated (systemd's characters and a known type suffix, so no glob reaches
+  `journalctl -u`) and user names must resolve through NSS, all before a process starts.
+- **Scopes and trust.** Every request names its manager, `SystemdScope::System` or
+  `SystemdScope::User { name }`. A root agent manages the system manager and every user's
+  manager and linger; it reaches another user's manager by running the tool with that
+  user's UID and GID, `XDG_RUNTIME_DIR=/run/user/<uid>` and
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/<uid>/bus` plus `--user`, not
+  `systemctl -M user@`, whose requirements differ between versions. A non-root agent reads
+  the system manager (lists, status and journal need no privileges) but the agent refuses
+  system actions itself, before any tool runs, instead of hitting a polkit prompt; it
+  manages its own user's manager fully and refuses other users. Linger follows the same
+  rule, with polkit deciding a non-root agent's own linger. Responses carry `can_manage`,
+  so the UI shows read-only views without knowing the rules.
+- **A user manager that does not run** (no `/run/user/<uid>/systemd/private` or bus socket)
+  is the typed `SystemdUserManagerNotRunning` failure (`409`, code
+  `systemd_user_manager_not_running`), so the UI can offer to enable linger instead of
+  showing a bus error. The root agent's user list judges `manager_running` by the same
+  sockets, not by `/run/user/<uid>` (which logind creates before the manager is up), so a
+  user the list shows as running never answers the next request with this failure.
+- **Hosts without systemd.** The agent decides once at startup with the `sd_booted()` check
+  (`/run/systemd/system` exists; macOS and Android are unsupported outright) and reports
+  `SystemdSupport` in its `hello`; the UI only offers the systemd view where it is
+  available. Systemd commands on such an agent fail with the typed `SystemdUnsupported`
+  (`501`, code `systemd_unsupported`), not a tool error.
+- **Actions wait for their job.** `systemctl start` and friends block until the systemd job
+  finishes, so "Job for x failed" reaches the UI (as a `409` with systemd's message). The
+  commands are request-cancelable on the command lane with a 120 second `AgentCall`
+  deadline; an abandoned call kills `systemctl`, while the job itself keeps running in
+  systemd. The action answers with the unit's status afterwards.
+- **Bounded lists.** Unit lists merge `list-units --all` with `list-unit-files`, so disabled
+  units that are not loaded appear too. The response is one control frame, so it is cut at
+  10,000 units with a `truncated` flag, and tool output past 16 MiB is drained and dropped.
+- **Unit files in the list.** Each listed unit carries `fragment_path`, the file the UI
+  opens to show the unit. Loaded units get systemd's `FragmentPath` from the same batched
+  `systemctl show` that reads timer schedules (devices, scopes, `not-found` and masked units
+  are left out of it, since they have no file). Unit files systemd has not loaded are not
+  asked about, because `show` would make systemd load each of them: the agent reads each
+  directory of `systemd-analyze [--user] unit-paths` once and takes the first file of the
+  unit's name, as systemd would. Transient files (`.../systemd/transient/`) and masked
+  units report none, an instance reports its template's file.
+- **Timers.** Unit details of a `.timer` carry `SystemdTimerInfo` (its rules from
+  `TimersCalendar`/`TimersMonotonic` as unit file lines, `Triggers`, the next and last
+  elapse, `Persistent`), and every unit's details carry `TriggeredBy`, so a service names
+  the timers, sockets or paths that start it. The unit list adds a `SystemdTimerSummary`
+  (next and last elapse, `Triggers`) to each loaded timer from the one extra
+  `systemctl show -p ...` that also reads the loaded units' files (in batches of 1,000
+  names, so the argument list stays bounded), so a `list-timers` view needs no request per
+  timer; a failure of that extra run lists the units without files and schedules instead of
+  failing the list. All of it comes
+  from `show` key=value lines, so it works on 245. systemd reports a monotonic next elapse
+  (`OnActiveSec=`, `OnUnitActiveSec=`, `OnBootSec=`) relative to `CLOCK_MONOTONIC` and
+  prints it as a time span since boot (`5month 2w 4d 10h 59min 4.344391s`), which only the
+  device can interpret. The agent therefore parses the span back to microseconds, moves it
+  onto the wall clock with its own `CLOCK_REALTIME - CLOCK_MONOTONIC` offset read at the
+  same moment (as `systemctl list-timers` does), and reports the earlier of that and
+  `NextElapseUSecRealtime` as Unix milliseconds. `CLOCK_MONOTONIC` and not `/proc/uptime`,
+  because containers virtualize the latter.
+- **Journal.** One `journalctl -o json --output-fields=... --all -n N -f` run delivers the
+  last lines and then follows, so history and live entries share one stream and nothing is
+  lost or repeated between them. System units use `--unit`, the agent's own user units
+  `--user --unit`, and a root agent reading another user's units uses explicit
+  `_SYSTEMD_USER_UNIT=<unit> _UID=<uid> + USER_UNIT=<unit> _UID=<uid>` matches, because
+  `--user-unit` would match root's own UID. The agent runs it as an `OUTPUT` command
+  through the search stream driver: validation errors are the result with no data (the
+  server waits for the first frame, so they become HTTP statuses), then an empty ready
+  frame, then batched NDJSON `SystemdJournalEvent` lines under stream credit, so a slow
+  browser stalls `journalctl` instead of growing memory. Lines are capped at 64 KiB (longer
+  entries become a note) and `MESSAGE` byte arrays are decoded lossily. The server relays
+  the lines as `application/x-ndjson` through an `Events` output flow; dropping the body
+  cancels the request, and `journalctl` is `kill_on_drop`. A non-root agent that cannot
+  open the system journal file (not in `systemd-journal` or `adm`) sends an
+  `access_limited` event first, because `journalctl` only prints its hint in text formats
+  and the log would otherwise just be empty. An `end` event appears only when `journalctl`
+  itself exits.
+- **The agent's own unit** comes from `/proc/self/cgroup` (the service or scope it runs in,
+  below `user@<uid>.service` for a user manager). The overview reports it and unit details
+  set `is_agent_unit`, so the UI warns harder before stopping, restarting or disabling the
+  unit that runs Redoor.
+- **UI.** The unit lists live under `/agents/{device}/systemd` (`system`, `user`,
+  `user/{user}`), shown only when the agent reports `SystemdSupport` available; a direct URL
+  on any other device explains why instead of sending requests. A unit has no page of its
+  own: its status, actions, timer schedule, drop-ins and journal are the Systemd tab of the
+  file view of its unit file (`/agents/{device}/browser/{fragment_path}?view=systemd`), so
+  a unit and the file that defines it are one tab apart. The tab appears only for unit files
+  and drop-ins (by name) that path status says a manager loads; a drop-in shows the unit it
+  changes, a template file lists its loaded instances (`&unit=` picks one, since a template
+  has no status), and a file several managers load gets a manager picker (`&systemdScope=`).
+  The route's loader asks path status before rendering `?view=systemd` and falls back to
+  the file's default view when no manager loads the file, like the Git view outside a
+  repository. Unit list rows link to `fragment_path`; units without a file (devices, scopes,
+  `-.slice`, transient units) are listed without a link. Unit names known only by name
+  (`Triggers`, `TriggeredBy`) resolve to their files through the manager's cached unit
+  list. Unit lists and unit status poll every few seconds while visible, because systemd
+  pushes nothing to the UI. The journal is a fetch subscription owned by the tab: it is
+  aborted on unmount (which stops `journalctl`) and keeps only the newest 5,000 entries in
+  memory.
+- **Path status** tells the editor and the file view's Systemd tab which managers load a
+  file: the system manager and one user manager, by matching the file's directory against `systemd-analyze [--user] unit-paths` (unit files) or its parent
+  `<unit>.d` directory (drop-ins), then `NeedDaemonReload` and `LoadState` say whether a
+  daemon-reload is due or systemd cannot load the unit yet (a new file on systemd versions
+  that do not load new files on demand). A drop-in missing from the loaded unit's
+  `DropInPaths` also needs a reload, because systemd (255) keeps `NeedDaemonReload=no`
+  when a drop-in is added to a running unit that had none.
+  The user manager is the one the request names (`&user=`), resolved with the same trust
+  rules as the unit lists (a non-root agent may only name its own account). Links from a
+  user's unit list, its timer links and its drop-in links carry that user as
+  `&systemdScope=user/<name>`, and the view, the tab and the loader's redirect pass it on,
+  because shared root-owned files such as `/usr/lib/systemd/user/*` belong to every user's
+  manager and the file alone cannot say whose. Without a user (the editor's reload offer)
+  the agent picks its own account's manager, or for a root agent the file owner's (the
+  parent directory's owner for a new file), since that is whose manager loads files below a
+  home directory.
 
 ## Browser live updates and transfer progress
 

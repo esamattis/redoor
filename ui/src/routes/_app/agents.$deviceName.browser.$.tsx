@@ -21,7 +21,6 @@ import {
 import {
     browserLineSchema,
     browserSearchSchema,
-    type BrowserSearch,
     type FileSortColumn,
 } from "#ui/browser-search";
 import { optionalBooleanSchema } from "#ui/agent-search";
@@ -83,7 +82,6 @@ import {
 import { useAgents, useRequiredAgent } from "#ui/use-agents";
 import { invalidateDeviceViews } from "#ui/use-active-agent";
 import { useBrowserRefreshTriggers } from "#ui/components/browser/refresh";
-import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { MountPoint } from "#bindings/MountPoint";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
@@ -92,7 +90,17 @@ import {
     loadRevision,
 } from "#ui/browser-revision-loader";
 import { prefetchWorktreeGitView } from "#ui/browser-git-loader";
-import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
+import {
+    SystemdFileView,
+    useSystemdFileTab,
+} from "#ui/components/systemd/file-view";
+import {
+    redirectOutsideWorktree,
+    redirectUnusableSystemdView,
+    replaceDefaultMarkdownPreview,
+    replaceUnsupportedFileView,
+    wantsFileContentView,
+} from "#ui/browser-view-redirects";
 import { getBaseName } from "#ui/utils/path";
 
 /** Reads line from the raw query so the loader can preserve it without adding line to loaderDeps. */
@@ -105,9 +113,6 @@ function lineFromLocationSearch(searchStr: string): number | undefined {
 
     return value === null ? undefined : browserLineSchema.parse(value);
 }
-
-/** The route's own parameters, which every redirect needs to stay on the same entry. */
-type BrowserParams = { deviceName: string; _splat?: string };
 
 /** What the route knows while its agent cannot serve paths yet, so only the URL is retained. */
 function lifecycleData(agent: Agent, path: string) {
@@ -142,22 +147,6 @@ function unresolvedData(agent: Agent, path: string, pathError: PathLoadError) {
         lsResult: null,
         pathError,
     };
-}
-
-/** Leaves the Git view of a path that is outside every repository, which has nothing to show. */
-function redirectOutsideWorktree(
-    params: BrowserParams,
-    view: BrowserSearch["view"],
-    gitContext: GitContextResponse,
-) {
-    if (view === "git" && gitContext.status === "outside_worktree") {
-        throw redirect({
-            to: "/agents/$deviceName/browser/$",
-            params,
-            search: {},
-            replace: true,
-        });
-    }
 }
 
 export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
@@ -278,6 +267,17 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
                 }
             }
 
+            await redirectUnusableSystemdView({
+                context,
+                agent,
+                params,
+                view: deps.view,
+                // Read outside loaderDeps like `line`, so picking a manager does not reload.
+                systemdScope: browserSearchSchema.parse(location.search)
+                    .systemdScope,
+                lsResult,
+            });
+
             if (deps.view === "details" && agent.isRoot) {
                 await fetchQueryUncancelled(
                     context.queryClient,
@@ -356,6 +356,8 @@ function BrowserRouteShell(props: {
     /** Shown under the breadcrumbs, such as the browsed Git revision. */
     banner?: ReactNode;
     readOnly?: boolean;
+    /** Shows the Systemd tab of a file a systemd manager loads. */
+    showSystemd?: boolean;
     children: ReactNode;
 }) {
     return (
@@ -380,6 +382,7 @@ function BrowserRouteShell(props: {
                     startEditingPath={props.startEditingPath}
                     banner={props.banner}
                     readOnly={props.readOnly}
+                    showSystemd={props.showSystemd}
                 />
                 <div
                     className={
@@ -543,8 +546,11 @@ function RevisionFileBrowser(props: {
     const isDirectory = tree.entry.type === "directory";
     const editable = isEditableRevisionEntry(tree);
 
+    // Systemd reads files from disk, never from history, so a revision has no unit to show.
+    const requestedView = search.view === "systemd" ? undefined : search.view;
+
     const activeView: BrowserView =
-        search.view ?? (isDirectory ? "files" : "view");
+        requestedView ?? (isDirectory ? "files" : "view");
 
     const isEditView = activeView === "view" && editable;
     const fileName = getBaseName(data.path);
@@ -827,8 +833,29 @@ function FileBrowserPage(props: {
     const activeView = search.view ?? "view";
     const isEditView = activeView === "view" && editable;
 
+    const showSystemd = useSystemdFileTab({
+        agent,
+        path: lsResult.path,
+        activeView,
+        scopeKey: search.systemdScope,
+    });
+
     const content =
-        activeView === "git" ? (
+        activeView === "systemd" ? (
+            <SystemdFileView
+                key={`${agent.id}:${lsResult.path}`}
+                agent={agent}
+                path={lsResult.path}
+                unit={search.unit}
+                scopeKey={search.systemdScope}
+                onScopeChange={(systemdScope) =>
+                    void navigate({
+                        search: (previous) => ({ ...previous, systemdScope }),
+                        replace: true,
+                    })
+                }
+            />
+        ) : activeView === "git" ? (
             <WorktreeGitView
                 agent={agent}
                 path={lsResult.path}
@@ -903,6 +930,7 @@ function FileBrowserPage(props: {
             editable={editable}
             gitHead={gitTabHead(props.gitContext)}
             fillAvailableHeight={isEditView}
+            showSystemd={showSystemd}
         >
             {content}
         </BrowserRouteShell>
@@ -1080,58 +1108,6 @@ function DirectoryListing(props: {
             }
         />
     );
-}
-
-/** Content is the file default view. */
-function wantsFileContentView(view: BrowserSearch["view"]) {
-    return view === undefined;
-}
-
-/** Replaces history so a content URL for a file without viewable content does not stay on the stack. */
-function replaceUnsupportedFileView(
-    params: BrowserParams,
-    view: BrowserSearch["view"],
-    metadata: MetadataResponse | null,
-) {
-    const canShowContent =
-        opensInEditor(metadata) || metadata?.viewable_image === true;
-
-    if (wantsFileContentView(view) && !canShowContent) {
-        throw redirect({
-            to: "/agents/$deviceName/browser/$",
-            params,
-            search: { view: "details" },
-            replace: true,
-        });
-    }
-}
-
-/** Makes rendered markdown the canonical first view while line bookmarks stay in the editor. */
-function replaceDefaultMarkdownPreview(options: {
-    params: BrowserParams;
-    view: BrowserSearch["view"];
-    filePath: string;
-    metadata: MetadataResponse | null;
-    line: BrowserSearch["line"];
-    preview: BrowserSearch["preview"];
-    currentSearch: BrowserSearch;
-}) {
-    if (
-        !wantsFileContentView(options.view) ||
-        options.metadata?.editable !== true ||
-        syntaxLanguageFromFileName(options.filePath) !== "markdown" ||
-        options.line !== undefined ||
-        options.preview !== undefined
-    ) {
-        return;
-    }
-
-    throw redirect({
-        to: "/agents/$deviceName/browser/$",
-        params: options.params,
-        search: { ...options.currentSearch, preview: true },
-        replace: true,
-    });
 }
 
 /** Selects the most specific filesystem mount containing the browsed directory. */

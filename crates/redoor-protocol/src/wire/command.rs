@@ -66,6 +66,14 @@ pub enum Command {
     SelfExec(request::SelfExec),
     CreateTerminal(request::CreateTerminal),
     CloseTerminal(request::CloseTerminal),
+    SystemdOverview(request::SystemdOverview),
+    SystemdListUnits(request::SystemdListUnits),
+    SystemdUnitDetails(request::SystemdUnitDetails),
+    SystemdUnitAction(request::SystemdUnitAction),
+    SystemdDaemonReload(request::SystemdDaemonReload),
+    SystemdSetLinger(request::SystemdSetLinger),
+    SystemdPathStatus(request::SystemdPathStatus),
+    SystemdJournal(request::SystemdJournal),
 }
 
 impl Command {
@@ -236,6 +244,34 @@ impl Command {
                 format!("CreateTerminal id={} cwd={}", request.id, request.cwd)
             }
             Self::CloseTerminal(request) => format!("CloseTerminal id={}", request.id),
+            Self::SystemdOverview(_) => "SystemdOverview".to_string(),
+            Self::SystemdListUnits(request) => {
+                format!("SystemdListUnits scope={}", request.scope)
+            }
+            Self::SystemdUnitDetails(request) => format!(
+                "SystemdUnitDetails scope={} unit={}",
+                request.scope, request.unit
+            ),
+            Self::SystemdUnitAction(request) => format!(
+                "SystemdUnitAction scope={} unit={} action={}",
+                request.scope,
+                request.unit,
+                request.action.verb()
+            ),
+            Self::SystemdDaemonReload(request) => {
+                format!("SystemdDaemonReload scope={}", request.scope)
+            }
+            Self::SystemdSetLinger(request) => format!(
+                "SystemdSetLinger user={} enabled={}",
+                request.user, request.enabled
+            ),
+            Self::SystemdPathStatus(request) => {
+                format!("SystemdPathStatus path={}", request.path)
+            }
+            Self::SystemdJournal(request) => format!(
+                "SystemdJournal scope={} unit={} lines={}",
+                request.scope, request.unit, request.lines
+            ),
         }
     }
 }
@@ -368,6 +404,12 @@ pub enum CommandErrorKind {
     Paused,
     /// Resume authorization no longer identifies the opened source file.
     SourceChanged,
+    /// The host does not run systemd; distinct from `NotFound` so the UI can explain it
+    /// instead of reporting a missing unit.
+    SystemdUnsupported,
+    /// The targeted user's systemd manager does not run, so its units cannot be reached
+    /// until the user logs in or linger is enabled.
+    SystemdUserManagerNotRunning,
     Internal,
 }
 
@@ -404,7 +446,9 @@ impl CommandErrorKind {
             | Self::AlreadyExists
             | Self::Conflict
             | Self::InvalidInput
-            | Self::SourceChanged => Level::Info,
+            | Self::SourceChanged
+            | Self::SystemdUnsupported
+            | Self::SystemdUserManagerNotRunning => Level::Info,
         }
     }
 }

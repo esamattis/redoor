@@ -46,6 +46,7 @@ function agentInfo(
         supports_upload_preconditions: false,
         uid: 1000,
         is_root: false,
+        systemd: null,
         duplicate_id: null,
         ...overrides,
     };

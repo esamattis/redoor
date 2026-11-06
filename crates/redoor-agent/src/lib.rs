@@ -166,6 +166,7 @@ impl PreparedAgent {
         let services = AgentServices::new(
             trash,
             redoor_core::partials::PartialStore::new(runtime.paths.data_dir()?),
+            commands::systemd::Systemd::detect().await,
             loaded_config_path.as_deref(),
         );
         services

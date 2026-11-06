@@ -4,6 +4,7 @@ use crate::actors::router::{
     ExecuteStreamRequest, OutputReceiver, OutputStreamTracking, RouterHandle, RouterMsg,
 };
 use crate::http::error::ApiError;
+use axum::{body::Body, http::header, response::Response};
 use bytes::Bytes;
 use futures_util::Stream;
 use redoor_protocol::wire::request;
@@ -17,6 +18,7 @@ use redoor_protocol::{
 };
 use std::pin::Pin;
 use std::task::{Context, Poll, ready};
+use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::ReusableBoxFuture;
 
@@ -105,6 +107,51 @@ impl OutputStream {
         )
         .await?;
         Ok((stream, terminal_receiver))
+    }
+
+    /// Admits an NDJSON event stream (a search or a journal) and waits up to `timeout` for
+    /// the agent's first frame.
+    ///
+    /// The agent validates its request before it sends anything, so an early failure arrives
+    /// here as the stream's error and becomes a proper HTTP status instead of a body that
+    /// breaks off after a `200`. `what` names the stream in the error for a stream that ends
+    /// before it starts.
+    pub(crate) async fn open_events(
+        router: &RouterHandle,
+        agent_id: AgentId,
+        command: Command,
+        timeout: Duration,
+        what: &str,
+    ) -> Result<Self, ApiError> {
+        let mut output =
+            Self::open(router, agent_id, command, OutputStreamTracking::Events).await?;
+        let first = tokio::time::timeout(timeout, output.peek())
+            .await
+            .map_err(|_| ApiError::Timeout(timeout))?;
+        match first {
+            Some(Ok(_)) => Ok(output),
+            Some(Err(AgentStreamError(error))) => Err(ApiError::Command {
+                kind: error.kind.clone(),
+                message: error.message.clone(),
+            }),
+            None => Err(ApiError::internal(format!(
+                "{what} ended before it started"
+            ))),
+        }
+    }
+
+    /// Answers with the agent's NDJSON lines as they arrive.
+    ///
+    /// The body ends with an error when the agent fails mid-stream, so a client never takes a
+    /// cut-off stream for a finished one. Dropping the body cancels the agent's work.
+    pub(crate) fn into_ndjson_response(self) -> Response {
+        Response::builder()
+            .header(header::CONTENT_TYPE, "application/x-ndjson")
+            // Reverse proxies such as nginx would otherwise hold lines back until the stream
+            // ends, which defeats streaming them.
+            .header("X-Accel-Buffering", "no")
+            .body(Body::from_stream(self))
+            .unwrap_or_else(|_| Response::new(Body::empty()))
     }
 
     /// Request id of the stream, which executions expose for cancellation.

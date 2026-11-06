@@ -615,6 +615,7 @@ fn stopped_agent_response(
         supports_upload_preconditions: false,
         uid: None,
         is_root: false,
+        systemd: None,
         duplicate_id: None,
     }
 }

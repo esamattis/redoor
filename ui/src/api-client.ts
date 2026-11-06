@@ -148,6 +148,18 @@ import type { VaultFileWriteResponse } from "#bindings/VaultFileWriteResponse";
 import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
 import type { RewrapVaultFileRequest } from "#bindings/RewrapVaultFileRequest";
 import type { ReencryptVaultFileRequest } from "#bindings/ReencryptVaultFileRequest";
+import type { SystemdSupport } from "#bindings/SystemdSupport";
+import type { SystemdScope } from "#bindings/SystemdScope";
+import type { SystemdOverviewResponse } from "#bindings/SystemdOverviewResponse";
+import type { SystemdUnitListResponse } from "#bindings/SystemdUnitListResponse";
+import type { SystemdUnitDetailsResponse } from "#bindings/SystemdUnitDetailsResponse";
+import type { SystemdUnitAction } from "#bindings/SystemdUnitAction";
+import type { SystemdUnitActionRequest } from "#bindings/SystemdUnitActionRequest";
+import type { SystemdDaemonReloadResponse } from "#bindings/SystemdDaemonReloadResponse";
+import type { SystemdLingerRequest } from "#bindings/SystemdLingerRequest";
+import type { SystemdLingerResponse } from "#bindings/SystemdLingerResponse";
+import type { SystemdPathStatusResponse } from "#bindings/SystemdPathStatusResponse";
+import type { SystemdJournalEvent } from "#bindings/SystemdJournalEvent";
 import {
     ApiError,
     apiRequest,
@@ -263,6 +275,13 @@ async function* requireSearchDone<T extends { type: string }>(
     if (!done) {
         throw new Error("The search ended before it was complete");
     }
+}
+
+/** The URL segment of a systemd manager: `system` or `user/<name>`. */
+function systemdScopePath(scope: SystemdScope): string {
+    return scope.type === "system"
+        ? "system"
+        : `user/${encodeURIComponent(scope.name)}`;
 }
 
 export class Agent {
@@ -402,6 +421,11 @@ export class Agent {
     /** Whether the latest session's effective UID is root. */
     get isRoot(): boolean {
         return this.info.is_root;
+    }
+
+    /** Whether the device runs systemd; null until the agent first connects. */
+    get systemd(): SystemdSupport | null {
+        return this.info.systemd;
     }
 
     /** Returns the configured SSH destination for inventory labels. */
@@ -890,6 +914,155 @@ export class Agent {
         return apiRequest<MetadataResponse>(
             this.filesystemUrl("metadata", path),
             undefined,
+            this.requestContext,
+        );
+    }
+
+    /** Builds a systemd REST URL below `/api/v1/agents/{agent}/systemd`. */
+    private systemdUrl(route: string): string {
+        const base = `${this.baseUrl}/api/v1/agents/${encodeURIComponent(this.info.id)}/systemd`;
+
+        return route ? `${base}/${route}` : base;
+    }
+
+    /** Builds the URL of one unit of a systemd manager, optionally of a sub-resource. */
+    private systemdUnitUrl(
+        scope: SystemdScope,
+        unit: string,
+        resource?: string,
+    ): string {
+        const url = this.systemdUrl(
+            `${systemdScopePath(scope)}/units/${encodeURIComponent(unit)}`,
+        );
+
+        return resource ? `${url}/${resource}` : url;
+    }
+
+    /**
+     * Describes the agent account's systemd situation: its own user manager, linger and the
+     * unit the agent runs in, plus every account's manager for root agents.
+     */
+    async systemdOverview(
+        options: { signal?: AbortSignal } = {},
+    ): Promise<SystemdOverviewResponse> {
+        return apiRequest<SystemdOverviewResponse>(
+            this.systemdUrl(""),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /** Lists every unit of one manager, loaded units merged with installed unit files. */
+    async listSystemdUnits(
+        scope: SystemdScope,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<SystemdUnitListResponse> {
+        return apiRequest<SystemdUnitListResponse>(
+            this.systemdUrl(`${systemdScopePath(scope)}/units`),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /** Reads the status of one unit; templates are refused with a 400. */
+    async systemdUnit(
+        scope: SystemdScope,
+        unit: string,
+        options: { signal?: AbortSignal } = {},
+    ): Promise<SystemdUnitDetailsResponse> {
+        return apiRequest<SystemdUnitDetailsResponse>(
+            this.systemdUnitUrl(scope, unit),
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Starts, stops, restarts, reloads, enables or disables one unit. Resolves once systemd
+     * finished the job, with the unit's status afterwards; a failed job rejects with
+     * systemd's message.
+     */
+    async runSystemdUnitAction(
+        scope: SystemdScope,
+        unit: string,
+        action: SystemdUnitAction,
+    ): Promise<SystemdUnitDetailsResponse> {
+        return this.postJson<
+            SystemdUnitDetailsResponse,
+            SystemdUnitActionRequest
+        >(this.systemdUnitUrl(scope, unit, "actions"), { action });
+    }
+
+    /** Makes one manager reload its unit files. */
+    async systemdDaemonReload(
+        scope: SystemdScope,
+    ): Promise<SystemdDaemonReloadResponse> {
+        return apiRequest<SystemdDaemonReloadResponse>(
+            this.systemdUrl(`${systemdScopePath(scope)}/daemon-reload`),
+            { method: "POST" },
+            this.requestContext,
+        );
+    }
+
+    /** Enables or disables linger, so the user's manager runs without a login session. */
+    async setSystemdLinger(
+        user: string,
+        enabled: boolean,
+    ): Promise<SystemdLingerResponse> {
+        const request: SystemdLingerRequest = { enabled };
+
+        return apiRequest<SystemdLingerResponse>(
+            this.systemdUrl(`user/${encodeURIComponent(user)}/linger`),
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Tells which managers load the file at `path` and whether a daemon-reload is due, so the
+     * editor can offer one after saving a unit file. `user` names the user manager to check
+     * instead of the file owner's, because shared root-owned files such as
+     * `/usr/lib/systemd/user/*` belong to the manager of whichever user's unit list led there.
+     */
+    async systemdPathStatus(
+        path: string,
+        options: { user?: string; signal?: AbortSignal } = {},
+    ): Promise<SystemdPathStatusResponse> {
+        const query = new URLSearchParams({ path });
+
+        if (options.user !== undefined) {
+            query.set("user", options.user);
+        }
+
+        return apiRequest<SystemdPathStatusResponse>(
+            `${this.systemdUrl("path-status")}?${query.toString()}`,
+            { signal: options.signal },
+            this.requestContext,
+        );
+    }
+
+    /**
+     * Streams one unit's journal: the last `lines` entries (200 by default, at most 10000),
+     * then new entries as they are written. The stream normally never ends; aborting the
+     * signal stops `journalctl` on the device.
+     */
+    streamSystemdJournal(
+        scope: SystemdScope,
+        unit: string,
+        options: { lines?: number; signal?: AbortSignal } = {},
+    ): AsyncGenerator<SystemdJournalEvent[]> {
+        const query =
+            options.lines === undefined
+                ? ""
+                : `?${new URLSearchParams({ lines: String(options.lines) }).toString()}`;
+
+        return streamNdjson<SystemdJournalEvent>(
+            `${this.systemdUnitUrl(scope, unit, "journal")}${query}`,
+            { signal: options.signal },
             this.requestContext,
         );
     }

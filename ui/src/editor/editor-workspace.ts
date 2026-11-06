@@ -80,6 +80,7 @@ export type CaretReport = {
 export type ActivateRequest = {
     container: HTMLElement;
     key: string;
+    /** The file's path, so languages that depend on the directory, such as systemd drop-ins, are found. */
     fileName: string;
     deviceContent: string;
     stored: StoredBuffer | null;

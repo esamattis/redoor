@@ -5,6 +5,7 @@ import type { BinaryIdentity } from "./BinaryIdentity";
 import type { DuplicateIdWarning } from "./DuplicateIdWarning";
 import type { ProvisioningStatusMessage } from "./ProvisioningStatusMessage";
 import type { SocketId } from "./SocketId";
+import type { SystemdSupport } from "./SystemdSupport";
 import type { UnixTimestampSeconds } from "./UnixTimestampSeconds";
 
 /**
@@ -57,6 +58,11 @@ uid: number | null,
  * Whether the latest session's effective UID is root; false until first connect.
  */
 is_root: boolean, 
+/**
+ * Whether the device runs systemd, as the latest session reported it, so the UI only
+ * offers the systemd view where it works; absent until first connect.
+ */
+systemd: SystemdSupport | null, 
 /**
  * Set while several machines are using this device's id (usually a cloned data dir) and
  * the router is refusing the newcomers, so the UI can explain why one of them is offline.

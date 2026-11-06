@@ -183,7 +183,7 @@ impl RouterState {
                 matches!(flow.phase, OutputPhase::Canceling { .. }),
                 match flow.kind {
                     OutputKind::Download { progress_id, .. } => Some(progress_id),
-                    OutputKind::Execution { .. } | OutputKind::Search => None,
+                    OutputKind::Execution { .. } | OutputKind::Events => None,
                 },
             ),
             // Past the commit or publication boundary the agent finishes regardless, and its

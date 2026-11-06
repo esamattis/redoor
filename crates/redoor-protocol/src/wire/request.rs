@@ -26,6 +26,10 @@ use crate::api::git::worktree::{
 use crate::api::git::worktree_list::GitWorktreeListResponse;
 use crate::api::git::worktree_status::GitWorktreeStatusResponse;
 use crate::api::search::CaseSensitivity;
+use crate::api::systemd::{
+    SystemdLingerResponse, SystemdOverviewResponse, SystemdPathStatusResponse, SystemdScope,
+    SystemdUnitDetailsResponse, SystemdUnitListResponse,
+};
 use crate::api::transfers::CopyExistingMode;
 use crate::api::trash::TrashListResponse;
 use crate::ids::TerminalSessionId;
@@ -633,6 +637,67 @@ pub struct CloseTerminal {
     pub id: TerminalSessionId,
 }
 
+/// Summarizes the agent account's systemd situation (see [`SystemdOverviewResponse`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdOverview {}
+
+/// Lists the units of one manager, loaded units merged with installed unit files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdListUnits {
+    pub scope: SystemdScope,
+}
+
+/// Reads the status properties of one unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdUnitDetails {
+    pub scope: SystemdScope,
+    pub unit: String,
+}
+
+/// Starts, stops, restarts, reloads, enables or disables one unit and answers with its
+/// status afterwards. The agent waits for the systemd job, so a failing start is reported.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdUnitAction {
+    pub scope: SystemdScope,
+    pub unit: String,
+    pub action: crate::api::systemd::SystemdUnitAction,
+}
+
+/// Makes one manager reload its unit files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdDaemonReload {
+    pub scope: SystemdScope,
+}
+
+/// Enables or disables linger for one account.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdSetLinger {
+    pub user: String,
+    pub enabled: bool,
+}
+
+/// Tells which managers' unit search paths contain a file and what they know about its unit.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdPathStatus {
+    pub path: String,
+    /// The user whose manager to check instead of the one the agent derives from the file's
+    /// owner. Links from a user's unit list name it, because shared root-owned files such as
+    /// `/usr/lib/systemd/user/*` belong to every user's manager, not root's.
+    #[serde(default)]
+    pub user: Option<String>,
+}
+
+/// Streams one unit's journal as NDJSON [`SystemdJournalEvent`] lines: the last `lines`
+/// entries, then new ones until canceled. Validation errors are the result with no data.
+///
+/// [`SystemdJournalEvent`]: crate::api::systemd::SystemdJournalEvent
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SystemdJournal {
+    pub scope: SystemdScope,
+    pub unit: String,
+    pub lines: u32,
+}
+
 /// Ties each request struct to its [`Command`] variant and its response type.
 macro_rules! agent_requests {
     ($($request:ident => $response:ty),* $(,)?) => {
@@ -708,6 +773,14 @@ agent_requests! {
     SelfExec => (),
     CreateTerminal => TerminalSessionRecord,
     CloseTerminal => bool,
+    SystemdOverview => SystemdOverviewResponse,
+    SystemdListUnits => SystemdUnitListResponse,
+    SystemdUnitDetails => SystemdUnitDetailsResponse,
+    SystemdUnitAction => SystemdUnitDetailsResponse,
+    SystemdDaemonReload => (),
+    SystemdSetLinger => SystemdLingerResponse,
+    SystemdPathStatus => SystemdPathStatusResponse,
+    SystemdJournal => (),
 }
 
 #[cfg(test)]
@@ -772,6 +845,8 @@ mod tests {
             through_result_frame::<OpenPath>(Value::Null),
             through_result_frame::<Restart>(Value::Null),
             through_result_frame::<SelfExec>(Value::Null),
+            through_result_frame::<SystemdDaemonReload>(Value::Null),
+            through_result_frame::<SystemdJournal>(Value::Null),
         ] {
             // Requests without a payload answer with `ok: null`.
             assert_eq!(unit, Value::Null);
@@ -850,6 +925,48 @@ mod tests {
             "username": "me", "connected_at": 0, "binary": {"version": "1", "git_rev": "abc",
             "git_dirty": false, "version_dirty": false, "build_mode": "debug",
             "build_date": "2026-10-10"}, "mount_points": [], "uid": 1000, "is_root": false}));
+        assert_round_trip::<SystemdOverview>(json!({"username": "me", "uid": 1000,
+            "is_root": false, "user_manager_running": true, "linger": false,
+            "agent_unit": {"scope": {"type": "user", "name": "me"}, "unit": "redoor.service"},
+            "users": [], "users_truncated": false}));
+        assert_round_trip::<SystemdListUnits>(json!({"scope": {"type": "system"}, "units": [{
+            "name": "a.service", "unit_type": "service", "description": "A",
+            "load_state": "loaded", "active_state": "active", "sub_state": "running",
+            "unit_file_state": null, "fragment_path": null, "timer": null}, {
+            "name": "a.timer", "unit_type": "timer", "description": "A timer",
+            "load_state": "loaded", "active_state": "active", "sub_state": "waiting",
+            "unit_file_state": "enabled", "fragment_path": "/etc/systemd/system/a.timer",
+            "timer": {"next_elapse_ms": 7,
+            "last_trigger_ms": null, "triggers": ["a.service"]}}], "truncated": false,
+            "can_manage": false}));
+        let details = json!({"scope": {"type": "system"}, "id": "a.service",
+            "description": null, "load_state": "loaded", "active_state": "inactive",
+            "sub_state": "dead", "unit_file_state": "disabled", "unit_file_preset": null,
+            "fragment_path": "/etc/systemd/system/a.service", "drop_in_paths": [],
+            "need_daemon_reload": false, "main_pid": null, "exec_main_status": 0,
+            "result": "success", "active_enter_timestamp_ms": null,
+            "inactive_enter_timestamp_ms": 5, "memory_current_bytes": null,
+            "cpu_usage_nsec": null, "tasks_current": null, "can_reload": false,
+            "can_manage": true, "is_agent_unit": false, "timer": null,
+            "triggered_by": ["a.timer"]});
+        assert_round_trip::<SystemdUnitDetails>(details);
+        let timer = json!({"scope": {"type": "system"}, "id": "a.timer",
+            "description": null, "load_state": "loaded", "active_state": "active",
+            "sub_state": "waiting", "unit_file_state": "enabled", "unit_file_preset": null,
+            "fragment_path": "/etc/systemd/system/a.timer", "drop_in_paths": [],
+            "need_daemon_reload": false, "main_pid": null, "exec_main_status": null,
+            "result": "success", "active_enter_timestamp_ms": 3,
+            "inactive_enter_timestamp_ms": null, "memory_current_bytes": null,
+            "cpu_usage_nsec": null, "tasks_current": null, "can_reload": false,
+            "can_manage": true, "is_agent_unit": false, "timer": {"triggers": ["a.service"],
+            "next_elapse_ms": 9, "last_trigger_ms": 4,
+            "schedules": ["OnCalendar=*-*-* 03:00:00", "OnUnitActiveSec=1d"],
+            "persistent": true}, "triggered_by": []});
+        assert_round_trip::<SystemdUnitAction>(timer);
+        assert_round_trip::<SystemdSetLinger>(json!({"user": "me", "linger": true}));
+        assert_round_trip::<SystemdPathStatus>(json!({"path": "/etc/systemd/system/a.service",
+            "matches": [{"scope": {"type": "system"}, "unit": "a.service", "drop_in": false,
+            "state": "needs_reload", "can_reload": true}]}));
         assert_round_trip::<GetLoggingLevel>(json!("debug"));
         assert_round_trip::<SetLoggingLevel>(json!("info"));
     }

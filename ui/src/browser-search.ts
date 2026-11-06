@@ -17,7 +17,28 @@ export const browserLineSchema = z
 
 /** The alternate representations a path can show besides its default listing or content. */
 const browserViewSchema = z
-    .enum(["details", "sync", "git"])
+    .enum(["details", "sync", "git", "systemd"])
+    .optional()
+    .catch(undefined);
+
+/**
+ * Names the systemd unit the Systemd view shows when the file does not define just one: an
+ * instance such as `getty@tty1.service` of the open template file. Only the characters of
+ * unit names pass, so a hand-edited URL cannot smuggle anything else into a request.
+ */
+const systemdUnitSchema = z
+    .string()
+    .regex(/^[A-Za-z0-9:_.@\\-]{1,256}$/)
+    .optional()
+    .catch(undefined);
+
+/**
+ * Picks the manager in the Systemd view of a file that more than one manager loads, as
+ * `system` or `user/<name>`. The first manager is the default and stays out of the URL.
+ */
+const systemdScopeSchema = z
+    .string()
+    .regex(/^(system|user\/[^/]{1,256})$/)
     .optional()
     .catch(undefined);
 
@@ -84,8 +105,8 @@ const fileSortDirectionSchema = z
  * The file browser's own URL state: which representation of the path is open, an editor
  * line to reveal, the rendered preview of Markdown, HTML or SVG, the full-window editor, the
  * Git comparison, the browsed Git revision, the Git view's list, the order of its branch and
- * tag lists, whether the branch list shows local or remote-tracking branches and the listing
- * order. Keeping these in the URL makes each of them survive a reload, work with Back, and be
+ * tag lists, whether the branch list shows local or remote-tracking branches, the listing
+ * order, and the unit and manager of the Systemd view. Keeping these in the URL makes each of them survive a reload, work with Back, and be
  * shareable. Every field falls back to undefined, so a stale or hand-edited URL degrades to
  * the defaults.
  */
@@ -101,6 +122,8 @@ export const browserSearchSchema = z.object({
     branchScope: gitBranchScopeSchema,
     sort: fileSortColumnSchema,
     order: fileSortDirectionSchema,
+    unit: systemdUnitSchema,
+    systemdScope: systemdScopeSchema,
 });
 
 /** The validated browser search state, derived so the schema stays the single definition. */

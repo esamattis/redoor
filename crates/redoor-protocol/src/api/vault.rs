@@ -497,4 +497,9 @@ pub enum ApiErrorCode {
     /// A key generation cannot be destroyed while an SSH key still uses it; rewrap the key
     /// first.
     VaultKeyInUse,
+    /// The device does not run systemd, so it has no units to manage.
+    SystemdUnsupported,
+    /// The user's systemd manager does not run, typically because the user has no session
+    /// and linger is off; enabling linger starts it.
+    SystemdUserManagerNotRunning,
 }

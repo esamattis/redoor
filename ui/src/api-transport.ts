@@ -25,6 +25,8 @@ const API_ERROR_CODES = [
     "ssh_key_locked",
     "vault_required",
     "vault_key_in_use",
+    "systemd_unsupported",
+    "systemd_user_manager_not_running",
 ] as const satisfies readonly ApiErrorCode[];
 
 /** Fails to compile when the server gains a code this list does not name. */

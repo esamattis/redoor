@@ -693,10 +693,11 @@ describe("Route access table", () => {
             ["POST", `/api/v1/agents/${agentA}/terminals`],
             ["DELETE", `/api/v1/terminals/${someId}`],
             ["GET", `/api/v1/terminals/${someId}/ws`],
+            ...systemdRoutes(agentA),
         ];
 
         for (const [method, path] of routes) {
-            // Configuration, live sockets and token management are never grantable.
+            // Configuration, live sockets, token and systemd management are never grantable.
             expect(
                 await rawStatus({
                     bearer,
@@ -716,6 +717,32 @@ describe("Route access table", () => {
         ).toBe(true);
     });
 });
+
+/**
+ * Every systemd route of one device. Systemd management is a UI feature; tokens and MCP
+ * manage units through exec, so these stay session-only even for full-permission tokens.
+ */
+function systemdRoutes(device: string): [string, string][] {
+    const base = `/api/v1/agents/${device}/systemd`;
+    const unit = "redoor-access-control.service";
+    const user = "user/access-control-user";
+
+    return [
+        ["GET", base],
+        ["GET", `${base}/path-status?path=%2Ftmp`],
+        ["GET", `${base}/system/units`],
+        ["GET", `${base}/system/units/${unit}`],
+        ["POST", `${base}/system/units/${unit}/actions`],
+        ["GET", `${base}/system/units/${unit}/journal`],
+        ["POST", `${base}/system/daemon-reload`],
+        ["GET", `${base}/${user}/units`],
+        ["GET", `${base}/${user}/units/${unit}`],
+        ["POST", `${base}/${user}/units/${unit}/actions`],
+        ["GET", `${base}/${user}/units/${unit}/journal`],
+        ["POST", `${base}/${user}/daemon-reload`],
+        ["PUT", `${base}/${user}/linger`],
+    ];
+}
 
 /** One MCP device tool, the permissions it needs and its arguments for one device. */
 type ToolCase = {

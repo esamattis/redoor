@@ -102,6 +102,7 @@ impl ApiError {
     pub(crate) fn code(&self) -> Option<ApiErrorCode> {
         match self {
             Self::Coded { code, .. } => Some(*code),
+            Self::Command { kind, .. } => command_code(kind),
             _ => None,
         }
     }
@@ -131,7 +132,24 @@ fn command_status(kind: &CommandErrorKind) -> StatusCode {
         CommandErrorKind::Canceled | CommandErrorKind::Paused => StatusCode::BAD_REQUEST,
         CommandErrorKind::AlreadyExists | CommandErrorKind::Conflict => StatusCode::CONFLICT,
         CommandErrorKind::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+        // The device lacks the feature altogether, which no retry or other input changes.
+        CommandErrorKind::SystemdUnsupported => StatusCode::NOT_IMPLEMENTED,
+        // The device's current state (no running user manager) blocks the request; enabling
+        // linger or logging in changes it.
+        CommandErrorKind::SystemdUserManagerNotRunning => StatusCode::CONFLICT,
         CommandErrorKind::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+/// The machine-readable code of an agent failure the UI words itself, so it need not parse
+/// agent messages to tell "no systemd here" from "the user's manager is not running".
+fn command_code(kind: &CommandErrorKind) -> Option<ApiErrorCode> {
+    match kind {
+        CommandErrorKind::SystemdUnsupported => Some(ApiErrorCode::SystemdUnsupported),
+        CommandErrorKind::SystemdUserManagerNotRunning => {
+            Some(ApiErrorCode::SystemdUserManagerNotRunning)
+        }
+        _ => None,
     }
 }
 
@@ -203,6 +221,32 @@ mod tests {
         );
     }
 
+    /// Systemd failures carry the codes the UI chooses its explanation by.
+    #[test]
+    fn systemd_failures_carry_their_codes() {
+        let unsupported = ApiError::Command {
+            kind: CommandErrorKind::SystemdUnsupported,
+            message: "no systemd".to_string(),
+        };
+        // The UI shows "This device does not use systemd" for this code.
+        assert_eq!(unsupported.code(), Some(ApiErrorCode::SystemdUnsupported));
+        let stopped = ApiError::Command {
+            kind: CommandErrorKind::SystemdUserManagerNotRunning,
+            message: "not running".to_string(),
+        };
+        // The UI offers to enable linger for this code.
+        assert_eq!(
+            stopped.code(),
+            Some(ApiErrorCode::SystemdUserManagerNotRunning)
+        );
+        let missing = ApiError::Command {
+            kind: CommandErrorKind::NotFound,
+            message: "missing".to_string(),
+        };
+        // Ordinary agent failures stay uncoded.
+        assert_eq!(missing.code(), None);
+    }
+
     /// Every agent error kind keeps its status after it crossed the typed `result` frame.
     #[test]
     fn decoded_agent_errors_keep_their_statuses() {
@@ -219,6 +263,14 @@ mod tests {
             (
                 CommandErrorKind::ServiceUnavailable,
                 StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                CommandErrorKind::SystemdUnsupported,
+                StatusCode::NOT_IMPLEMENTED,
+            ),
+            (
+                CommandErrorKind::SystemdUserManagerNotRunning,
+                StatusCode::CONFLICT,
             ),
             (
                 CommandErrorKind::Internal,

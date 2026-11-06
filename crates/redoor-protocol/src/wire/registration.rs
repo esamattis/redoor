@@ -4,6 +4,7 @@
 //! flat field names) through the router's live connection and retained inventory to the REST
 //! projection, instead of a dozen loose fields copied between four structs.
 
+use crate::api::systemd::SystemdSupport;
 use crate::identity::BinaryIdentity;
 use serde::{Deserialize, Serialize};
 
@@ -34,7 +35,7 @@ pub struct AgentIdentity {
 
 /// Which platform-dependent features the agent implements, so the server only offers what
 /// this agent can do.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentCapabilities {
     /// Can launch filesystem paths in a graphical desktop.
     pub supports_native_open: bool,
@@ -46,4 +47,9 @@ pub struct AgentCapabilities {
     /// so the server refuses vault writes to agents that do not announce this.
     #[serde(default)]
     pub supports_upload_preconditions: bool,
+    /// Whether the host runs systemd, decided once at agent startup; the UI only offers the
+    /// systemd view when it does. Defaults to unavailable, so a `hello` without it (scripted
+    /// test agents) never receives systemd commands.
+    #[serde(default)]
+    pub systemd: SystemdSupport,
 }
