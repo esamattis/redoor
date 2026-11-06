@@ -1,5 +1,34 @@
 # Changelog
 
+## v2.5.0
+
+_2026-11-06_
+
+### Breaking changes
+
+- SSH devices no longer have the remote binary path and home directory settings: the server always manages the binary itself and the device opens the remote user's home. Remove `remote_bin` and `home` from SSH entries in `[[agents]]`, because the server refuses to load a config that still has them. Relays keep both settings and local devices keep their home directory.
+- The agent protocol is now `redoor.v6`. Upgrade standalone agents together with the server, since agents of the previous version are refused until then. Managed local and SSH agents need nothing.
+
+### Features
+
+- Manage systemd services and timers from the UI. A device's Systemd view lists the units of each manager, and a unit file's Systemd tab shows its status, schedule and live journal next to the editor. After saving a unit file, the UI offers the daemon-reload it needs.
+- Run an executable file in a new terminal opened in its directory, straight from the file view.
+- Set up a managed SSH key by hand on hosts where the server cannot log in yet: the setup dialog shows a command to run on the device, and the key takes effect only after redoor has logged in with it.
+- Managed SSH keys in a device's `authorized_keys` now end with the server's `<username>@<hostname>`, so you can tell which server installed them. Keys installed earlier keep working.
+- SSH devices have a configurable install directory for the redoor binary, for hosts such as TrueNAS that mount home directories `noexec`. A start now stops before uploading and names the mount when the install directory cannot run programs.
+- A failed device start keeps its connection log and error across retries and Disconnect until the device connects, and a stopped device shows how far an interrupted start got.
+- Preview HTML and SVG files in a sandboxed frame that cannot reach redoor. Scripts stay off unless you turn them on for the file.
+- Path and content search results appear as the agent finds them. Content search shows matches from files nearest the search root first, in a stable order, and shows how long the search took.
+- The search filter chip for `.gitignore`d files now reads "Ignored files" and is pressed when ignored files are included, so every pressed chip widens the search.
+
+### Fixes
+
+- Opening a raw file URL in a tab no longer runs an HTML or SVG file's scripts with the signed-in user's access.
+- Dotfiles such as `.env` are now hidden from search unless hidden files are included, as the filter promises.
+- A daemon that outlived the server no longer reconnects needlessly after a server restart, which closed reattached terminals.
+- Cancel now aborts a passkey prompt that never settles instead of leaving the vault dialog stuck.
+- 1Password no longer offers to save the one-time SSH password from the add-device form.
+
 ## v2.4.0
 
 _2026-11-04_
