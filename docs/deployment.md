@@ -29,6 +29,16 @@ proxy_request_buffering off;
 
 Save the proxy host to apply it. This has been confirmed to make Nginx Proxy Manager stream uploads to Redoor.
 
+## Client addresses
+
+Behind a reverse proxy, every connection Redoor sees comes from the proxy. Log lines for sign-ins and refused agents, and the refused-agent list on the Agents page, therefore also show the client address the proxy forwards in `X-Forwarded-For` (or `X-Real-IP`), for example `remote=10.87.1.10:40318 (forwarded for 203.0.113.5)`. Nginx Proxy Manager, Caddy and Traefik send these headers by default; with plain Nginx add:
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+```
+
+Any client can send these headers, so Redoor only displays the forwarded address and never trusts it. The login rate limiter counts failures per proxy address, so all users behind one proxy share its limit.
+
 ## Other reverse proxies
 
 Other proxies often stream by default. Avoid features that buffer the complete request body:

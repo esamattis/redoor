@@ -446,14 +446,14 @@ function ProtocolMismatchList(props: {
                 <tbody className="divide-y divide-slate-800 text-slate-200">
                     {props.attempts.map((attempt) => (
                         <tr
-                            key={`${attempt.remote_address}-${attempt.agent_version ?? ""}`}
-                            aria-label={`Refused agent at ${attempt.remote_address}`}
+                            key={`${attempt.remote_address}-${attempt.forwarded_for ?? ""}-${attempt.agent_version ?? ""}`}
+                            aria-label={`Refused agent at ${attempt.forwarded_for ?? attempt.remote_address}`}
                         >
                             <td className="py-2 pr-4">
                                 {new Date(attempt.at).toLocaleString()}
                             </td>
                             <td className="py-2 pr-4 font-mono">
-                                {attempt.remote_address}
+                                <RefusedAgentAddress attempt={attempt} />
                             </td>
                             <td className="py-2 pr-4">
                                 {attempt.agent_version ?? "unknown"}
@@ -468,6 +468,25 @@ function ProtocolMismatchList(props: {
                 </tbody>
             </table>
         </section>
+    );
+}
+
+/**
+ * Address cell of a refused agent. Behind a reverse proxy the peer is the proxy for every
+ * agent, so the forwarded client is shown first and the proxy below it to tell hosts apart.
+ */
+function RefusedAgentAddress(props: { attempt: ProtocolMismatchAttempt }) {
+    if (props.attempt.forwarded_for === null) {
+        return props.attempt.remote_address;
+    }
+
+    return (
+        <>
+            <div className="break-all">{props.attempt.forwarded_for}</div>
+            <div className="text-xs text-slate-400">
+                via {props.attempt.remote_address}
+            </div>
+        </>
     );
 }
 

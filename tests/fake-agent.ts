@@ -122,6 +122,8 @@ export type UpgradeOptions = {
     version?: string;
     /** Whether `ws` answers pings itself; stale-detection tests turn this off. */
     autoPong?: boolean;
+    /** Extra request headers, such as the forwarding headers a reverse proxy adds. */
+    headers?: Record<string, string>;
 };
 
 /** What the server answered to an upgrade attempt. */
@@ -148,6 +150,7 @@ export async function upgradeAgentSocket(
         options.token === undefined ? TEST_AGENT_TOKEN : options.token;
 
     const versionHeader = {
+        ...options.headers,
         "X-Redoor-Agent-Version": options.version ?? "0.0.0-fake-agent",
     };
 

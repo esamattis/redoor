@@ -3234,9 +3234,16 @@ own endpoints:
      hand-written hash with other cost parameters still takes a different time; accepted,
      since the change form writes default parameters.
 
-  The login rate limiter counts every failure, whichever method failed. The
-  login handler logs the attempted name (debug-quoted) for failures and the signed-in user
-  on success.
+  The login rate limiter counts every failure, whichever method failed, keyed by the TCP
+  peer's IP. The login handler logs the attempted name (debug-quoted) for failures and the
+  signed-in user on success.
+- **Client addresses** in log lines (logins, refused agent upgrades) and in the refused-agent
+  list come from `http::client_address::ClientAddress`: the TCP peer plus the client a
+  reverse proxy names in `X-Forwarded-For` (or `X-Real-IP`). Behind a proxy the peer is the
+  proxy for every client, so the forwarded value is what tells clients apart. Any client can
+  send those headers, so the claim is only displayed next to the peer and never used for a
+  security decision; the login rate limiter stays on the peer IP so a fresh header per guess
+  cannot dodge it.
 - **Sessions** are files in the server data dir. Each records the login name and the method,
   and is bound to the credential that created it, so each is revoked on its own; the check
   resolves name and method against the running config on every request and at startup:

@@ -8,7 +8,7 @@
 use crate::actors;
 use axum::{
     Json,
-    extract::{ConnectInfo, State as AxumState, ws::WebSocketUpgrade},
+    extract::{State as AxumState, ws::WebSocketUpgrade},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -22,8 +22,8 @@ use redoor_protocol::wire::handshake::{
     AGENT_VERSION_HEADER, PROTOCOL, ProtocolMismatchResponse, offered_protocols,
 };
 use redoor_protocol::wire::log::Level;
-use std::net::SocketAddr;
 
+use super::client_address::ClientAddress;
 use super::state::ServerState;
 
 /// Largest websocket message an agent may send. Stream data frames are at most 64 KiB, but a
@@ -67,7 +67,7 @@ fn agent_version(headers: &HeaderMap) -> Option<String> {
 }
 
 /// Refuses an upgrade that does not offer [`PROTOCOL`] with `426` and remembers the attempt.
-fn protocol_mismatch(state: &ServerState, remote: SocketAddr, headers: &HeaderMap) -> Response {
+fn protocol_mismatch(state: &ServerState, remote: &ClientAddress, headers: &HeaderMap) -> Response {
     let version = agent_version(headers);
     let offered = offered(headers);
     // An error, not a warning: the agent cannot connect until an operator upgrades it.
@@ -83,7 +83,12 @@ fn protocol_mismatch(state: &ServerState, remote: SocketAddr, headers: &HeaderMa
         .protocol_mismatches
         // The IP, not the address: every retry comes from a new ephemeral port, and one agent's
         // reconnect loop must keep replacing its own entry.
-        .record(remote.ip().to_string(), version, offered);
+        .record(
+            remote.peer.ip().to_string(),
+            remote.forwarded_for.clone(),
+            version,
+            offered,
+        );
     let server_version = redoor_core::identity::current_binary_identity().version;
     (
         StatusCode::UPGRADE_REQUIRED,
@@ -105,7 +110,7 @@ fn protocol_mismatch(state: &ServerState, remote: SocketAddr, headers: &HeaderMa
 /// upgrade echoing [`PROTOCOL`] with the server's nonce and its proof of the token.
 pub(crate) async fn agent_websocket_handler(
     ws: WebSocketUpgrade,
-    ConnectInfo(remote): ConnectInfo<SocketAddr>,
+    remote: ClientAddress,
     headers: HeaderMap,
     AxumState(state): AxumState<ServerState>,
 ) -> Response {
@@ -120,7 +125,7 @@ pub(crate) async fn agent_websocket_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if !offers_protocol(&headers) {
-        return protocol_mismatch(&state, remote, &headers);
+        return protocol_mismatch(&state, &remote, &headers);
     }
     let nonces = HandshakeNonces {
         agent: agent_nonce,

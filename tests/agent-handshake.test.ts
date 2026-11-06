@@ -132,6 +132,38 @@ describe("agent websocket handshake", () => {
         ).toBe(true);
     });
 
+    it("names the forwarded client of an agent refused behind a reverse proxy", async () => {
+        const version = "0.0.0-proxied-agent";
+        const client = "203.0.113.5";
+
+        const logged = waitForLogMessage(
+            serverProcess(),
+            /incompatible protocol: remote=\S+ \(forwarded for 203\.0\.113\.5\), agent_version=0\.0\.0-proxied-agent/,
+        );
+
+        const outcome = await upgradeAgentSocket({
+            serverPort,
+            protocols: ["redoor.v1"],
+            version,
+            headers: { "X-Forwarded-For": client },
+        });
+
+        // The proxy forwards the upgrade, so the refusal itself is unchanged.
+        expect(outcome).toMatchObject({ kind: "refused", status: 426 });
+        // Behind a proxy the peer is the proxy, so the log must also name the real client.
+        await logged;
+
+        const mismatches = await api.listProtocolMismatches();
+
+        const attempt = mismatches.attempts.find(
+            (candidate) => candidate.agent_version === version,
+        );
+
+        // The refused-agent list shows the forwarded client, which tells hosts behind one
+        // proxy apart, next to the proxy's own address.
+        expect(attempt?.forwarded_for).toBe(client);
+    });
+
     it("rejects a hello whose name belongs to another live agent", async () => {
         let error: unknown;
 

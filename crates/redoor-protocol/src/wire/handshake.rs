@@ -43,6 +43,10 @@ pub struct ProtocolMismatchAttempt {
     pub at: UnixTimestampMillis,
     /// Peer address of the TCP connection (the tunnel end for SSH-launched agents).
     pub remote_address: String,
+    /// Client chain a reverse proxy claims in `X-Forwarded-For` (or `X-Real-IP`). Behind a
+    /// proxy the peer address is the proxy, so this is what identifies the agent's host; it is
+    /// unverified, since any client can send the header.
+    pub forwarded_for: Option<String>,
     /// Agent binary version from the upgrade header, when the agent sent one.
     pub agent_version: Option<String>,
     /// Subprotocols the agent offered; empty when it offered none.

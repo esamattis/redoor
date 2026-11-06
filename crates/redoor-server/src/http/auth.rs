@@ -20,7 +20,7 @@ use argon2::{
 };
 use axum::{
     Json,
-    extract::{ConnectInfo, State},
+    extract::State,
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use super::client_address::ClientAddress;
 use super::state::ServerState;
 use password_logins::{Logins, PasswordLogins};
 
@@ -810,10 +811,12 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 /// Verifies a login name and password and persists a new server-side login session.
 pub(crate) async fn login_handler(
     State(state): State<ServerState>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    client: ClientAddress,
     Json(request): Json<LoginRequest>,
 ) -> Response {
-    let client_ip = addr.ip();
+    // The TCP peer, not the forwarded claim: a client could otherwise dodge the limit by
+    // sending a fresh `X-Forwarded-For` with every guess.
+    let client_ip = client.peer.ip();
     if state
         .auth
         .login_limiter
@@ -843,7 +846,7 @@ pub(crate) async fn login_handler(
             // Debug-quoted, because the name is whatever the client sent.
             log!(
                 Level::Info,
-                "Failed login: name={:?}, address={client_ip}",
+                "Failed login: name={:?}, address={client}",
                 request.username
             );
             return (
@@ -874,7 +877,7 @@ pub(crate) async fn login_handler(
     };
     log!(
         Level::Info,
-        "Signed in: user={}, address={client_ip}",
+        "Signed in: user={}, address={client}",
         session.user.log_label()
     );
 

@@ -17,6 +17,12 @@ at: UnixTimestampMillis,
  */
 remote_address: string, 
 /**
+ * Client chain a reverse proxy claims in `X-Forwarded-For` (or `X-Real-IP`). Behind a
+ * proxy the peer address is the proxy, so this is what identifies the agent's host; it is
+ * unverified, since any client can send the header.
+ */
+forwarded_for: string | null, 
+/**
  * Agent binary version from the upgrade header, when the agent sent one.
  */
 agent_version: string | null, 

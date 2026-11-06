@@ -10,6 +10,7 @@ mod agents;
 mod archive_upload;
 pub(crate) mod auth;
 mod auth_me;
+mod client_address;
 mod copy;
 mod diffs;
 mod editor_buffers;
