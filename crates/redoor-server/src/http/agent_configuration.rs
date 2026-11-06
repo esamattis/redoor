@@ -179,6 +179,8 @@ async fn update_ssh_agent(
     let clear_password = request.clear_password.unwrap_or(false);
     let mut config = validate_update_request(request)?;
     let _operation = state.ssh_key_operations.begin(agent_id)?;
+    // A pending manual SSH key setup was generated for the old settings.
+    state.manual_ssh_keys.discard(agent_id);
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent(state, agent_id).await?;
     config.id = existing_config.id.clone();
@@ -325,6 +327,8 @@ async fn delete_managed_agent(
     current_file_key: Option<&str>,
 ) -> Result<(), ApiError> {
     let _operation = state.ssh_key_operations.begin(agent_id)?;
+    // A deleted device's pending manual SSH key setup can never be confirmed.
+    state.manual_ssh_keys.discard(agent_id);
     let _edit_guard = state.config_edit_lock.lock().await;
     let configured = find_configured_agent(state, agent_id).await?;
     if let Some(config) = &configured {

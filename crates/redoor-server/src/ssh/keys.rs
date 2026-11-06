@@ -95,11 +95,9 @@ impl SshKeyStore {
         Ok(dir)
     }
 
-    /// Generates a new ed25519 key in redoor's memory and writes it as the staged key,
-    /// encrypted with the vault when `vault` is given and as plaintext otherwise.
+    /// Generates a new ed25519 key (see [`GeneratedKey::generate`]) and writes it as the
+    /// staged key, directly with 0600.
     ///
-    /// Generating in-process instead of running `ssh-keygen` means the private key is
-    /// written only by redoor, directly with 0600, and never passes through another process.
     /// A staged key left behind by a crashed setup or rotation is simply replaced (of either
     /// form): it was never current, so nothing refers to it.
     pub(crate) async fn stage(
@@ -107,27 +105,26 @@ impl SshKeyStore {
         device: &AgentId,
         vault: Option<&SshKeySeal>,
     ) -> std::io::Result<StagedKey> {
-        let mut private_key = SshPrivateKey::generate()?;
-        // The comment only helps someone inspecting a plaintext file; the fingerprint does
-        // not depend on it.
-        let fingerprint = private_key.fingerprint();
-        private_key.set_comment(marker(device, &fingerprint));
+        let generated = GeneratedKey::generate(device, vault).await?;
+        self.write_staged(&generated).await
+    }
 
+    /// Writes a key generated earlier as the staged key, replacing a leftover of either
+    /// form. The manual setup generates the key in one request and stages it only in the
+    /// confirming one, so an abandoned setup leaves nothing on disk and an automatic setup
+    /// in between cannot overwrite the file the confirmation would commit.
+    pub(crate) async fn write_staged(
+        &self,
+        generated: &GeneratedKey,
+    ) -> std::io::Result<StagedKey> {
+        let device = &generated.key.device;
         self.ensure_device_dir(device).await?;
         self.delete_staged(device).await?;
-        let encrypted = vault.is_some();
-        let path = self.device_file(device, staged_file_name(encrypted));
-        let content = match vault {
-            Some(vault) => Zeroizing::new(seal(&private_key, device, vault).await?),
-            None => Zeroizing::new(private_key.to_openssh()?.as_bytes().to_vec()),
-        };
-        write_atomically(&path, &content, 0o600).await?;
+        let path = self.device_file(device, staged_file_name(generated.encrypted));
+        write_atomically(&path, &generated.content, 0o600).await?;
         Ok(StagedKey {
-            key: ManagedKey {
-                device: device.clone(),
-                private_key: Arc::new(private_key),
-            },
-            encrypted,
+            key: generated.key.clone(),
+            encrypted: generated.encrypted,
         })
     }
 
@@ -445,6 +442,52 @@ impl StoredKey {
     /// `SHA256:` fingerprint of the public key.
     pub(crate) fn fingerprint(&self) -> String {
         self.public_key().fingerprint(HashAlg::Sha256).to_string()
+    }
+}
+
+/// A new key in memory together with the exact bytes its key file will hold, before
+/// anything is written to disk.
+///
+/// The bytes are produced at generation time because an encrypted key needs the browser's
+/// file key, which is only sent with the request that generates it; keeping the sealed bytes
+/// instead of the file key means the server never keeps a file key between requests.
+#[derive(Clone)]
+pub(crate) struct GeneratedKey {
+    /// The key itself, used to verify it and to build its `authorized_keys` line.
+    pub(crate) key: ManagedKey,
+    /// The key file's content: the OpenSSH private key, or its sealed form.
+    content: Zeroizing<Vec<u8>>,
+    /// Whether `content` is encrypted with the vault, which decides the file names.
+    pub(crate) encrypted: bool,
+}
+
+impl GeneratedKey {
+    /// Generates a new ed25519 key for `device`, sealed with the vault when `vault` is
+    /// given and as plaintext otherwise.
+    ///
+    /// Generating in-process instead of running `ssh-keygen` means the private key is
+    /// written only by redoor and never passes through another process.
+    pub(crate) async fn generate(
+        device: &AgentId,
+        vault: Option<&SshKeySeal>,
+    ) -> std::io::Result<Self> {
+        let mut private_key = SshPrivateKey::generate()?;
+        // The comment only helps someone inspecting a plaintext file; the fingerprint does
+        // not depend on it.
+        let fingerprint = private_key.fingerprint();
+        private_key.set_comment(marker(device, &fingerprint));
+        let content = match vault {
+            Some(vault) => Zeroizing::new(seal(&private_key, device, vault).await?),
+            None => Zeroizing::new(private_key.to_openssh()?.as_bytes().to_vec()),
+        };
+        Ok(Self {
+            key: ManagedKey {
+                device: device.clone(),
+                private_key: Arc::new(private_key),
+            },
+            content,
+            encrypted: vault.is_some(),
+        })
     }
 }
 

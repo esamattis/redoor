@@ -67,6 +67,8 @@ pub(crate) struct ServerState {
     pub(crate) held_ssh_keys: crate::ssh::held_keys::HeldSshKeys,
     /// Devices with a key operation or edit in progress, so they cannot race each other.
     pub(crate) ssh_key_operations: super::ssh_keys::SshKeyOperations,
+    /// Keys of manual SSH key setups waiting for the user to add them to their device.
+    pub(crate) manual_ssh_keys: super::ssh_keys::ManualSshKeys,
     /// Signals axum graceful shutdown; restart fires this after a successful
     /// pre-validation so the listener is dropped before exec.
     pub(crate) shutdown_tx: Arc<tokio::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,

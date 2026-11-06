@@ -1,7 +1,9 @@
 // Serial: adds and removes SSH devices in the shared device list, and creates and deletes
 // the test account's vault, which encrypts SSH keys.
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
+import { $ } from "zx";
 import { z } from "zod";
 import {
     expect,
@@ -26,6 +28,8 @@ const ADDED_DEVICE = `playwright-ssh-key-${process.pid}`;
 const UPGRADED_DEVICE = `playwright-ssh-key-upgrade-${process.pid}`;
 
 const ENCRYPTED_DEVICE = `playwright-ssh-key-vault-${process.pid}`;
+
+const MANUAL_DEVICE = `playwright-ssh-key-manual-${process.pid}`;
 
 const PASSPHRASE = "correct horse battery staple";
 
@@ -160,6 +164,46 @@ async function getKeyStatus(
     return response.json();
 }
 
+/**
+ * Runs a command on the fixture as the password user, the way a person would paste it into
+ * their own SSH session. The password goes through askpass so it never appears in process
+ * arguments or test output.
+ */
+async function runOnDevice(command: string): Promise<void> {
+    const password = process.env.REDOOR_SSH_TEST_PASSWORD;
+
+    if (password === undefined) {
+        throw new Error("REDOOR_SSH_TEST_PASSWORD unexpectedly missing");
+    }
+
+    const askpassDir = await fs.mkdtemp(
+        path.join(os.tmpdir(), "redoor-e2e-askpass-"),
+    );
+
+    const askpassPath = path.join(askpassDir, "askpass");
+
+    await fs.writeFile(
+        askpassPath,
+        `#!/bin/sh
+printf '%s' "$REDOOR_SSH_TEST_PASSWORD"
+`,
+        { mode: 0o700 },
+    );
+
+    try {
+        await $({
+            env: {
+                ...process.env,
+                DISPLAY: process.env.DISPLAY ?? ":0",
+                SSH_ASKPASS: askpassPath,
+                SSH_ASKPASS_REQUIRE: "force",
+            },
+        })`ssh -l ${SSH_USER} redoor-ssh-test ${command}`.quiet();
+    } finally {
+        await fs.rm(askpassDir, { recursive: true, force: true });
+    }
+}
+
 /** Probes the host key the fixture presents, to compare with what the UI showed. */
 async function probeHostKey(
     request: APIRequestContext,
@@ -185,6 +229,7 @@ test.describe.serial("Dedicated SSH device keys", () => {
         await removeDevice(request, ADDED_DEVICE);
         await removeDevice(request, UPGRADED_DEVICE);
         await removeDevice(request, ENCRYPTED_DEVICE);
+        await removeDevice(request, MANUAL_DEVICE);
         await removeVault();
     });
 
@@ -193,6 +238,7 @@ test.describe.serial("Dedicated SSH device keys", () => {
         await removeDevice(request, ADDED_DEVICE);
         await removeDevice(request, UPGRADED_DEVICE);
         await removeDevice(request, ENCRYPTED_DEVICE);
+        await removeDevice(request, MANUAL_DEVICE);
         await removeVault();
     });
 
@@ -568,5 +614,103 @@ test.describe.serial("Dedicated SSH device keys", () => {
                 .getByRole("status")
                 .filter({ hasText: "Removed the SSH key from" }),
         ).toBeVisible({ timeout: 30_000 });
+    });
+
+    test("sets up a key the user adds to the device by hand", async ({
+        page,
+    }) => {
+        test.setTimeout(SSH_KEY_TEST_TIMEOUT);
+
+        // No password: the server cannot log in to the device, like a host that accepts
+        // only keys redoor does not have.
+        const createResponse = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents`,
+            {
+                data: {
+                    target: "redoor-ssh-test",
+                    username: SSH_USER,
+                    ssh_port: null,
+                    name: MANUAL_DEVICE,
+                    install_dir: null,
+                    password: null,
+                    clear_password: false,
+                },
+            },
+        );
+
+        expect(createResponse.ok()).toBe(true);
+        const agent = await findAgent(page.request, MANUAL_DEVICE);
+
+        if (!agent) throw new Error(`${MANUAL_DEVICE} missing after create`);
+
+        await page.goto(`${WEB_BASE_URL}/`);
+        await page.getByRole("link", { name: `Edit ${MANUAL_DEVICE}` }).click();
+        await page.getByRole("button", { name: "Set up SSH key" }).click();
+
+        const setup = page.getByRole("dialog", {
+            name: "Set up a dedicated SSH key",
+        });
+
+        await expect(setup.getByLabel(/^Host key \(.+\) contents$/)).toHaveText(
+            /^SHA256:/,
+            { timeout: 30_000 },
+        );
+        await setup.getByRole("radio", { name: "I add it myself" }).check();
+        // Redoor never logs in to install the key, so no password is asked for.
+        await expect(
+            setup.getByLabel("SSH password (used once, not saved)"),
+        ).toHaveCount(0);
+        await setup
+            .getByRole("button", { name: "Trust host key and create key" })
+            .click();
+
+        const addKey = page.getByRole("dialog", {
+            name: "Add the key to the device",
+        });
+
+        const command = addKey.getByLabel("Command contents");
+        await expect(command).toContainText("authorized_keys", {
+            timeout: 30_000,
+        });
+
+        const fingerprint = await addKey
+            .getByLabel("New key fingerprint contents")
+            .textContent();
+
+        // Nothing is the device's key before it was verified on the device.
+        expect(
+            (await getConfiguration(page.request, agent.id))
+                .has_managed_ssh_key,
+        ).toBe(false);
+
+        await addKey
+            .getByRole("button", { name: "I've added the key" })
+            .click();
+        // Confirming before the line is on the device fails, and says what to check.
+        await expect(
+            addKey.getByText("Redoor could not log in with the new SSH key"),
+        ).toBeVisible({ timeout: 30_000 });
+
+        await runOnDevice((await command.textContent()) ?? "");
+        // The same key can be checked again once the user ran the command.
+        await addKey.getByRole("button", { name: "Check again" }).click();
+
+        const installed = page.getByRole("dialog", {
+            name: "SSH key installed",
+        });
+
+        // The device now uses the key the user added, not another one.
+        await expect(
+            installed.getByLabel("New key fingerprint contents"),
+        ).toHaveText(fingerprint ?? "", { timeout: 60_000 });
+        await installed.getByRole("button", { name: "Done" }).click();
+
+        const configuration = await getConfiguration(page.request, agent.id);
+        // The verified key became the device's key, with nothing else to log in with.
+        expect(configuration.has_managed_ssh_key).toBe(true);
+        expect(configuration.has_password).toBe(false);
+        await expect(page.getByLabel("SSH key status")).toContainText(
+            "dedicated SSH key",
+        );
     });
 });

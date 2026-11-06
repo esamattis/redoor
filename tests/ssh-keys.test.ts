@@ -45,6 +45,7 @@ import {
     startAndWaitForIssue,
     fixturePassword,
     keyMarker,
+    sshAs,
 } from "./ssh-key-test-utils";
 
 describe.skipIf(
@@ -221,6 +222,151 @@ describe.skipIf(
             const echo = await connected.echo("managed-key-typed");
             // The agent session, which also uploaded the binary, logged in with the new key.
             expect(echo.message).toBe("managed-key-typed");
+        },
+        SSH_KEY_TEST_TIMEOUT_MS,
+    );
+
+    test(
+        "manual setup uses a key the user added only after verifying it",
+        async () => {
+            const fixture = await startKeyFixture({
+                label: "manual",
+                sshUsers: [SSH_PASSWORD_USER],
+            });
+
+            // No password is stored or typed: the server cannot log in to this account,
+            // like a host with password login disabled.
+            const deviceId = await createDevice(fixture, {
+                user: SSH_PASSWORD_USER,
+                name: `ssh-keys-manual-${fixture.suffix}`,
+            });
+
+            const unconfirmed = await apiFailure(
+                fixture.apiClient.prepareManualSshKey(deviceId, {
+                    host_key_fingerprint: null,
+                }),
+            );
+
+            // The key is later verified against a pin, so the host key must be confirmed.
+            expect(unconfirmed.status).toBe(400);
+
+            const hostKey = await fixture.apiClient.getSshHostKey(deviceId);
+
+            const abandoned = await fixture.apiClient.prepareManualSshKey(
+                deviceId,
+                { host_key_fingerprint: hostKey.fingerprint },
+            );
+
+            await fixture.apiClient.discardManualSshKey(deviceId);
+
+            // A discarded setup cannot be confirmed anymore.
+            expect(
+                (
+                    await apiFailure(
+                        fixture.apiClient.confirmManualSshKey(deviceId, {
+                            fingerprint: abandoned.fingerprint,
+                        }),
+                    )
+                ).status,
+            ).toBe(404);
+
+            const replaced = await fixture.apiClient.prepareManualSshKey(
+                deviceId,
+                { host_key_fingerprint: hostKey.fingerprint },
+            );
+
+            const prepared = await fixture.apiClient.prepareManualSshKey(
+                deviceId,
+                { host_key_fingerprint: hostKey.fingerprint },
+            );
+
+            // A newer setup replaces the earlier one, so a stale dialog cannot confirm it.
+            expect(
+                (
+                    await apiFailure(
+                        fixture.apiClient.confirmManualSshKey(deviceId, {
+                            fingerprint: replaced.fingerprint,
+                        }),
+                    )
+                ).status,
+            ).toBe(404);
+
+            // The line has the automatic setup's format and marker, so rotation and
+            // removal find it later.
+            expect(prepared.authorized_keys_line).toMatch(
+                /^restrict,port-forwarding ssh-ed25519 \S+ /,
+            );
+            expect(
+                prepared.authorized_keys_line.endsWith(
+                    ` ${keyMarker(deviceId, prepared.fingerprint)}`,
+                ),
+            ).toBe(true);
+            // The command the user pastes appends exactly that line.
+            expect(prepared.install_command).toContain(
+                shellQuote(prepared.authorized_keys_line),
+            );
+            // Nothing is written until the key is verified, so an abandoned setup leaves
+            // no key behind ...
+            expect(localKeyFiles(fixture, deviceId)).toEqual([]);
+            // ... and the device does not use the key yet.
+            expect(configEntry(fixture, deviceId)).not.toMatch(
+                /^managed_ssh_key/m,
+            );
+
+            const notAdded = await apiFailure(
+                fixture.apiClient.confirmManualSshKey(deviceId, {
+                    fingerprint: prepared.fingerprint,
+                }),
+            );
+
+            // The key is not on the device yet, so the login with it fails ...
+            expect(notAdded.status).toBe(502);
+            // ... with a message that tells the user what to check.
+            expect(notAdded.message).toContain(
+                "Redoor could not log in with the new SSH key",
+            );
+            // A failed verification commits nothing.
+            expect(localKeyFiles(fixture, deviceId)).toEqual([]);
+
+            await sshAs(SSH_PASSWORD_USER, prepared.install_command);
+
+            // The same setup can be confirmed again after the user added the line.
+            const enrolled = await fixture.apiClient.confirmManualSshKey(
+                deviceId,
+                { fingerprint: prepared.fingerprint },
+            );
+
+            // The manual setup installs the device's first key.
+            expect(enrolled).toEqual({
+                fingerprint: prepared.fingerprint,
+                rotated: false,
+            });
+            // The verified key is now the device's current key ...
+            expect(localKeyFiles(fixture, deviceId)).toEqual(["id_ed25519"]);
+            expect(
+                fingerprintOf((await localPublicKey(fixture, deviceId))[1]),
+            ).toBe(prepared.fingerprint);
+            // ... and the config says the device uses it.
+            expect(configEntry(fixture, deviceId)).toMatch(
+                /^managed_ssh_key = true$/m,
+            );
+            // The device has exactly the line the user added.
+            expect(
+                await remoteDeviceLines(SSH_PASSWORD_USER, deviceId),
+            ).toEqual([prepared.authorized_keys_line]);
+
+            const connected = await startAndWaitConnected(fixture, deviceId);
+            const echo = await connected.echo("managed-key-manual");
+            // The agent session logs in with the manually added key.
+            expect(echo.message).toBe("managed-key-manual");
+            await connected.shutdown();
+
+            const removal = await fixture.apiClient.removeSshKey(deviceId);
+            // Removal finds the manually added line by its marker and deletes it.
+            expect(removal.removed_from_device).toBe(true);
+            expect(
+                await remoteDeviceLines(SSH_PASSWORD_USER, deviceId),
+            ).toEqual([]);
         },
         SSH_KEY_TEST_TIMEOUT_MS,
     );
@@ -1057,11 +1203,18 @@ describe("managed SSH key access", () => {
                     host_key_fingerprint: "SHA256:x",
                 }),
                 tokenClient.removeSshKey(deviceId),
+                tokenClient.prepareManualSshKey(deviceId, {
+                    host_key_fingerprint: null,
+                }),
+                tokenClient.confirmManualSshKey(deviceId, {
+                    fingerprint: "SHA256:x",
+                }),
+                tokenClient.discardManualSshKey(deviceId),
             ].map(async (call) => (await apiFailure(call)).status),
         );
 
         // Even a token with every permission cannot change what the server logs in to.
-        expect(statuses).toEqual([403, 403, 403, 403]);
+        expect(statuses).toEqual([403, 403, 403, 403, 403, 403, 403]);
         // The same request with the session reaches the handler, so the 403 is about the
         // token and not a missing route.
         expect(

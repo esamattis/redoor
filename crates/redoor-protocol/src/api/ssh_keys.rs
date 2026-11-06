@@ -44,6 +44,47 @@ pub struct EnrollSshKeyRequest {
     pub current_file_key: Option<String>,
 }
 
+/// Starts the manual setup of a device's first managed key
+/// (`POST /api/v1/agents/{agent}/ssh-key/manual`), for devices the server cannot log in to
+/// yet, such as hosts with password login disabled. The server pins the host key and
+/// generates the key, but installs nothing: the user adds the returned line to the device.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct PrepareManualSshKeyRequest {
+    /// Fingerprint the user confirmed. Required when no host key is pinned yet, because the
+    /// confirmation must later verify the key against a pin.
+    pub host_key_fingerprint: Option<String>,
+    /// Encrypts the new key with the account's vault, with the same rules as
+    /// [`EnrollSshKeyRequest::vault`].
+    #[serde(default)]
+    #[ts(optional)]
+    pub vault: Option<SshKeyVaultSeal>,
+}
+
+/// The generated but not yet verified key of a manual setup. It is not the device's key
+/// until `POST …/ssh-key/manual/confirm` verified that it logs in.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ManualSshKeyResponse {
+    /// `SHA256:` fingerprint of the new key; the confirmation names it so a stale dialog
+    /// cannot confirm a key generated later by another one.
+    pub fingerprint: String,
+    /// The exact `authorized_keys` line, in the format the automatic setup installs, so
+    /// rotation and removal later find and rewrite it.
+    pub authorized_keys_line: String,
+    /// A shell command that appends the line to `~/.ssh/authorized_keys` on the device with
+    /// the modes sshd requires, for pasting into an existing console or SSH session.
+    pub install_command: String,
+}
+
+/// Confirms that the user added the manual setup's line to the device.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfirmManualSshKeyRequest {
+    /// Fingerprint from [`ManualSshKeyResponse`]; must be the pending key's.
+    pub fingerprint: String,
+}
+
 /// What the browser supplies to encrypt a new SSH key with the vault. The server generates
 /// the key itself, so the browser never sees it; it only picks the file key and wraps it.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

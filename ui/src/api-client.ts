@@ -76,6 +76,9 @@ import type { UpdateSshAgentResponse } from "#bindings/UpdateSshAgentResponse";
 import type { UpdateSshAgentRequest } from "#bindings/UpdateSshAgentRequest";
 import type { SshHostKeyResponse } from "#bindings/SshHostKeyResponse";
 import type { EnrollSshKeyRequest } from "#bindings/EnrollSshKeyRequest";
+import type { PrepareManualSshKeyRequest } from "#bindings/PrepareManualSshKeyRequest";
+import type { ManualSshKeyResponse } from "#bindings/ManualSshKeyResponse";
+import type { ConfirmManualSshKeyRequest } from "#bindings/ConfirmManualSshKeyRequest";
 import type { SshKeyEnrollmentResponse } from "#bindings/SshKeyEnrollmentResponse";
 import type { SshKeyRemovalResponse } from "#bindings/SshKeyRemovalResponse";
 import type { PinSshHostKeyRequest } from "#bindings/PinSshHostKeyRequest";
@@ -1846,6 +1849,51 @@ export class ApiClient {
             },
             this.requestContext(),
         );
+    }
+
+    /**
+     * Starts a manual SSH key setup: the server pins the host key and generates the key,
+     * and the user adds the returned `authorized_keys` line to the device themselves.
+     */
+    async prepareManualSshKey(
+        agentId: string,
+        request: PrepareManualSshKeyRequest,
+    ): Promise<ManualSshKeyResponse> {
+        return apiRequest<ManualSshKeyResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key/manual`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Verifies the manually added key logs in and makes it the device's managed key. */
+    async confirmManualSshKey(
+        agentId: string,
+        request: ConfirmManualSshKeyRequest,
+    ): Promise<SshKeyEnrollmentResponse> {
+        return apiRequest<SshKeyEnrollmentResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key/manual/confirm`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Discards an abandoned manual SSH key setup, so its key does not linger on the server. */
+    async discardManualSshKey(agentId: string): Promise<void> {
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/ssh-key/manual`,
+            withAuthentication({ method: "DELETE" }, this.requestContext()),
+        );
+
+        await requireSuccessfulResponse(response, this.requestContext());
     }
 
     /**

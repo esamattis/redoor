@@ -242,6 +242,15 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
                 .delete(super::ssh_keys::remove_handler),
         )
         .route(
+            "/api/v1/agents/{agent}/ssh-key/manual",
+            post(super::ssh_keys::prepare_manual_handler)
+                .delete(super::ssh_keys::discard_manual_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/ssh-key/manual/confirm",
+            post(super::ssh_keys::confirm_manual_handler),
+        )
+        .route(
             "/api/v1/agents/{agent}/ssh-key/rewrap",
             post(super::vault_ssh_keys::rewrap_handler),
         )

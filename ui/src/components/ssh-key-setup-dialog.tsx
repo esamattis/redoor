@@ -10,6 +10,8 @@ import {
 } from "lucide-react";
 
 import type { EnrollSshKeyRequest } from "#bindings/EnrollSshKeyRequest";
+import type { ManualSshKeyResponse } from "#bindings/ManualSshKeyResponse";
+import type { PrepareManualSshKeyRequest } from "#bindings/PrepareManualSshKeyRequest";
 import type { SshHostKeyResponse } from "#bindings/SshHostKeyResponse";
 import type { ApiClient } from "#ui/api-client";
 import { Button } from "#ui/components/button";
@@ -17,6 +19,7 @@ import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { Password } from "#ui/components/password";
+import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import {
     invalidateSshKeyQueries,
     sshHostKeyQueryOptions,
@@ -37,6 +40,13 @@ const rootRouteApi = getRouteApi("__root__");
 
 /** Whether the dialog installs the device's first managed key or replaces the current one. */
 export type SshKeySetupMode = "setup" | "rotate";
+
+/**
+ * How a first key gets onto the device: redoor logs in and installs it, or the user adds
+ * the line themselves because redoor has no way to log in yet (for example on a host with
+ * password login disabled).
+ */
+type InstallMethod = "automatic" | "manual";
 
 /** Props shared by the dialog shell and its content, which only exists while it is open. */
 type SshKeySetupProps = {
@@ -82,18 +92,25 @@ export function SshKeySetupDialog(
     );
 }
 
-/** Owns the probe and the enrollment request for one opening of the dialog. */
+/** Owns the probe and the enrollment requests for one opening of the dialog. */
 function SshKeySetupDialogContent(props: SshKeySetupProps) {
     const { api, vault } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
     const vaultStatus = useQuery(vaultStatusQueryOptions(api));
     const [password, setPassword] = React.useState(props.initialPassword ?? "");
+    const [method, setMethod] = React.useState<InstallMethod>("automatic");
     const needsHostKeyConfirmation = !props.hasPinnedHostKey;
+    const isRotate = props.mode === "rotate";
+    const isManual = !isRotate && method === "manual";
 
     const hostKeyQuery = useQuery({
         ...sshHostKeyQueryOptions(api, props.agentId),
         enabled: needsHostKeyConfirmation,
     });
+
+    const hostKeyFingerprint = needsHostKeyConfirmation
+        ? (hostKeyQuery.data?.fingerprint ?? null)
+        : null;
 
     const enrollMutation = useMutation({
         mutationFn: async () =>
@@ -105,9 +122,7 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                     agentId: props.agentId,
                     deviceName: props.deviceName,
                     mode: props.mode,
-                    hostKeyFingerprint: needsHostKeyConfirmation
-                        ? (hostKeyQuery.data?.fingerprint ?? null)
-                        : null,
+                    hostKeyFingerprint,
                     password,
                 }),
             ),
@@ -116,64 +131,57 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
         onSuccess: () => invalidateSshKeyQueries(queryClient, props.agentId),
     });
 
-    const isRotate = props.mode === "rotate";
-    const title = isRotate ? "Rotate SSH key" : "Set up a dedicated SSH key";
+    const { prepareMutation, confirmMutation, close } = useManualSetup({
+        agentId: props.agentId,
+        deviceName: props.deviceName,
+        hostKeyFingerprint,
+        onClose: props.onClose,
+    });
 
-    if (enrollMutation.isSuccess) {
+    const enrolled = enrollMutation.data ?? confirmMutation.data;
+
+    if (enrolled !== undefined) {
         return (
-            <Dialog
-                isOpen
-                title={isRotate ? "SSH key rotated" : "SSH key installed"}
-                closeAriaLabel="Close SSH key dialog"
+            <SshKeyInstalledStep
+                deviceName={props.deviceName}
+                isRotate={isRotate}
+                fingerprint={enrolled.fingerprint}
+                doneLabel={props.doneLabel}
                 onClose={props.onClose}
-            >
-                <div className="mt-4 space-y-4 text-sm text-slate-300">
-                    <p role="status" className="flex items-start gap-2">
-                        <CheckCircle2
-                            className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
-                            aria-hidden="true"
-                        />
-                        <span>
-                            {props.deviceName} now logs in with its own SSH key.
-                            {isRotate
-                                ? " A running connection stays connected, and every new connection uses the new key."
-                                : " No password is stored for it. Connect the device again to use the new key."}
-                        </span>
-                    </p>
-                    <CopyableCodeRow
-                        label="New key fingerprint"
-                        value={enrollMutation.data.fingerprint}
-                    />
-                </div>
-                <DialogActions>
-                    <Button
-                        type="button"
-                        tooltip="Close this dialog"
-                        onClick={props.onClose}
-                    >
-                        {props.doneLabel ?? "Done"}
-                    </Button>
-                </DialogActions>
-            </Dialog>
+            />
         );
     }
 
+    const prepared = prepareMutation.data;
+
+    if (prepared !== undefined) {
+        return (
+            <ManualInstallStep
+                deviceName={props.deviceName}
+                prepared={prepared}
+                isVerifying={confirmMutation.isPending}
+                errorMessage={
+                    confirmMutation.isError
+                        ? getErrorMessage(
+                              confirmMutation.error,
+                              "Failed to verify the SSH key",
+                          )
+                        : null
+                }
+                onConfirm={() => confirmMutation.mutate(prepared.fingerprint)}
+                onClose={close}
+            />
+        );
+    }
+
+    const activeMutation = isManual ? prepareMutation : enrollMutation;
+    const isPending = activeMutation.isPending;
     const hostKey = hostKeyQuery.data;
 
     const canSubmit =
-        !enrollMutation.isPending &&
-        (!needsHostKeyConfirmation || hostKey !== undefined);
+        !isPending && (!needsHostKeyConfirmation || hostKey !== undefined);
 
-    // Closing the vault dialog is the user's own choice, so it returns to the form as it
-    // was instead of reporting a failure.
-    const errorMessage =
-        enrollMutation.isError &&
-        !(enrollMutation.error instanceof VaultUnlockCancelled)
-            ? vaultErrorMessage(
-                  enrollMutation.error,
-                  "Failed to set up the SSH key",
-              )
-            : null;
+    const errorMessage = setupErrorMessage(activeMutation.error, isManual);
 
     const hasVault =
         vaultStatus.data === undefined ? null : vaultStatus.data.vault !== null;
@@ -181,16 +189,17 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
     return (
         <Dialog
             isOpen
-            title={title}
+            title={isRotate ? "Rotate SSH key" : "Set up a dedicated SSH key"}
             description={
                 isRotate
                     ? `Creates a new key for ${props.deviceName}, installs it with the current key and then removes the current key from the device. A connected agent is not stopped.`
-                    : `Creates an SSH key used only for ${props.deviceName} and installs it in the device's authorized_keys.`
+                    : `Creates an SSH key used only for ${props.deviceName} and adds it to the device's authorized_keys.`
             }
             closeAriaLabel="Close SSH key dialog"
-            isBusy={enrollMutation.isPending}
+            size="medium"
+            isBusy={isPending}
             errorMessage={errorMessage}
-            onClose={props.onClose}
+            onClose={close}
         >
             <form
                 className="mt-4 space-y-4"
@@ -198,7 +207,7 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                     event.preventDefault();
 
                     if (canSubmit) {
-                        enrollMutation.mutate();
+                        activeMutation.mutate();
                     }
                 }}
             >
@@ -217,8 +226,19 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                         onRetry={() => void hostKeyQuery.refetch()}
                     />
                 ) : null}
+                {isRotate ? null : (
+                    <InstallMethodChoice
+                        method={method}
+                        disabled={isPending}
+                        onChange={(value) => {
+                            setMethod(value);
+                            enrollMutation.reset();
+                            prepareMutation.reset();
+                        }}
+                    />
+                )}
                 <SshKeyStorageNote hasVault={hasVault} />
-                {props.mode === "setup" ? (
+                {props.mode === "setup" && !isManual ? (
                     <Password
                         label="SSH password (used once, not saved)"
                         value={password}
@@ -227,24 +247,19 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                         autoComplete="off"
                         ignoreIn1Password
                         required={false}
-                        disabled={enrollMutation.isPending}
+                        disabled={isPending}
                         onChange={(value) => {
                             setPassword(value);
                             enrollMutation.reset();
                         }}
                     />
                 ) : null}
-                {enrollMutation.isPending ? (
-                    <p
-                        role="status"
-                        className="flex items-center gap-2 text-sm text-slate-300"
-                    >
-                        <LoaderCircle
-                            className="h-4 w-4 animate-spin text-blue-400"
-                            aria-hidden="true"
-                        />
-                        Installing the key on the device...
-                    </p>
+                {isPending ? (
+                    <BusyStatus>
+                        {isManual
+                            ? "Creating the key..."
+                            : "Installing the key on the device..."}
+                    </BusyStatus>
                 ) : null}
                 <DialogActions stackOnMobile>
                     <Button
@@ -255,24 +270,22 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                                 ? "Keep using the current key"
                                 : "Close without creating a key. You can set it up later from the device's configuration page."
                         }
-                        disabled={enrollMutation.isPending}
-                        onClick={props.onClose}
+                        disabled={isPending}
+                        onClick={close}
                     >
                         Cancel
                     </Button>
                     <Button
                         type="submit"
-                        tooltip={
-                            needsHostKeyConfirmation
-                                ? "Trust this host key for the device and install a new SSH key on it"
-                                : isRotate
-                                  ? "Replace the device's SSH key with a new one"
-                                  : "Install a new SSH key on the device"
-                        }
+                        tooltip={submitTooltip({
+                            needsHostKeyConfirmation,
+                            isRotate,
+                            isManual,
+                        })}
                         disabled={!canSubmit}
-                        isLoading={enrollMutation.isPending}
+                        isLoading={isPending}
                     >
-                        {enrollMutation.isPending ? (
+                        {isPending ? (
                             <LoaderCircle
                                 className="h-4 w-4 animate-spin"
                                 aria-hidden="true"
@@ -280,20 +293,360 @@ function SshKeySetupDialogContent(props: SshKeySetupProps) {
                         ) : (
                             <KeyRound className="h-4 w-4" aria-hidden="true" />
                         )}
-                        {enrollMutation.isPending
-                            ? "Installing key..."
-                            : errorMessage !== null
-                              ? "Try again"
-                              : needsHostKeyConfirmation
-                                ? "Trust host key and install"
-                                : isRotate
-                                  ? "Rotate key"
-                                  : "Install key"}
+                        {submitLabel({
+                            isPending,
+                            hasError: errorMessage !== null,
+                            needsHostKeyConfirmation,
+                            isRotate,
+                            isManual,
+                        })}
                     </Button>
                 </DialogActions>
             </form>
         </Dialog>
     );
+}
+
+/**
+ * The requests of a manual setup: preparing the key, confirming it was added, and
+ * discarding it when the dialog closes before the confirmation succeeded, so a prepared
+ * key does not linger on the server once the user gives up.
+ */
+function useManualSetup(options: {
+    agentId: string;
+    deviceName: string;
+    hostKeyFingerprint: string | null;
+    onClose: () => void;
+}) {
+    const { api, vault } = rootRouteApi.useRouteContext();
+    const queryClient = useQueryClient();
+
+    const prepareMutation = useMutation({
+        mutationFn: async () =>
+            api.prepareManualSshKey(
+                options.agentId,
+                await manualRequest({
+                    api,
+                    vault,
+                    deviceName: options.deviceName,
+                    hostKeyFingerprint: options.hostKeyFingerprint,
+                }),
+            ),
+        // Preparing pins the host key, which the configuration page reports.
+        onSuccess: () => invalidateSshKeyQueries(queryClient, options.agentId),
+    });
+
+    const confirmMutation = useMutation({
+        mutationFn: (fingerprint: string) =>
+            api.confirmManualSshKey(options.agentId, { fingerprint }),
+        onSuccess: () => invalidateSshKeyQueries(queryClient, options.agentId),
+    });
+
+    const discardMutation = useMutation({
+        mutationFn: () => api.discardManualSshKey(options.agentId),
+    });
+
+    const close = () => {
+        if (prepareMutation.isSuccess && !confirmMutation.isSuccess) {
+            discardMutation.mutate();
+        }
+
+        options.onClose();
+    };
+
+    return { prepareMutation, confirmMutation, close };
+}
+
+/** Confirms that the device now logs in with its new key and shows the key's fingerprint. */
+function SshKeyInstalledStep(props: {
+    deviceName: string;
+    isRotate: boolean;
+    fingerprint: string;
+    doneLabel: string | undefined;
+    onClose: () => void;
+}) {
+    return (
+        <Dialog
+            isOpen
+            title={props.isRotate ? "SSH key rotated" : "SSH key installed"}
+            closeAriaLabel="Close SSH key dialog"
+            size="medium"
+            onClose={props.onClose}
+        >
+            <div className="mt-4 space-y-4 text-sm text-slate-300">
+                <p role="status" className="flex items-start gap-2">
+                    <CheckCircle2
+                        className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400"
+                        aria-hidden="true"
+                    />
+                    <span>
+                        {props.deviceName} now logs in with its own SSH key.
+                        {props.isRotate
+                            ? " A running connection stays connected, and every new connection uses the new key."
+                            : " No password is stored for it. Connect the device again to use the new key."}
+                    </span>
+                </p>
+                <CopyableCodeRow
+                    label="New key fingerprint"
+                    value={props.fingerprint}
+                />
+            </div>
+            <DialogActions>
+                <Button
+                    type="button"
+                    tooltip="Close this dialog"
+                    onClick={props.onClose}
+                >
+                    {props.doneLabel ?? "Done"}
+                </Button>
+            </DialogActions>
+        </Dialog>
+    );
+}
+
+/**
+ * The message for a failed setup or preparation. Closing the vault dialog is the user's own
+ * choice, so it returns to the form as it was instead of reporting a failure.
+ */
+function setupErrorMessage(error: Error | null, isManual: boolean) {
+    if (error === null || error instanceof VaultUnlockCancelled) {
+        return null;
+    }
+
+    return vaultErrorMessage(
+        error,
+        isManual
+            ? "Failed to create the SSH key"
+            : "Failed to set up the SSH key",
+    );
+}
+
+/** A spinner with text, for the network round trips that take a while. */
+function BusyStatus(props: { children: React.ReactNode }) {
+    return (
+        <p
+            role="status"
+            className="flex items-center gap-2 text-sm text-slate-300"
+        >
+            <LoaderCircle
+                className="h-4 w-4 animate-spin text-blue-400"
+                aria-hidden="true"
+            />
+            {props.children}
+        </p>
+    );
+}
+
+/** The submit button's tooltip, which says what pressing it does in the chosen flow. */
+function submitTooltip(options: {
+    needsHostKeyConfirmation: boolean;
+    isRotate: boolean;
+    isManual: boolean;
+}): string {
+    if (options.isManual) {
+        return options.needsHostKeyConfirmation
+            ? "Trust this host key for the device and create a key to add to it yourself"
+            : "Create a key to add to the device yourself";
+    }
+
+    if (options.needsHostKeyConfirmation) {
+        return "Trust this host key for the device and install a new SSH key on it";
+    }
+
+    return options.isRotate
+        ? "Replace the device's SSH key with a new one"
+        : "Install a new SSH key on the device";
+}
+
+/** The submit button's label, which follows the request's progress and the chosen flow. */
+function submitLabel(options: {
+    isPending: boolean;
+    hasError: boolean;
+    needsHostKeyConfirmation: boolean;
+    isRotate: boolean;
+    isManual: boolean;
+}): string {
+    if (options.isPending) {
+        return options.isManual ? "Creating key..." : "Installing key...";
+    }
+
+    if (options.hasError) {
+        return "Try again";
+    }
+
+    if (options.isManual) {
+        return options.needsHostKeyConfirmation
+            ? "Trust host key and create key"
+            : "Create key";
+    }
+
+    if (options.needsHostKeyConfirmation) {
+        return "Trust host key and install";
+    }
+
+    return options.isRotate ? "Rotate key" : "Install key";
+}
+
+/**
+ * Lets the user pick who installs a first key. Redoor logging in is the default; adding
+ * the line by hand is for devices redoor cannot log in to yet, such as hosts that only
+ * accept keys redoor does not have.
+ */
+function InstallMethodChoice(props: {
+    method: InstallMethod;
+    disabled: boolean;
+    onChange: (method: InstallMethod) => void;
+}) {
+    return (
+        <RadioCardGroup
+            legend="How to install the key"
+            disabled={props.disabled}
+            legendClassName="text-sm font-medium text-slate-300"
+            optionsClassName="@xl:grid-cols-2"
+        >
+            <RadioCardOption
+                name="ssh-key-install-method"
+                value="automatic"
+                label="Redoor installs it"
+                description="Redoor logs in to the device once with a password or this server's own SSH keys."
+                checked={props.method === "automatic"}
+                layout="compact"
+                onChange={() => props.onChange("automatic")}
+            />
+            <RadioCardOption
+                name="ssh-key-install-method"
+                value="manual"
+                label="I add it myself"
+                description="Run a command on the device yourself, for example when it does not allow password login."
+                checked={props.method === "manual"}
+                layout="compact"
+                onChange={() => props.onChange("manual")}
+            />
+        </RadioCardGroup>
+    );
+}
+
+/**
+ * The second step of a manual setup: shows the command that adds the generated key to the
+ * device and lets the user ask redoor to verify it. The key becomes the device's key only
+ * once redoor logged in with it, and a failed check can be repeated after fixing the line.
+ */
+function ManualInstallStep(props: {
+    deviceName: string;
+    prepared: ManualSshKeyResponse;
+    isVerifying: boolean;
+    errorMessage: string | null;
+    onConfirm: () => void;
+    onClose: () => void;
+}) {
+    return (
+        <Dialog
+            isOpen
+            title="Add the key to the device"
+            description={`Run this command on ${props.deviceName} as the user redoor logs in as, for example in a console or an existing SSH session. It appends the new key to ~/.ssh/authorized_keys.`}
+            closeAriaLabel="Close SSH key dialog"
+            size="medium"
+            isBusy={props.isVerifying}
+            errorMessage={props.errorMessage}
+            onClose={props.onClose}
+        >
+            <form
+                className="mt-4 space-y-4"
+                onSubmit={(event) => {
+                    event.preventDefault();
+
+                    if (!props.isVerifying) {
+                        props.onConfirm();
+                    }
+                }}
+            >
+                <CopyableCodeRow
+                    label="Command"
+                    value={props.prepared.install_command}
+                    copyAriaLabel="Copy install command"
+                    wrap
+                />
+                <CopyableCodeRow
+                    label="authorized_keys line"
+                    value={props.prepared.authorized_keys_line}
+                    copyAriaLabel="Copy authorized_keys line"
+                    wrap
+                />
+                <CopyableCodeRow
+                    label="New key fingerprint"
+                    value={props.prepared.fingerprint}
+                />
+                <p className="text-sm text-slate-400">
+                    Redoor then logs in with the new key to check that it works
+                    before the device starts using it.
+                </p>
+                {props.isVerifying ? (
+                    <BusyStatus>Logging in with the new key...</BusyStatus>
+                ) : null}
+                <DialogActions stackOnMobile>
+                    <Button
+                        type="button"
+                        variant="secondary"
+                        tooltip="Close and discard the new key. You can set up a key later from the device's configuration page."
+                        disabled={props.isVerifying}
+                        onClick={props.onClose}
+                    >
+                        Cancel
+                    </Button>
+                    <Button
+                        type="submit"
+                        tooltip="Log in with the new key and start using it for the device"
+                        disabled={props.isVerifying}
+                        isLoading={props.isVerifying}
+                    >
+                        {props.isVerifying ? (
+                            <LoaderCircle
+                                className="h-4 w-4 animate-spin"
+                                aria-hidden="true"
+                            />
+                        ) : (
+                            <ShieldCheck
+                                className="h-4 w-4"
+                                aria-hidden="true"
+                            />
+                        )}
+                        {props.isVerifying
+                            ? "Verifying..."
+                            : props.errorMessage !== null
+                              ? "Check again"
+                              : "I've added the key"}
+                    </Button>
+                </DialogActions>
+            </form>
+        </Dialog>
+    );
+}
+
+/**
+ * Builds the manual setup request, unlocking the vault first when the account has one,
+ * because the new key is encrypted with it exactly like an automatically installed one.
+ */
+async function manualRequest(options: {
+    api: ApiClient;
+    vault: VaultSession;
+    deviceName: string;
+    hostKeyFingerprint: string | null;
+}): Promise<PrepareManualSshKeyRequest> {
+    const request: PrepareManualSshKeyRequest = {
+        host_key_fingerprint: options.hostKeyFingerprint,
+    };
+
+    const seal = await newSshKeySealIfVault({
+        api: options.api,
+        vault: options.vault,
+        reason: `Set up the SSH key of ${options.deviceName}`,
+    });
+
+    if (seal !== null) {
+        request.vault = seal;
+    }
+
+    return request;
 }
 
 /**

@@ -99,6 +99,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("POST", "/api/v1/agents/{agent}/ssh-host-key/pin")
         | ("GET" | "POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key")
         | ("POST", "/api/v1/agents/{agent}/ssh-key/rewrap")
+        | ("POST" | "DELETE", "/api/v1/agents/{agent}/ssh-key/manual")
+        | ("POST", "/api/v1/agents/{agent}/ssh-key/manual/confirm")
         | ("GET", "/api/v1/vault/ssh-keys") => Access::SessionOnly,
 
         // The vault and encrypted files: a token or MCP client may copy ciphertext through the
@@ -380,6 +382,21 @@ mod tests {
             (
                 Method::POST,
                 "/api/v1/agents/{agent}/ssh-key/rewrap",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/ssh-key/manual",
+                Access::SessionOnly,
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/agents/{agent}/ssh-key/manual",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/agents/{agent}/ssh-key/manual/confirm",
                 Access::SessionOnly,
             ),
             (Method::GET, "/api/v1/vault/ssh-keys", Access::SessionOnly),

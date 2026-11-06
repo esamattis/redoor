@@ -21,7 +21,9 @@ use zeroize::Zeroizing;
 use super::ProvisionError;
 use super::encrypted_keys::SshKeySeal;
 use super::held_keys::HeldSshKeys;
-use super::keys::{HostKey, ManagedKey, SshKeyStore, StagedKey, StoredKey, device_marker};
+use super::keys::{
+    GeneratedKey, HostKey, ManagedKey, SshKeyStore, StagedKey, StoredKey, device_marker,
+};
 use super::shell::quote;
 use super::transport::{
     AuthPolicy, HostKeyPolicy, PinnedHostKey, SshConfigDump, SshHost, SshOutput, SshRunOptions,
@@ -425,11 +427,96 @@ impl ManagedKeyDevice {
             self.rollback(pending).await;
             return Err(error);
         }
-        if let Err(error) = self.verify(pending.key(), pinned).await {
+        if let Err(error) = self
+            .verify(
+                pending.key(),
+                pinned,
+                "The new SSH key was installed but does not work for redoor (it needs public key login and remote port forwarding), so it was removed again.",
+            )
+            .await
+        {
             self.rollback(pending).await;
             return Err(error);
         }
         Ok(pending)
+    }
+
+    /// Manual setup step 1: pins the host key and generates the device's first key without
+    /// logging in, for devices the server has no credential for yet. The user adds the key's
+    /// line to the device, and [`ManagedKeyDevice::finish_manual_key`] verifies it.
+    ///
+    /// Nothing is written but the pin: the key stays in memory until it is verified, so an
+    /// abandoned setup leaves no key file behind. Rotation has no manual path, because it
+    /// always logs in with the current key.
+    pub(crate) async fn prepare_manual_key(
+        &self,
+        confirmed_host_key: Option<&str>,
+        vault: Option<&SshKeySeal>,
+    ) -> Result<GeneratedKey, ManagedKeyError> {
+        if self.config.managed_ssh_key {
+            return Err(ManagedKeyError::Input(
+                "This device already has a managed SSH key; rotate it instead".to_string(),
+            ));
+        }
+        self.ensure_pinned(confirmed_host_key).await?;
+        let generated =
+            GeneratedKey::generate(&self.device, vault)
+                .await
+                .map_err(ManagedKeyError::local(
+                    "Failed to create the new SSH key in the server's data directory",
+                ))?;
+        log!(
+            Level::Info,
+            "Generated managed SSH key for manual install: device={}, fingerprint={}, encrypted={}",
+            self.device,
+            generated.key.fingerprint(),
+            generated.encrypted
+        );
+        Ok(generated)
+    }
+
+    /// Manual setup step 2: verifies, against the pin from step 1, that the key the user
+    /// added logs in the way the agent will use it, then stages it for the commit.
+    ///
+    /// The returned key's rollback credential is the new key itself, the only one the
+    /// server has for the device, so a failed commit can still remove the line again.
+    pub(crate) async fn finish_manual_key(
+        &self,
+        generated: &GeneratedKey,
+    ) -> Result<PendingKey, ManagedKeyError> {
+        let pinned = self
+            .pinned_policy()
+            .await
+            .map_err(ManagedKeyError::local(READ_PIN_FAILED))?
+            .ok_or_else(|| {
+                ManagedKeyError::Input(
+                    "The device's pinned host key was removed during the setup. Start the SSH key setup again."
+                        .to_string(),
+                )
+            })?;
+        self.verify(
+            &generated.key,
+            pinned,
+            &format!(
+                "Redoor could not log in with the new SSH key. Check that the command ran on the device as {}, and that sshd allows public key login and remote port forwarding.",
+                self.config.username.as_deref().unwrap_or("the device's SSH user")
+            ),
+        )
+        .await?;
+        let key = self
+            .keys()?
+            .write_staged(generated)
+            .await
+            .map_err(ManagedKeyError::local(
+                "Failed to save the new SSH key in the server's data directory",
+            ))?;
+        Ok(PendingKey {
+            bootstrap: AuthPolicy::ManagedKey {
+                key: key.key.private_key().clone(),
+            },
+            key,
+            previous_keep: Vec::new(),
+        })
     }
 
     /// Removes a pending key from the device and deletes the staged file, after a failed
@@ -642,7 +729,15 @@ impl ManagedKeyDevice {
     /// Enrollment step 5: logs in with only the new key and requests a reverse forward of
     /// the same form the agent uses. Running only `true` would pass on hosts that refuse
     /// forwarding, and every later agent start would then fail.
-    async fn verify(&self, key: &ManagedKey, pinned: PinnedHostKey) -> Result<(), ManagedKeyError> {
+    ///
+    /// `failure` explains the failure to the user before OpenSSH's own reason; it differs
+    /// because the automatic setup removes the line again and the manual one cannot.
+    async fn verify(
+        &self,
+        key: &ManagedKey,
+        pinned: PinnedHostKey,
+        failure: &str,
+    ) -> Result<(), ManagedKeyError> {
         let host = self.managed_key_host(key, pinned);
         // Remote port 0 lets the device pick a free port; the destination is never used.
         let options = SshRunOptions::default().with_reverse_forward(0, "localhost", 9);
@@ -662,7 +757,7 @@ impl ManagedKeyDevice {
             return Ok(());
         }
         Err(ManagedKeyError::Remote(format!(
-            "The new SSH key was installed but does not work for redoor (it needs public key login and remote port forwarding), so it was removed again. {}",
+            "{failure} {}",
             host.failure_message("verify the SSH key", &output)
         )))
     }
@@ -853,9 +948,78 @@ trap - EXIT
     )
 }
 
+/// The command the user pastes on the device to add `line` to `~/.ssh/authorized_keys` by
+/// hand, for the manual setup.
+///
+/// It appends instead of rewriting like [`install_script`], because it is a one-liner a
+/// person reads before running it; later rotations and removals rewrite the file anyway.
+/// A newline is added first when the file does not end with one, since appending to such a
+/// file would merge the new line into the user's last key and break both. Statements are
+/// joined with `;`, not `&&`, so a `chmod` that a symlinked file's filesystem refuses (as
+/// Proxmox VE's cluster filesystem does) does not stop the append. Only syntax that sh,
+/// bash, zsh and fish share is used, since the user's login shell is unknown.
+pub(crate) fn manual_install_command(line: &str) -> String {
+    let file = "~/.ssh/authorized_keys";
+    format!(
+        r#"mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch {file}; chmod 600 {file}; [ -z "$(tail -c 1 {file})" ] || echo >> {file}; printf '%s\n' {} >> {file}"#,
+        quote(line)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The manual command adds the line once, with sshd's modes, without merging it into a
+    /// last line that lacks its newline.
+    #[tokio::test]
+    async fn manual_install_command_appends_after_an_unterminated_line() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = redoor_core::test_support::TempDir::create();
+        let line = "restrict,port-forwarding ssh-ed25519 AAAAnew redoor:dev_x:SHA256:a+b/c";
+        let command = manual_install_command(line);
+
+        let output = run_script(home.path(), &command).await;
+        // A missing ~/.ssh and authorized_keys are created.
+        assert!(output.status.success(), "{output:?}");
+        let file = home.path().join(".ssh/authorized_keys");
+        // A new file holds only the line, without a leading blank line.
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            format!("{line}\n")
+        );
+        // sshd StrictModes rejects group- or world-writable files and directories.
+        assert_eq!(
+            tokio::fs::metadata(&file)
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        assert_eq!(
+            tokio::fs::metadata(home.path().join(".ssh"))
+                .await
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o700
+        );
+
+        tokio::fs::write(&file, "ssh-ed25519 AAAAown user@laptop")
+            .await
+            .unwrap();
+        let output = run_script(home.path(), &command).await;
+        // The command also succeeds on an existing file.
+        assert!(output.status.success(), "{output:?}");
+        // The user's own key keeps its own line instead of being merged with the new one.
+        assert_eq!(
+            tokio::fs::read_to_string(&file).await.unwrap(),
+            format!("ssh-ed25519 AAAAown user@laptop\n{line}\n")
+        );
+    }
 
     /// Runs the install script against a fake home and returns the resulting file.
     async fn run_script(home: &std::path::Path, script: &str) -> std::process::Output {

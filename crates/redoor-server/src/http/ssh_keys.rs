@@ -4,16 +4,16 @@
 //! passwords and file keys and change what the server can log in to. Keys belong to the
 //! server's single account, so everyone who can sign in shares them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::{Json, extract::State as AxumState, http::StatusCode};
 use redoor_core::config::{AgentConfig, SshBackedAgentConfig, edit_ssh_agent};
 use redoor_core::log;
 use redoor_protocol::api::ssh_keys::{
-    EnrollSshKeyRequest, PinSshHostKeyRequest, RemoveSshKeyRequest, SshHostKeyPinResponse,
-    SshHostKeyResponse, SshKeyEnrollmentResponse, SshKeyRemovalResponse, SshKeyStatusResponse,
-    SshKeyVaultSeal,
+    ConfirmManualSshKeyRequest, EnrollSshKeyRequest, ManualSshKeyResponse, PinSshHostKeyRequest,
+    PrepareManualSshKeyRequest, RemoveSshKeyRequest, SshHostKeyPinResponse, SshHostKeyResponse,
+    SshKeyEnrollmentResponse, SshKeyRemovalResponse, SshKeyStatusResponse, SshKeyVaultSeal,
 };
 use redoor_protocol::api::vault::ApiErrorCode;
 use redoor_protocol::ids::AgentId;
@@ -27,8 +27,10 @@ use super::agent_configuration::{
 use super::vault_files::{file_key, format_error};
 use super::{access::ResolvedDevice, error::ApiError, state::ServerState};
 use crate::ssh::encrypted_keys::{SshKeyOpenError, SshKeySeal};
-use crate::ssh::keys::{ManagedKey, StoredKey};
-use crate::ssh::managed_keys::{ManagedKeyDevice, ManagedKeyError, PendingKey};
+use crate::ssh::keys::{GeneratedKey, ManagedKey, StoredKey};
+use crate::ssh::managed_keys::{
+    ManagedKeyDevice, ManagedKeyError, PendingKey, manual_install_command,
+};
 
 /// Route: `GET /api/v1/agents/{agent}/ssh-host-key` probes the host key the device presents
 /// so the user can confirm it before any credential is sent.
@@ -116,6 +118,8 @@ async fn enroll(
     agent_id: &AgentId,
     request: EnrollSshKeyRequest,
 ) -> Result<SshKeyEnrollmentResponse, ApiError> {
+    // Choosing the automatic setup abandons a manual one.
+    state.manual_ssh_keys.discard(agent_id);
     let config = find_ssh_agent(state, agent_id).await?;
     let device = managed_key_device_for(state, config.clone())?;
     let seal = vault_seal(state, request.vault).await?;
@@ -189,6 +193,196 @@ async fn enroll(
         fingerprint,
         rotated,
     })
+}
+
+/// Route: `POST /api/v1/agents/{agent}/ssh-key/manual` starts a manual setup: pins the host
+/// key, generates the device's first key and returns the line the user adds to the device.
+///
+/// The key is kept only in the server's memory until the confirmation verified it, so it
+/// never becomes the device's key unverified, and abandoning the setup leaves nothing.
+pub(crate) async fn prepare_manual_handler(
+    ResolvedDevice(agent_id): ResolvedDevice,
+    AxumState(state): AxumState<ServerState>,
+    Json(request): Json<PrepareManualSshKeyRequest>,
+) -> Result<Json<ManualSshKeyResponse>, ApiError> {
+    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    complete_operation(async move {
+        let _operation = operation;
+        let prepared = prepare_manual(&state, &agent_id, request).await;
+        log_failure("Preparing a manual SSH key setup", &agent_id, prepared).map(Json)
+    })
+    .await
+}
+
+/// The manual preparation itself, kept out of the `complete_operation` closure so rustfmt
+/// formats it.
+async fn prepare_manual(
+    state: &ServerState,
+    agent_id: &AgentId,
+    request: PrepareManualSshKeyRequest,
+) -> Result<ManualSshKeyResponse, ApiError> {
+    // A new attempt replaces an earlier one, also when this one fails.
+    state.manual_ssh_keys.discard(agent_id);
+    let config = find_ssh_agent(state, agent_id).await?;
+    let device = managed_key_device_for(state, config.clone())?;
+    let seal = vault_seal(state, request.vault).await?;
+    let vault_key_id = seal.as_ref().map(|seal| seal.key_id.clone());
+    let generated = device
+        .prepare_manual_key(request.host_key_fingerprint.as_deref(), seal.as_ref())
+        .await?;
+    let line = generated.key.authorized_keys_line();
+    let response = ManualSshKeyResponse {
+        fingerprint: generated.key.fingerprint(),
+        install_command: manual_install_command(&line),
+        authorized_keys_line: line,
+    };
+    state.manual_ssh_keys.insert(
+        agent_id,
+        ManualSshKey {
+            generated,
+            enrolled_for: config,
+            vault_key_id,
+        },
+    );
+    Ok(response)
+}
+
+/// Route: `POST /api/v1/agents/{agent}/ssh-key/manual/confirm` verifies that the pending
+/// manual key logs in and makes it the device's key, like the automatic setup's commit.
+///
+/// A failed verification keeps the pending key, so the user can fix the line on the device
+/// and confirm again without copying a new command.
+pub(crate) async fn confirm_manual_handler(
+    ResolvedDevice(agent_id): ResolvedDevice,
+    AxumState(state): AxumState<ServerState>,
+    Json(request): Json<ConfirmManualSshKeyRequest>,
+) -> Result<Json<SshKeyEnrollmentResponse>, ApiError> {
+    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    complete_operation(async move {
+        let _operation = operation;
+        let confirmed = confirm_manual(&state, &agent_id, &request.fingerprint).await;
+        log_failure("Confirming the manual SSH key setup", &agent_id, confirmed).map(Json)
+    })
+    .await
+}
+
+/// The confirmation itself, kept out of the `complete_operation` closure so rustfmt formats
+/// it.
+async fn confirm_manual(
+    state: &ServerState,
+    agent_id: &AgentId,
+    fingerprint: &str,
+) -> Result<SshKeyEnrollmentResponse, ApiError> {
+    let pending = state
+        .manual_ssh_keys
+        .take(agent_id, fingerprint)
+        .ok_or_else(|| {
+            ApiError::not_found(
+                "This SSH key setup is no longer pending (it was cancelled, replaced or the server restarted). Start the SSH key setup again.",
+            )
+        })?;
+    let config = find_ssh_agent(state, agent_id).await?;
+    // Checked before logging in, so a stale setup never verifies against another account.
+    if config.managed_ssh_key {
+        return Err(ApiError::conflict(
+            "The device got a managed SSH key during the manual setup",
+        ));
+    }
+    if config.target != pending.enrolled_for.target
+        || config.username != pending.enrolled_for.username
+    {
+        return Err(ApiError::conflict(
+            "The device's target or username changed during the SSH key setup. Start the SSH key setup again.",
+        ));
+    }
+    check_vault_unchanged(state, pending.vault_key_id.as_deref()).await?;
+    let device = managed_key_device_for(state, config)?;
+    log!(
+        Level::Info,
+        "Verifying manually installed SSH key: device={}, fingerprint={}",
+        agent_id,
+        fingerprint
+    );
+    let pending_key = match device.finish_manual_key(&pending.generated).await {
+        Ok(pending_key) => pending_key,
+        Err(error) => {
+            // The user may not have added the line yet, or added it for another account;
+            // the same key can be confirmed again once they fixed it.
+            state.manual_ssh_keys.insert(agent_id, pending);
+            return Err(error.into());
+        }
+    };
+    let runtime_error = match commit_key(
+        state,
+        agent_id,
+        &pending.enrolled_for,
+        Some((&device, &pending_key)),
+    )
+    .await
+    {
+        Ok(error) => error,
+        Err(error) => {
+            device.rollback(pending_key).await;
+            return Err(error);
+        }
+    };
+    let fingerprint = pending_key.key().fingerprint();
+    drop(pending_key);
+    if let Some(error) = runtime_error {
+        return Err(saved_but_not_registered("The SSH key was set up", error));
+    }
+    log!(
+        Level::Info,
+        "Managed SSH key in use: device={}, fingerprint={}, installed=manually",
+        agent_id,
+        fingerprint
+    );
+    Ok(SshKeyEnrollmentResponse {
+        fingerprint,
+        rotated: false,
+    })
+}
+
+/// Refuses to commit a manual key whose vault seal no longer matches the account's vault.
+///
+/// The key was sealed when the setup started; a vault created, replaced or rotated since
+/// would otherwise get a plaintext key or one under a generation that a running vault
+/// rotation does not rewrap.
+async fn check_vault_unchanged(
+    state: &ServerState,
+    vault_key_id: Option<&str>,
+) -> Result<(), ApiError> {
+    let current_key_id = state
+        .vault
+        .summary()
+        .await?
+        .map(|summary| summary.current_key_id);
+    if current_key_id.as_deref() == vault_key_id {
+        return Ok(());
+    }
+    Err(ApiError::conflict(
+        "The vault changed during the SSH key setup. Start the SSH key setup again.",
+    ))
+}
+
+/// Route: `DELETE /api/v1/agents/{agent}/ssh-key/manual` discards the pending manual key
+/// when the user abandons the setup, so the private key does not linger in memory.
+///
+/// A line the user may already have added stays on the device; it grants nothing, because
+/// the private key is gone, and the next setup's `authorized_keys` rewrite drops it.
+pub(crate) async fn discard_manual_handler(
+    ResolvedDevice(agent_id): ResolvedDevice,
+    AxumState(state): AxumState<ServerState>,
+) -> Result<StatusCode, ApiError> {
+    let _operation = state.ssh_key_operations.begin(&agent_id)?;
+    if state.manual_ssh_keys.discard(&agent_id) {
+        log!(
+            Level::Info,
+            "Discarded a pending manual SSH key setup: device={}",
+            agent_id
+        );
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Route: `DELETE /api/v1/agents/{agent}/ssh-key` removes the key from the device when it
@@ -733,6 +927,63 @@ impl Drop for SshKeyOperation {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(&self.agent_id);
+    }
+}
+
+/// A manual setup's generated key while the user adds it to the device.
+pub(crate) struct ManualSshKey {
+    /// The key and its key file content, written only after verification.
+    generated: GeneratedKey,
+    /// The config the key was generated for; the commit refuses another target or account.
+    enrolled_for: SshBackedAgentConfig,
+    /// The vault generation the key is sealed with, `None` for a plaintext key, so the
+    /// confirmation can refuse a key the vault changed under.
+    vault_key_id: Option<String>,
+}
+
+/// Pending manual setups, at most one per device, kept in memory only.
+///
+/// They live across two requests, unlike everything [`SshKeyOperations`] guards, so the
+/// busy set alone cannot protect them; every access happens under a device's busy guard,
+/// though, so a confirmation never races a new preparation of the same device. A restart
+/// forgets them, which only means the user starts the setup again.
+#[derive(Clone, Default)]
+pub(crate) struct ManualSshKeys {
+    /// The pending key of each device in a manual setup.
+    pending: Arc<Mutex<HashMap<AgentId, ManualSshKey>>>,
+}
+
+impl ManualSshKeys {
+    /// Locks the map; a poisoned lock still holds a consistent map, because no access
+    /// panics half way through an update.
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<AgentId, ManualSshKey>> {
+        self.pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Makes `key` the device's pending key, replacing an earlier one.
+    fn insert(&self, agent_id: &AgentId, key: ManualSshKey) {
+        self.lock().insert(agent_id.clone(), key);
+    }
+
+    /// Removes and returns the device's pending key when its fingerprint is `fingerprint`,
+    /// so a dialog left open from an earlier attempt cannot confirm a newer key.
+    fn take(&self, agent_id: &AgentId, fingerprint: &str) -> Option<ManualSshKey> {
+        let mut pending = self.lock();
+        if pending
+            .get(agent_id)
+            .is_none_or(|key| key.generated.key.fingerprint() != fingerprint)
+        {
+            return None;
+        }
+        pending.remove(agent_id)
+    }
+
+    /// Drops the device's pending key, if any, and reports whether there was one. Also used
+    /// when the device is edited or deleted, which makes a pending setup meaningless.
+    pub(crate) fn discard(&self, agent_id: &AgentId) -> bool {
+        self.lock().remove(agent_id).is_some()
     }
 }
 

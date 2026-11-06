@@ -3118,6 +3118,24 @@ devices.
      and the old held key is dropped otherwise. Then the old line is removed using the new
      key. The UI offers "Rotate to a vault-encrypted key" for a plaintext key once a vault
      exists.
+- **Manual setup** (`POST …/ssh-key/manual`, `POST …/ssh-key/manual/confirm`,
+  `DELETE …/ssh-key/manual`) installs a first key on a device the server cannot log in to
+  yet, such as a host with password login disabled. Preparing pins the host key like step 1
+  and generates the key (sealed with the vault under the same rules), but logs in nowhere
+  and writes no key file: the key and its file content stay in server memory
+  (`ManualSshKeys`, one per device) and the response carries its `authorized_keys` line
+  (same format and marker as step 3) and a shell command that appends it. The user runs the
+  command on the device and confirms with the key's fingerprint, so a stale dialog cannot
+  confirm a newer key. Confirming checks that the device still has no managed key, the same
+  target and username, and the vault generation the key was sealed with, then verifies as
+  in step 4 and commits as in step 5, with the new key as the rollback credential. A failed
+  verification keeps the pending key for another try; any other failure, a new preparation,
+  an automatic setup, a device edit or deletion, the discard request (the dialog's Cancel)
+  and a restart drop it. A line the user added for a dropped key grants nothing and the next
+  setup's rewrite removes it. The command joins its steps with `;` so a `chmod` refused by
+  a symlink target's filesystem does not stop the append, adds a newline first when the file
+  lacks a trailing one, and uses only syntax sh, bash, zsh and fish share. Rotation has no
+  manual path, because it always logs in with the current key.
 - **Operation credential.** Rotation, removal and device deletion log in with the current
   key. For an encrypted key the request may carry `current_file_key`, which is decrypted
   with the same checks as Start, or else the held key is cloned. It is resolved before
@@ -3149,7 +3167,8 @@ devices.
   `connection_issue` names the pinned and presented fingerprints, and only an explicit
   re-pin (`POST …/ssh-host-key/pin` with the confirmed fingerprint) replaces the pin.
 - **Concurrency.** Key operations, rewraps and device edits of one device are serialized
-  by a per-device busy set; a second request gets 409. The config edit lock is held only
+  by a per-device busy set; a second request gets 409. Pending manual keys outlive one
+  request, but every access to them happens under the busy guard. The config edit lock is held only
   for the final commit (rename and config write, or the rotation's rename and held key),
   because the flow includes network round trips. Mutating HTTP handlers run their
   operation in an owned Tokio task, so disconnecting a client does not release the busy
@@ -3159,7 +3178,9 @@ devices.
 - **UI.** A dedicated key is the default for new SSH devices. The add form then creates the
   device without a password and opens `SshKeySetupDialog` (host key confirmation, a
   password used once, enrollment, unlocking the vault first when one exists), so
-  the typed password only ever travels with the enroll request. Turning the option off
+  the typed password only ever travels with the enroll request. For a first key the dialog
+  also offers "I add it myself" (the manual setup), which shows the command to copy and
+  verifies the key when the user confirms. Turning the option off
   brings back the server-keys or stored-password choice. The device's configuration page
   has an SSH key section for set up, rotate, remove and re-pin that shows whether the key is
   encrypted with the vault or plaintext. Starting a device whose key is locked (the server

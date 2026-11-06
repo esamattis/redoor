@@ -445,6 +445,7 @@ impl ServerRuntime {
             ssh_keys,
             held_ssh_keys,
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
+            manual_ssh_keys: crate::http::ssh_keys::ManualSshKeys::default(),
             shutdown_tx: Arc::new(tokio::sync::Mutex::new(Some(shutdown_tx))),
             upgrade_lock: Arc::default(),
             boot_id: uuid::Uuid::new_v4().to_string().into(),
