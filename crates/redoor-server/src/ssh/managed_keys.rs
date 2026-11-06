@@ -769,7 +769,10 @@ impl ManagedKeyDevice {
         keep: &[String],
         new_key: Option<&ManagedKey>,
     ) -> Result<(), ManagedKeyError> {
-        let new_line = new_key.map(|key| (key.authorized_keys_line(), key.fingerprint()));
+        let new_line = match new_key {
+            Some(key) => Some((key.authorized_keys_line().await, key.fingerprint())),
+            None => None,
+        };
         let keys = self.keys()?;
         let script = install_script(
             &device_marker(&self.device),
@@ -1041,7 +1044,8 @@ mod tests {
     /// The script keeps other lines byte for byte, removes stale lines of this device only,
     /// and running it twice does not duplicate the new line. The fingerprints contain `+`,
     /// `/` and `=`, which must be matched literally, and a fingerprint that is a prefix of a
-    /// kept one must not count as kept.
+    /// kept one must not count as kept. Lines with and without the `<username>@<hostname>` label
+    /// after the marker are managed alike, because older servers wrote no label.
     #[tokio::test]
     async fn install_script_rewrites_only_this_devices_lines() {
         let home = redoor_core::test_support::TempDir::create();
@@ -1058,6 +1062,7 @@ mod tests {
         let original = format!(
             "{unrelated}
 ssh-ed25519 AAAAstale redoor:{device}:{stale}
+ssh-ed25519 AAAAstalelabel redoor:{device}:{stale} alice@old-server
 ssh-ed25519 AAAAprefix redoor:{device}:{kept_prefix}
 ssh-ed25519 AAAAother redoor:{other_device}:{stale}
 ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
@@ -1067,8 +1072,9 @@ ssh-ed25519 AAAAempty redoor:{device}:
         tokio::fs::write(ssh_dir.join("authorized_keys"), &original)
             .await
             .unwrap();
-        let new_line =
-            format!("restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:{new}");
+        let new_line = format!(
+            "restrict,port-forwarding ssh-ed25519 AAAAnew redoor:{device}:{new} alice@server"
+        );
         let script = install_script(
             &marker,
             &[kept.to_string(), new.to_string()],
@@ -1090,8 +1096,8 @@ ssh-ed25519 AAAAkept redoor:{device}:{kept}\r
 {new_line}
 "
         );
-        // Unrelated lines survive unchanged (even a CRLF line ending), the stale, prefix and
-        // empty-fingerprint lines of this device are gone, the other device's line with the
+        // Unrelated lines survive unchanged (even a CRLF line ending), the stale (with and
+        // without a server label), prefix and empty-fingerprint lines of this device are gone, the other device's line with the
         // same fingerprint stays, and the new line appears exactly once.
         assert_eq!(written, expected);
 

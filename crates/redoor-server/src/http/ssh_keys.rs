@@ -230,7 +230,7 @@ async fn prepare_manual(
     let generated = device
         .prepare_manual_key(request.host_key_fingerprint.as_deref(), seal.as_ref())
         .await?;
-    let line = generated.key.authorized_keys_line();
+    let line = generated.key.authorized_keys_line().await;
     let response = ManualSshKeyResponse {
         fingerprint: generated.key.fingerprint(),
         install_command: manual_install_command(&line),

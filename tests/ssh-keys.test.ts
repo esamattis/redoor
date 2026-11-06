@@ -45,6 +45,7 @@ import {
     startAndWaitForIssue,
     fixturePassword,
     keyMarker,
+    serverLabel,
     sshAs,
 } from "./ssh-key-test-utils";
 
@@ -212,10 +213,12 @@ describe.skipIf(
             });
 
             const lines = await remoteDeviceLines(SSH_PASSWORD_USER, deviceId);
+            const label = await serverLabel(fixture);
             // Exactly the restricted line for this key is installed on the device, marked
-            // with the device id, the account and the key's fingerprint.
+            // with the device id and the key's fingerprint, and labelled with the account
+            // and machine of the server that installed it.
             expect(lines).toEqual([
-                `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} ${keyMarker(deviceId, enrolled.fingerprint)}`,
+                `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} ${keyMarker(deviceId, enrolled.fingerprint)} ${label}`,
             ]);
 
             const connected = await startAndWaitConnected(fixture, deviceId);
@@ -291,14 +294,15 @@ describe.skipIf(
                 ).status,
             ).toBe(404);
 
+            const label = await serverLabel(fixture);
             // The line has the automatic setup's format and marker, so rotation and
-            // removal find it later.
+            // removal find it later, and the server label tells the user who installed it.
             expect(prepared.authorized_keys_line).toMatch(
                 /^restrict,port-forwarding ssh-ed25519 \S+ /,
             );
             expect(
                 prepared.authorized_keys_line.endsWith(
-                    ` ${keyMarker(deviceId, prepared.fingerprint)}`,
+                    ` ${keyMarker(deviceId, prepared.fingerprint)} ${label}`,
                 ),
             ).toBe(true);
             // The command the user pastes appends exactly that line.
@@ -553,6 +557,8 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             const unrelatedMarker = `redoor-test-unrelated-${fixture.suffix}`;
             const unrelated = `ssh-ed25519   ${randomEd25519PublicKey()}  ${unrelatedMarker}\t#  odd   spacing `;
             const staleKey = randomEd25519PublicKey();
+            // Written without the server label, as servers before the label did, so the
+            // test also covers that such lines are still managed.
             const stale = `restrict,port-forwarding ssh-ed25519 ${staleKey} ${keyMarker(deviceId, fingerprintOf(staleKey))}`;
 
             onTestFinished(async () => {

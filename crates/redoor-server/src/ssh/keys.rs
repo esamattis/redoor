@@ -343,6 +343,71 @@ pub(crate) fn device_marker(device: &AgentId) -> String {
     format!("redoor:{device}:")
 }
 
+/// The full comment of a managed key: the [`marker`], then `<username>@<hostname>` of the
+/// account and machine the server runs on, after a space, the same form `ssh-keygen` uses,
+/// so someone reading the device's `authorized_keys` can tell which server installed the
+/// line.
+///
+/// The label must come after the marker and be separated by whitespace: the install
+/// script reads the fingerprint from the end of the marker up to the next whitespace, so
+/// lines written before the label existed and lines with it are managed alike. The label
+/// is informational only and never matched, so a renamed server only shows its old name
+/// until the next rotation.
+async fn key_comment(device: &AgentId, fingerprint: &str) -> String {
+    let marker = marker(device, fingerprint);
+    let hostname = nix::unistd::gethostname()
+        .ok()
+        .and_then(|name| name.into_string().ok());
+    let label = match (server_username().await, hostname) {
+        (Some(username), Some(hostname)) => server_label(&username, &hostname),
+        _ => None,
+    };
+    match label {
+        Some(label) => format!("{marker} {label}"),
+        None => marker,
+    }
+}
+
+/// Account name of the server process, looked up once because it cannot change while the
+/// process runs.
+static SERVER_USERNAME: tokio::sync::OnceCell<Option<String>> = tokio::sync::OnceCell::const_new();
+
+/// The account the server runs as, or `None` when it has no passwd entry. Looked up off the
+/// async runtime because NSS may block.
+async fn server_username() -> Option<String> {
+    SERVER_USERNAME
+        .get_or_init(|| async {
+            let uid = nix::unistd::Uid::effective();
+            redoor_core::logging::spawn_blocking_in_user_scope(move || {
+                nix::unistd::User::from_uid(uid)
+            })
+            .await
+            .ok()?
+            .ok()?
+            .map(|user| user.name)
+        })
+        .await
+        .clone()
+}
+
+/// `<username>@<hostname>` with only the characters account and host names normally hold,
+/// or `None` when either part is left empty.
+///
+/// The label ends up in an `authorized_keys` line and in a shell command the user pastes,
+/// so whitespace, quotes or line breaks from an odd name must never reach it: they would
+/// split the comment, break the quoting or start a new `authorized_keys` line.
+fn server_label(username: &str, hostname: &str) -> Option<String> {
+    let clean = |name: &str| -> String {
+        name.chars()
+            .filter(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '-' | '.' | '_')
+            })
+            .collect()
+    };
+    let (username, hostname) = (clean(username), clean(hostname));
+    (!username.is_empty() && !hostname.is_empty()).then(|| format!("{username}@{hostname}"))
+}
+
 /// A decrypted or plaintext SSH private key in memory.
 ///
 /// `ssh-key` zeroizes the private half on drop, and `Debug` never prints it, so the key
@@ -475,7 +540,7 @@ impl GeneratedKey {
         // The comment only helps someone inspecting a plaintext file; the fingerprint does
         // not depend on it.
         let fingerprint = private_key.fingerprint();
-        private_key.set_comment(marker(device, &fingerprint));
+        private_key.set_comment(key_comment(device, &fingerprint).await);
         let content = match vault {
             Some(vault) => Zeroizing::new(seal(&private_key, device, vault).await?),
             None => Zeroizing::new(private_key.to_openssh()?.as_bytes().to_vec()),
@@ -526,11 +591,11 @@ impl ManagedKey {
     ///
     /// `restrict` turns off PTY allocation, agent and X11 forwarding and `~/.ssh/rc`, none of
     /// which redoor uses; `port-forwarding` puts back the `-R` tunnel the agent needs.
-    pub(crate) fn authorized_keys_line(&self) -> String {
+    pub(crate) async fn authorized_keys_line(&self) -> String {
         format!(
             "restrict,port-forwarding {} {}",
             self.private_key.public_key_openssh(),
-            marker(&self.device, &self.fingerprint())
+            key_comment(&self.device, &self.fingerprint()).await
         )
     }
 
@@ -769,19 +834,48 @@ mod tests {
 
         // The same public key comes back from the private key file alone.
         assert_eq!(loaded.fingerprint(), key.fingerprint());
-        let line = loaded.authorized_keys_line();
+        let line = loaded.authorized_keys_line().await;
         // The key is restricted except for the reverse tunnel.
         assert!(
             line.starts_with("restrict,port-forwarding ssh-ed25519 "),
             "{line}"
         );
-        // The marker names the device and the key's fingerprint.
+        let hostname = nix::unistd::gethostname().unwrap().into_string().unwrap();
+        let username = nix::unistd::User::from_uid(nix::unistd::Uid::effective())
+            .unwrap()
+            .unwrap()
+            .name;
+        // The marker names the device and the key's fingerprint, and the label after it
+        // names the account and machine of the server that installed the line.
         assert!(
-            line.ends_with(&format!(" redoor:{device}:{}", key.fingerprint())),
+            line.ends_with(&format!(
+                " redoor:{device}:{} {username}@{hostname}",
+                key.fingerprint()
+            )),
             "{line}"
         );
         // The fingerprint is the `ssh-keygen -l` format the user sees in the UI.
         assert!(key.fingerprint().starts_with("SHA256:"));
+    }
+
+    /// The server label keeps account and host name characters and drops anything that
+    /// could split the `authorized_keys` comment or break the quoting of the pasted install
+    /// command.
+    #[test]
+    fn server_label_keeps_only_name_characters() {
+        // Ordinary names are kept as is.
+        assert_eq!(
+            server_label("svc.redoor_1", "node-1.example_lan").as_deref(),
+            Some("svc.redoor_1@node-1.example_lan")
+        );
+        // Whitespace, quotes and line breaks are dropped from both parts.
+        assert_eq!(
+            server_label("al ice\n", "bad host'\n\r\t\"").as_deref(),
+            Some("alice@badhost")
+        );
+        // An empty part means no label instead of a half one such as `@host`.
+        assert_eq!(server_label(" '\n", "host"), None);
+        assert_eq!(server_label("alice", " '\n"), None);
     }
 
     /// An encrypted key is written only in its encrypted form, its public key is readable

@@ -12,7 +12,7 @@ import {
     statSync,
     writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
 import { onTestFinished } from "vitest";
 import { $ } from "zx";
@@ -213,6 +213,16 @@ export async function remoteAuthorizedKeys(user: string): Promise<string> {
 /** The `authorized_keys` marker of a key the server installed for `deviceId`. */
 export function keyMarker(deviceId: string, fingerprint: string): string {
     return `redoor:${deviceId}:${fingerprint}`;
+}
+
+/**
+ * The `<username>@<hostname>` label the server appends after the marker. The test server
+ * runs as the same account as the test runner, and its hostname comes from the API.
+ */
+export async function serverLabel(fixture: KeyFixture): Promise<string> {
+    const { hostname } = await fixture.apiClient.getServerInfo();
+
+    return `${userInfo().username}@${hostname}`;
 }
 
 /** The `authorized_keys` lines of `user` that carry `deviceId`'s marker. */
