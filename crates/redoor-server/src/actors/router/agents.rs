@@ -498,10 +498,12 @@ impl RouterState {
             known.status = AgentConnectionStatus::Connected;
             known.connection_issue = snapshot.connection_issue;
             known.provisioning_status = snapshot.provisioning_status.clone();
+            known.last_failed_attempt = snapshot.last_failed_attempt;
         } else {
             known.status = snapshot.status.clone();
             known.connection_issue = snapshot.connection_issue;
             known.provisioning_status = snapshot.provisioning_status;
+            known.last_failed_attempt = snapshot.last_failed_attempt;
             known.socket_id = snapshot.socket_id;
             if known.status != AgentConnectionStatus::Connected {
                 known.connected_at = None;
@@ -613,6 +615,7 @@ impl RouterState {
                 last_seen_at: info.last_seen_at,
                 connection_issue: info.connection_issue.clone(),
                 provisioning_status: info.provisioning_status.clone(),
+                last_failed_attempt: info.last_failed_attempt.clone(),
                 identity: info.identity.clone(),
                 capabilities: info.capabilities.clone(),
                 duplicate_id: info.duplicate_id.clone(),
@@ -1130,6 +1133,7 @@ mod tests {
                 status: AgentConnectionStatus::Starting,
                 connection_issue: None,
                 provisioning_status: Vec::new(),
+                last_failed_attempt: None,
                 socket_id: None,
             },
             evict_existing: true,
@@ -1174,6 +1178,7 @@ mod tests {
                 status: AgentConnectionStatus::Stopping,
                 connection_issue: None,
                 provisioning_status: Vec::new(),
+                last_failed_attempt: None,
                 socket_id: None,
             },
             evict_existing: false,

@@ -612,6 +612,7 @@ fn stopped_agent_response(
         last_seen_at: None,
         connection_issue: None,
         provisioning_status: Vec::new(),
+        last_failed_attempt: None,
         binary: None,
         supports_native_open: false,
         supports_move_to_trash: false,

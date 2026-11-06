@@ -23,7 +23,9 @@ use tokio::sync::{mpsc, oneshot};
 
 use redoor_core::backoff::Backoff;
 use redoor_core::log;
-use redoor_protocol::api::agents::{AgentConnectionStatus, ProvisioningStatusMessage};
+use redoor_protocol::api::agents::{
+    AgentConnectionStatus, FailedStartAttempt, ProvisioningStatusMessage,
+};
 use redoor_protocol::identity::BinaryIdentity;
 use redoor_protocol::ids::{SocketId, UnixTimestampMillis};
 use redoor_protocol::wire::log::Level;
@@ -238,6 +240,8 @@ pub struct WatchdogSnapshot {
     pub connection_issue: Option<String>,
     /// Accumulated prepare/ensure lines for the current start cycle.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
+    /// The latest failed cycle's steps and error, so they outlive the next cycle and a stop.
+    pub last_failed_attempt: Option<FailedStartAttempt>,
     /// Protects replacement connections from stale disconnect events.
     pub socket_id: Option<SocketId>,
 }
@@ -251,6 +255,7 @@ impl WatchdogSnapshot {
             status: AgentConnectionStatus::Stopped,
             connection_issue: None,
             provisioning_status: Vec::new(),
+            last_failed_attempt: None,
             socket_id: None,
         }
     }
@@ -616,6 +621,7 @@ impl WatchdogHandle {
             snapshot.status = AgentConnectionStatus::Connected;
             snapshot.connection_issue = None;
             snapshot.provisioning_status.clear();
+            snapshot.last_failed_attempt = None;
             snapshot.socket_id = Some(socket_id.clone());
             snapshot.clone()
         };
@@ -1229,7 +1235,7 @@ impl Supervisor {
                 status = child.wait() => {
                     let output = read_child_diagnostic(output_reader, CHILD_DIAGNOSTIC_TIMEOUT).await;
                     let issue = format_exit_issue(status, process_name, output.as_ref());
-                    publish_issue(&self.watchdog, attempt_generation, issue);
+                    publish_failure(&self.watchdog, attempt_generation, issue);
                     return CycleResult { action: CommandAction::Continue, was_connected: connected };
                 }
                 _ = &mut startup_timeout, if !connected && !timeout_reported => {
@@ -1269,7 +1275,7 @@ impl Supervisor {
         );
         kill_and_reap(child).await;
         self.replace_next = true;
-        publish_issue(
+        publish_failure(
             &self.watchdog,
             attempt_generation,
             format!(
@@ -1300,7 +1306,7 @@ impl Supervisor {
                 // Only the tunnel is rebuilt; a repeat failure reaches the deadline, which
                 // replaces the daemon.
                 kill_and_reap(child).await;
-                publish_issue(
+                publish_failure(
                     &self.watchdog,
                     attempt_generation,
                     "Agent connection went stale".to_string(),
@@ -1485,7 +1491,7 @@ fn report_spawn_failure(
         watchdog.key(),
         retryable
     );
-    publish_issue(watchdog, attempt_generation, issue);
+    publish_failure(watchdog, attempt_generation, issue);
     CycleResult {
         // A shutdown or retry queued meanwhile still wins: the wait handles it first.
         action: if retryable {
@@ -1524,6 +1530,7 @@ fn publish_stop_requested(watchdog: &WatchdogHandle, stopping: bool) {
 /// The device is stopped and nothing is pending.
 fn publish_stopped(watchdog: &WatchdogHandle) {
     watchdog.publish_update(|snapshot| {
+        clear_connected_steps(snapshot);
         snapshot.desired_running = false;
         snapshot.status = AgentConnectionStatus::Stopped;
         snapshot.connection_issue = None;
@@ -1534,11 +1541,20 @@ fn publish_stopped(watchdog: &WatchdogHandle) {
 /// The session is gone and the daemon is being stopped on the device.
 fn publish_stopping(watchdog: &WatchdogHandle) {
     watchdog.publish_update(|snapshot| {
+        clear_connected_steps(snapshot);
         snapshot.desired_running = false;
         snapshot.status = AgentConnectionStatus::Stopping;
         snapshot.connection_issue = None;
         snapshot.socket_id = None;
     });
+}
+
+/// Drops the steps of an attempt that connected when the device stops. Only an interrupted
+/// start's steps are kept, so a stopped device shows how far its start got.
+fn clear_connected_steps(snapshot: &mut WatchdogSnapshot) {
+    if snapshot.status == AgentConnectionStatus::Connected {
+        snapshot.provisioning_status.clear();
+    }
 }
 
 /// Shows why the pending stop failed while it is retried.
@@ -1581,17 +1597,36 @@ fn publish_connected(
         snapshot.desired_running = true;
         snapshot.status = AgentConnectionStatus::Connected;
         snapshot.connection_issue = None;
+        snapshot.last_failed_attempt = None;
         snapshot.socket_id = Some(socket_id);
     })
 }
 
-/// Retains a concrete lifecycle issue while the desired-running retry loop continues.
+/// Shows a diagnostic of an attempt that keeps running; a failed attempt uses
+/// `publish_failure` instead.
 fn publish_issue(watchdog: &WatchdogHandle, attempt_generation: u64, issue: String) {
     watchdog.publish_attempt_update(attempt_generation, |snapshot| {
         snapshot.desired_running = true;
         if snapshot.socket_id.is_none() {
             snapshot.status = AgentConnectionStatus::Starting;
         }
+        snapshot.connection_issue = Some(issue);
+    });
+}
+
+/// Ends a failed cycle: the issue stays current for the status displays, while the cycle's
+/// steps move with it to `last_failed_attempt`, where the next cycle and a stop leave them.
+fn publish_failure(watchdog: &WatchdogHandle, attempt_generation: u64, issue: String) {
+    watchdog.publish_attempt_update(attempt_generation, |snapshot| {
+        snapshot.desired_running = true;
+        if snapshot.socket_id.is_none() {
+            snapshot.status = AgentConnectionStatus::Starting;
+        }
+        snapshot.last_failed_attempt = Some(FailedStartAttempt {
+            messages: std::mem::take(&mut snapshot.provisioning_status),
+            error: issue.clone(),
+            at: UnixTimestampMillis::now(),
+        });
         snapshot.connection_issue = Some(issue);
     });
 }
@@ -2526,7 +2561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provisioning_status_accumulates_then_resets_on_the_next_cycle() {
+    async fn provisioning_status_moves_to_the_last_failed_attempt_on_failure() {
         let first_spawn = Arc::new(tokio::sync::Notify::new());
         let release_first = Arc::new(tokio::sync::Notify::new());
         let spawn_count = Arc::new(AtomicUsize::new(0));
@@ -2543,13 +2578,13 @@ mod tests {
                 async move {
                     let attempt = observed_spawns.fetch_add(1, Ordering::SeqCst);
                     request.status.report(format!("step-{attempt}"));
-                    if attempt == 0 {
-                        wait_first.notify_one();
-                        hold_first.notified().await;
+                    if attempt > 0 {
+                        // The retry hangs, as a stuck start does, so its steps stay current.
+                        return std::future::pending::<SpawnResult>().await;
                     }
-                    Err(SpawnError::Spawn(std::io::Error::other(format!(
-                        "spawn failed {attempt}"
-                    ))))
+                    wait_first.notify_one();
+                    hold_first.notified().await;
+                    Err(SpawnError::Spawn(std::io::Error::other("spawn failed")))
                 }
             }),
             &registry,
@@ -2588,6 +2623,38 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["step-1"]
         );
+        let failed = handle
+            .snapshot()
+            .last_failed_attempt
+            .expect("the failed attempt is kept");
+        // The failed attempt's steps and error stay readable while the retry runs.
+        assert_eq!(
+            failed
+                .messages
+                .iter()
+                .map(|line| line.message.as_str())
+                .collect::<Vec<_>>(),
+            ["step-0"]
+        );
+        assert!(failed.error.contains("spawn failed"), "{}", failed.error);
+        handle.shutdown(None).await.expect("shutdown acknowledged");
+        let stopped = handle.snapshot();
+        // A Disconnect keeps the interrupted attempt's steps and the failed attempt.
+        assert_eq!(
+            stopped
+                .provisioning_status
+                .iter()
+                .map(|line| line.message.as_str())
+                .collect::<Vec<_>>(),
+            ["step-1"]
+        );
+        assert_eq!(stopped.last_failed_attempt, Some(failed));
+
+        handle.start().await.expect("restart accepted");
+        wait_until(|| spawn_count.load(Ordering::SeqCst) == 3).await;
+        assert!(connect(&handle, &SocketId::new()).await.is_some());
+        // A connected device has nothing left to diagnose, so the failed attempt goes.
+        wait_until(|| handle.snapshot().last_failed_attempt.is_none()).await;
         handle.shutdown(None).await.expect("shutdown acknowledged");
     }
 

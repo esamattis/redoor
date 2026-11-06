@@ -535,6 +535,7 @@ mod tests {
             last_seen_at: None,
             connection_issue: None,
             provisioning_status: Vec::new(),
+            last_failed_attempt: None,
             identity: Some(registration.identity),
             capabilities: registration.capabilities,
             duplicate_id: None,

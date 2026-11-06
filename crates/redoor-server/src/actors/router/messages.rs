@@ -95,6 +95,8 @@ pub struct AgentListEntry {
     pub connection_issue: Option<String>,
     /// Sticky SSH start steps copied from the supervisor snapshot.
     pub provisioning_status: Vec<redoor_protocol::api::agents::ProvisioningStatusMessage>,
+    /// Latest failed start attempt copied from the supervisor snapshot.
+    pub last_failed_attempt: Option<redoor_protocol::api::agents::FailedStartAttempt>,
     /// Identity from the latest registration; absent until the agent first connects.
     pub identity: Option<AgentIdentity>,
     /// Capabilities from the latest registration; all off until the agent first connects.
@@ -145,6 +147,7 @@ impl From<AgentListEntry> for AgentInfoResponse {
             last_seen_at: agent.last_seen_at,
             connection_issue: agent.connection_issue,
             provisioning_status: agent.provisioning_status,
+            last_failed_attempt: agent.last_failed_attempt,
             uid: identity.as_ref().map(|identity| identity.uid),
             is_root: identity.as_ref().is_some_and(|identity| identity.is_root),
             // Unknown until the agent first registers; retained afterwards like the identity.
@@ -647,6 +650,7 @@ mod tests {
             last_seen_at: None,
             connection_issue: None,
             provisioning_status: Vec::new(),
+            last_failed_attempt: None,
             identity: Some(registration.identity),
             capabilities: registration.capabilities,
             duplicate_id: None,

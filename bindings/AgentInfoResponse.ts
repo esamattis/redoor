@@ -3,6 +3,7 @@ import type { AgentConnectionStatus } from "./AgentConnectionStatus";
 import type { AgentId } from "./AgentId";
 import type { BinaryIdentity } from "./BinaryIdentity";
 import type { DuplicateIdWarning } from "./DuplicateIdWarning";
+import type { FailedStartAttempt } from "./FailedStartAttempt";
 import type { ProvisioningStatusMessage } from "./ProvisioningStatusMessage";
 import type { SocketId } from "./SocketId";
 import type { SystemdSupport } from "./SystemdSupport";
@@ -28,6 +29,10 @@ connection_id: SocketId | null, last_seen_at: UnixTimestampSeconds | null, conne
  * Ordered SSH start steps for the current attempt; empty for local or dormant agents.
  */
 provisioning_status: Array<ProvisioningStatusMessage>, 
+/**
+ * The latest failed start attempt; replaced by the next failure, dropped on connect.
+ */
+last_failed_attempt: FailedStartAttempt | null, 
 /**
  * Binary identity from the latest registration; absent until first connect.
  */

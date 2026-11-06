@@ -1079,6 +1079,13 @@ test.describe.serial("Agent management", () => {
             .not.toBeNull();
         // The actionable supervisor issue remains visible after the first explicit attempt fails.
         await expect(page.getByRole("alert")).not.toBeEmpty();
+
+        const lastFailedAttempt = page.getByRole("region", {
+            name: "Last failed attempt",
+        });
+
+        // The failed attempt's error is shown apart from the retry that replaces it.
+        await expect(lastFailedAttempt.getByRole("alert")).not.toBeEmpty();
         await expect(
             page.getByRole("status", { name: "Connection status" }),
         ).toHaveText("Connecting…");
@@ -1104,6 +1111,8 @@ test.describe.serial("Agent management", () => {
         await expect(
             page.getByRole("link", { name: `${FAILING_AGENT}, stopped` }),
         ).toHaveAttribute("aria-current", "page");
+        // Disconnect keeps the failed attempt, so a failing start can still be inspected.
+        await expect(lastFailedAttempt.getByRole("alert")).not.toBeEmpty();
         expect((await getAgent(page.request, FAILING_AGENT)).status).toBe(
             "stopped",
         );

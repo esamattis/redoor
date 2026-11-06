@@ -96,6 +96,7 @@ function agentInfo(id: string, name: string): AgentInfoResponse {
         last_seen_at: 1,
         connection_issue: null,
         provisioning_status: [],
+        last_failed_attempt: null,
         binary: null,
         supports_native_open: false,
         supports_move_to_trash: false,

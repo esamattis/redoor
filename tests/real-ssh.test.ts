@@ -1110,9 +1110,10 @@ name = "${agentName}"
                 "Configure a password, SSH key, or ssh-agent credential",
             );
             // Progress lines may exist, but authentication failure still uses connection_issue.
-            // The first SSH round trip resolves the agent's socket directory.
+            // The first SSH round trip resolves the agent's socket directory; the failed
+            // attempt's steps move to lastFailedAttempt.
             expect(
-                failed.provisioningStatus.some((step) =>
+                failed.lastFailedAttempt?.messages.some((step) =>
                     step.message.includes("on the SSH target"),
                 ),
             ).toBe(true);

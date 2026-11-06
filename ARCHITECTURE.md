@@ -1076,7 +1076,11 @@ sequenceDiagram
   debug upload verifies or is rejected this way, a
   background task removes the other `debug-*` directories and the legacy `debug/`
   directory; an agent still running an old build keeps its deleted file open. Each step is
-  published as `provisioning_status`, which the UI lists while the agent starts. Killing
+  published as `provisioning_status`, which the UI lists while the agent starts and keeps
+  after a Disconnect interrupts the start. A failed cycle moves its steps, with its error,
+  to `last_failed_attempt`: every cycle starts with an empty list, and without the move a
+  retry would erase the failure before anyone could read it. The next failure replaces it,
+  and a connect drops it. Killing
   ssh only ends the session; the daemon keeps running. Relays probe and install once before
   their first start instead,
   because they restart the agent many times from the prepared state; they prepare again

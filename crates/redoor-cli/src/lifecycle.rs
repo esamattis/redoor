@@ -120,6 +120,17 @@ impl RemoteClient {
                 return Ok(());
             }
             if let Some(issue) = snapshot.connection_issue {
+                // A failed attempt's steps move to `last_failed_attempt`, so the ones it
+                // reported since the last poll are only there.
+                for step in snapshot
+                    .last_failed_attempt
+                    .iter()
+                    .flat_map(|attempt| &attempt.messages)
+                {
+                    if reported.insert((step.at, step.message.clone())) {
+                        eprintln!("Agent {label}: {}", step.message.escape_debug());
+                    }
+                }
                 anyhow::bail!("{}", issue.escape_debug());
             }
             anyhow::ensure!(snapshot.managed, "Agent {label} is no longer managed");

@@ -110,7 +110,11 @@ install_dir = "${noexecDir}"
                         (entry) => entry.name === agentName,
                     );
 
-                    for (const step of agent?.provisioningStatus ?? []) {
+                    // A failed attempt's steps move to lastFailedAttempt.
+                    for (const step of [
+                        ...(agent?.provisioningStatus ?? []),
+                        ...(agent?.lastFailedAttempt?.messages ?? []),
+                    ]) {
                         seenProvisioning.add(step.message);
                     }
 

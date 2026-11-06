@@ -75,6 +75,8 @@ pub struct KnownAgent {
     pub connection_issue: Option<String>,
     /// Sticky SSH start steps for the current watchdog cycle.
     pub provisioning_status: Vec<redoor_protocol::api::agents::ProvisioningStatusMessage>,
+    /// The supervisor's latest failed start attempt.
+    pub last_failed_attempt: Option<redoor_protocol::api::agents::FailedStartAttempt>,
     /// Guards the inventory against stale socket teardown.
     pub socket_id: Option<SocketId>,
     /// Last registered identity, retained after disconnect for list warnings and gating.
@@ -104,6 +106,7 @@ impl KnownAgent {
             last_seen_at: None,
             connection_issue: None,
             provisioning_status: Vec::new(),
+            last_failed_attempt: None,
             socket_id: None,
             identity: None,
             capabilities: AgentCapabilities::default(),

@@ -466,6 +466,11 @@ export class Agent {
         return this.info.provisioning_status;
     }
 
+    /** Returns the latest failed start attempt, kept until the device connects. */
+    get lastFailedAttempt(): AgentInfoResponse["last_failed_attempt"] {
+        return this.info.last_failed_attempt;
+    }
+
     /**
      * Set while several machines are using this device's id, so the UI can explain why one
      * of them is refused and how to give the clone its own id.

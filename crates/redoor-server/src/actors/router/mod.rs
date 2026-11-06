@@ -675,6 +675,7 @@ mod tests {
                 last_seen_at: None,
                 connection_issue: None,
                 provisioning_status: Vec::new(),
+                last_failed_attempt: None,
                 identity: list_agents[0].identity.clone(),
                 capabilities: redoor_protocol::wire::registration::AgentCapabilities {
                     supports_native_open: true,

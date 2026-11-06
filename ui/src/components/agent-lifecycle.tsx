@@ -8,6 +8,7 @@ import type { Agent } from "#ui/api-client";
 import { agentStartStatesAtom } from "#ui/agent-start-state";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
+import { FoldingSection } from "#ui/components/folding-section";
 import { Tooltip } from "#ui/components/tooltip";
 import { queryKeys } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
@@ -120,9 +121,10 @@ export function AgentLifecycle(props: {
 
 /**
  * Explains what the device is doing while it is not connected: the start steps while it
- * connects, otherwise what the operator can do, followed by the supervisor's diagnostic and
- * the last start failure. Kept apart from the controls so the device home can place it
- * below its header while the file browser keeps its centered layout.
+ * connects, otherwise what the operator can do, followed by the supervisor's diagnostic,
+ * the last failed start attempt and the last start request failure. Kept apart from the
+ * controls so the device home can place it below its header while the file browser keeps
+ * its centered layout.
  */
 export function AgentLifecycleMessages(props: {
     agent: Agent;
@@ -132,27 +134,39 @@ export function AgentLifecycleMessages(props: {
     const startStates = useAtomValue(agentStartStatesAtom);
     const startError = startStates[props.agent.id]?.error ?? null;
     const now = useNow(100);
+    const steps = props.agent.provisioningStatus;
+    const lastStep = steps.at(-1);
+
+    const lastFailedAttempt =
+        phase === "connected" ? null : props.agent.lastFailedAttempt;
 
     return (
         <div className={cn("space-y-4", props.className)}>
-            {phase === "connecting" &&
-            props.agent.provisioningStatus.length > 0 ? (
-                <ProvisioningStatusList
-                    messages={props.agent.provisioningStatus}
-                    nowMs={now}
-                />
-            ) : (
+            {phase === "connecting" && steps.length > 0 ? null : (
                 <p className="text-slate-400">
                     {lifecycleDescription(phase, props.agent)}
                 </p>
             )}
-            {props.agent.connectionIssue ? (
+            {/* After a Disconnect the interrupted start's steps stay, so a stuck start can
+                still be inspected; they no longer tick once nothing runs them. */}
+            {phase !== "connected" && lastStep !== undefined ? (
+                <ProvisioningStatusList
+                    messages={steps}
+                    nowMs={phase === "connecting" ? now : lastStep.at}
+                />
+            ) : null}
+            {/* The failed attempt's error is shown with its steps below. */}
+            {props.agent.connectionIssue &&
+            props.agent.connectionIssue !== lastFailedAttempt?.error ? (
                 <p
                     role="alert"
                     className="whitespace-pre-wrap wrap-anywhere rounded border border-amber-800 bg-amber-950/30 p-3 text-left text-sm text-amber-300"
                 >
                     {props.agent.connectionIssue}
                 </p>
+            ) : null}
+            {lastFailedAttempt ? (
+                <LastFailedAttempt attempt={lastFailedAttempt} />
             ) : null}
             {startError ? (
                 <p
@@ -163,6 +177,39 @@ export function AgentLifecycleMessages(props: {
                 </p>
             ) : null}
         </div>
+    );
+}
+
+/**
+ * The steps and error of the latest failed start attempt. The server keeps it across retries
+ * and a Disconnect, so the failure can be read after the next retry has already started.
+ */
+function LastFailedAttempt(props: {
+    attempt: NonNullable<Agent["lastFailedAttempt"]>;
+}) {
+    const [isOpen, setIsOpen] = React.useState(true);
+
+    return (
+        <FoldingSection
+            title="Last failed attempt"
+            tooltip="The start steps and error of the latest start attempt that failed"
+            open={isOpen}
+            onOpenChange={setIsOpen}
+            className="text-left"
+        >
+            {props.attempt.messages.length > 0 ? (
+                <ProvisioningStatusList
+                    messages={props.attempt.messages}
+                    nowMs={props.attempt.at}
+                />
+            ) : null}
+            <p
+                role="alert"
+                className="whitespace-pre-wrap wrap-anywhere rounded border border-amber-800 bg-amber-950/30 p-3 text-sm text-amber-300"
+            >
+                {props.attempt.error}
+            </p>
+        </FoldingSection>
     );
 }
 

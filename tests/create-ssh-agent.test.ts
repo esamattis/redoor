@@ -585,7 +585,7 @@ describe("SSH agent configuration API", () => {
         );
     });
 
-    it("publishes sniffing progress for an SSH target that never answers", async () => {
+    it("keeps a failed SSH start attempt across retries and Disconnect", async () => {
         const name = "unreachable-ssh-progress";
         // Accepting TCP but never sending an SSH banner keeps the sniff pending for as long as
         // the test needs, without waiting out ssh's connect timeout on an unroutable address.
@@ -662,24 +662,66 @@ describe("SSH agent configuration API", () => {
         answering = false;
 
         for (const socket of pendingSockets) socket.destroy();
+        pendingSockets.clear();
 
         const failed = await waitForValue({
             timeoutMs: 10_000,
-            description: "connection_issue after the silent SSH target hung up",
+            description:
+                "last failed attempt after the silent SSH target hung up",
             predicate: async () => {
                 const agent = (await apiClient.listAgents()).find(
                     (entry) => entry.name === name,
                 );
 
-                const hasSniff = agent?.provisioningStatus.some((step) =>
-                    step.message.includes("on the SSH target"),
+                const hasSniff = agent?.lastFailedAttempt?.messages.some(
+                    (step) => step.message.includes("on the SSH target"),
                 );
 
-                return agent?.connectionIssue && hasSniff ? agent : undefined;
+                return hasSniff ? agent : undefined;
             },
         });
 
-        // Failures stay on connection_issue rather than replacing the progress list.
+        // The failure stays on connection_issue for the status displays and is kept with
+        // the failed attempt's steps.
         expect(failed.connectionIssue).toBeTruthy();
+        expect(failed.lastFailedAttempt?.error).toBe(failed.connectionIssue);
+
+        // Answering again makes the next retry hang in its sniff, as a stuck start does.
+        answering = true;
+
+        const retrying = await waitForValue({
+            timeoutMs: 10_000,
+            description: "next retry sniffing while the failed attempt is kept",
+            predicate: async () => {
+                if (pendingSockets.size === 0) return undefined;
+
+                const agent = (await apiClient.listAgents()).find(
+                    (entry) => entry.name === name,
+                );
+
+                return agent?.provisioningStatus.some((step) =>
+                    step.message.includes("on the SSH target"),
+                )
+                    ? agent
+                    : undefined;
+            },
+        });
+
+        // The previous attempt's steps and error stay readable while the next retry runs.
+        expect(
+            retrying.lastFailedAttempt?.messages.map((step) => step.message),
+        ).toContain("Finding the agent socket directory on the SSH target");
+        expect(retrying.lastFailedAttempt?.error).toBeTruthy();
+
+        const stopped = (await retrying.shutdown()).agent;
+
+        // Disconnecting the hanging start keeps its steps, so a stuck start can be inspected.
+        expect(
+            stopped.provisioning_status.map((step) => step.message),
+        ).toContain("Finding the agent socket directory on the SSH target");
+        // The failed attempt outlives the Disconnect as well.
+        expect(stopped.last_failed_attempt?.error).toBe(
+            retrying.lastFailedAttempt?.error,
+        );
     });
 });

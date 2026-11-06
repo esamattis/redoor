@@ -194,6 +194,7 @@ pub(crate) async fn start_agent_handler(
     snapshot.status = lifecycle.status;
     snapshot.connection_issue = lifecycle.connection_issue;
     snapshot.provisioning_status = lifecycle.provisioning_status;
+    snapshot.last_failed_attempt = lifecycle.last_failed_attempt;
     if snapshot.status != redoor_protocol::api::agents::AgentConnectionStatus::Connected {
         snapshot.connected_at = None;
     }

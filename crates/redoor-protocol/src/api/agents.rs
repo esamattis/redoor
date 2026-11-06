@@ -258,6 +258,19 @@ pub struct ProvisioningStatusMessage {
     pub at: UnixTimestampMillis,
 }
 
+/// A start attempt that failed, kept apart from the current one so its log and error stay
+/// readable while the next retry runs and after a Disconnect, when they are needed most.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct FailedStartAttempt {
+    /// The attempt's start steps up to the failure.
+    pub messages: Vec<ProvisioningStatusMessage>,
+    /// Why the attempt failed.
+    pub error: String,
+    /// When it failed, so the log's last step shows how long it ran.
+    pub at: UnixTimestampMillis,
+}
+
 /// Summarizes one known agent without requiring a current WebSocket connection.
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -278,6 +291,8 @@ pub struct AgentInfoResponse {
     pub connection_issue: Option<String>,
     /// Ordered SSH start steps for the current attempt; empty for local or dormant agents.
     pub provisioning_status: Vec<ProvisioningStatusMessage>,
+    /// The latest failed start attempt; replaced by the next failure, dropped on connect.
+    pub last_failed_attempt: Option<FailedStartAttempt>,
     /// Binary identity from the latest registration; absent until first connect.
     pub binary: Option<BinaryIdentity>,
     /// Whether the latest agent session can launch paths in a graphical desktop.
