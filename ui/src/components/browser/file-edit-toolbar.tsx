@@ -24,6 +24,7 @@ import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
 import type { EditorSelection } from "#ui/components/browser/code-editor";
+import type { FilePreviewKind } from "#ui/utils/sandboxed-preview-document";
 import { SelectPathMenuButton } from "#ui/components/browser/path-actions";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { ViewToolbar } from "#ui/components/browser/view-toolbar-slot";
@@ -45,6 +46,13 @@ const toolbarButtonClassName = "h-8 w-8 rounded-md p-0";
 const toolbarToggleClassName =
     "h-8 w-8 text-slate-300 aria-pressed:bg-blue-500/20 aria-pressed:text-blue-300";
 
+/** Names each previewable format the way readers know it, for the preview toggle's tooltip. */
+const previewKindNames = {
+    markdown: "markdown",
+    html: "HTML",
+    svg: "SVG",
+} satisfies Record<FilePreviewKind, string>;
+
 /** Keeps save state and editor mutations inside the representation they affect. */
 function FileEditActions(props: {
     /** A committed revision cannot be saved. */
@@ -63,6 +71,7 @@ function FileEditActions(props: {
     };
     selection: EditorSelection | null;
     preview?: boolean;
+    previewKind: FilePreviewKind | null;
     isSearchOpen: boolean;
     onSave: () => void;
     onToggleSearch: () => void;
@@ -103,7 +112,9 @@ ${props.selection.text}
                 </Button>
             )}
             {props.readOnly ? null : <ToolbarDivider />}
-            {props.preview !== undefined && props.onPreviewChange ? (
+            {props.preview !== undefined &&
+            props.previewKind !== null &&
+            props.onPreviewChange ? (
                 <ToggleButton
                     pressed={props.preview}
                     label="Preview"
@@ -111,8 +122,8 @@ ${props.selection.text}
                     className={toolbarToggleClassName}
                     tooltip={
                         props.preview
-                            ? "Show the markdown editor"
-                            : "Preview rendered markdown"
+                            ? `Show the ${previewKindNames[props.previewKind]} editor`
+                            : `Preview rendered ${previewKindNames[props.previewKind]}`
                     }
                     onClick={() => props.onPreviewChange?.(!props.preview)}
                 >
@@ -436,6 +447,7 @@ export function FileEditHeader(props: {
     filePath: string;
     selection: EditorSelection | null;
     preview: boolean | undefined;
+    previewKind: FilePreviewKind | null;
     isSearchOpen: boolean;
     isReloading: boolean;
     downloadUrl: string | null;
@@ -484,6 +496,7 @@ export function FileEditHeader(props: {
                             }}
                             selection={props.selection}
                             preview={props.preview}
+                            previewKind={props.previewKind}
                             isSearchOpen={props.isSearchOpen}
                             onSave={props.onSave}
                             onToggleSearch={props.onToggleSearch}

@@ -82,9 +82,9 @@ const fileSortDirectionSchema = z
 
 /**
  * The file browser's own URL state: which representation of the path is open, an editor
- * line to reveal, markdown preview, the full-window editor, the Git comparison, the browsed
- * Git revision, the Git view's list, the order of its branch and tag lists, whether the
- * branch list shows local or remote-tracking branches and the listing
+ * line to reveal, the rendered preview of Markdown, HTML or SVG, the full-window editor, the
+ * Git comparison, the browsed Git revision, the Git view's list, the order of its branch and
+ * tag lists, whether the branch list shows local or remote-tracking branches and the listing
  * order. Keeping these in the URL makes each of them survive a reload, work with Back, and be
  * shareable. Every field falls back to undefined, so a stale or hand-edited URL degrades to
  * the defaults.

@@ -44,8 +44,12 @@ import {
     gitGutterSource,
     type GitGutterSource,
 } from "#ui/editor/git-gutter";
-import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
 import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
+import { SandboxedPreview } from "#ui/components/browser/sandboxed-preview";
+import {
+    filePreviewKind,
+    type FilePreviewKind,
+} from "#ui/utils/sandboxed-preview-document";
 import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
 import {
     useVaultFile,
@@ -57,13 +61,13 @@ import { isVaultPath } from "#ui/vault/vault-path";
 
 const rootRouteApi = getRouteApi("__root__");
 
-/** Puts the editor exit on the rendered page so it stays with the markdown, not the toolbar. */
-function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
+/** Puts the editor exit on the rendered page so it stays with the document, not the toolbar. */
+function ClosePreviewButton(props: { onClose: () => void }) {
     return (
         <IconButton
             type="button"
-            label="Close markdown preview"
-            tooltip="Edit markdown"
+            label="Close preview"
+            tooltip="Edit the source"
             onClick={props.onClose}
             variant="ghost"
             size="lg"
@@ -71,6 +75,51 @@ function CloseMarkdownPreviewButton(props: { onClose: () => void }) {
         >
             <X className="h-4 w-4" aria-hidden="true" />
         </IconButton>
+    );
+}
+
+/**
+ * Shows the rendered form of the editor's text. Markdown is rendered by React and can stay
+ * mounted while hidden; an HTML or SVG document only exists while it is shown, so a page
+ * whose scripts were enabled does not keep running behind the editor.
+ */
+function FilePreview(props: {
+    kind: FilePreviewKind;
+    shown: boolean;
+    content: string;
+    deviceName: string;
+    filePath: string;
+    repositoryRoot: string | null;
+    scope: string;
+    onClose: () => void;
+}) {
+    if (props.kind === "markdown") {
+        return (
+            <>
+                <MarkdownPreview
+                    content={props.content}
+                    deviceName={props.deviceName}
+                    filePath={props.filePath}
+                    repositoryRoot={props.repositoryRoot}
+                />
+                <div className="absolute top-0 right-1 z-10">
+                    <ClosePreviewButton onClose={props.onClose} />
+                </div>
+            </>
+        );
+    }
+
+    if (!props.shown) {
+        return null;
+    }
+
+    return (
+        <SandboxedPreview
+            kind={props.kind}
+            content={props.content}
+            scope={props.scope}
+            actions={<ClosePreviewButton onClose={props.onClose} />}
+        />
     );
 }
 
@@ -150,6 +199,7 @@ function FileEditorSurface(props: {
     deviceContent: string;
     stored: StoredBuffer | null;
     previewContent: string;
+    previewKind: FilePreviewKind | null;
     fileName: string;
     editable: boolean;
     vimMode: boolean;
@@ -214,17 +264,18 @@ function FileEditorSurface(props: {
                     props.preview ? "relative flex min-h-0 flex-1" : "hidden"
                 }
             >
-                <MarkdownPreview
-                    content={props.previewContent}
-                    deviceName={props.deviceName}
-                    filePath={props.filePath}
-                    repositoryRoot={props.repositoryRoot}
-                />
-                <div className="absolute top-0 right-1 z-10">
-                    <CloseMarkdownPreviewButton
+                {props.previewKind === null ? null : (
+                    <FilePreview
+                        kind={props.previewKind}
+                        shown={props.preview}
+                        content={props.previewContent}
+                        deviceName={props.deviceName}
+                        filePath={props.filePath}
+                        repositoryRoot={props.repositoryRoot}
+                        scope={props.bufferKey}
                         onClose={props.onClosePreview}
                     />
-                </div>
+                )}
             </div>
         </>
     );
@@ -587,10 +638,8 @@ export function FileEditView(props: FileEditViewProps) {
         !buffer.readOnly &&
         (contentQuery.isSuccess || buffer.vaultFile.isLocked);
 
-    const isMarkdown =
-        syntaxLanguageFromFileName(props.fileName) === "markdown";
-
-    const isPreviewShown = isMarkdown && props.preview;
+    const previewKind = filePreviewKind(props.fileName);
+    const isPreviewShown = previewKind !== null && props.preview;
 
     const previewContent = React.useSyncExternalStore(
         buffer.editor.subscribeDocument,
@@ -676,7 +725,8 @@ export function FileEditView(props: FileEditViewProps) {
                     agent={props.agent}
                     filePath={props.filePath}
                     selection={selection}
-                    preview={isMarkdown ? props.preview : undefined}
+                    preview={previewKind === null ? undefined : props.preview}
+                    previewKind={previewKind}
                     isSearchOpen={isSearchOpen}
                     isReloading={contentQuery.isFetching}
                     downloadUrl={props.downloadUrl}
@@ -688,7 +738,7 @@ export function FileEditView(props: FileEditViewProps) {
                         }
                     }}
                     onPreviewChange={
-                        isMarkdown ? props.onPreviewChange : undefined
+                        previewKind === null ? undefined : props.onPreviewChange
                     }
                     onToggleFullWindow={fullWindow.toggle}
                     onReload={reloadFile}
@@ -724,6 +774,7 @@ export function FileEditView(props: FileEditViewProps) {
                             deviceContent={contentQuery.data ?? ""}
                             stored={buffer.storedQuery.data ?? null}
                             previewContent={previewContent}
+                            previewKind={previewKind}
                             fileName={props.fileName}
                             editable={canEdit}
                             vimMode={userState.vimMode}

@@ -3188,6 +3188,27 @@ own endpoints:
     cross-site websocket hijacking.
   - Token management rejects cross-site requests (`Sec-Fetch-Site` and `Origin`).
   - `/mcp` accepts only the origins listed in `mcp_allowed_origins`.
+  - **Previewed HTML and SVG files are untrusted documents.** The editor's preview
+    (`preview=true`) renders Markdown with React, but an `.html`/`.htm` or `.svg` file has to
+    be rendered by the browser, so `SandboxedPreview` puts the editor buffer's text into an
+    `<iframe srcdoc>` (never the `/raw` URL). The frame's `sandbox` never contains
+    `allow-same-origin`, so the document has an opaque origin and cannot reach the UI's DOM,
+    the session cookie, storage or the authenticated API. Top navigation, popups, forms and
+    modals are never allowed. `utils/sandboxed-preview-document.ts` puts a meta
+    Content-Security-Policy in front of the file's markup (after a leading doctype only,
+    which keeps standards mode and cannot carry markup), since a meta policy only covers
+    what follows it: `default-src 'none'` with only inline styles and `data:` images, fonts
+    and media, so nothing loads from the network or the redoor server. Scripts are off by
+    default; the "Enable JavaScript" toggle adds only `allow-scripts` and
+    `script-src 'unsafe-inline'` and recreates the frame, because a loaded frame keeps its
+    sandbox. The choice is history-entry state per file, so other files start with scripts
+    off. Without scripts an SVG is shown as an `<img>` data URL, where SVG scripts never run;
+    with scripts its markup is inlined so they can. CSP cannot stop the frame navigating
+    itself (a clicked link, or a script setting `location`); the new document keeps the
+    sandbox, so it still cannot reach redoor. CSP does not cover WebRTC either, so with
+    scripts on a document can send data out over a peer connection; the UI says scripts may
+    reach the network rather than promise isolation. Either way all it can leak is the
+    file's own content and the fact that it was opened. Relative assets next to the file do not load.
 
 ### Access control
 

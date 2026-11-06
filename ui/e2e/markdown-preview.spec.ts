@@ -83,7 +83,7 @@ ${"```"}
         ).toHaveText("");
         // The preview pane itself owns the editor exit so it stays on the rendered page.
         await expect(
-            page.getByRole("button", { name: "Close markdown preview" }),
+            page.getByRole("button", { name: "Close preview" }),
         ).toBeVisible();
         // CodeMirror remains mounted while CSS keeps it out of the visible preview.
         await expect(
@@ -191,9 +191,7 @@ Draft body`);
                 .getByText("Draft body", { exact: true }),
         ).toBeVisible();
 
-        await page
-            .getByRole("button", { name: "Close markdown preview" })
-            .click();
+        await page.getByRole("button", { name: "Close preview" }).click();
 
         // The same mounted CodeMirror retains both draft contents and caret state.
         await expect(editor).toContainText("# Draft heading");
