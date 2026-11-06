@@ -212,6 +212,14 @@ pub(crate) async fn raw_agent_handler(
     let mut response_builder = Response::builder()
         .status(status_code)
         .header("Content-Type", metadata.mime_type)
+        // Agent files are untrusted, yet served on redoor's origin with the session cookie.
+        // Opening one in a tab (a Download link opened in a new tab, or a shared URL) would
+        // otherwise run an HTML or SVG file's scripts as redoor with the user's full API
+        // access. `sandbox` gives such a document an opaque origin and no scripts, and
+        // `nosniff` stops the browser upgrading other types to HTML. Neither affects `<img>`
+        // or downloads.
+        .header("Content-Security-Policy", "sandbox")
+        .header("X-Content-Type-Options", "nosniff")
         .header("Content-Length", content_length.to_string())
         .header("Accept-Ranges", "bytes");
 

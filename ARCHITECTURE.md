@@ -3188,6 +3188,12 @@ own endpoints:
     cross-site websocket hijacking.
   - Token management rejects cross-site requests (`Sec-Fetch-Site` and `Origin`).
   - `/mcp` accepts only the origins listed in `mcp_allowed_origins`.
+  - **Raw file responses are sandboxed.** `/raw` serves agent files inline with their
+    guessed type on redoor's origin, so a browser that opens the URL directly (a Download
+    link opened in a new tab, a shared link) would run an HTML or SVG file's scripts as
+    redoor with the user's API access. Every file response therefore carries
+    `Content-Security-Policy: sandbox` (opaque origin, no scripts) and
+    `X-Content-Type-Options: nosniff`. `<img>` and downloads ignore both.
   - **Previewed HTML and SVG files are untrusted documents.** The editor's preview
     (`preview=true`) renders Markdown with React, but an `.html`/`.htm` or `.svg` file has to
     be rendered by the browser, so `SandboxedPreview` puts the editor buffer's text into an

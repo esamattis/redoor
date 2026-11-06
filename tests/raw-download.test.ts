@@ -910,6 +910,21 @@ describe("Raw Download API", () => {
         expect(response.headers.get("Content-Disposition")).toMatch(/\.txt/);
     });
 
+    it("should serve inline files sandboxed so HTML cannot run as redoor", async () => {
+        const testFilePath = tempFiles.create(
+            "<script>fetch('/api/v1/agents')</script>",
+            { suffix: ".html" },
+        );
+
+        const response = await testAgent.download(testFilePath);
+
+        // The file is served inline with its real type, so only these headers keep a
+        // browser that opens the URL from running the file's scripts on redoor's origin.
+        expect(response.headers.get("Content-Type")).toMatch(/^text\/html/);
+        expect(response.headers.get("Content-Security-Policy")).toBe("sandbox");
+        expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+    });
+
     it("should indicate range support with Accept-Ranges header", async () => {
         const testContent = "test content for range check";
         const testFilePath = tempFiles.create(testContent, { suffix: ".txt" });
