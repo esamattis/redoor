@@ -16,7 +16,7 @@ use redoor_core::log_error;
 use redoor_protocol::api::auth::{ChangePasswordRequest, ChangePasswordResponse};
 
 use super::access::Principal;
-use super::auth::PasswordChangeError;
+use super::auth::{ActiveSession, PasswordChangeError};
 use super::error::ApiError;
 use super::state::ServerState;
 
@@ -25,6 +25,7 @@ use super::state::ServerState;
 pub(crate) async fn change_password_handler(
     State(state): State<ServerState>,
     Extension(principal): Extension<Principal>,
+    Extension(current_session): Extension<ActiveSession>,
     ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Response, ApiError> {
@@ -53,6 +54,7 @@ pub(crate) async fn change_password_handler(
         .change_password(
             &state.config_path,
             &user,
+            current_session.length,
             &request.current_password,
             &request.new_password,
         )

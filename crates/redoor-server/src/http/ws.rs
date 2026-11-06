@@ -2,6 +2,7 @@
 
 use crate::actors;
 use axum::{
+    Extension,
     extract::{
         State as AxumState,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -13,15 +14,21 @@ use redoor_core::websocket::WebSocketTimeouts;
 use redoor_protocol::api::ui_events::UiEvent;
 use uuid::Uuid;
 
-use super::state::ServerState;
+use super::{
+    auth::ActiveSession,
+    session_watch::{SessionWatch, close_for_ended_session},
+    state::ServerState,
+};
 
 /// Route: `GET /api/v1/ui/ws`
 pub(crate) async fn ui_websocket_handler(
     ws: WebSocketUpgrade,
     AxumState(state): AxumState<ServerState>,
+    Extension(session): Extension<ActiveSession>,
 ) -> impl IntoResponse {
     let timeouts = state.runtime.ws_timeouts;
-    ws.on_upgrade(move |socket| handle_ui_socket(socket, state.router_ref, timeouts))
+    let watch = SessionWatch::new(state.auth.clone(), &session);
+    ws.on_upgrade(move |socket| handle_ui_socket(socket, state.router_ref, timeouts, watch))
 }
 
 /// Relays UI events from the router to the websocket until either side closes.
@@ -71,11 +78,13 @@ async fn wait_for_ui_disconnect(receiver: &mut futures_util::stream::SplitStream
     }
 }
 
-/// Streams UI events to one browser until it disconnects or the router stops.
+/// Streams UI events to one browser until it disconnects, the router stops or the session
+/// ends.
 async fn handle_ui_socket(
     socket: WebSocket,
     router_ref: actors::router::RouterHandle,
     timeouts: WebSocketTimeouts,
+    watch: SessionWatch,
 ) {
     let subscriber_id = Uuid::new_v4().to_string();
     let (mut sender, mut receiver) = socket.split();
@@ -99,9 +108,13 @@ async fn handle_ui_socket(
         return;
     }
 
-    tokio::select! {
-        _ = forward_ui_events(&mut sender, &mut rx_out, timeouts) => {}
-        _ = wait_for_ui_disconnect(&mut receiver) => {}
+    let session_ended = tokio::select! {
+        _ = forward_ui_events(&mut sender, &mut rx_out, timeouts) => false,
+        _ = wait_for_ui_disconnect(&mut receiver) => false,
+        () = watch.ended() => true,
+    };
+    if session_ended {
+        close_for_ended_session(&mut sender).await;
     }
 
     if let Err(error) = router_ref

@@ -3,7 +3,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
-import { type ApiClient } from "#ui/api-client";
+import { type ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { UiEvent } from "#bindings/UiEvent";
 import {
     invalidateAgentData,
@@ -192,8 +192,15 @@ export class RefreshListener {
         this.websocket.addEventListener("error", () => {
             this.websocket?.close();
         });
-        this.websocket.addEventListener("close", () => {
+        this.websocket.addEventListener("close", (event) => {
             this.websocket = null;
+
+            // The session ended; reconnecting would only be refused again.
+            if (event.code === SESSION_ENDED_CLOSE_CODE) {
+                this.api.notifySessionEnded();
+
+                return;
+            }
 
             if (this.started) {
                 this.reconnectTimer = window.setTimeout(() => {

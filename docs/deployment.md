@@ -2,6 +2,10 @@
 
 Run Redoor behind an HTTPS reverse proxy when exposing it outside a trusted network, or let it serve HTTPS itself with [`[server.tls]`](config.md#servertls-built-in-https), using your own certificate or a self-signed one it creates.
 
+## Sessions behind a proxy
+
+Browser sessions last the length picked on the login page (1 hour by default) without activity, and the page keeps them alive with `POST /api/v1/session/activity` while it is used. Proxies need no special configuration for this. The server enforces the length; the session cookie itself lasts a year, restarted by activity. When a session ends, Redoor closes the page's WebSockets with close code 4401, which the page answers by showing the login form. Upgrading to the release that introduced session lengths signs every browser out once.
+
 ## Streaming request bodies
 
 Redoor streams uploads to the destination device through its agent with bounded memory use. Configure reverse proxies to forward request bodies as they arrive. Otherwise, the proxy receives the complete file before Redoor starts uploading it to the device, causing a long `(pending)` interval and using temporary storage proportional to the file size.

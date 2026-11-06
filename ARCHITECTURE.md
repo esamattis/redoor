@@ -227,7 +227,9 @@ The agent runtime and the implementation of every command.
     preference document and one file per open file's editor buffer), keyed by the
     session's login name.
   - `auth`: login verification (`[[server.users]]` passwords), sessions per login method and the password change; `auth_me` answers
-    `GET /api/v1/auth/me`. `auth/password_logins` owns the password logins: the config file
+    `GET /api/v1/auth/me`. `session_activity` renews sessions on reported activity and holds
+    them open during transfers; `session_watch` closes browser websockets whose session
+    ended (see "Authentication and trust"). `auth/password_logins` owns the password logins: the config file
     is their only source of truth, stat'ed on every login and session check and parsed again
     when its metadata changes, so hand edits apply without a restart and the password change
     only writes the file. A file that does not parse keeps the last good logins, and unchanged
@@ -3244,14 +3246,67 @@ own endpoints:
   send those headers, so the claim is only displayed next to the peer and never used for a
   security decision; the login rate limiter stays on the peer IP so a fresh header per guess
   cannot dodge it.
-- **Sessions** are files in the server data dir. Each records the login name and the method,
-  and is bound to the credential that created it, so each is revoked on its own; the check
-  resolves name and method against the running config on every request and at startup:
+- **Sessions** are files in the server data dir. Each records the login name, the method and
+  the session length, and is bound to the credential that created it, so each is revoked on
+  its own; the check resolves name and method against the running config on every request
+  and at startup:
 
   | Method | Bound to | Revoked when | Lifetime |
   |---|---|---|---|
-  | `password` | that user's password fingerprint (plaintext and hash in separate digest domains) | the user's password changes or the user is removed | 7 days |
-  | `oidc` | a digest of issuer, client id and allowed groups | those change or OIDC is removed | sliding |
+  | `password` | that user's password fingerprint (plaintext and hash in separate digest domains) | the user's password changes or the user is removed | the chosen length |
+  | `oidc` | a digest of issuer, client id and allowed groups | those change or OIDC is removed | the chosen length, capped by `session_lifetime_days` |
+- **Session length and idle expiry.** The login page offers how long the session lasts
+  without activity: 1 hour (the default, also for clients that send nothing), 24 hours,
+  1 week, 1 month (30 days) or 1 year (365 days), as `SessionLength` in `LoginRequest` or
+  the `session` query of the OIDC start route, where `PendingLogin` keeps it server-side
+  through the provider round trip (a failed sign-in sends it back to the login page). The
+  choice is a search parameter of the login route, so it survives that redirect. The file
+  stores the enum, and the lifetime is derived on every use, so lowering the OIDC cap also
+  shortens existing OIDC sessions. Every session cookie gets the same fixed `Max-Age`, the
+  longest length (365 days), set at sign-in and again by each written activity renewal so a
+  session kept active for over a year keeps its cookie: the server alone enforces the idle
+  expiry. A cookie tied to the lifetime would expire in the browser while a long transfer
+  still holds the session open, and a dead session id left in the browser is harmless
+  because the server rejects it. A password change re-issues the session with the same
+  length. The field is
+  required: session files from before it existed fail to parse and are removed, so that
+  upgrade signed everyone out once.
+- **Sessions slide only on activity.** Checking a session (every request, `auth/me`,
+  websocket watches) never renews it, so background polling of an unattended page cannot
+  keep it signed in. Two things do (`http/session_activity.rs`):
+  - `POST /api/v1/session/activity` (session only, behind the normal access check, so an
+    expired session gets 401 and cannot revive itself) sets the expiry to now plus the
+    lifetime, writing the file at most once a minute per session under the session file
+    lock with an existence check, so a renewal racing a logout cannot write the file back.
+    It answers `SessionExpiry` (RFC 3339 expiry and seconds left); a renewal that was
+    written also re-sends the session cookie with its fixed `Max-Age`.
+    `GET /api/v1/auth/me` returns the same expiry for browser sessions.
+  - The UI shell (`components/shell/session-activity.tsx`) listens on the document, in the
+    capture phase so terminal keystrokes count, for `pointerdown`, `keydown`, `wheel` and
+    `touchstart` while the page is visible, and reports at most once a minute
+    through a mutation. `scroll` does not count, because scripts scroll too (the log viewer
+    follows new lines) and would keep an unattended page signed in. It schedules from the
+    seconds left, not the server's timestamp, so
+    a wrong browser clock does not matter; it re-reads `auth/me` a minute before the expiry
+    (activity in another tab cancels the warning) and shows a `Toast` if the minute is
+    still near, then reads it again just after the expiry, whose 401 leads to the login
+    page with the current path as `redirect`.
+  - Uploads and downloads whose bodies stream for long (`access::routes::is_session_transfer`:
+    raw GET and PUT, archive and encrypted uploads, Git and decrypted downloads) are
+    activity the page cannot see, such as a native `<a download>`. The access layer takes a
+    `SessionActivityGuard` before the handler runs and moves it into the response body
+    (`TransferBody`), so it lives until the last byte of either direction is through. While
+    any guard of a session exists, an in-memory counter in `AuthState` keeps the session
+    valid past its expiry (reported as at least a lifetime away); dropping the guard renews
+    the session and only then releases the hold, so it cannot expire in between.
+- **Browser websockets end with their session.** The UI events, server log, agent log and
+  terminal sockets are authenticated once, at the upgrade, so each runs a `SessionWatch`
+  (`http/session_watch.rs`) next to its relay: every 30 s it checks the session without
+  renewing it, and once the session expired, was logged out or was revoked it closes the
+  socket with code 4401. The UI treats that code like a 401 (`ApiClient.notifySessionEnded`)
+  and goes to the login page instead of reconnecting; a terminal's shell keeps running.
+  The access layer puts the session (`ActiveSession`: id, length, expiry) into the request
+  extensions next to `Principal::Session` for these handlers.
 
   The name of an OIDC session is the ID token's
   `preferred_username`, else `email`, else `sub`; it is only for display, logs and the
@@ -3288,9 +3343,9 @@ own endpoints:
     providers where the client registration already decides who may use it; the server
     logs a startup warning so this is never accidental. An empty list is refused because
     it could mean either "nobody" or "anybody".
-  - Every allowed identity maps to the single account. OIDC sessions slide forward on use
-    (rewritten at most daily, cookie refreshed by the access layer), and their digest
-    hashes an unset `allowed_groups` in its own domain.
+  - Every allowed identity maps to the single account. OIDC sessions last the length picked
+    on the login page, capped by `session_lifetime_days`, and slide like every session (see
+    above); their digest hashes an unset `allowed_groups` in its own domain.
 - **Access tokens** are the one credential type for clients other than the browser. They
   are created and managed only by a browser session (see "Access control" below). An MCP
   client is usually an AI assistant acting for the user, so it should get no more access

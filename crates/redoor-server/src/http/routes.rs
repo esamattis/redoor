@@ -92,6 +92,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         )
         .route("/api/v1/auth/me", get(super::auth_me::auth_me_handler))
         .route(
+            "/api/v1/session/activity",
+            post(super::session_activity::session_activity_handler),
+        )
+        .route(
             "/api/v1/auth/oidc/login",
             get(super::oidc::oidc_login_handler),
         )

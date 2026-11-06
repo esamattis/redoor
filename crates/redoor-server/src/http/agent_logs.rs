@@ -1,12 +1,18 @@
 //! Browser endpoint for live agent logs: bridges one browser websocket to one log stream of
 //! the agent's connection.
 
-use super::{state::ServerState, websocket_security::is_same_origin};
+use super::{
+    auth::ActiveSession,
+    session_watch::{SessionWatch, close_for_ended_session},
+    state::ServerState,
+    websocket_security::is_same_origin,
+};
 use crate::actors::router::{
     LogStream, OpenAgentLogStreamRequest, OutputReceiver, RouterError, RouterMsg, StreamCloseGuard,
 };
 use crate::http::access::ResolvedDevice;
 use axum::{
+    Extension,
     extract::{
         State as AxumState,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -32,6 +38,7 @@ pub(crate) async fn browser_agent_logs_websocket_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     headers: HeaderMap,
     AxumState(state): AxumState<ServerState>,
+    Extension(session): Extension<ActiveSession>,
     websocket: WebSocketUpgrade,
 ) -> Response {
     if !is_same_origin(&headers) {
@@ -41,15 +48,22 @@ pub(crate) async fn browser_agent_logs_websocket_handler(
         )
             .into_response();
     }
+    let watch = SessionWatch::new(state.auth.clone(), &session);
     websocket
         .max_message_size(MAX_LOG_MESSAGE_SIZE)
         .max_frame_size(MAX_LOG_MESSAGE_SIZE)
-        .on_upgrade(move |socket| run_log_relay(socket, agent_id, state))
+        .on_upgrade(move |socket| run_log_relay(socket, agent_id, state, watch))
         .into_response()
 }
 
-/// Opens the log stream and relays its events until the browser or the agent goes away.
-async fn run_log_relay(mut browser: WebSocket, agent_id: AgentId, state: ServerState) {
+/// Opens the log stream and relays its events until the browser or the agent goes away, or
+/// the session that opened the socket ends.
+async fn run_log_relay(
+    mut browser: WebSocket,
+    agent_id: AgentId,
+    state: ServerState,
+    watch: SessionWatch,
+) {
     let opened = state
         .router_ref
         .request(|reply| {
@@ -77,10 +91,14 @@ async fn run_log_relay(mut browser: WebSocket, agent_id: AgentId, state: ServerS
         agent_id,
         stream
     );
-    let (browser_sink, browser_stream) = browser.split();
-    tokio::select! {
-        _ = forward_agent_events(output, browser_sink, state.runtime.ws_timeouts) => {}
-        _ = wait_for_browser_disconnect(browser_stream) => {}
+    let (mut browser_sink, browser_stream) = browser.split();
+    let session_ended = tokio::select! {
+        _ = forward_agent_events(output, &mut browser_sink, state.runtime.ws_timeouts) => false,
+        _ = wait_for_browser_disconnect(browser_stream) => false,
+        () = watch.ended() => true,
+    };
+    if session_ended {
+        close_for_ended_session(&mut browser_sink).await;
     }
     log!(
         Level::Info,
@@ -144,7 +162,7 @@ enum StreamOutput {
 /// Validates the agent's events before forwarding them unchanged to the browser.
 async fn forward_agent_events(
     mut output: OutputReceiver,
-    mut browser: SplitSink<WebSocket, WsMessage>,
+    browser: &mut SplitSink<WebSocket, WsMessage>,
     timeouts: WebSocketTimeouts,
 ) -> Result<(), ()> {
     let mut keepalive = timeouts.keepalive_interval();
@@ -162,14 +180,14 @@ async fn forward_agent_events(
                     .map_err(|_| ())?;
                 continue;
             }
-            StreamOutput::Data(None | Some(Err(_))) => return close(&mut browser).await,
+            StreamOutput::Data(None | Some(Err(_))) => return close(browser).await,
             StreamOutput::Data(Some(Ok(chunk))) => chunk,
         };
         for line in lines.push(&chunk.data)? {
-            forward_line(&mut browser, line).await?;
+            forward_line(browser, line).await?;
         }
         if chunk.is_last {
-            return close(&mut browser).await;
+            return close(browser).await;
         }
     }
 }

@@ -36,7 +36,12 @@ test.describe("Signed-in user", () => {
         // The shared session signed in with a password, so the answer is held to an OIDC one.
         await page.route("**/api/v1/auth/me", (route) =>
             route.fulfill({
-                json: { name: "operator", method: "oidc", token_id: null },
+                json: {
+                    name: "operator",
+                    method: "oidc",
+                    token_id: null,
+                    session: null,
+                },
             }),
         );
         await page.goto(`${WEB_BASE_URL}/`);

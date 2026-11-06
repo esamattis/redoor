@@ -2,6 +2,7 @@ import * as React from "react";
 import { ScrollText } from "lucide-react";
 import { z } from "zod";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 
 import type { Level } from "#bindings/Level";
 import type { LogEntry } from "#bindings/LogEntry";
@@ -13,7 +14,10 @@ import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { Select } from "#ui/components/select";
 import { Toast } from "#ui/components/toast";
+import { SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import { cn } from "#ui/utils/cn";
+
+const rootRouteApi = getRouteApi("__root__");
 
 type ConnectionState = "connecting" | "connected" | "reconnecting";
 
@@ -366,6 +370,7 @@ export function LogViewer(props: {
     headerActions?: React.ReactNode;
     loggingLevelControl: LoggingLevelControlConfig;
 }) {
+    const { api } = rootRouteApi.useRouteContext();
     const [entries, setEntries] = React.useState<ViewerEntry[]>([]);
     const errorDetails = useErrorDetailsSelection();
     const [autoScroll, setAutoScroll] = React.useState(true);
@@ -476,12 +481,20 @@ export function LogViewer(props: {
                 setStatusMessage("Log connection failed; reconnecting…");
                 nextSocket.close();
             });
-            nextSocket.addEventListener("close", () => {
+            nextSocket.addEventListener("close", (event) => {
                 if (socket !== nextSocket) {
                     return;
                 }
 
                 socket = null;
+
+                // The session ended; reconnecting would only be refused again.
+                if (event.code === SESSION_ENDED_CLOSE_CODE) {
+                    api.notifySessionEnded();
+
+                    return;
+                }
+
                 scheduleReconnect();
             });
         };
@@ -500,7 +513,7 @@ export function LogViewer(props: {
             socket = null;
             activeSocket?.close();
         };
-    }, [props.websocketUrl]);
+    }, [api, props.websocketUrl]);
 
     React.useLayoutEffect(() => {
         if (!autoScroll) {

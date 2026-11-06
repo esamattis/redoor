@@ -46,6 +46,8 @@ import type { LoginRequest } from "#bindings/LoginRequest";
 import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LoginMethodsResponse } from "#bindings/LoginMethodsResponse";
 import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
+import type { SessionExpiry } from "#bindings/SessionExpiry";
+import type { SessionLength } from "#bindings/SessionLength";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { CreateOneTimeTokenResponse } from "#bindings/CreateOneTimeTokenResponse";
@@ -179,6 +181,13 @@ const { appendFilesystemPath, encodeFilesystemPath } = apiPaths;
 
 /** Carries a file key on `fetch` requests, so keys never appear in URLs or logs. */
 export const VAULT_KEY_HEADER = "Redoor-Vault-Key";
+
+/**
+ * Close code of a browser websocket whose sign-in session ended (expired, logged out or
+ * revoked). Sockets closed with it must send the user to the login page instead of
+ * reconnecting, because every reconnect would be refused.
+ */
+export const SESSION_ENDED_CLOSE_CODE = 4401;
 
 /** The revision a vault read returns and a save sends back. */
 export const VAULT_REVISION_HEADER = "Redoor-Vault-Revision";
@@ -1536,6 +1545,14 @@ export class ApiClient {
         this.unauthorizedHandler = handler;
     }
 
+    /**
+     * Reports a session end noticed outside a REST response, such as a websocket closed with
+     * `SESSION_ENDED_CLOSE_CODE`, so it leads to the login page exactly like a 401 does.
+     */
+    notifySessionEnded(): void {
+        if (!this.logoutStarted) this.unauthorizedHandler?.();
+    }
+
     /** Returns authentication headers for direct streaming requests outside this wrapper. */
     getAuthHeaders(): Record<string, string> {
         return authenticationHeaders(this.requestContext());
@@ -1560,9 +1577,22 @@ export class ApiClient {
         };
     }
 
-    /** Establishes a browser cookie and captures it explicitly when running under Node fetch. */
-    async login(username: string, password: string): Promise<LoginResponse> {
-        const request: LoginRequest = { username, password };
+    /**
+     * Establishes a browser cookie and captures it explicitly when running under Node fetch.
+     * The session ends after `sessionLength` without activity. Node clients (scripts and
+     * tests) never report activity, so they default to a day; the login page always passes
+     * the user's choice.
+     */
+    async login(
+        username: string,
+        password: string,
+        sessionLength: SessionLength = "day",
+    ): Promise<LoginResponse> {
+        const request: LoginRequest = {
+            username,
+            password,
+            session_length: sessionLength,
+        };
 
         const response = await fetch(
             `${this.baseUrl}/api/v1/login`,
@@ -1643,9 +1673,27 @@ export class ApiClient {
         );
     }
 
-    /** Builds the browser navigation target that starts OIDC sign-in and returns to `redirect`. */
-    getOidcLoginUrl(redirect: string): string {
-        const params = new URLSearchParams({ redirect });
+    /**
+     * Records user activity, which slides the session's expiry forward. Ordinary requests
+     * never do, so an unattended page signs out after the chosen session length.
+     */
+    async recordSessionActivity(): Promise<SessionExpiry> {
+        return apiRequest<SessionExpiry>(
+            `${this.baseUrl}/api/v1/session/activity`,
+            { method: "POST" },
+            this.requestContext(),
+        );
+    }
+
+    /**
+     * Builds the browser navigation target that starts OIDC sign-in and returns to
+     * `redirect`; the server keeps `sessionLength` for the session the sign-in creates.
+     */
+    getOidcLoginUrl(redirect: string, sessionLength: SessionLength): string {
+        const params = new URLSearchParams({
+            redirect,
+            session: sessionLength,
+        });
 
         return `${this.baseUrl}/api/v1/auth/oidc/login?${params.toString()}`;
     }

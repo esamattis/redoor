@@ -131,6 +131,10 @@ describe("HTTP authentication", () => {
             name: TEST_USERNAME,
             method: "password",
             token_id: null,
+            session: {
+                expires_at: expect.any(String),
+                expires_in_seconds: expect.any(Number),
+            },
         });
         // When routing discovers an external address, it must not return an empty value.
         expect(

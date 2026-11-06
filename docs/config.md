@@ -123,6 +123,12 @@ For a `[[server.users]]` (or shorthand) login, the server home page and the appl
 
 #### When sessions end
 
+The login page asks how long to stay signed in: **1 hour** (the default), **24 hours**, **1 week**, **1 month** or **1 year**. The session ends after that long without activity: using the page (clicking, typing, scrolling with the wheel or touch) and uploads or downloads that finish start the time again, while a page merely left open does not. The server enforces the length; the browser keeps the session cookie for a year whichever length you pick, restarted by activity, and a cookie of an ended session is simply refused. About a minute before the end the page warns that you will be signed out; any interaction keeps you signed in. Open terminals and live logs close when the session ends, and the page returns to the login form. For OIDC sign-ins the choice is capped by `session_lifetime_days`.
+
+Upgrading to the release that added the choice signs everyone out once.
+
+Sessions also end early when:
+
 | Method   | Session ends when                                                         |
 | -------- | ------------------------------------------------------------------------- |
 | Password | that user's password changes or the user is removed from the config       |
@@ -157,7 +163,7 @@ Adds "Sign in with …" to the login page using any OpenID Connect provider (Poc
 | `allowed_groups`        | array of strings | unset (any account)              | The ID token's `groups` claim must contain at least one of these. Checked by Redoor even if the provider also restricts the client. When unset, every account that signs in at the provider gets in, so restrict the client at the provider instead. An empty list is an error. |
 | `scopes`                | array of strings | `["openid", "profile", "groups"]` | Requested scopes. `openid` is always added. Change this if your provider releases the `groups` claim under another scope.           |
 | `provider_name`         | string           | `single sign-on`                 | Button label: "Sign in with {provider_name}".                                                                                       |
-| `session_lifetime_days` | integer          | `30`                             | Idle lifetime of sessions created by OIDC sign-in (1–400). Every use extends it, so it only expires after this long without use.     |
+| `session_lifetime_days` | integer          | `30`                             | Upper bound on the session length of OIDC sign-ins (1–400). A longer choice on the login page, such as "1 year", is cut to this.     |
 
 The provider must support the authorization code flow with PKCE (S256), and its discovered authorization and token endpoints must follow the same `https://` rule as `issuer`. The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups` (including adding or removing it), or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS through a reverse proxy; built-in [`[server.tls]`](#servertls-built-in-https) does it automatically.
 

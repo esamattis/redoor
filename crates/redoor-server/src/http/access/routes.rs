@@ -92,6 +92,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
 
         // Changing the login password: a token must never be able to take over the account.
         ("PUT", "/api/v1/auth/password") => Access::SessionOnly,
+        // Keeping a browser session alive; tokens do not idle out.
+        ("POST", "/api/v1/session/activity") => Access::SessionOnly,
 
         // SSH keys and host keys carry login passwords and file keys and change what the
         // server can log in to.
@@ -221,6 +223,29 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
     Some(access)
 }
 
+/// Routes whose request or response body can stream for a long time in a browser, so the
+/// access layer keeps their session open until the body is done (see
+/// `AuthState::hold_for_transfer`). The browser cannot report activity for a native download
+/// or while the user just waits for an upload, so without this a long transfer would outlive
+/// the 15 minute idle session it runs in.
+pub(crate) fn is_session_transfer(method: &Method, matched_path: &str) -> bool {
+    let path = matched_path
+        .strip_suffix("/{*path}")
+        .unwrap_or(matched_path);
+    matches!(
+        (method.as_str(), path),
+        (
+            "GET",
+            "/api/v1/agents/{agent}/raw" | "/api/v1/agents/{agent}/git/download"
+        ) | (
+            "PUT",
+            "/api/v1/agents/{agent}/raw"
+                | "/api/v1/agents/{agent}/archive"
+                | "/api/v1/agents/{agent}/vault/raw"
+        ) | ("POST", "/api/v1/agents/{agent}/vault/download")
+    )
+}
+
 /// Identifies raw GETs carrying a one-time link token; their handler validates the link, so
 /// they need no session or access token.
 pub(crate) fn is_one_time_token_raw_request(method: &Method, uri: &Uri) -> bool {
@@ -261,6 +286,11 @@ mod tests {
             (Method::GET, "/api/v1/auth/oidc/callback", Access::Public),
             (Method::GET, "/api/v1/auth/methods", Access::Public),
             (Method::PUT, "/api/v1/auth/password", Access::SessionOnly),
+            (
+                Method::POST,
+                "/api/v1/session/activity",
+                Access::SessionOnly,
+            ),
             (Method::GET, "/api/v1/auth/me", Access::AnyPrincipal),
             (Method::GET, "/api/v1/agents", Access::AnyPrincipal),
             (Method::POST, "/api/v1/agents", Access::SessionOnly),
@@ -443,6 +473,40 @@ mod tests {
         assert_eq!(classify(&Method::GET, "/api/v1/new-feature"), None);
         // A known path with an unlisted method is unclassified the same way.
         assert_eq!(classify(&Method::PATCH, "/api/v1/agents/{agent}/raw"), None);
+    }
+
+    /// Only streaming uploads and downloads hold their session open; ordinary requests must
+    /// not, or background polling would keep an idle browser signed in.
+    #[test]
+    fn only_transfers_hold_the_session_open() {
+        // Downloads, with and without a path, keep the session open while they stream.
+        assert!(is_session_transfer(
+            &Method::GET,
+            "/api/v1/agents/{agent}/raw/{*path}"
+        ));
+        assert!(is_session_transfer(
+            &Method::GET,
+            "/api/v1/agents/{agent}/git/download"
+        ));
+        // Uploads do too, including encrypted ones.
+        assert!(is_session_transfer(
+            &Method::PUT,
+            "/api/v1/agents/{agent}/archive/{*path}"
+        ));
+        assert!(is_session_transfer(
+            &Method::PUT,
+            "/api/v1/agents/{agent}/vault/raw/{*path}"
+        ));
+        // Deleting through the raw route is no transfer.
+        assert!(!is_session_transfer(
+            &Method::DELETE,
+            "/api/v1/agents/{agent}/raw/{*path}"
+        ));
+        // Listings are ordinary requests that must not count as activity.
+        assert!(!is_session_transfer(
+            &Method::GET,
+            "/api/v1/agents/{agent}/ls/{*path}"
+        ));
     }
 
     /// Keeps the link bypass limited to raw GETs that present a non-empty token parameter.

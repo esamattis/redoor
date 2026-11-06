@@ -169,8 +169,9 @@ test.describe("Authentication", () => {
                 json: { oidc: { provider_name: "Test ID" } },
             }),
         );
+        // The server sends a refused sign-in back with the length the user had picked.
         await page.goto(
-            `${WEB_BASE_URL}/login?redirect=${encodeURIComponent("/transfers?from=oidc")}&oidc_error=denied`,
+            `${WEB_BASE_URL}/login?redirect=${encodeURIComponent("/transfers?from=oidc")}&oidc_error=denied&session=month`,
         );
 
         const providerButton = page.getByRole("link", {
@@ -179,10 +180,14 @@ test.describe("Authentication", () => {
 
         // The provider is the primary way in.
         await expect(providerButton).toBeVisible();
-        // The provider round trip carries the page to return to.
+        // The provider round trip carries the page to return to and the session length.
         await expect(providerButton).toHaveAttribute(
             "href",
-            `${WEB_BASE_URL}/api/v1/auth/oidc/login?redirect=${encodeURIComponent("/transfers?from=oidc")}`,
+            `${WEB_BASE_URL}/api/v1/auth/oidc/login?redirect=${encodeURIComponent("/transfers?from=oidc")}&session=month`,
+        );
+        // The picked length is still selected for the next attempt.
+        await expect(page.getByLabel("Stay signed in for")).toHaveValue(
+            "month",
         );
         // A refused sign-in is explained with fixed text chosen by the code.
         await expect(page.getByRole("alert")).toHaveText(

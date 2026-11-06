@@ -14,6 +14,9 @@ export default async function globalSetup(): Promise<void> {
             data: {
                 username: "test-user",
                 password: "test-password",
+                // The suite runs longer than the default hour, and page loads and API calls
+                // do not count as activity, so the shared session must outlast the run.
+                session_length: "week",
             },
         });
 

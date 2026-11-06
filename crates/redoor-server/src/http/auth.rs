@@ -28,7 +28,7 @@ use redoor_core::config::{OidcConfig, ServerPasswordEditError};
 use redoor_core::{log, log_error};
 use redoor_protocol::api::{
     ErrorResponse,
-    auth::{LoginRequest, LoginResponse, LogoutResponse},
+    auth::{LoginRequest, LoginResponse, LogoutResponse, SessionLength},
 };
 use redoor_protocol::wire::log::Level;
 use serde::{Deserialize, Serialize};
@@ -43,11 +43,15 @@ mod password_logins;
 
 /// Cookie carrying the opaque browser session id.
 const SESSION_COOKIE_NAME: &str = "redoor_session";
-/// One week, so routine use does not require frequent re-login while stolen cookies expire.
-const SESSION_LIFETIME: Duration = Duration::from_secs(60 * 60 * 24 * 7);
-/// Upper bound on how often a sliding OIDC session file is rewritten, so busy UIs that send
-/// many requests per second do not turn every request into a disk write.
-const SESSION_RENEWAL_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24);
+/// `Max-Age` of every session cookie: the longest session length. The server alone enforces
+/// the idle expiry, so the cookie is never refreshed; a cookie tied to the lifetime would
+/// expire in the browser while a long transfer still holds the session open. A dead session
+/// id left in the browser is harmless, because the server rejects it.
+const SESSION_COOKIE_MAX_AGE: Duration = SessionLength::Year.duration();
+/// Upper bound on how often a renewal rewrites a session file, so an active UI and many
+/// finishing transfers do not turn every renewal into a disk write. Also the granularity
+/// of the expiry the UI is told.
+const SESSION_RENEWAL_INTERVAL: Duration = Duration::from_secs(60);
 /// Caps online brute force against a single source address.
 const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
 /// Caps coordinated multi-source brute force against the whole process.
@@ -86,6 +90,10 @@ pub(crate) struct AuthState {
     /// Orders session renewals against logouts, so a renewal racing a logout cannot write
     /// the just-deleted session file back.
     session_file_lock: Arc<tokio::sync::Mutex<()>>,
+    /// Uploads and downloads in progress per session id. A session with one keeps working
+    /// past its idle expiry, because a user waiting for a long transfer is not idle and
+    /// the browser cannot report activity for a native download.
+    transfers: Arc<Mutex<HashMap<String, usize>>>,
 }
 
 /// How sessions created by OIDC sign-in are bound and how long they live.
@@ -94,7 +102,8 @@ struct OidcSessionPolicy {
     /// Digest of the provider settings, so changing the issuer, client or allowed groups
     /// invalidates sessions that were granted under the old rules.
     fingerprint: String,
-    /// Idle lifetime; every authenticated request slides the expiry forward.
+    /// Upper bound on the idle lifetime of OIDC sessions (`session_lifetime_days`), so an
+    /// operator can keep sign-ins through the provider shorter than the login page offers.
     lifetime: Duration,
 }
 
@@ -103,12 +112,12 @@ struct OidcSessionPolicy {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum SessionMethod {
-    /// A `[[server.users]]` name and password; fixed lifetime, revoked when that user's
-    /// password changes or the user is removed. The default keeps session files written
+    /// A `[[server.users]]` name and password; revoked when that user's password changes or
+    /// the user is removed. The default keeps session files written
     /// before OIDC support valid.
     #[default]
     Password,
-    /// OpenID Connect sign-in; sliding lifetime, revoked when the OIDC settings change.
+    /// OpenID Connect sign-in; revoked when the OIDC settings change.
     Oidc,
 }
 
@@ -139,15 +148,50 @@ impl SessionUser {
     }
 }
 
-/// Outcome of checking a request's session cookie.
+/// Outcome of checking a request's session cookie. Checking never renews the session: only
+/// explicit activity and finished transfers do, so background polling of an unattended
+/// browser cannot keep it signed in.
 pub(crate) enum SessionCheck {
     /// No usable session; the request must be treated as unauthenticated.
     Invalid,
-    /// The session is valid and its cookie needs no update.
-    Valid(SessionUser),
-    /// The session is valid and its expiry slid forward, so the response must refresh the
-    /// browser cookie's lifetime to match.
-    Renewed(SessionUser, HeaderValue),
+    /// The session is valid: who it belongs to and which session it is.
+    Valid(SessionUser, ActiveSession),
+}
+
+/// The browser session behind a request, put into the request extensions next to
+/// `Principal::Session` so handlers can renew it, hold it open during a transfer, or watch
+/// it end from a websocket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActiveSession {
+    /// The opaque session id from the cookie, already validated as a UUID.
+    pub(crate) id: String,
+    /// The session length chosen at sign-in. A password change issues its new session with
+    /// the same length.
+    pub(crate) length: SessionLength,
+    /// Unix seconds after which the session ends without activity. While a transfer keeps
+    /// the session open this is at least a full lifetime away, because the transfer renews
+    /// the session when it finishes.
+    pub(crate) expires_at: i64,
+}
+
+/// A renewal that succeeded: the new expiry, and the session cookie when the renewal was
+/// written (not throttled), so the browser's copy restarts its fixed `Max-Age` and a session
+/// kept active for longer than that never loses its cookie.
+pub(crate) struct RenewedSession {
+    /// Unix seconds after which the session ends without further activity.
+    pub(crate) expires_at: i64,
+    /// `Set-Cookie` for the session, present only when the file was written.
+    pub(crate) cookie: Option<HeaderValue>,
+}
+
+/// Why a session is renewed, because a finished transfer may renew a session that only the
+/// transfer kept alive past its expiry, while explicit activity may not revive one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RenewalCause {
+    /// The UI reported user interaction.
+    Activity,
+    /// An upload or download of the session finished.
+    TransferFinished,
 }
 
 /// A successful credential check: who signed in and the fingerprint the new session is
@@ -254,6 +298,10 @@ struct SessionFile {
     expires_at: i64,
     #[serde(default)]
     method: SessionMethod,
+    /// The idle lifetime the user picked on the login page. Required: files written before
+    /// the choice existed do not parse and are dropped, so that upgrade signed everyone out
+    /// once instead of keeping sessions whose lifetime nobody chose.
+    length: SessionLength,
 }
 
 impl AuthState {
@@ -297,6 +345,7 @@ impl AuthState {
                 lifetime: config.session_lifetime,
             }),
             session_file_lock: Arc::new(tokio::sync::Mutex::new(())),
+            transfers: Arc::default(),
         };
 
         // Drop sessions of changed passwords and removed logins so the change takes effect
@@ -325,57 +374,149 @@ impl AuthState {
         let Some(session_id) = session_cookie(headers) else {
             return SessionCheck::Invalid;
         };
-        let Some(path) = self.session_path(&session_id) else {
+        self.check_session_id(&session_id).await
+    }
+
+    /// Checks one session by id, for the request path and for websockets that watch their
+    /// session end. Never renews; an expired session is only kept while a transfer of it
+    /// is still running.
+    pub(crate) async fn check_session_id(&self, session_id: &str) -> SessionCheck {
+        let Some(path) = self.session_path(session_id) else {
             return SessionCheck::Invalid;
         };
-        let Ok(contents) = tokio::fs::read(&path).await else {
-            return SessionCheck::Invalid;
-        };
-        let Ok(mut session) = serde_json::from_slice::<SessionFile>(&contents) else {
+        let Some(session) = read_session_file(&path).await else {
             return SessionCheck::Invalid;
         };
 
         let now = jiff::Timestamp::now().as_second();
         let logins = self.logins.current().await;
+        let transferring = self.has_transfers(session_id);
         if session.session_id != session_id
             || !self.is_current(&session, &logins)
-            || session.expires_at <= now
+            || (session.expires_at <= now && !transferring)
         {
             // Remove expired or credential-mismatched files so disk does not retain stealable IDs.
             let _ = tokio::fs::remove_file(path).await;
             return SessionCheck::Invalid;
         }
-        let user = SessionUser {
-            name: session.username.clone(),
-            method: session.method,
+        let expires_at = if transferring {
+            // The transfer renews the session when it ends, so it cannot expire before then.
+            let lifetime = self.lifetime(session.method, session.length).as_secs() as i64;
+            session.expires_at.max(now + lifetime)
+        } else {
+            session.expires_at
         };
+        SessionCheck::Valid(
+            SessionUser {
+                name: session.username,
+                method: session.method,
+            },
+            ActiveSession {
+                id: session.session_id,
+                length: session.length,
+                expires_at,
+            },
+        )
+    }
 
-        let Some(policy) = self
-            .oidc_sessions
-            .as_ref()
-            .filter(|_| session.method == SessionMethod::Oidc)
-        else {
-            return SessionCheck::Valid(user);
+    /// The idle lifetime of a session: the length picked at sign-in, capped by
+    /// `session_lifetime_days` for OIDC sessions. Computed on every use rather than stored,
+    /// so lowering the OIDC cap also shortens sessions that already exist.
+    fn lifetime(&self, method: SessionMethod, length: SessionLength) -> Duration {
+        match method {
+            SessionMethod::Password => length.duration(),
+            // Without OIDC configured the session is revoked anyway; the shortest length is
+            // only a safe answer.
+            SessionMethod::Oidc => self
+                .oidc_sessions
+                .as_ref()
+                .map_or(SessionLength::Hour.duration(), |policy| {
+                    length.duration().min(policy.lifetime)
+                }),
+        }
+    }
+
+    /// Slides a session's expiry a full lifetime forward because the user was active.
+    /// Returns `None` when the session is gone, expired or revoked, so activity can never
+    /// revive a session.
+    pub(crate) async fn renew_session(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Option<RenewedSession>> {
+        self.renew(session_id, RenewalCause::Activity).await
+    }
+
+    /// Writes the renewed expiry, at most once per [`SESSION_RENEWAL_INTERVAL`] per session.
+    ///
+    /// Runs under the session file lock and checks that the file still exists, so a renewal
+    /// racing a logout cannot write the just-deleted session back.
+    async fn renew(
+        &self,
+        session_id: &str,
+        cause: RenewalCause,
+    ) -> anyhow::Result<Option<RenewedSession>> {
+        let Some(path) = self.session_path(session_id) else {
+            return Ok(None);
         };
-        let lifetime = policy.lifetime.as_secs() as i64;
-        let renewal_interval = SESSION_RENEWAL_INTERVAL.min(policy.lifetime / 2).as_secs() as i64;
-        if session.expires_at - now > lifetime - renewal_interval {
-            return SessionCheck::Valid(user);
-        }
-        session.expires_at = now + lifetime;
+        let logins = self.logins.current().await;
         let _guard = self.session_file_lock.lock().await;
-        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
-            // Logged out while this request was in flight; let this request finish but do not
-            // bring the session back.
-            return SessionCheck::Valid(user);
+        let Some(mut session) = read_session_file(&path).await else {
+            return Ok(None);
+        };
+        let now = jiff::Timestamp::now().as_second();
+        let expired = session.expires_at <= now && !self.has_transfers(session_id);
+        if session.session_id != session_id
+            || !self.is_current(&session, &logins)
+            || (cause == RenewalCause::Activity && expired)
+        {
+            return Ok(None);
         }
-        if let Err(error) = self.write_session(&session).await {
-            // The session is still valid until its old expiry, so a failed renewal must not
-            // log the user out; the next request simply tries again.
-            log_error!(error, "Failed to renew session");
-            return SessionCheck::Valid(user);
+        let lifetime = self.lifetime(session.method, session.length);
+        let renewed_until = now + lifetime.as_secs() as i64;
+        let mut cookie = None;
+        if renewed_until - session.expires_at >= SESSION_RENEWAL_INTERVAL.as_secs() as i64 {
+            session.expires_at = renewed_until;
+            self.write_session(&session).await?;
+            cookie = Some(self.session_set_cookie(session_id));
         }
-        SessionCheck::Renewed(user, self.session_set_cookie(&session_id, policy.lifetime))
+        Ok(Some(RenewedSession {
+            expires_at: session.expires_at,
+            cookie,
+        }))
+    }
+
+    /// Keeps a session open while an upload or download of it runs, and renews it when the
+    /// transfer ends; see [`SessionActivityGuard`].
+    pub(crate) fn hold_for_transfer(&self, session: &ActiveSession) -> SessionActivityGuard {
+        *self
+            .transfers
+            .lock()
+            .expect("session transfers poisoned")
+            .entry(session.id.clone())
+            .or_default() += 1;
+        SessionActivityGuard {
+            auth: self.clone(),
+            session_id: session.id.clone(),
+        }
+    }
+
+    /// Whether an upload or download of the session is still running.
+    fn has_transfers(&self, session_id: &str) -> bool {
+        self.transfers
+            .lock()
+            .expect("session transfers poisoned")
+            .contains_key(session_id)
+    }
+
+    /// Forgets one finished transfer of the session.
+    fn release_transfer(&self, session_id: &str) {
+        let mut transfers = self.transfers.lock().expect("session transfers poisoned");
+        if let Some(count) = transfers.get_mut(session_id) {
+            *count -= 1;
+            if *count == 0 {
+                transfers.remove(session_id);
+            }
+        }
     }
 
     /// Whether a stored session still matches the login that issued it: a password session
@@ -397,8 +538,13 @@ impl AuthState {
     }
 
     /// Creates a session for an OIDC sign-in; `name` is the provider's readable name for the
-    /// user, recorded for display and logs only.
-    pub(crate) async fn create_oidc_session(&self, name: String) -> anyhow::Result<NewSession> {
+    /// user, recorded for display and logs only, and `length` is the login page's choice
+    /// carried through the provider round trip (capped by `session_lifetime_days`).
+    pub(crate) async fn create_oidc_session(
+        &self,
+        name: String,
+        length: SessionLength,
+    ) -> anyhow::Result<NewSession> {
         let policy = self
             .oidc_sessions
             .as_ref()
@@ -411,7 +557,7 @@ impl AuthState {
                 },
                 fingerprint: policy.fingerprint.clone(),
             },
-            policy.lifetime,
+            length,
         )
         .await
     }
@@ -420,18 +566,20 @@ impl AuthState {
     async fn issue_session(
         &self,
         grant: SessionGrant,
-        lifetime: Duration,
+        length: SessionLength,
     ) -> anyhow::Result<NewSession> {
+        let lifetime = self.lifetime(grant.user.method, length);
         let session = SessionFile {
             session_id: Uuid::new_v4().to_string(),
             username: grant.user.name.clone(),
             credentials_fingerprint: grant.fingerprint,
             expires_at: (jiff::Timestamp::now() + lifetime).as_second(),
             method: grant.user.method,
+            length,
         };
         self.write_session(&session).await?;
         Ok(NewSession {
-            cookie: self.session_set_cookie(&session.session_id, lifetime),
+            cookie: self.session_set_cookie(&session.session_id),
             user: grant.user,
         })
     }
@@ -456,12 +604,13 @@ impl AuthState {
         Ok(())
     }
 
-    /// Builds the `Set-Cookie` value for a session so every issuer uses the same attributes.
-    fn session_set_cookie(&self, session_id: &str, lifetime: Duration) -> HeaderValue {
+    /// Builds the `Set-Cookie` value for a session so every issuer uses the same attributes,
+    /// including the fixed [`SESSION_COOKIE_MAX_AGE`].
+    fn session_set_cookie(&self, session_id: &str) -> HeaderValue {
         let cookie = format!(
             "{SESSION_COOKIE_NAME}={session_id}; HttpOnly; SameSite=Lax; Path=/{}; Max-Age={}",
             self.secure_flag(),
-            lifetime.as_secs()
+            SESSION_COOKIE_MAX_AGE.as_secs()
         );
         HeaderValue::from_str(&cookie).expect("generated cookie contains only safe ASCII")
     }
@@ -471,12 +620,18 @@ impl AuthState {
         if self.cookie_secure { "; Secure" } else { "" }
     }
 
-    /// Deletes only a syntactically valid session identifier, preventing path traversal via cookies.
+    /// Deletes the session named by the request's cookie, for logout.
     async fn delete_session(&self, headers: &HeaderMap) -> anyhow::Result<()> {
         let Some(session_id) = session_cookie(headers) else {
             return Ok(());
         };
-        let Some(path) = self.session_path(&session_id) else {
+        self.delete_session_id(&session_id).await
+    }
+
+    /// Deletes only a syntactically valid session identifier, preventing path traversal via
+    /// cookies. Holds the session file lock, so a renewal in flight cannot write it back.
+    pub(crate) async fn delete_session_id(&self, session_id: &str) -> anyhow::Result<()> {
+        let Some(path) = self.session_path(session_id) else {
             return Ok(());
         };
         let _guard = self.session_file_lock.lock().await;
@@ -575,11 +730,13 @@ impl AuthState {
     /// The file is written before the in-memory verifier changes, so a failed write leaves
     /// the old password working everywhere, and the hash in memory is the one in the file,
     /// so sessions created now survive the next restart. Returns a new session for the
-    /// browser that made the change, because the purge also removed its old one.
+    /// browser that made the change, because the purge also removed its old one; it keeps
+    /// that browser's session length, so a short session does not turn into a long one.
     pub(crate) async fn change_password(
         &self,
         config_path: &std::path::Path,
         user: &SessionUser,
+        length: SessionLength,
         current_password: &str,
         new_password: &str,
     ) -> Result<NewSession, PasswordChangeError> {
@@ -639,7 +796,7 @@ impl AuthState {
                 user: user.clone(),
                 fingerprint,
             },
-            SESSION_LIFETIME,
+            length,
         )
         .await
         .map_err(|error| {
@@ -756,6 +913,45 @@ pub(crate) struct NewSession {
     pub(crate) cookie: HeaderValue,
 }
 
+/// Reads and parses a session file; `None` when it is missing or unreadable, which every
+/// caller treats as no session.
+async fn read_session_file(path: &std::path::Path) -> Option<SessionFile> {
+    let contents = tokio::fs::read(path).await.ok()?;
+    serde_json::from_slice(&contents).ok()
+}
+
+/// Keeps a browser session open while one upload or download of it runs.
+///
+/// Held by the response body of a transfer route, so it lives as long as the bytes flow,
+/// not just as long as the handler. On drop it renews the session (the transfer was the
+/// user's activity) before releasing the hold, so the session cannot expire in between.
+pub(crate) struct SessionActivityGuard {
+    auth: AuthState,
+    session_id: String,
+}
+
+impl Drop for SessionActivityGuard {
+    fn drop(&mut self) {
+        let auth = self.auth.clone();
+        let session_id = std::mem::take(&mut self.session_id);
+        // Renewing writes a file, which needs the runtime; without one (shutdown) there is
+        // nothing left to keep alive.
+        if tokio::runtime::Handle::try_current().is_err() {
+            auth.release_transfer(&session_id);
+            return;
+        }
+        redoor_core::logging::spawn_in_user_scope(async move {
+            if let Err(error) = auth
+                .renew(&session_id, RenewalCause::TransferFinished)
+                .await
+            {
+                log_error!(error, "Failed to renew the session after a transfer");
+            }
+            auth.release_transfer(&session_id);
+        });
+    }
+}
+
 /// Writes bytes with mode 0600 so local users cannot steal bearer session IDs from disk.
 async fn write_private_file(path: &std::path::Path, contents: &[u8]) -> anyhow::Result<()> {
     use tokio::io::AsyncWriteExt;
@@ -860,7 +1056,11 @@ pub(crate) async fn login_handler(
         }
     };
 
-    let session = match state.auth.issue_session(grant, SESSION_LIFETIME).await {
+    let session = match state
+        .auth
+        .issue_session(grant, request.session_length)
+        .await
+    {
         Ok(session) => session,
         Err(error) => {
             // Keep IO/path details off the wire; operators still see them in server logs.
@@ -919,13 +1119,61 @@ pub(crate) async fn logout_handler(
     response
 }
 
+/// Fixtures other modules' tests use to get a signed-in session without the HTTP layer.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{ActiveSession, AuthState, LoginVerification, SessionCheck, SessionLength};
+    use redoor_core::test_support::TempDir;
+
+    /// An auth state with the password user `admin` and a one-hour session of it. The directory must outlive the auth state, so it is returned too.
+    pub(crate) async fn signed_in_auth() -> (TempDir, AuthState, ActiveSession) {
+        let directory = TempDir::create();
+        let config = directory.path().join("config.toml");
+        tokio::fs::write(
+            &config,
+            r#"agent_token = "t"
+[server]
+username = "admin"
+password = "password"
+"#,
+        )
+        .await
+        .expect("write config");
+        let auth = AuthState::new(config, None, "t".to_string(), false, directory.path())
+            .await
+            .expect("auth state must initialize");
+        let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
+        else {
+            panic!("admin must be able to sign in");
+        };
+        let session = auth
+            .issue_session(grant, SessionLength::Hour)
+            .await
+            .expect("session");
+        let mut headers = axum::http::HeaderMap::new();
+        let pair = session
+            .cookie
+            .to_str()
+            .expect("ASCII")
+            .split(';')
+            .next()
+            .expect("cookie pair")
+            .to_string();
+        headers.insert(axum::http::header::COOKIE, pair.parse().expect("cookie"));
+        let SessionCheck::Valid(_, active) = auth.check_session(&headers).await else {
+            panic!("a new session must be valid");
+        };
+        (directory, auth, active)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
         LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification,
-        PasswordChangeError, SESSION_COOKIE_NAME, SESSION_LIFETIME, SessionCheck, SessionFile,
-        SessionGrant, SessionMethod, SessionUser, oidc_fingerprint,
+        PasswordChangeError, SESSION_COOKIE_NAME, SessionCheck, SessionFile, SessionGrant,
+        SessionLength, SessionMethod, SessionUser, oidc_fingerprint,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
     use redoor_core::config::{ConfiguredPassword, ConfiguredUser, OidcConfig};
@@ -1018,7 +1266,7 @@ password = '{password}'
     async fn session_headers(auth: &AuthState, grant: SessionGrant) -> HeaderMap {
         cookie_headers(
             &auth
-                .issue_session(grant, SESSION_LIFETIME)
+                .issue_session(grant, SessionLength::Week)
                 .await
                 .expect("session")
                 .cookie,
@@ -1029,7 +1277,7 @@ password = '{password}'
     async fn session_user(auth: &AuthState, headers: &HeaderMap) -> Option<SessionUser> {
         match auth.check_session(headers).await {
             SessionCheck::Invalid => None,
-            SessionCheck::Valid(user) | SessionCheck::Renewed(user, _) => Some(user),
+            SessionCheck::Valid(user, _) => Some(user),
         }
     }
 
@@ -1087,87 +1335,259 @@ password = '{password}'
             .expect("rewrite session");
     }
 
-    /// OIDC sessions slide forward on use, at most once per renewal interval, and refresh
-    /// the browser cookie when they do.
-    #[tokio::test]
-    async fn oidc_sessions_slide_and_refresh_the_cookie() {
-        let directory = TempDir::create();
-        let oidc = oidc_config(&["admins"]);
-        let auth = auth_state(&directory, Some(&oidc)).await;
+    /// The session id carried by request headers built from a cookie.
+    fn session_id(headers: &HeaderMap) -> String {
+        headers[header::COOKIE]
+            .to_str()
+            .expect("ASCII")
+            .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
+            .expect("session cookie")
+            .to_string()
+    }
+
+    /// The stored expiry of a session, as the activity endpoint and the UI see it.
+    async fn stored_expiry(directory: &TempDir, headers: &HeaderMap) -> i64 {
+        let path = directory
+            .path()
+            .join("sessions")
+            .join(format!("session_{}.json", session_id(headers)));
+        let session: SessionFile =
+            serde_json::from_slice(&tokio::fs::read(&path).await.expect("session file"))
+                .expect("session JSON");
+        session.expires_at
+    }
+
+    /// A password session of `admin` with the given length, and the `Set-Cookie` value it
+    /// was issued with.
+    async fn password_session(auth: &AuthState, length: SessionLength) -> (HeaderMap, String) {
+        let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
+        else {
+            panic!("admin must be able to sign in");
+        };
         let session = auth
-            .create_oidc_session("alice".to_string())
+            .issue_session(grant, length)
             .await
             .expect("session must be created");
-        // The browser cookie lasts as long as the configured sliding lifetime.
-        assert!(
-            session
-                .cookie
-                .to_str()
-                .expect("ASCII")
-                .contains("Max-Age=31536000")
-        );
-        let headers = cookie_headers(&session.cookie);
-        // A brand-new session needs no renewal, so no disk write or cookie per request, and
-        // it names the OIDC user.
-        assert!(matches!(
-            auth.check_session(&headers).await,
-            SessionCheck::Valid(SessionUser { name, method: SessionMethod::Oidc }) if name == "alice"
-        ));
+        let cookie = session.cookie.to_str().expect("ASCII").to_string();
+        (cookie_headers(&session.cookie), cookie)
+    }
 
+    /// The chosen length decides the stored expiry, while every cookie gets the same
+    /// `Max-Age`, so the browser never drops a cookie the server still accepts.
+    #[tokio::test]
+    async fn chosen_length_decides_lifetime_and_cookie() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        for length in [
+            SessionLength::Hour,
+            SessionLength::Day,
+            SessionLength::Week,
+            SessionLength::Month,
+            SessionLength::Year,
+        ] {
+            let seconds = length.duration().as_secs();
+            let now = jiff::Timestamp::now().as_second();
+            let (headers, cookie) = password_session(&auth, length).await;
+            // One fixed year for every length; the server enforces the idle expiry.
+            assert!(
+                cookie.ends_with("; Max-Age=31536000"),
+                "{length:?}: {cookie}"
+            );
+            let remaining = stored_expiry(&directory, &headers).await - now;
+            // The server ends the session that long after sign-in (allowing a slow test).
+            assert!(
+                (seconds as i64 - 5..=seconds as i64 + 5).contains(&remaining),
+                "{length:?}: {remaining}"
+            );
+            // The request path knows the length, so a password change can reuse it.
+            assert!(matches!(
+                auth.check_session(&headers).await,
+                SessionCheck::Valid(_, session) if session.length == length
+            ));
+        }
+    }
+
+    /// `session_lifetime_days` caps the length an OIDC sign-in may pick.
+    #[tokio::test]
+    async fn oidc_sessions_are_capped_by_the_configured_lifetime() {
+        let directory = TempDir::create();
+        let oidc = OidcConfig {
+            session_lifetime: Duration::from_secs(30 * 24 * 60 * 60),
+            ..oidc_config(&["admins"])
+        };
+        let auth = auth_state(&directory, Some(&oidc)).await;
+        let now = jiff::Timestamp::now().as_second();
+        let capped = auth
+            .create_oidc_session("alice".to_string(), SessionLength::Year)
+            .await
+            .expect("session");
+        let remaining = stored_expiry(&directory, &cookie_headers(&capped.cookie)).await - now;
+        // A year is longer than the configured 30 days, so the session lasts 30 days.
+        assert!(
+            (2_592_000 - 5..=2_592_000 + 5).contains(&remaining),
+            "{remaining}"
+        );
+        let short = auth
+            .create_oidc_session("alice".to_string(), SessionLength::Day)
+            .await
+            .expect("session");
+        let remaining = stored_expiry(&directory, &cookie_headers(&short.cookie)).await - now;
+        // A shorter choice than the cap is kept.
+        assert!(
+            (86_400 - 5..=86_400 + 5).contains(&remaining),
+            "{remaining}"
+        );
+    }
+
+    /// Ordinary requests never extend a session; only reported activity does, and it does
+    /// not revive a session that already expired.
+    #[tokio::test]
+    async fn only_activity_renews_and_never_revives() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Hour).await;
         let now = jiff::Timestamp::now().as_second();
         set_expiry(&directory, &headers, now + 60).await;
-        // A session close to expiry is extended and the cookie is re-issued.
-        let SessionCheck::Renewed(_, cookie) = auth.check_session(&headers).await else {
-            panic!("a used session close to expiry must be renewed");
-        };
-        assert!(cookie.to_str().expect("ASCII").contains("Max-Age=31536000"));
-        // After renewal the stored expiry is a full lifetime away again.
+
+        // Checking a session, as every request does, leaves its expiry alone.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Valid(..)
         ));
+        assert_eq!(stored_expiry(&directory, &headers).await, now + 60);
+
+        let renewed = auth
+            .renew_session(&session_id(&headers))
+            .await
+            .expect("renewal")
+            .expect("a valid session is renewed");
+        // Activity moves the expiry a full lifetime ahead and says so.
+        assert!(renewed.expires_at >= now + 3600);
+        assert_eq!(
+            stored_expiry(&directory, &headers).await,
+            renewed.expires_at
+        );
+        // A written renewal restarts the browser cookie's fixed lifetime.
+        assert!(
+            renewed
+                .cookie
+                .expect("a written renewal sends the cookie")
+                .to_str()
+                .expect("ASCII")
+                .ends_with("; Max-Age=31536000")
+        );
 
         set_expiry(&directory, &headers, now - 1).await;
-        // Sliding never revives a session that already expired.
+        // Activity reported after the expiry cannot bring the session back.
+        assert!(
+            auth.renew_session(&session_id(&headers))
+                .await
+                .expect("renewal")
+                .is_none()
+        );
+        // And the request path refuses it.
         assert!(matches!(
             auth.check_session(&headers).await,
             SessionCheck::Invalid
         ));
     }
 
-    /// Password sessions keep their fixed lifetime even when OIDC is configured.
+    /// Activity within a minute of the last renewal does not rewrite the session file.
     #[tokio::test]
-    async fn password_sessions_do_not_slide() {
+    async fn activity_renewals_are_throttled() {
         let directory = TempDir::create();
-        let oidc = oidc_config(&["admins"]);
-        let auth = auth_state(&directory, Some(&oidc)).await;
-        let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
-        else {
-            panic!("admin must be able to sign in");
-        };
-        let session = auth
-            .issue_session(grant, SESSION_LIFETIME)
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Week).await;
+        let id = session_id(&headers);
+        let first = auth
+            .renew_session(&id)
             .await
-            .expect("session must be created");
-        // Password sessions keep the existing one-week cookie.
-        assert!(
-            session
-                .cookie
-                .to_str()
-                .expect("ASCII")
-                .contains("Max-Age=604800")
-        );
-        let headers = cookie_headers(&session.cookie);
-        set_expiry(
-            &directory,
-            &headers,
-            jiff::Timestamp::now().as_second() + 60,
-        )
-        .await;
-        // Use near expiry does not extend a password session.
+            .expect("renewal")
+            .expect("valid");
+        let marker = first.expires_at - 30;
+        // Stands in for "renewed 30 seconds ago", so a write would be visible.
+        set_expiry(&directory, &headers, marker).await;
+        let second = auth
+            .renew_session(&id)
+            .await
+            .expect("renewal")
+            .expect("valid");
+        // Less than a minute since the last renewal: the file is not written again.
+        assert_eq!(stored_expiry(&directory, &headers).await, marker);
+        assert_eq!(second.expires_at, marker);
+        // A throttled renewal sends no cookie, so the response stays small.
+        assert!(second.cookie.is_none());
+
+        set_expiry(&directory, &headers, marker - 60).await;
+        let third = auth
+            .renew_session(&id)
+            .await
+            .expect("renewal")
+            .expect("valid");
+        // A minute or more since the last renewal: the expiry is written again.
+        assert!(third.expires_at > marker);
+        assert_eq!(stored_expiry(&directory, &headers).await, third.expires_at);
+    }
+
+    /// Session files from before the login page offered a length have no `length`; they are
+    /// rejected and removed, so the upgrade signs those browsers out once.
+    #[tokio::test]
+    async fn session_files_without_a_length_are_rejected() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Week).await;
+        let path = directory
+            .path()
+            .join("sessions")
+            .join(format!("session_{}.json", session_id(&headers)));
+        let mut stored: serde_json::Value =
+            serde_json::from_slice(&tokio::fs::read(&path).await.expect("file")).expect("JSON");
+        stored.as_object_mut().expect("object").remove("length");
+        tokio::fs::write(&path, serde_json::to_vec(&stored).expect("JSON"))
+            .await
+            .expect("rewrite");
+        // The old format no longer authenticates.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Invalid
+        ));
+        auth_state(&directory, None).await;
+        // The startup purge deletes it rather than keeping a dead file around.
+        assert!(!tokio::fs::try_exists(&path).await.expect("stat"));
+    }
+
+    /// A running transfer keeps its session open past the idle expiry, and finishing it
+    /// renews the session for a full lifetime.
+    #[tokio::test]
+    async fn transfers_keep_the_session_alive() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Hour).await;
+        let SessionCheck::Valid(_, session) = auth.check_session(&headers).await else {
+            panic!("the new session must be valid");
+        };
+        let guard = auth.hold_for_transfer(&session);
+        let now = jiff::Timestamp::now().as_second();
+        set_expiry(&directory, &headers, now - 1).await;
+
+        // The expiry passed during the transfer, but the transfer keeps the session open,
+        // and the UI is told the session lasts at least a lifetime longer.
+        assert!(matches!(
+            auth.check_session(&headers).await,
+            SessionCheck::Valid(_, session) if session.expires_at >= now + 3600
+        ));
+
+        drop(guard);
+        // Dropping the guard renews in a task; wait until the hold is released, which
+        // happens after the renewal was written.
+        while auth.has_transfers(&session.id) {
+            tokio::task::yield_now().await;
+        }
+        // The finished transfer counted as activity: the session lives on afterwards.
+        assert!(stored_expiry(&directory, &headers).await > now);
+        assert!(matches!(
+            auth.check_session(&headers).await,
+            SessionCheck::Valid(..)
         ));
     }
 
@@ -1180,7 +1600,7 @@ password = '{password}'
         let auth = auth_state(&directory, Some(&oidc)).await;
         let oidc_headers = cookie_headers(
             &auth
-                .create_oidc_session("alice".to_string())
+                .create_oidc_session("alice".to_string(), SessionLength::Year)
                 .await
                 .expect("session")
                 .cookie,
@@ -1197,12 +1617,12 @@ password = '{password}'
         // Password sessions do not depend on the OIDC settings.
         assert!(matches!(
             restarted.check_session(&password_headers).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Valid(..)
         ));
 
         let oidc_headers = cookie_headers(
             &restarted
-                .create_oidc_session("alice".to_string())
+                .create_oidc_session("alice".to_string(), SessionLength::Year)
                 .await
                 .expect("session")
                 .cookie,
@@ -1216,7 +1636,7 @@ password = '{password}'
         // Without OIDC configured, no OIDC session can be created at all.
         assert!(
             without_oidc
-                .create_oidc_session("alice".to_string())
+                .create_oidc_session("alice".to_string(), SessionLength::Year)
                 .await
                 .is_err()
         );
@@ -1265,7 +1685,7 @@ password = '{password}'
         // Upgrading the server must not sign out existing browsers.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Valid(..)
         ));
     }
 
@@ -1322,10 +1742,21 @@ password = '{stored}'
         let other = login(&auth, "admin", "old-password").await;
 
         let session = auth
-            .change_password(&config_path, &admin(), "old-password", "new-password")
+            .change_password(
+                &config_path,
+                &admin(),
+                SessionLength::Week,
+                "old-password",
+                "new-password",
+            )
             .await
             .expect("the change must succeed");
 
+        // The new session keeps the length the changing browser signed in with.
+        assert!(matches!(
+            auth.check_session(&cookie_headers(&session.cookie)).await,
+            SessionCheck::Valid(_, renewed) if renewed.length == SessionLength::Week
+        ));
         let stored = stored_password(&config_path).await;
         // The file never gets the plaintext; it gets a hash the config parser accepts.
         assert!(stored.starts_with("$argon2id$"), "{stored}");
@@ -1351,7 +1782,7 @@ password = '{stored}'
         // The browser that made the change gets a working session.
         assert!(matches!(
             auth.check_session(&current).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Valid(..)
         ));
 
         let (_, restarted) =
@@ -1360,7 +1791,7 @@ password = '{stored}'
         // session survives a restart.
         assert!(matches!(
             restarted.check_session(&current).await,
-            SessionCheck::Valid(_)
+            SessionCheck::Valid(..)
         ));
         // And the hash from the file verifies the new password.
         assert!(matches!(
@@ -1383,7 +1814,13 @@ password = '{stored}'
             .expect("config");
 
         let wrong = auth
-            .change_password(&config_path, &admin(), "guess", "new-password")
+            .change_password(
+                &config_path,
+                &admin(),
+                SessionLength::Week,
+                "guess",
+                "new-password",
+            )
             .await
             .err();
         // A stolen session alone cannot set a new password.
@@ -1392,7 +1829,13 @@ password = '{stored}'
             Some(PasswordChangeError::WrongCurrentPassword)
         ));
         let short = auth
-            .change_password(&config_path, &admin(), "old-password", "short")
+            .change_password(
+                &config_path,
+                &admin(),
+                SessionLength::Week,
+                "old-password",
+                "short",
+            )
             .await
             .err();
         // The form's minimum length is enforced by the server, not only by the UI.
@@ -1436,7 +1879,13 @@ password = '{stored}'
             method: SessionMethod::Oidc,
         };
         let error = auth
-            .change_password(&config_path, &user, "old-password", "new-password")
+            .change_password(
+                &config_path,
+                &user,
+                SessionLength::Week,
+                "old-password",
+                "new-password",
+            )
             .await
             .err();
         // Even with the right name and current password, the method decides.
@@ -1627,7 +2076,13 @@ password = 'hand-edited-password'
         .await;
 
         let stale = auth
-            .change_password(&config_path, &admin(), "old-password", "new-password")
+            .change_password(
+                &config_path,
+                &admin(),
+                SessionLength::Week,
+                "old-password",
+                "new-password",
+            )
             .await
             .err();
         // The password from before the hand edit no longer counts as current.
@@ -1638,6 +2093,7 @@ password = 'hand-edited-password'
         auth.change_password(
             &config_path,
             &admin(),
+            SessionLength::Week,
             "hand-edited-password",
             "new-password",
         )
@@ -1670,7 +2126,13 @@ port = "not-a-port"
         write_config(&directory, broken).await;
 
         let error = auth
-            .change_password(&config_path, &admin(), "old-password", "new-password")
+            .change_password(
+                &config_path,
+                &admin(),
+                SessionLength::Week,
+                "old-password",
+                "new-password",
+            )
             .await
             .err();
         // The change is refused rather than reported as done while it cannot apply.
@@ -1708,9 +2170,15 @@ port = "not-a-port"
             method: SessionMethod::Password,
         };
 
-        auth.change_password(&config_path, &alice, "alice-password", "alice-new-password")
-            .await
-            .expect("the change must succeed");
+        auth.change_password(
+            &config_path,
+            &alice,
+            SessionLength::Week,
+            "alice-password",
+            "alice-new-password",
+        )
+        .await
+        .expect("the change must succeed");
         // Alice's other browser is signed out.
         assert!(session_user(&auth, &alice_elsewhere).await.is_none());
         // Bob is not affected.

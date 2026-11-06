@@ -130,6 +130,11 @@ describe("login methods", () => {
                 name,
                 method: "password",
                 token_id: null,
+                // Browser sessions report when they end without activity.
+                session: {
+                    expires_at: expect.any(String),
+                    expires_in_seconds: expect.any(Number),
+                },
             });
         }
 
@@ -154,6 +159,8 @@ describe("login methods", () => {
             name: "ci token",
             method: "token",
             token_id: metadata.id,
+            // Tokens do not idle out, so they have no session expiry.
+            session: null,
         });
     });
 

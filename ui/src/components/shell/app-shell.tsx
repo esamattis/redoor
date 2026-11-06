@@ -10,6 +10,7 @@ import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
 import { ApplicationBottomDrawer } from "#ui/components/shell/bottom-drawer";
 import { DocumentTitle } from "#ui/components/shell/document-title";
 import { RouteLoadingIndicator } from "#ui/components/shell/route-loading-indicator";
+import { SessionActivity } from "#ui/components/shell/session-activity";
 import { ThemeManager } from "#ui/components/theme-toggle";
 import { UserStatePersistToast } from "#ui/components/user-state-persist-toast";
 import { VaultDialog } from "#ui/components/vault-dialog";
@@ -49,6 +50,7 @@ export function AppShell() {
                 <DocumentTitle />
                 <RouteLoadingIndicator />
                 <UserStatePersistToast />
+                <SessionActivity />
                 <VaultDialog />
                 <ApplicationNavigation />
                 <OverlayChromeLayout

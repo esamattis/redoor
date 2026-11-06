@@ -3,14 +3,40 @@ import { useMutation } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { KeyRound, LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
+import type { SessionLength } from "#bindings/SessionLength";
 import { Button } from "#ui/components/button";
 import { Password } from "#ui/components/password";
+import { Select } from "#ui/components/select";
 import { TextField } from "#ui/components/text-field";
+import { Tooltip } from "#ui/components/tooltip";
 import { getErrorMessage } from "#ui/utils/error";
+
+/** The session lengths the login page offers, shortest first, with their labels. */
+const SESSION_LENGTHS = [
+    { value: "hour", label: "1 hour" },
+    { value: "day", label: "24 hours" },
+    { value: "week", label: "1 week" },
+    { value: "month", label: "1 month" },
+    { value: "year", label: "1 year" },
+] as const satisfies readonly { value: SessionLength; label: string }[];
+
+/** Matches the server's default, so a link without the parameter gets the shortest session. */
+const DEFAULT_SESSION_LENGTH: SessionLength = "hour";
+
+const sessionLengthSchema: z.ZodType<SessionLength> = z.enum([
+    "hour",
+    "day",
+    "week",
+    "month",
+    "year",
+]);
 
 const loginSearchSchema = z.object({
     redirect: z.string().optional(),
     oidc_error: z.string().optional(),
+    // In the URL rather than component state, so the choice survives the server's redirect
+    // back here after a failed OIDC sign-in. A bad value falls back to the default.
+    session: sessionLengthSchema.optional().catch(undefined),
 });
 
 export const Route = createFileRoute("/login")({
@@ -68,7 +94,9 @@ function messageFromLocationHash(): string | null {
 function LoginPage() {
     const { api } = Route.useRouteContext();
     const search = Route.useSearch();
+    const navigate = Route.useNavigate();
     const methods = Route.useLoaderData();
+    const sessionLength = search.session ?? DEFAULT_SESSION_LENGTH;
     const [username, setUsername] = React.useState("");
     const [password, setPassword] = React.useState("");
 
@@ -79,8 +107,16 @@ function LoginPage() {
     const [firstRunMessage] = React.useState(messageFromLocationHash);
 
     const loginMutation = useMutation({
-        mutationFn: (credentials: { username: string; password: string }) =>
-            api.login(credentials.username, credentials.password),
+        mutationFn: (credentials: {
+            username: string;
+            password: string;
+            sessionLength: SessionLength;
+        }) =>
+            api.login(
+                credentials.username,
+                credentials.password,
+                credentials.sessionLength,
+            ),
         onSuccess: () => {
             window.location.replace(safeRedirectPath(search.redirect));
         },
@@ -92,7 +128,7 @@ function LoginPage() {
     /** Keeps the password out of URLs and clears it immediately after either outcome. */
     const submit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
-        loginMutation.mutate({ username, password });
+        loginMutation.mutate({ username, password, sessionLength });
     };
 
     const error = loginMutation.isError
@@ -100,6 +136,22 @@ function LoginPage() {
         : null;
 
     const isSubmitting = loginMutation.isPending;
+
+    /** Keeps the choice in the URL; replacing the entry keeps "back" from stepping through it. */
+    const changeSessionLength = (
+        event: React.ChangeEvent<HTMLSelectElement>,
+    ) => {
+        const parsed = sessionLengthSchema.safeParse(event.target.value);
+
+        if (!parsed.success) {
+            return;
+        }
+
+        void navigate({
+            search: (previous) => ({ ...previous, session: parsed.data }),
+            replace: true,
+        });
+    };
 
     return (
         <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
@@ -142,6 +194,33 @@ function LoginPage() {
                     <h1 className="mb-6 text-center text-2xl font-bold text-slate-100">
                         Sign in to Redoor
                     </h1>
+                    {/* Above both sign-in methods, because the choice applies to either. */}
+                    <div className="mb-6 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                        <label
+                            htmlFor="session-length"
+                            className="text-sm font-medium text-slate-300"
+                        >
+                            Stay signed in for
+                        </label>
+                        <Tooltip content="You are signed out after this long without activity. Any interaction with the page starts the time again.">
+                            <Select
+                                id="session-length"
+                                value={sessionLength}
+                                disabled={isSubmitting}
+                                onChange={changeSessionLength}
+                                containerClassName="min-w-36"
+                            >
+                                {SESSION_LENGTHS.map((length) => (
+                                    <option
+                                        key={length.value}
+                                        value={length.value}
+                                    >
+                                        {length.label}
+                                    </option>
+                                ))}
+                            </Select>
+                        </Tooltip>
+                    </div>
                     {methods.oidc ? (
                         <div className="space-y-4">
                             {oidcError ? (
@@ -157,6 +236,7 @@ function LoginPage() {
                                 size="lg"
                                 href={api.getOidcLoginUrl(
                                     safeRedirectPath(search.redirect),
+                                    sessionLength,
                                 )}
                                 className="w-full rounded-md"
                             >

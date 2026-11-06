@@ -12,7 +12,7 @@ use jiff::{SignedDuration, Timestamp, Unit};
 use redoor_protocol::{
     api::{
         agents::{AgentInfoResponse, AgentListResponse},
-        auth::LoginRequest,
+        auth::{LoginRequest, SessionLength},
         tokens::{
             AccessTokenResponse, AccessTokenSecretResponse, CreateAccessTokenRequest, DeviceScope,
             Permission,
@@ -638,6 +638,9 @@ impl TransientSession {
             .body(serde_json::to_vec(&LoginRequest {
                 username: username.to_owned(),
                 password,
+                // The session only lives while the token is created, so the shortest length
+                // leaves the least behind if the logout at the end fails.
+                session_length: SessionLength::Hour,
             })?)
             .send()
             .await

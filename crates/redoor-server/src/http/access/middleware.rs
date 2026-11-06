@@ -5,7 +5,7 @@ use axum::{
     RequestPartsExt,
     body::Body,
     extract::{MatchedPath, RawPathParams, Request, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -14,7 +14,12 @@ use super::{
     Principal, ResolvedDevice,
     routes::{self, Access},
 };
-use crate::http::{auth::SessionCheck, error::ApiError, state::ServerState};
+use crate::http::{
+    auth::{ActiveSession, SessionCheck},
+    error::ApiError,
+    session_activity::TransferBody,
+    state::ServerState,
+};
 
 /// Authenticates the caller, applies the route's access rule and hands the principal to the
 /// handler. Layered with `Router::layer`, so it only runs for matched browser routes.
@@ -37,11 +42,11 @@ pub(crate) async fn access_control(
     let public = access == Access::Public
         || routes::is_one_time_token_raw_request(request.method(), request.uri());
     // Authenticating before resolving keeps anonymous callers from probing device names.
-    let (principal, renewed_cookie) = if public {
+    let (principal, session) = if public {
         (None, None)
     } else {
         match authenticate(&state, request.headers()).await {
-            Ok((principal, renewed_cookie)) => (Some(principal), renewed_cookie),
+            Ok((principal, session)) => (Some(principal), session),
             Err(error) => return error.into_response(),
         }
     };
@@ -64,26 +69,31 @@ pub(crate) async fn access_control(
     // Every log line written while serving the request names who made it.
     let user = Some(std::sync::Arc::from(principal.log_label()));
     parts.extensions.insert(principal);
-    let mut response =
-        redoor_core::logging::user_scope(user, next.run(Request::from_parts(parts, body))).await;
-    // A sliding session moved its expiry forward; the browser cookie must follow or it would
-    // still expire at the original time. A handler that set the session cookie itself (a
-    // password change issuing a new session) wins, because browsers keep the last one.
-    if let Some(cookie) = renewed_cookie
-        && !response.headers().contains_key(header::SET_COOKIE)
-    {
-        response.headers_mut().append(header::SET_COOKIE, cookie);
+    // A browser upload or download keeps its session open for as long as its bytes flow:
+    // the hold is created before the handler reads the request body and moves into the
+    // response body, so it ends when the last byte of either direction is through.
+    let transfer = session
+        .as_ref()
+        .filter(|_| routes::is_session_transfer(&parts.method, &matched))
+        .map(|session| state.auth.hold_for_transfer(session));
+    if let Some(session) = session {
+        parts.extensions.insert(session);
     }
-    response
+    let response =
+        redoor_core::logging::user_scope(user, next.run(Request::from_parts(parts, body))).await;
+    match transfer {
+        Some(hold) => response.map(|body| Body::new(TransferBody::new(body, hold))),
+        None => response,
+    }
 }
 
 /// A bearer token alone decides when present, so a stale cookie can never upgrade a rejected
-/// token; otherwise the browser session cookie is used. Also returns the refreshed session
-/// cookie when a sliding session was renewed.
+/// token; otherwise the browser session cookie is used. Also returns the browser session
+/// behind a session principal, for the handlers that renew, hold or watch it.
 async fn authenticate(
     state: &ServerState,
     headers: &HeaderMap,
-) -> Result<(Principal, Option<HeaderValue>), ApiError> {
+) -> Result<(Principal, Option<ActiveSession>), ApiError> {
     if let Some(secret) = bearer_token(headers) {
         return match state.tokens.authenticate(secret).await {
             Some(grant) => Ok((Principal::Token(grant), None)),
@@ -92,8 +102,7 @@ async fn authenticate(
     }
     match state.auth.check_session(headers).await {
         SessionCheck::Invalid => Err(unauthorized("Authentication required")),
-        SessionCheck::Valid(user) => Ok((Principal::Session(user), None)),
-        SessionCheck::Renewed(user, cookie) => Ok((Principal::Session(user), Some(cookie))),
+        SessionCheck::Valid(user, session) => Ok((Principal::Session(user), Some(session))),
     }
 }
 

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import type { Agent } from "#ui/api-client";
+import { type Agent, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
 import type { TerminalSize } from "#bindings/TerminalSize";
@@ -52,6 +52,8 @@ export type TerminalServer = {
     exists: (sessionId: string) => Promise<boolean | null>;
     /** The socket that attaches this window to a session. */
     attachUrl: (sessionId: string, size: TerminalSize) => string;
+    /** The browser's sign-in session ended, which the attach socket reported on close. */
+    onSessionEnded: () => void;
 };
 
 /** Identifies the exact canonical listing that should reflect command-created entries. */
@@ -664,7 +666,8 @@ export class TerminalSession {
         const handleMessage = (event: MessageEvent) =>
             this.handleMessage(socket, generation, event);
 
-        const handleClose = () => this.handleClose(generation);
+        const handleClose = (event: CloseEvent) =>
+            this.handleClose(generation, event.code);
 
         /** Relies on close for one deterministic state transition. */
         const handleError = () => {
@@ -785,7 +788,7 @@ export class TerminalSession {
      * An unexpected close (a network change, a sleeping laptop) leaves the shell running on
      * the server, so the tab attaches again with a capped backoff.
      */
-    private handleClose(generation: number): void {
+    private handleClose(generation: number, code: number): void {
         this.options.startupCommand?.cancelPending();
 
         if (this.socketGeneration !== generation) {
@@ -796,6 +799,20 @@ export class TerminalSession {
         this.removeSocketListeners?.();
         this.removeSocketListeners = null;
         this.isReady = false;
+
+        // The sign-in session ended: attaching again would be refused, and the shell keeps
+        // running for after the next sign-in.
+        if (code === SESSION_ENDED_CLOSE_CODE) {
+            this.setState({
+                type: "disconnected",
+                message: "Signed out",
+                canReconnect: false,
+            });
+            this.options.server.onSessionEnded();
+
+            return;
+        }
+
         const state = this.tabSnapshot.state.type;
 
         if (state === "disconnected" || state === "taken_over") {

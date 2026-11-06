@@ -26,6 +26,7 @@ ssh-encoding.workspace = true
 signature.workspace = true
 zeroize.workspace = true
 headers.workspace = true
+http-body.workspace = true
 jiff.workspace = true
 libc.workspace = true
 nix.workspace = true

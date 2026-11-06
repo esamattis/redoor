@@ -20,7 +20,7 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redoor_core::config::OidcConfig;
 use redoor_core::{log, log_error};
-use redoor_protocol::api::auth::{LoginMethodsResponse, OidcLoginMethod};
+use redoor_protocol::api::auth::{LoginMethodsResponse, OidcLoginMethod, SessionLength};
 use redoor_protocol::wire::log::Level;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -82,6 +82,9 @@ struct PendingLogin {
     pkce_verifier: String,
     /// Same-origin path to open after sign-in, already validated.
     return_path: String,
+    /// The session length picked on the login page. Kept here, server-side, because the
+    /// provider round trip carries nothing of the login page but the `state`.
+    session_length: SessionLength,
     expires_at: Instant,
 }
 
@@ -245,13 +248,18 @@ impl OidcClient {
     }
 
     /// Records a new pending sign-in and returns the provider URL plus its `state` value.
-    async fn start(&self, return_path: String) -> anyhow::Result<(String, String)> {
+    async fn start(
+        &self,
+        return_path: String,
+        session_length: SessionLength,
+    ) -> anyhow::Result<(String, String)> {
         let discovery = self.discovery().await?;
         let state = random_token()?;
         let login = PendingLogin {
             nonce: random_token()?,
             pkce_verifier: random_token()?,
             return_path,
+            session_length,
             expires_at: Instant::now() + PENDING_LOGIN_LIFETIME,
         };
         let mut url = url::Url::parse(&discovery.authorization_endpoint)?;
@@ -496,11 +504,22 @@ fn see_other(location: &str) -> Response {
 }
 
 /// Sends the browser back to the login page with a failure code, clearing the state cookie.
-fn fail(state: &ServerState, failure: SignInFailure, return_path: &str) -> Response {
-    let query = url::form_urlencoded::Serializer::new(String::new())
+/// The session length goes back too when the attempt is known, so the user's choice is still
+/// selected when they try again.
+fn fail(
+    state: &ServerState,
+    failure: SignInFailure,
+    return_path: &str,
+    session_length: Option<SessionLength>,
+) -> Response {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query
         .append_pair("redirect", return_path)
-        .append_pair("oidc_error", failure.code())
-        .finish();
+        .append_pair("oidc_error", failure.code());
+    if let Some(length) = session_length {
+        query.append_pair("session", length.as_str());
+    }
+    let query = query.finish();
     let mut response = see_other(&format!("/login?{query}"));
     response.headers_mut().append(
         header::SET_COOKIE,
@@ -529,6 +548,9 @@ pub(crate) async fn login_methods_handler(State(state): State<ServerState>) -> R
 pub(crate) struct LoginQuery {
     /// Path to return to after signing in, as the password form's `redirect` parameter.
     redirect: Option<String>,
+    /// The session length picked on the login page; one hour when absent.
+    #[serde(default)]
+    session: SessionLength,
 }
 
 /// Starts sign-in: remembers the attempt and redirects the browser to the provider.
@@ -540,7 +562,7 @@ pub(crate) async fn oidc_login_handler(
         return not_configured();
     };
     let return_path = safe_return_path(query.redirect.as_deref());
-    match client.start(return_path.clone()).await {
+    match client.start(return_path.clone(), query.session).await {
         Ok((authorization_url, login_state)) => {
             let mut response = see_other(&authorization_url);
             response.headers_mut().append(
@@ -551,7 +573,12 @@ pub(crate) async fn oidc_login_handler(
         }
         Err(error) => {
             log_error!(error, "Failed to start OIDC sign-in");
-            fail(&state, SignInFailure::Unavailable, &return_path)
+            fail(
+                &state,
+                SignInFailure::Unavailable,
+                &return_path,
+                Some(query.session),
+            )
         }
     }
 }
@@ -588,7 +615,7 @@ pub(crate) async fn oidc_callback_handler(
         .filter(|_| cookie_matches)
         .and_then(|login_state| client.take(login_state, Instant::now()));
     let Some(login) = login else {
-        return fail(&state, SignInFailure::Expired, "/");
+        return fail(&state, SignInFailure::Expired, "/", None);
     };
     if let Some(error) = query.error {
         log!(
@@ -600,20 +627,40 @@ pub(crate) async fn oidc_callback_handler(
         } else {
             SignInFailure::Failed
         };
-        return fail(&state, failure, &login.return_path);
+        return fail(
+            &state,
+            failure,
+            &login.return_path,
+            Some(login.session_length),
+        );
     }
     let Some(code) = query.code else {
-        return fail(&state, SignInFailure::Failed, &login.return_path);
+        return fail(
+            &state,
+            SignInFailure::Failed,
+            &login.return_path,
+            Some(login.session_length),
+        );
     };
     let id_token = match client.redeem(&login, &code).await {
         Ok(id_token) => id_token,
         Err(error) => {
             log_error!(error, "Failed to redeem OIDC authorization code");
-            return fail(&state, SignInFailure::Unavailable, &login.return_path);
+            return fail(
+                &state,
+                SignInFailure::Unavailable,
+                &login.return_path,
+                Some(login.session_length),
+            );
         }
     };
     let Some(discovery) = client.discovery.get() else {
-        return fail(&state, SignInFailure::Unavailable, &login.return_path);
+        return fail(
+            &state,
+            SignInFailure::Unavailable,
+            &login.return_path,
+            Some(login.session_length),
+        );
     };
     let user = match validate_id_token(
         &id_token,
@@ -627,18 +674,28 @@ pub(crate) async fn oidc_callback_handler(
                 IdTokenError::NotAllowed { .. } => SignInFailure::Denied,
                 _ => SignInFailure::Failed,
             };
-            return fail(&state, failure, &login.return_path);
+            return fail(
+                &state,
+                failure,
+                &login.return_path,
+                Some(login.session_length),
+            );
         }
     };
     let session = match state
         .auth
-        .create_oidc_session(user.display_name().to_string())
+        .create_oidc_session(user.display_name().to_string(), login.session_length)
         .await
     {
         Ok(session) => session,
         Err(error) => {
             log_error!(error, "Failed to create session");
-            return fail(&state, SignInFailure::Failed, &login.return_path);
+            return fail(
+                &state,
+                SignInFailure::Failed,
+                &login.return_path,
+                Some(login.session_length),
+            );
         }
     };
     log!(
@@ -848,6 +905,7 @@ mod tests {
             nonce: "n".to_string(),
             pkce_verifier: "v".to_string(),
             return_path: "/".to_string(),
+            session_length: SessionLength::Hour,
             expires_at,
         }
     }
@@ -922,7 +980,10 @@ mod tests {
                 token_endpoint_auth_methods_supported: None,
             })
             .unwrap();
-        let (url, state) = client.start("/agents".to_string()).await.unwrap();
+        let (url, state) = client
+            .start("/agents".to_string(), SessionLength::Week)
+            .await
+            .unwrap();
         let url = url::Url::parse(&url).unwrap();
         let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
         let login = client.take(&state, Instant::now()).unwrap();
@@ -943,6 +1004,9 @@ mod tests {
         );
         // The validated return path survives the round trip.
         assert_eq!(login.return_path, "/agents");
+        // So does the session length, which the provider never sees.
+        assert_eq!(login.session_length, SessionLength::Week);
+        assert!(!query.values().any(|value| value == "week"));
     }
 
     /// The return path can never send the browser to another site.

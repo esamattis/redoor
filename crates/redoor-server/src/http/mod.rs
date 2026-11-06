@@ -36,6 +36,8 @@ pub(crate) mod routes;
 mod server_info;
 mod server_upgrade;
 pub(crate) mod services;
+mod session_activity;
+mod session_watch;
 pub(crate) mod ssh_keys;
 pub mod state;
 mod systemd;

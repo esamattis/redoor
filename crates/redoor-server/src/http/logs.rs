@@ -1,6 +1,7 @@
 //! Browser websocket that replays and live-streams the server's own log.
 
 use axum::{
+    Extension,
     extract::{
         State,
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
@@ -12,6 +13,11 @@ use redoor_core::{log_error, logging, websocket::WebSocketTimeouts};
 use redoor_protocol::wire::log::{LogEntry, LogEvent};
 use tokio::sync::broadcast;
 
+use super::{
+    auth::ActiveSession,
+    session_watch::{SessionWatch, close_for_ended_session},
+};
+
 /// Keeps outbound helpers concise while retaining Axum's concrete socket sink type.
 type SocketSender = futures_util::stream::SplitSink<WebSocket, WsMessage>;
 /// Keeps disconnect handling independent from the live-entry forwarding loop.
@@ -21,9 +27,11 @@ type SocketReceiver = futures_util::stream::SplitStream<WebSocket>;
 pub(crate) async fn server_logs_websocket_handler(
     ws: WebSocketUpgrade,
     State(state): State<super::state::ServerState>,
+    Extension(session): Extension<ActiveSession>,
 ) -> impl IntoResponse {
     let timeouts = state.runtime.ws_timeouts;
-    ws.on_upgrade(move |socket| handle_server_logs_socket(socket, timeouts))
+    let watch = SessionWatch::new(state.auth.clone(), &session);
+    ws.on_upgrade(move |socket| handle_server_logs_socket(socket, timeouts, watch))
 }
 
 /// Sends one typed event and returns whether forwarding can safely continue.
@@ -81,8 +89,13 @@ async fn wait_for_disconnect(receiver: &mut SocketReceiver) {
     }
 }
 
-/// Builds the snapshot before forwarding live records so protocol ordering remains deterministic.
-async fn handle_server_logs_socket(socket: WebSocket, timeouts: WebSocketTimeouts) {
+/// Builds the snapshot before forwarding live records so protocol ordering remains
+/// deterministic, and closes the socket once the session that opened it ends.
+async fn handle_server_logs_socket(
+    socket: WebSocket,
+    timeouts: WebSocketTimeouts,
+    watch: SessionWatch,
+) {
     let subscription = match logging::subscribe().await {
         Ok(subscription) => subscription,
         Err(error) => {
@@ -106,8 +119,12 @@ async fn handle_server_logs_socket(socket: WebSocket, timeouts: WebSocketTimeout
     }
 
     let mut live_entries = subscription.receiver;
-    tokio::select! {
-        _ = forward_live_entries(&mut sender, &mut live_entries, timeouts) => {}
-        _ = wait_for_disconnect(&mut receiver) => {}
+    let session_ended = tokio::select! {
+        _ = forward_live_entries(&mut sender, &mut live_entries, timeouts) => false,
+        _ = wait_for_disconnect(&mut receiver) => false,
+        () = watch.ended() => true,
+    };
+    if session_ended {
+        close_for_ended_session(&mut sender).await;
     }
 }

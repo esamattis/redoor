@@ -212,6 +212,27 @@ function cookiePair(cookie: string): string {
     return cookie.split(";", 1)[0] ?? "";
 }
 
+/** Seconds until the session a callback created ends, read from its stored session file. */
+function storedExpiresIn(callback: Response): number {
+    const pair = cookiePair(setCookie(callback, "redoor_session") ?? "");
+    const sessionId = pair.split("=", 2)[1] ?? "";
+
+    const stored = JSON.parse(
+        readFileSync(
+            join(
+                serverHome,
+                ".local/share",
+                TEST_APP_NAME,
+                "sessions",
+                `session_${sessionId}.json`,
+            ),
+            "utf8",
+        ),
+    );
+
+    return stored.expires_at - Date.now() / 1000;
+}
+
 /** Requests a URL without following redirects, the way each browser hop is checked. */
 function hop(url: string, cookie?: string): Promise<Response> {
     return fetch(url, {
@@ -224,13 +245,18 @@ function hop(url: string, cookie?: string): Promise<Response> {
  * Walks the browser through sign-in: start, provider, callback. Returns the callback
  * response and the state cookie the browser held.
  */
-async function signIn(returnPath: string): Promise<{
+async function signIn(
+    returnPath: string,
+    sessionLength?: string,
+): Promise<{
     callback: Response;
     callbackUrl: string;
     stateCookie: string;
 }> {
+    const session = sessionLength ? `&session=${sessionLength}` : "";
+
     const start = await hop(
-        `${baseUrl}/api/v1/auth/oidc/login?redirect=${encodeURIComponent(returnPath)}`,
+        `${baseUrl}/api/v1/auth/oidc/login?redirect=${encodeURIComponent(returnPath)}${session}`,
     );
 
     // Starting sign-in is a redirect to the provider, never a page of its own.
@@ -256,9 +282,13 @@ let serverPid = 0;
 
 /**
  * Starts the server with OIDC against the mock provider. `allowedGroups` of null leaves the
- * key out, which allows every account the provider signs in.
+ * key out, which allows every account the provider signs in. `lifetimeDays` caps the session
+ * length a sign-in may pick.
  */
-async function startServer(allowedGroups: string[] | null): Promise<void> {
+async function startServer(
+    allowedGroups: string[] | null,
+    lifetimeDays = 365,
+): Promise<void> {
     const allowedGroupsLine =
         allowedGroups === null
             ? ""
@@ -279,7 +309,7 @@ client_secret = "${CLIENT_SECRET}"
 redirect_url = "${redirectUrl}"
 ${allowedGroupsLine}
 provider_name = "Test ID"
-session_lifetime_days = 365
+session_lifetime_days = ${lifetimeDays}
 `,
     });
 
@@ -313,15 +343,18 @@ describe("OIDC sign-in", () => {
             preferred_username: "alice",
             groups: ["family", "admins"],
         };
-        const { callback } = await signIn("/transfers?from=oidc");
+        const { callback } = await signIn("/transfers?from=oidc", "week");
         // A successful sign-in resumes exactly where the user started.
         expect(callback.status).toBe(303);
         expect(callback.headers.get("location")).toBe("/transfers?from=oidc");
         const session = setCookie(callback, "redoor_session");
-        // The OIDC session cookie lives as long as the configured sliding lifetime.
+        // Every session cookie outlasts the longest session; the server enforces the length.
         expect(session).toMatch(
             /^redoor_session=[0-9a-f-]{36}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=31536000$/,
         );
+        // The length picked on the login page survives the provider round trip.
+        expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
+        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604800 + 1);
         // The one-shot state cookie is removed once it has been used.
         expect(setCookie(callback, "redoor_oidc_state")).toMatch(/Max-Age=0/);
 
@@ -346,6 +379,7 @@ describe("OIDC sign-in", () => {
         expect(stored).toMatchObject({
             username: "alice",
             method: "oidc",
+            length: "week",
         });
 
         const agents = await fetch(`${baseUrl}/api/v1/agents`, {
@@ -377,7 +411,7 @@ describe("OIDC sign-in", () => {
             preferred_username: "mallory",
             groups: ["family"],
         };
-        const { callback } = await signIn("/");
+        const { callback } = await signIn("/", "month");
 
         const location = new URL(
             callback.headers.get("location") ?? "",
@@ -387,6 +421,8 @@ describe("OIDC sign-in", () => {
         // The browser lands on the login page with an explanation instead of a session.
         expect(location.pathname).toBe("/login");
         expect(location.searchParams.get("oidc_error")).toBe("denied");
+        // The chosen length is still selected when the user tries again.
+        expect(location.searchParams.get("session")).toBe("month");
         // No session may be issued to a user the server itself does not allow.
         expect(setCookie(callback, "redoor_session")).toBeNull();
     });
@@ -479,7 +515,8 @@ describe("OIDC sign-in without allowed_groups", () => {
     beforeAll(async () => {
         // Restarted last, so the restricted tests above keep their own server.
         await processManager.killAndWait(serverPid);
-        await startServer(null);
+        // A one-week cap, so a longer choice on the login page is visibly clamped.
+        await startServer(null, 7);
     });
 
     it("signs in a user of any group", async () => {
@@ -493,6 +530,21 @@ describe("OIDC sign-in without allowed_groups", () => {
         // Without a restriction a group outside any list still gets a session.
         expect(callback.status).toBe(303);
         expect(callback.headers.get("location")).toBe("/");
-        expect(setCookie(callback, "redoor_session")).not.toBeNull();
+        // Without a choice the session lasts the default hour.
+        expect(storedExpiresIn(callback)).toBeGreaterThan(3600 - 30);
+        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(3600 + 1);
+    });
+
+    it("caps the chosen length at session_lifetime_days", async () => {
+        provider.user = {
+            sub: "subject-3",
+            preferred_username: "carol",
+            groups: ["family"],
+        };
+        const { callback } = await signIn("/", "year");
+
+        // A year is longer than the configured week, so the session gets a week.
+        expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
+        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604800 + 1);
     });
 });

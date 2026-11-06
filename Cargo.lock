@@ -3597,6 +3597,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "headers",
+ "http-body",
  "jiff",
  "libc",
  "nix",

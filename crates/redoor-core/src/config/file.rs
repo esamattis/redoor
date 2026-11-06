@@ -86,8 +86,9 @@ struct RawOidcSection {
     session_lifetime_days: Option<u64>,
 }
 
-/// Default idle lifetime of OIDC sessions: long enough that daily use rarely revisits the
-/// provider, short enough that an abandoned browser stops working within a month.
+/// Default cap on the idle lifetime of OIDC sessions, which the user picks on the login page:
+/// long enough that daily use rarely revisits the provider, short enough that an abandoned
+/// browser stops working within a month even when "1 year" was picked.
 const DEFAULT_OIDC_SESSION_LIFETIME_DAYS: u64 = 30;
 /// Scopes that release the subject, display name and `groups` claim on common providers.
 const DEFAULT_OIDC_SCOPES: [&str; 3] = ["openid", "profile", "groups"];
