@@ -44,14 +44,26 @@ let serverPid: number;
 
 let agentHome: string;
 
+/** How many servers this file started, so each one keeps its own log. */
+let serverStarts = 0;
+
 /** Starts the test server from `executablePath` (the built binary by default). */
 async function startServer(options?: {
     executablePath?: string;
     env?: NodeJS.ProcessEnv;
 }): Promise<void> {
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
+    serverStarts += 1;
     serverPid = processes.spawnServer({
         config: configPath,
+        // Every restart in this file is a separate server, and a failed adoption or
+        // replacement is only explained by the log of the server that ran it.
+        log: join(
+            import.meta.dirname,
+            "..",
+            "log",
+            `managed-daemons-server-${serverStarts}.log`,
+        ),
         executablePath: options?.executablePath,
         // Daemons inherit the server's environment; a plain shell needs no profile in the
         // server's temporary home.
@@ -109,6 +121,11 @@ async function waitForConnected(
  * replaced by the ensure step with the daemon this server expects, and that one connected.
  * The adopted daemon's provisional connection comes first, so waiting for any connection
  * would return the daemon that is about to be replaced.
+ *
+ * The order of the provisioning steps proves nothing: the new daemon can connect before the
+ * ensure report reaches the server, so "Connected" may come before "Replaced". The ensure
+ * step stops the old daemon before it starts the new one, so once the report names the new
+ * PID, a connection that answers a command belongs to that daemon.
  */
 async function waitForReplacedDaemon(name: string): Promise<Agent> {
     return waitForValue({
@@ -116,16 +133,33 @@ async function waitForReplacedDaemon(name: string): Promise<Agent> {
         description: `${name}'s daemon to be replaced and connect`,
         predicate: async () => {
             const agent = await agentNamed(name);
-            const steps = agent.provisioningStatus.map((step) => step.message);
 
-            const replaced = steps.findIndex((message) =>
-                message.startsWith("Replaced the agent daemon"),
-            );
+            const replacedPid = agent.provisioningStatus
+                .map((step) =>
+                    /^Replaced the agent daemon \(new PID (\d+)\)/.exec(
+                        step.message,
+                    ),
+                )
+                .find((match) => match !== null)?.[1];
 
-            return agent.status === "connected" &&
-                replaced !== -1 &&
-                steps.lastIndexOf("Connected") > replaced
-                ? agent
+            if (
+                replacedPid === undefined ||
+                agent.status !== "connected" ||
+                managedDaemonPid(agent.id) !== Number(replacedPid)
+            ) {
+                return undefined;
+            }
+
+            // The old daemon's socket can still be listed until the server notices it closed;
+            // only a live daemon answers.
+            await agent.echo("daemon-ready");
+
+            const after = await agentNamed(name);
+
+            // A connection that changed during the echo may be one the echo did not reach.
+            return after.status === "connected" &&
+                after.connectionId === agent.connectionId
+                ? after
                 : undefined;
         },
     });
