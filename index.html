@@ -359,6 +359,8 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 /* Two screenshots stacked over each other for the vault and access token showcases. */
 .stack { position: relative; padding-bottom: 18%; }
 .stack .back { width: 82%; }
+.stack.wide .back { width: 70%; }
+.stack.wide .front { width: 72%; }
 .stack .front {
     position: absolute;
     right: 0;
@@ -599,6 +601,8 @@ footer p { margin: 6px 0; }
     .stack { padding-bottom: 30%; }
     .stack .back { width: 92%; }
     .stack .front { width: 70%; }
+    .stack.wide .back { width: 92%; }
+    .stack.wide .front { width: 84%; }
     .cli-media .window, .cli-media .terminal { width: 100%; }
     .cli-media .terminal { margin-top: -40px; }
     .terminal pre { font-size: 12.5px; padding: 16px; }
@@ -763,9 +767,38 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase" id="git">
+        <div class="showcase" id="systemd">
             <div class="showcase-text reveal">
-                <span class="kicker">05 / Git</span>
+                <span class="kicker">05 / Systemd</span>
+                <h2><a class="anchor" href="#systemd">Services and timers without the shell</a></h2>
+                <p>Check why a unit failed, restart it after editing its file and follow its log, all in the browser. Redoor drives the standard <code>systemctl</code> and <code>journalctl</code> tools on Linux devices running systemd.</p>
+                <ul class="checks">
+                    <li>System and user units, filterable by name, type and state</li>
+                    <li>Start, stop, restart, reload, enable and disable, with systemd's own error when a job fails</li>
+                    <li>A Systemd tab on every unit file with its status, timer schedule and live journal, next to the editor</li>
+                    <li>Offers the daemon-reload after you save a unit file, and manages user linger</li>
+                </ul>
+            </div>
+            <div class="showcase-media reveal">
+                <div class="media-glow"></div>
+                <div class="stack wide">
+                    <div class="window back">
+                        <button class="shot" type="button" data-full="screenshots/systemd_unit.webp" data-caption="A unit file's Systemd tab with its status, controls and live journal">
+                            <img src="screenshots/systemd_unit.webp" alt="Systemd tab of a service showing its state, start, stop and restart buttons and a live journal" loading="lazy" width="1600" height="1731">
+                        </button>
+                    </div>
+                    <div class="window front">
+                        <button class="shot" type="button" data-full="screenshots/systemd_units.webp" data-caption="The units of a user's systemd manager, filtered to services">
+                            <img src="screenshots/systemd_units.webp" alt="List of a user's systemd services with their state and unit file status" loading="lazy" width="1600" height="1187">
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="showcase reverse" id="git">
+            <div class="showcase-text reveal">
+                <span class="kicker">06 / Git</span>
                 <h2><a class="anchor" href="#git">Read your history, not just your files</a></h2>
                 <p>Redoor understands Git repositories on every device. Step through commits, review diffs, and browse the whole tree as it was at any point in time.</p>
                 <ul class="checks">
@@ -785,9 +818,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase reverse" id="vault">
+        <div class="showcase" id="vault">
             <div class="showcase-text reveal">
-                <span class="kicker">06 / SSH keys &amp; vault</span>
+                <span class="kicker">07 / SSH keys &amp; vault</span>
                 <h2><a class="anchor" href="#vault">SSH keys managed for you, locked by your passkey</a></h2>
                 <p>Redoor manages the SSH keys of your devices and their rotation, and keeps them in a vault encrypted with your passkey. The same encryption protects any file you choose, so devices only ever store ciphertext.</p>
                 <ul class="checks">
@@ -814,9 +847,9 @@ footer p { margin: 6px 0; }
             </div>
         </div>
 
-        <div class="showcase" id="automation">
+        <div class="showcase reverse" id="automation">
             <div class="showcase-text reveal">
-                <span class="kicker">07 / Automation</span>
+                <span class="kicker">08 / Automation</span>
                 <h2><a class="anchor" href="#automation">Let your AI agents in, with scoped keys</a></h2>
                 <p>A stateless MCP endpoint and a remote CLI give scripts and AI agents access to all your devices at once. Every token is limited to the permissions and devices you pick.</p>
                 <ul class="checks">
