@@ -17,6 +17,7 @@ import { Password } from "#ui/components/password";
 import { TextField } from "#ui/components/text-field";
 import { queryKeys, vaultStatusQueryOptions } from "#ui/queries";
 import { wipe } from "#ui/vault/vault-crypto";
+import { vaultDebug } from "#ui/vault/vault-debug";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import {
     NewPassphraseFields,
@@ -75,6 +76,11 @@ function usePasskeyPrompt(): PasskeyPrompt {
     const run = React.useCallback(
         async <T,>(prompt: (signal: AbortSignal) => Promise<T>) => {
             const controller = new AbortController();
+
+            vaultDebug("dialog passkey prompt run", {
+                replacesPendingPrompt: controllerRef.current !== null,
+            });
+
             controllerRef.current = controller;
             setIsWaiting(true);
 
@@ -85,7 +91,16 @@ function usePasskeyPrompt(): PasskeyPrompt {
                 // the vault for flows that have already failed.
                 controller.signal.throwIfAborted();
 
+                vaultDebug("dialog passkey prompt done");
+
                 return result;
+            } catch (error) {
+                vaultDebug("dialog passkey prompt failed", {
+                    aborted: controller.signal.aborted,
+                    error: String(error),
+                });
+
+                throw error;
             } finally {
                 if (controllerRef.current === controller) {
                     controllerRef.current = null;
@@ -98,6 +113,9 @@ function usePasskeyPrompt(): PasskeyPrompt {
     );
 
     const abort = React.useCallback(() => {
+        vaultDebug("dialog passkey prompt abort", {
+            hadPendingPrompt: controllerRef.current !== null,
+        });
         controllerRef.current?.abort();
     }, []);
 
@@ -228,6 +246,13 @@ function CreateVaultForm(props: {
 
         setValidation(problem);
 
+        vaultDebug("create vault submitted", {
+            withPasskey,
+            withPassphrase,
+            problem,
+            alreadyPending: create.isPending,
+        });
+
         if (problem === null) {
             create.mutate();
         }
@@ -347,6 +372,14 @@ function UnlockVaultForm(props: {
     const [passphrase, setPassphrase] = React.useState("");
     const [keep, setKeep] = React.useState(false);
 
+    // Logged because a remount drops the pending mutations, which could make the user
+    // press the passkey button again while the first prompt is still open.
+    React.useEffect(() => {
+        vaultDebug("unlock form mounted");
+
+        return () => vaultDebug("unlock form unmounted");
+    }, []);
+
     // Loaded with the dialog, so the passkey prompt starts directly from the click: some
     // browsers require the user gesture that a fetch in between would consume.
     const materialQuery = useQuery({
@@ -429,6 +462,11 @@ function UnlockVaultForm(props: {
             onSubmit={(event) => {
                 event.preventDefault();
 
+                vaultDebug("unlock form submitted", {
+                    hasPassphrase,
+                    isBusy,
+                });
+
                 if (hasPassphrase) {
                     withPasskey.reset();
                     withPassphrase.mutate();
@@ -445,7 +483,15 @@ function UnlockVaultForm(props: {
                     tooltip="Unlock with any passkey registered for this vault"
                     isLoading={withPasskey.isPending}
                     disabled={isBusy}
-                    onClick={() => {
+                    onClick={(event) => {
+                        vaultDebug("unlock with passkey clicked", {
+                            isBusy,
+                            materialLoaded: materialQuery.data !== undefined,
+                            materialFetching: materialQuery.isFetching,
+                            passkeys: passkeys.length,
+                            detail: event.detail,
+                            isTrusted: event.isTrusted,
+                        });
                         withPassphrase.reset();
                         withPasskey.mutate();
                     }}
@@ -533,6 +579,13 @@ export function VaultDialog() {
         enabled: isOpen,
     });
 
+    // Logged so a bug report shows when the dialog opened and closed around each prompt.
+    React.useEffect(() => {
+        vaultDebug(isOpen ? "vault dialog open" : "vault dialog closed", {
+            reason: state.pendingReason,
+        });
+    }, [isOpen, state.pendingReason]);
+
     if (!isOpen) {
         return null;
     }
@@ -540,6 +593,10 @@ export function VaultDialog() {
     const summary = statusQuery.data?.vault;
 
     const cancel = () => {
+        vaultDebug("vault dialog cancel", {
+            promptWaiting: passkeyPrompt.isWaiting,
+            isBusy,
+        });
         passkeyPrompt.abort();
         session.cancelPending();
     };

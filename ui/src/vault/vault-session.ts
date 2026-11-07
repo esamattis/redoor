@@ -14,6 +14,7 @@
  */
 import { z } from "zod";
 import { ExternalStore } from "#ui/utils/external-store";
+import { callerStack, vaultDebug } from "#ui/vault/vault-debug";
 import type { UnlockedVault } from "#ui/vault/vault-keys";
 
 /** How long an unlocked vault stays unlocked without use, unless kept on this device. */
@@ -167,6 +168,11 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
         const stored = await this.readKept().catch(() => null);
 
+        vaultDebug("session start", {
+            hasKeptKeys: stored !== null,
+            alreadyUnlocked: this.vault !== null,
+        });
+
         if (stored === null || this.vault !== null) {
             return;
         }
@@ -176,12 +182,15 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         const expected = await currentKeyId().catch(() => undefined);
 
         if (expected !== undefined && expected !== stored.currentKeyId) {
+            vaultDebug(
+                "kept keys are of a rotated generation, forgetting them",
+            );
             await this.forgetKept();
 
             return;
         }
 
-        this.adopt(fromStored(stored), true);
+        this.adopt(fromStored(stored), true, "kept keys");
     }
 
     /** The unlocked vault, or null while locked. */
@@ -200,6 +209,12 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             return Promise.resolve(this.vault);
         }
 
+        vaultDebug("unlock requested", {
+            reason,
+            alreadyWaiting: this.pending.length,
+            stack: callerStack(),
+        });
+
         return new Promise((resolve, reject) => {
             this.pending.push({ resolve, reject });
             this.publishState(reason);
@@ -208,6 +223,11 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
     /** Ends every waiting flow because the user closed the dialog. */
     cancelPending(): void {
+        vaultDebug("unlock cancelled", {
+            waiting: this.pending.length,
+            stack: callerStack(),
+        });
+
         for (const waiting of this.pending.splice(0)) {
             waiting.reject(new VaultUnlockCancelled());
         }
@@ -220,13 +240,15 @@ export class VaultSession extends ExternalStore<VaultLockState> {
      * are also kept in IndexedDB and never lock on idle.
      */
     async unlock(vault: UnlockedVault, persist: boolean): Promise<void> {
+        vaultDebug("unlocking", { persist, waiting: this.pending.length });
+
         if (persist) {
             await this.writeKept(toStored(vault));
         } else {
             await this.forgetKept().catch(() => undefined);
         }
 
-        this.adopt(vault, persist);
+        this.adopt(vault, persist, "this tab");
         this.post({
             type: "unlocked",
             vault: toStored(vault),
@@ -240,8 +262,9 @@ export class VaultSession extends ExternalStore<VaultLockState> {
      * again before writing.
      */
     async rotated(vault: UnlockedVault): Promise<void> {
+        vaultDebug("rotated, locking other tabs");
         await this.lock();
-        this.adopt(vault, false);
+        this.adopt(vault, false, "rotation");
     }
 
     /**
@@ -249,6 +272,7 @@ export class VaultSession extends ExternalStore<VaultLockState> {
      * to the user is never undone by a reload that races the deletion.
      */
     async lock(): Promise<void> {
+        vaultDebug("locking", { stack: callerStack() });
         await this.forgetKept().catch(() => undefined);
         this.drop();
         this.post({ type: "locked" });
@@ -273,14 +297,28 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             window.clearTimeout(this.idleTimer);
         }
 
-        this.idleTimer = window.setTimeout(
-            () => void this.lock(),
-            AUTO_LOCK_MS,
-        );
+        this.idleTimer = window.setTimeout(() => {
+            vaultDebug("idle timeout reached");
+            void this.lock();
+        }, AUTO_LOCK_MS);
     }
 
-    /** Takes keys in and wakes waiting flows. */
-    private adopt(vault: UnlockedVault, persisted: boolean): void {
+    /**
+     * Takes keys in and wakes waiting flows. `source` only feeds the debug log, to tell
+     * this tab's unlock from one that arrived from another tab or IndexedDB.
+     */
+    private adopt(
+        vault: UnlockedVault,
+        persisted: boolean,
+        source: string,
+    ): void {
+        vaultDebug("adopting unlocked keys", {
+            source,
+            persisted,
+            wasUnlocked: this.vault !== null,
+            waking: this.pending.length,
+        });
+
         this.vault = vault;
         this.persisted = persisted;
 
@@ -300,6 +338,11 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
     /** Forgets keys in this tab only. */
     private drop(): void {
+        vaultDebug("dropping keys", {
+            wasUnlocked: this.vault !== null,
+            stillWaiting: this.pending.length,
+        });
+
         this.vault = null;
         this.persisted = false;
 
@@ -313,8 +356,16 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
     /** Handles a message from another tab. */
     private receive(message: ChannelMessage): void {
+        if (message.type !== "touched") {
+            vaultDebug("message from another tab", { type: message.type });
+        }
+
         if (message.type === "unlocked") {
-            this.adopt(fromStored(message.vault), message.persisted);
+            this.adopt(
+                fromStored(message.vault),
+                message.persisted,
+                "other tab",
+            );
         } else if (message.type === "locked") {
             this.drop();
         } else if (message.type === "touched") {

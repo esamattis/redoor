@@ -7,6 +7,7 @@ import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialR
 import { Button } from "#ui/components/button";
 import { Password } from "#ui/components/password";
 import { queryKeys } from "#ui/queries";
+import { vaultDebug } from "#ui/vault/vault-debug";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
 import { passphraseSlot, type FreshUnlockInput } from "#ui/vault/vault-keys";
 import {
@@ -136,7 +137,15 @@ export function FreshUnlockFields(props: {
                     tooltip="Confirm with any passkey registered for this hostname"
                     isLoading={prompt.isPending}
                     disabled={props.disabled}
-                    onClick={() => prompt.mutate()}
+                    onClick={(event) => {
+                        vaultDebug("fresh unlock passkey clicked", {
+                            alreadyPending: prompt.isPending,
+                            passkeys: passkeys.length,
+                            detail: event.detail,
+                            isTrusted: event.isTrusted,
+                        });
+                        prompt.mutate();
+                    }}
                 >
                     <Fingerprint className="h-4 w-4" aria-hidden="true" />
                     Unlock with passkey

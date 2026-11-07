@@ -16,6 +16,12 @@ import {
     randomBytes,
     toBase64Url,
 } from "#ui/vault/vault-crypto";
+import {
+    callerStack,
+    nextPasskeyPromptId,
+    vaultDebug,
+    type VaultDebugValue,
+} from "#ui/vault/vault-debug";
 
 /** Thrown when an authenticator cannot derive keys (no PRF support). */
 export class PasskeyPrfUnsupported extends Error {
@@ -61,6 +67,79 @@ function toArrayBuffer(source: BufferSource): ArrayBuffer {
 }
 
 /**
+ * Runs one browser passkey prompt with console logging of its start, end and failure. A
+ * password manager sometimes shows a prompt twice, and the numbered lines with caller
+ * stacks show whether redoor asked twice or the prompt repeated by itself.
+ */
+async function loggedPrompt<T>(
+    options: {
+        kind: "get" | "create";
+        details: Record<string, VaultDebugValue>;
+        signal: AbortSignal | undefined;
+    },
+    prompt: () => Promise<T>,
+): Promise<T> {
+    const { kind, details, signal } = options;
+    const id = nextPasskeyPromptId();
+    const started = performance.now();
+    const elapsed = () => Math.round(performance.now() - started);
+
+    const onAbort = () =>
+        vaultDebug(`passkey prompt #${id} (${kind}) abort requested`, {
+            elapsedMs: elapsed(),
+        });
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+
+    vaultDebug(`passkey prompt #${id} (${kind}) start`, {
+        ...details,
+        rpId: currentRpId(),
+        hasSignal: signal !== undefined,
+        alreadyAborted: signal?.aborted ?? false,
+        userActivation: navigator.userActivation?.isActive,
+        stack: callerStack(),
+    });
+
+    try {
+        const result = await prompt();
+
+        vaultDebug(`passkey prompt #${id} (${kind}) settled`, {
+            elapsedMs: elapsed(),
+            isCredential: result instanceof PublicKeyCredential,
+            credentialId:
+                result instanceof PublicKeyCredential
+                    ? toBase64Url(result.rawId)
+                    : null,
+            authenticatorAttachment:
+                result instanceof PublicKeyCredential
+                    ? result.authenticatorAttachment
+                    : null,
+            prfEnabled:
+                result instanceof PublicKeyCredential
+                    ? result.getClientExtensionResults().prf?.enabled
+                    : null,
+            prfHasOutput:
+                result instanceof PublicKeyCredential
+                    ? prfOutput(result) !== null
+                    : null,
+        });
+
+        return result;
+    } catch (error) {
+        vaultDebug(`passkey prompt #${id} (${kind}) failed`, {
+            elapsedMs: elapsed(),
+            aborted: signal?.aborted ?? false,
+            // DOMException names tell a refused prompt from an aborted one.
+            error: String(error),
+        });
+
+        throw error;
+    } finally {
+        signal?.removeEventListener("abort", onAbort);
+    }
+}
+
+/**
  * Requests an assertion from exactly the given credentials with a PRF evaluation. The signal
  * lets the user give up on a prompt that never settles, such as one a password manager
  * cannot show.
@@ -70,25 +149,32 @@ async function assert(
     salt: Uint8Array<ArrayBuffer>,
     signal?: AbortSignal,
 ): Promise<PublicKeyCredential> {
-    const credential = await navigator.credentials.get({
-        signal,
-        publicKey: {
-            challenge: randomBytes(32),
-            rpId: currentRpId(),
-            userVerification: "required",
-            allowCredentials: credentialIds.map((id) => ({
-                type: "public-key",
-                id: fromBase64Url(id),
-            })),
-            extensions: {
-                prf: {
-                    evalByCredential: Object.fromEntries(
-                        credentialIds.map((id) => [id, { first: salt }]),
-                    ),
+    const credential = await loggedPrompt(
+        { kind: "get", details: { credentialIds }, signal },
+        () =>
+            navigator.credentials.get({
+                signal,
+                publicKey: {
+                    challenge: randomBytes(32),
+                    rpId: currentRpId(),
+                    userVerification: "required",
+                    allowCredentials: credentialIds.map((id) => ({
+                        type: "public-key",
+                        id: fromBase64Url(id),
+                    })),
+                    extensions: {
+                        prf: {
+                            evalByCredential: Object.fromEntries(
+                                credentialIds.map((id) => [
+                                    id,
+                                    { first: salt },
+                                ]),
+                            ),
+                        },
+                    },
                 },
-            },
-        },
-    });
+            }),
+    );
 
     if (!(credential instanceof PublicKeyCredential)) {
         throw new Error("No passkey was used");
@@ -109,27 +195,35 @@ export async function registerPasskey(options: {
 }): Promise<{ credentialId: string; rpId: string; kek: CryptoKey }> {
     const salt = await prfSalt(options.vaultId);
 
-    const created = await navigator.credentials.create({
-        signal: options.signal,
-        publicKey: {
-            challenge: randomBytes(32),
-            rp: { name: "redoor vault", id: currentRpId() },
-            user: {
-                id: randomBytes(16),
-                name: options.label,
-                displayName: options.label,
-            },
-            pubKeyCredParams: [
-                { type: "public-key", alg: -7 },
-                { type: "public-key", alg: -257 },
-            ],
-            authenticatorSelection: {
-                userVerification: "required",
-                residentKey: "preferred",
-            },
-            extensions: { prf: { eval: { first: salt } } },
+    const created = await loggedPrompt(
+        {
+            kind: "create",
+            details: { slotId: options.slotId },
+            signal: options.signal,
         },
-    });
+        () =>
+            navigator.credentials.create({
+                signal: options.signal,
+                publicKey: {
+                    challenge: randomBytes(32),
+                    rp: { name: "redoor vault", id: currentRpId() },
+                    user: {
+                        id: randomBytes(16),
+                        name: options.label,
+                        displayName: options.label,
+                    },
+                    pubKeyCredParams: [
+                        { type: "public-key", alg: -7 },
+                        { type: "public-key", alg: -257 },
+                    ],
+                    authenticatorSelection: {
+                        userVerification: "required",
+                        residentKey: "preferred",
+                    },
+                    extensions: { prf: { eval: { first: salt } } },
+                },
+            }),
+    );
 
     if (!(created instanceof PublicKeyCredential)) {
         throw new Error("No passkey was created");
@@ -145,6 +239,14 @@ export async function registerPasskey(options: {
     let output = prfOutput(created);
 
     if (output === null) {
+        // Logged because this second prompt is expected, not a duplicate.
+        vaultDebug(
+            "passkey created without PRF output, asking again with get",
+            {
+                credentialId,
+            },
+        );
+
         output = prfOutput(await assert([credentialId], salt, options.signal));
     }
 
@@ -200,6 +302,12 @@ export async function derivePasskeyKek(
     );
 
     const output = prfOutput(credential);
+
+    vaultDebug("passkey matched to slot", {
+        usedId,
+        slotId: slot?.id ?? null,
+        hasPrfOutput: output !== null,
+    });
 
     if (!slot) {
         throw new Error("The passkey used is not registered for this vault");
