@@ -46,6 +46,8 @@ import {
     fixturePassword,
     keyMarker,
     serverLabel,
+    splitCreatedAt,
+    KEY_CREATED_AT,
     sshAs,
 } from "./ssh-key-test-utils";
 
@@ -216,9 +218,12 @@ describe.skipIf(
             const label = await serverLabel(fixture);
             // Exactly the restricted line for this key is installed on the device, marked
             // with the device id and the key's fingerprint, and labelled with the account
-            // and machine of the server that installed it.
-            expect(lines).toEqual([
-                `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} ${keyMarker(deviceId, enrolled.fingerprint)} ${label}`,
+            // and machine of the server that installed it and the time it appeared.
+            expect(lines.map(splitCreatedAt)).toEqual([
+                {
+                    line: `restrict,port-forwarding ${publicKey[0]} ${publicKey[1]} ${keyMarker(deviceId, enrolled.fingerprint)} ${label}`,
+                    createdAt: expect.stringMatching(KEY_CREATED_AT),
+                },
             ]);
 
             const connected = await startAndWaitConnected(fixture, deviceId);
@@ -295,16 +300,19 @@ describe.skipIf(
             ).toBe(404);
 
             const label = await serverLabel(fixture);
+            const preparedLine = splitCreatedAt(prepared.authorized_keys_line);
             // The line has the automatic setup's format and marker, so rotation and
-            // removal find it later, and the server label tells the user who installed it.
+            // removal find it later, and the server label and time tell the user who
+            // installed it and when.
             expect(prepared.authorized_keys_line).toMatch(
                 /^restrict,port-forwarding ssh-ed25519 \S+ /,
             );
             expect(
-                prepared.authorized_keys_line.endsWith(
+                preparedLine.line.endsWith(
                     ` ${keyMarker(deviceId, prepared.fingerprint)} ${label}`,
                 ),
             ).toBe(true);
+            expect(preparedLine.createdAt).toMatch(KEY_CREATED_AT);
             // The command the user pastes appends exactly that line.
             expect(prepared.install_command).toContain(
                 shellQuote(prepared.authorized_keys_line),

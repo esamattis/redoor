@@ -225,6 +225,22 @@ export async function serverLabel(fixture: KeyFixture): Promise<string> {
     return `${userInfo().username}@${hostname}`;
 }
 
+/** The whole-second UTC time the server ends a managed key's comment with. */
+export const KEY_CREATED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/;
+
+/**
+ * Splits the trailing creation time off an `authorized_keys` line, so a test can compare the
+ * rest exactly and check the time, which it cannot know in advance, by its format.
+ */
+export function splitCreatedAt(line: string) {
+    const separator = line.lastIndexOf(" ");
+
+    return {
+        line: line.slice(0, separator),
+        createdAt: line.slice(separator + 1),
+    };
+}
+
 /** The `authorized_keys` lines of `user` that carry `deviceId`'s marker. */
 export async function remoteDeviceLines(
     user: string,

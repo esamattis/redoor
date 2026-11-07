@@ -3130,14 +3130,17 @@ devices.
      next to the link target, renamed over it) so the link survives, because Proxmox VE
      links root's file into its cluster filesystem to share it between nodes; a dangling
      link, a non-regular target or a target in an unwritable directory is refused. The line is
-     `restrict,port-forwarding <key> redoor:<device-id>:<SHA256 fingerprint> <username>@<hostname>`.
+     `restrict,port-forwarding <key> redoor:<device-id>:<SHA256 fingerprint> <username>@<hostname> <YYYY-MM-DDTHH:MM:SSZ>`.
      A line is the device's when its comment contains `redoor:<device-id>:` (the trailing
      colon keeps `dev_abc` from matching `dev_abcd`), and a given key's when the rest of the
      marker, up to the next whitespace, is the fingerprint. The `<username>@<hostname>`
-     label (the server's account and machine, like `ssh-keygen` writes) only tells a person
-     reading the file which server installed the line; it is never
-     matched, and because it follows the marker after a space, lines written before it
-     existed are managed the same way. The awk filter gets the marker and keep list through `ENVIRON` (no
+     label (the server's account and machine, like `ssh-keygen` writes) and the UTC time
+     from the server's clock when the line was built only tell a person who does not know
+     redoor which server installed the line and when it appeared. Only freshly generated
+     keys are ever added, so that time is the install time, except for a manual setup,
+     where it is when the command was prepared. Neither is ever matched, and because they
+     follow the marker after a space, lines written before they existed are managed the
+     same way. The awk filter gets the marker and keep list through `ENVIRON` (no
      escape processing) and compares fingerprints only literally (`index`, `==`), because
      they contain `+`, `/` and `=`; it behaves the same in GNU, BSD and busybox awk.
   4. The key is verified with only that key, against the pin, with a dummy `-R 0:…`

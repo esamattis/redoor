@@ -345,14 +345,21 @@ pub(crate) fn device_marker(device: &AgentId) -> String {
 
 /// The full comment of a managed key: the [`marker`], then `<username>@<hostname>` of the
 /// account and machine the server runs on, after a space, the same form `ssh-keygen` uses,
-/// so someone reading the device's `authorized_keys` can tell which server installed the
-/// line.
+/// and finally the UTC time the comment was made. Someone reading the device's
+/// `authorized_keys` without knowing redoor can then tell which server installed the line
+/// and when it appeared.
 ///
-/// The label must come after the marker and be separated by whitespace: the install
-/// script reads the fingerprint from the end of the marker up to the next whitespace, so
-/// lines written before the label existed and lines with it are managed alike. The label
-/// is informational only and never matched, so a renamed server only shows its old name
-/// until the next rotation.
+/// The time is taken when the line is built, which is right before it is installed: only
+/// freshly generated keys are ever added, so build and install time are the same moment,
+/// except for a manual setup, where it is the time the command was prepared. The server's
+/// clock is used rather than the device's, because devices without network time can be
+/// far off.
+///
+/// The label and time must come after the marker and be separated by whitespace: the
+/// install script reads the fingerprint from the end of the marker up to the next
+/// whitespace, so lines written before they existed and lines with them are managed alike.
+/// They are informational only and never matched, so a renamed server only shows its old
+/// name until the next rotation.
 async fn key_comment(device: &AgentId, fingerprint: &str) -> String {
     let marker = marker(device, fingerprint);
     let hostname = nix::unistd::gethostname()
@@ -362,9 +369,12 @@ async fn key_comment(device: &AgentId, fingerprint: &str) -> String {
         (Some(username), Some(hostname)) => server_label(&username, &hostname),
         _ => None,
     };
+    // Whole seconds in the `Z` form: readable at a glance, free of time zone questions, and
+    // made only of characters that cannot split the comment or break the shell quoting.
+    let created = jiff::Timestamp::now().strftime("%Y-%m-%dT%H:%M:%SZ");
     match label {
-        Some(label) => format!("{marker} {label}"),
-        None => marker,
+        Some(label) => format!("{marker} {label} {created}"),
+        None => format!("{marker} {created}"),
     }
 }
 
@@ -834,7 +844,9 @@ mod tests {
 
         // The same public key comes back from the private key file alone.
         assert_eq!(loaded.fingerprint(), key.fingerprint());
+        let before = jiff::Timestamp::now().as_second();
         let line = loaded.authorized_keys_line().await;
+        let after = jiff::Timestamp::now().as_second();
         // The key is restricted except for the reverse tunnel.
         assert!(
             line.starts_with("restrict,port-forwarding ssh-ed25519 "),
@@ -845,15 +857,22 @@ mod tests {
             .unwrap()
             .unwrap()
             .name;
+        let (line_without_time, created) = line.rsplit_once(' ').unwrap();
         // The marker names the device and the key's fingerprint, and the label after it
         // names the account and machine of the server that installed the line.
         assert!(
-            line.ends_with(&format!(
+            line_without_time.ends_with(&format!(
                 " redoor:{device}:{} {username}@{hostname}",
                 key.fingerprint()
             )),
             "{line}"
         );
+        // The comment ends with when the line was made, in whole UTC seconds, so a reader
+        // of the device's authorized_keys can tell when it appeared.
+        assert_eq!(created.len(), "2026-01-01T00:00:00Z".len(), "{line}");
+        assert!(created.ends_with('Z'), "{line}");
+        let created = created.parse::<jiff::Timestamp>().unwrap().as_second();
+        assert!((before..=after).contains(&created), "{line}");
         // The fingerprint is the `ssh-keygen -l` format the user sees in the UI.
         assert!(key.fingerprint().starts_with("SHA256:"));
     }
