@@ -27,6 +27,7 @@ Here's the thing. Today I work on multiple different devices: Servers, laptops, 
 - [Configuration](docs/config.md)
 - [Remote CLI](docs/remote-cli.md)
 - [MCP](docs/mcp.md)
+- [Vault and encrypted files](docs/vault.md)
 - [SSH relays](docs/relays.md)
 - [Upgrade](docs/upgrade.md)
 - [Deployment behind a reverse proxy](docs/deployment.md)
