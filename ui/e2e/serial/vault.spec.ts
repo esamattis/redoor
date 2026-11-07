@@ -34,17 +34,20 @@ async function removeVault() {
     );
 }
 
-/** Creates a vault through the dialog that the first encrypted file opens. */
-async function createVaultInDialog(page: Page, keep = false) {
+/**
+ * Creates a vault through the dialog that the first encrypted file opens. `lockAfter` is the
+ * label of a "Stay unlocked for" choice; without it the default stays picked.
+ */
+async function createVaultInDialog(page: Page, lockAfter?: string) {
     const dialog = page.getByRole("dialog", { name: "Create vault" });
     await expect(dialog).toBeVisible();
     await dialog.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
     await dialog.getByLabel("Repeat passphrase").fill(PASSPHRASE);
 
-    if (keep) {
+    if (lockAfter !== undefined) {
         await dialog
-            .getByRole("checkbox", { name: "Keep unlocked on this device" })
-            .click();
+            .getByLabel("Stay unlocked for")
+            .selectOption({ label: lockAfter });
     }
 
     await dialog.getByRole("button", { name: "Create vault" }).click();
@@ -52,20 +55,20 @@ async function createVaultInDialog(page: Page, keep = false) {
     await expect(dialog).toBeHidden({ timeout: 30_000 });
 }
 
-/** Unlocks with the passphrase in the shared vault dialog. */
+/** Unlocks with the passphrase in the shared vault dialog, like `createVaultInDialog`. */
 async function unlockInDialog(
     page: Page,
-    keep = false,
+    lockAfter?: string,
     passphrase = PASSPHRASE,
 ) {
     const dialog = page.getByRole("dialog", { name: "Unlock vault" });
     await expect(dialog).toBeVisible();
     await dialog.getByLabel("Passphrase", { exact: true }).fill(passphrase);
 
-    if (keep) {
+    if (lockAfter !== undefined) {
         await dialog
-            .getByRole("checkbox", { name: "Keep unlocked on this device" })
-            .click();
+            .getByLabel("Stay unlocked for")
+            .selectOption({ label: lockAfter });
     }
 
     await dialog.getByRole("button", { name: "Unlock", exact: true }).click();
@@ -176,7 +179,7 @@ test.describe.serial("Vault", () => {
         expect(onDisk.includes(Buffer.from("very-secret"))).toBe(false);
 
         await page.reload();
-        // Without "keep unlocked" a reload locks the vault, so the editor asks first.
+        // The default 15 minutes keep the key in open tabs only, so a reload locks the vault and the editor asks first.
         await page.getByRole("button", { name: "Unlock vault" }).click();
         await unlockInDialog(page);
         // The unlocked editor shows the decrypted content.
@@ -244,7 +247,7 @@ test.describe.serial("Vault", () => {
     }) => {
         const fileName = "kept.txt.redoorencrypted";
         await createVaultFile(page, ctx, fileName);
-        await createVaultInDialog(page, true);
+        await createVaultInDialog(page, "Until I lock it");
         const editor = page.getByRole("textbox", { name: "File editor" });
         await expect(editor).toBeVisible();
 
@@ -280,7 +283,7 @@ test.describe.serial("Vault", () => {
             page.getByRole("button", { name: "Unlock vault" }),
         ).toBeVisible();
         await page.getByRole("button", { name: "Unlock vault" }).click();
-        await unlockInDialog(page, true);
+        await unlockInDialog(page, "Until I lock it");
         await expect(editor).toBeVisible();
 
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
@@ -300,7 +303,7 @@ test.describe.serial("Vault", () => {
         await page.context().clearCookies();
         await signIn(page);
         await createVaultFile(page, ctx, "logout.txt.redoorencrypted");
-        await createVaultInDialog(page, true);
+        await createVaultInDialog(page, "Until I lock it");
         await expect(
             page.getByRole("textbox", { name: "File editor" }),
         ).toBeVisible();
@@ -332,9 +335,14 @@ test.describe.serial("Vault", () => {
         await page.getByRole("button", { name: "Create vault" }).click();
         const create = page.getByRole("dialog", { name: "Create vault" });
         const createLockAfter = create.getByLabel("Stay unlocked for");
-        // The shortest lock is the default, so an unlock without a deliberate pick locks soon.
+        // The shortest lock is the default, so an unlock without a deliberate pick locks soon
+        // and never stores the key.
         await expect(createLockAfter).toHaveValue("15_minutes");
         await createLockAfter.selectOption({ label: "1 hour" });
+        // Choices that store the key say that the limit is only checked while redoor is open.
+        await expect(create).toContainText(
+            "The time limit is only checked while redoor is open",
+        );
         await create.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
         await create.getByLabel("Repeat passphrase").fill(PASSPHRASE);
         await create.getByRole("button", { name: "Create vault" }).click();
@@ -342,35 +350,29 @@ test.describe.serial("Vault", () => {
 
         const status = page.getByLabel("Vault status");
         const idleLock = page.getByLabel("Vault idle lock");
-        // The settings page names the picked lock, so the user can see when it locks.
+        // An hour is kept on the device, and the settings page names the picked lock.
+        await expect(status).toHaveText("Unlocked, kept on this device");
+        await expect(idleLock).toHaveText("Locks after 1 hour without use");
+
+        await page.reload();
+        // The kept key survives a reload together with its lock choice.
+        await expect(status).toHaveText("Unlocked, kept on this device");
         await expect(idleLock).toHaveText("Locks after 1 hour without use");
 
         await page.clock.fastForward("30:00");
         // Half the picked hour is not enough to lock it.
-        await expect(status).toHaveText("Unlocked");
+        await expect(status).toHaveText("Unlocked, kept on this device");
         await page.clock.fastForward("31:00");
         // Past the picked hour without use, the vault locks itself.
         await expect(status).toHaveText("Locked");
 
         await page.getByRole("button", { name: "Unlock", exact: true }).click();
-        const unlock = page.getByRole("dialog", { name: "Unlock vault" });
-        await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
-        await unlock
-            .getByRole("checkbox", { name: "Keep unlocked on this device" })
-            .click();
-        await unlock
-            .getByRole("button", { name: "Unlock", exact: true })
-            .click();
-        await expect(unlock).toBeHidden({ timeout: 30_000 });
-
-        await page.reload();
-        // The kept key survives a reload together with its lock choice.
+        await unlockInDialog(page, "1 hour");
         await expect(status).toHaveText("Unlocked, kept on this device");
-        await expect(idleLock).toHaveText("Locks after 15 minutes without use");
 
         // Moving the time without running timers stands in for a browser that was closed.
         await page.clock.setSystemTime(
-            (await page.evaluate(() => Date.now())) + 16 * 60 * 1000,
+            (await page.evaluate(() => Date.now())) + 61 * 60 * 1000,
         );
         await page.reload();
         // The kept key was unused for longer than its lock, so loading the page forgets it.
@@ -414,7 +416,7 @@ test.describe.serial("Vault", () => {
         await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
         await page.reload();
-        // Without "keep unlocked" the reload locks the vault, so the editor waits for an unlock.
+        // The default 15 minutes keep the key in open tabs only, so the reload locks the vault and the editor waits for an unlock.
         await expect(
             page.getByRole("button", { name: "Unlock vault" }),
         ).toBeVisible();
@@ -633,7 +635,7 @@ test.describe.serial("Vault", () => {
 
         await page.getByRole("button", { name: "Lock now" }).click();
         await page.getByRole("button", { name: "Unlock", exact: true }).click();
-        await unlockInDialog(page, false, generated);
+        await unlockInDialog(page, undefined, generated);
         // The generated passphrase wraps the same vault key.
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
 

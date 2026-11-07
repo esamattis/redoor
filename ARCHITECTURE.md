@@ -2960,14 +2960,18 @@ it.
   non-extractable keys of every reachable generation, shares them with the other tabs over a
   `BroadcastChannel`, and locks after the idle time picked in the unlock dialog (15 minutes
   by default, up to a week, or no idle lock; capped so one `setTimeout` can wait for it).
-  Using the vault (`requestUnlock`, file reads) restarts the idle timer in every tab. With
-  "Keep unlocked on this device" the keys are also kept in IndexedDB together with the idle
-  choice and the last use (written at most once a minute, and only onto a record that still
-  exists, so a lock in another tab is never undone), so a reload restores them with only the
-  remaining idle time and a browser that was closed past the lock finds the vault locked. On
-  load, kept keys of another generation than the server's current one are deleted, because
-  the vault was rotated elsewhere; a rotation in this tab locks every other tab, deletes kept
-  keys and keeps this tab's idle choice. "Lock now" deletes the
+  Using the vault (`requestUnlock`, file reads) restarts the idle timer in every tab, and a
+  tab that joins later gets only the remaining time. The one select also decides where the
+  keys live: 15 minutes keeps them in open tabs only, while every longer choice also keeps
+  them in IndexedDB together with the choice and the last use (written at most once a
+  minute, and only onto a record that still exists, so a lock in another tab is never
+  undone), so a reload restores them with only the remaining idle time. The idle lock of
+  kept keys is enforced by page code only: with no tab open nothing runs, so expired keys
+  stay on disk until the next page load deletes them, which does not protect a copied
+  browser profile; the dialog says so. On load, kept keys of another generation than the
+  server's current one are deleted, because the vault was rotated elsewhere; a rotation in
+  this tab locks every other tab, replaces kept keys with the new ones (or deletes them) and
+  keeps this tab's lock choice. "Lock now" deletes the
   kept copy before it locks, so a reload cannot undo it. Logging out locks the same way
   before it ends the session, so the next user of a shared browser finds the vault locked.
 - Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while

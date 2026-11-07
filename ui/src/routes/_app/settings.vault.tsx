@@ -357,7 +357,7 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                             className="block text-xs text-slate-500"
                         >
                             {state.lockAfter === "never"
-                                ? "Does not lock when idle"
+                                ? "Stays unlocked until you lock it or log out"
                                 : `Locks after ${lockAfterLabel} without use`}
                         </span>
                     ) : null}

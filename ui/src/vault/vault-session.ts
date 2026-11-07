@@ -5,9 +5,11 @@
  * Keys are non-extractable `CryptoKey`s. Tabs share them over a `BroadcastChannel`
  * (`CryptoKey` can be cloned between tabs), so unlocking once unlocks every tab, and locking
  * or rotating in one tab locks all of them. The user picks how long the vault stays unlocked
- * without use (`VaultLockAfter`). "Keep unlocked on this device" stores the keys in
- * IndexedDB, still non-extractable, so script cannot export them; anyone who can use or copy
- * this browser profile can still open the vault until it locks.
+ * without use (`VaultLockAfter`). Every choice but the shortest also keeps the keys in
+ * IndexedDB, still non-extractable, so script cannot export them. The idle lock of kept keys
+ * is only enforced by this code: with no tab open nothing runs, so expired keys stay on disk
+ * until the next page load deletes them, and anyone who can use or copy this browser profile
+ * can open the vault until then.
  *
  * Code that needs the vault calls `requestUnlock`, which resolves at once while unlocked and
  * otherwise asks the vault dialog (rendered once in the app shell) to create or unlock the
@@ -19,22 +21,28 @@ import { callerStack, vaultDebug } from "#ui/vault/vault-debug";
 import type { UnlockedVault } from "#ui/vault/vault-keys";
 
 /**
- * How long an unlocked vault stays unlocked without use, picked in the vault dialog. Null is
- * no idle lock at all. A fixed list, so every tab and kept record agrees on the choices, and
- * the longest one stays below the ~24.8 days that `setTimeout` can wait.
+ * How long an unlocked vault stays unlocked, picked in the vault dialog. `idleMs` is the idle
+ * lock (null: none). `keptOnDevice` keeps the keys in IndexedDB across reloads and browser
+ * restarts: a lock of an hour or more is pointless if closing the tab ends it, while the
+ * shortest choice is for users who do not want the key on disk at all. A fixed list, so every
+ * tab and kept record agrees on the choices, and the longest idle lock stays below the ~24.8
+ * days that `setTimeout` can wait.
  */
-export const VAULT_LOCK_AFTER_MS = {
-    "15_minutes": 15 * 60 * 1000,
-    "1_hour": 60 * 60 * 1000,
-    "24_hours": 24 * 60 * 60 * 1000,
-    "1_week": 7 * 24 * 60 * 60 * 1000,
-    never: null,
-} as const satisfies Record<string, number | null>;
+export const VAULT_LOCK_AFTER = {
+    "15_minutes": { idleMs: 15 * 60 * 1000, keptOnDevice: false },
+    "1_hour": { idleMs: 60 * 60 * 1000, keptOnDevice: true },
+    "24_hours": { idleMs: 24 * 60 * 60 * 1000, keptOnDevice: true },
+    "1_week": { idleMs: 7 * 24 * 60 * 60 * 1000, keptOnDevice: true },
+    never: { idleMs: null, keptOnDevice: true },
+} as const satisfies Record<
+    string,
+    { idleMs: number | null; keptOnDevice: boolean }
+>;
 
-/** A choice of `VAULT_LOCK_AFTER_MS`. */
-export type VaultLockAfter = keyof typeof VAULT_LOCK_AFTER_MS;
+/** A choice of `VAULT_LOCK_AFTER`. */
+export type VaultLockAfter = keyof typeof VAULT_LOCK_AFTER;
 
-/** The shortest choice, so an unlock without a deliberate pick locks soon. */
+/** The shortest choice, so an unlock without a deliberate pick locks soon and stays off disk. */
 export const DEFAULT_VAULT_LOCK_AFTER: VaultLockAfter = "15_minutes";
 
 /** Parses lock choices that arrive from other tabs and IndexedDB. */
@@ -66,7 +74,7 @@ export type VaultLockState = {
     status: "locked" | "unlocked";
     /** The unlocked current generation, so the UI can notice a rotation elsewhere. */
     currentKeyId: string | null;
-    /** Kept in IndexedDB, so it survives reloads and browser restarts. */
+    /** Unlocked and kept in IndexedDB, so it survives reloads and browser restarts. */
     persisted: boolean;
     /** How long the vault stays unlocked without use. */
     lockAfter: VaultLockAfter;
@@ -102,7 +110,6 @@ const channelMessageSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("unlocked"),
         vault: storedVaultSchema,
-        persisted: z.boolean(),
         lockAfter: lockAfterSchema,
         // The sender's last use, so a tab that joins late gets only the remaining idle time.
         lastUsedAt: z.number(),
@@ -116,8 +123,6 @@ type ChannelMessage = z.infer<typeof channelMessageSchema>;
 
 /** How a set of adopted keys locks, and where they came from. */
 type AdoptOptions = {
-    /** Kept in IndexedDB. */
-    persisted: boolean;
     lockAfter: VaultLockAfter;
     /** Only feeds the debug log, to tell this tab's unlock from another tab's or IndexedDB's. */
     source: string;
@@ -196,7 +201,6 @@ async function withStore<T>(
 /** Owns the lock state of this tab. */
 export class VaultSession extends ExternalStore<VaultLockState> {
     private vault: UnlockedVault | null = null;
-    private persisted = false;
     private lockAfter: VaultLockAfter = DEFAULT_VAULT_LOCK_AFTER;
     private idleTimer: number | null = null;
     /** When this tab last wrote the kept vault's last use, to throttle those writes. */
@@ -247,7 +251,7 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             return;
         }
 
-        const idleMs = VAULT_LOCK_AFTER_MS[stored.lockAfter];
+        const idleMs = VAULT_LOCK_AFTER[stored.lockAfter].idleMs;
 
         if (idleMs !== null && Date.now() - stored.lastUsedAt >= idleMs) {
             vaultDebug("kept keys passed their idle lock, forgetting them", {
@@ -272,7 +276,6 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         }
 
         this.adopt(fromStored(stored), {
-            persisted: true,
             lockAfter: stored.lockAfter,
             source: "kept keys",
             lastUsedAt: stored.lastUsedAt,
@@ -323,21 +326,16 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
     /**
      * Installs freshly unlocked keys in this tab and every other one, locking after
-     * `lockAfter` without use. With `persist` they are also kept in IndexedDB, so they
+     * `lockAfter` without use. Choices kept on the device also go to IndexedDB, so they
      * survive reloads until that lock.
      */
     async unlock(
         vault: UnlockedVault,
-        persist: boolean,
         lockAfter: VaultLockAfter,
     ): Promise<void> {
-        vaultDebug("unlocking", {
-            persist,
-            lockAfter,
-            waiting: this.pending.length,
-        });
+        vaultDebug("unlocking", { lockAfter, waiting: this.pending.length });
 
-        if (persist) {
+        if (VAULT_LOCK_AFTER[lockAfter].keptOnDevice) {
             await this.writeKept({
                 ...toStored(vault),
                 lockAfter,
@@ -347,15 +345,10 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             await this.forgetKept().catch(() => undefined);
         }
 
-        this.adopt(vault, {
-            persisted: persist,
-            lockAfter,
-            source: "this tab",
-        });
+        this.adopt(vault, { lockAfter, source: "this tab" });
         this.post({
             type: "unlocked",
             vault: toStored(vault),
-            persisted: persist,
             lockAfter,
             lastUsedAt: this.lastUsedAt,
         });
@@ -364,13 +357,23 @@ export class VaultSession extends ExternalStore<VaultLockState> {
     /**
      * Switches this tab to the keys of a rotation it just made. Every other tab locks and
      * kept keys are deleted, because they hold the replaced generation and must unlock
-     * again before writing. This tab keeps the idle lock the user picked at unlock.
+     * again before writing. This tab keeps the lock the user picked at unlock, so a choice
+     * kept on the device keeps the new keys there.
      */
     async rotated(vault: UnlockedVault): Promise<void> {
         vaultDebug("rotated, locking other tabs");
         const lockAfter = this.lockAfter;
         await this.lock();
-        this.adopt(vault, { persisted: false, lockAfter, source: "rotation" });
+
+        if (VAULT_LOCK_AFTER[lockAfter].keptOnDevice) {
+            await this.writeKept({
+                ...toStored(vault),
+                lockAfter,
+                lastUsedAt: Date.now(),
+            });
+        }
+
+        this.adopt(vault, { lockAfter, source: "rotation" });
     }
 
     /**
@@ -407,7 +410,7 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             this.idleTimer = null;
         }
 
-        const idleMs = VAULT_LOCK_AFTER_MS[this.lockAfter];
+        const idleMs = VAULT_LOCK_AFTER[this.lockAfter].idleMs;
 
         if (this.vault === null || idleMs === null) {
             return;
@@ -434,8 +437,8 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
         if (
             this.vault === null ||
-            !this.persisted ||
-            VAULT_LOCK_AFTER_MS[this.lockAfter] === null ||
+            !VAULT_LOCK_AFTER[this.lockAfter].keptOnDevice ||
+            VAULT_LOCK_AFTER[this.lockAfter].idleMs === null ||
             now - this.keptLastUsedWrittenAt < KEPT_LAST_USED_WRITE_INTERVAL_MS
         ) {
             return;
@@ -451,14 +454,12 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
         vaultDebug("adopting unlocked keys", {
             source: options.source,
-            persisted: options.persisted,
             lockAfter: options.lockAfter,
             wasUnlocked: this.vault !== null,
             waking: this.pending.length,
         });
 
         this.vault = vault;
-        this.persisted = options.persisted;
         this.lockAfter = options.lockAfter;
         // A kept record already holds this time, so the next use writes again only after the
         // throttle interval.
@@ -480,7 +481,6 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         });
 
         this.vault = null;
-        this.persisted = false;
 
         if (this.idleTimer !== null) {
             window.clearTimeout(this.idleTimer);
@@ -498,7 +498,6 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
         if (message.type === "unlocked") {
             this.adopt(fromStored(message.vault), {
-                persisted: message.persisted,
                 lockAfter: message.lockAfter,
                 source: "other tab",
                 lastUsedAt: message.lastUsedAt,
@@ -512,7 +511,6 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             this.post({
                 type: "unlocked",
                 vault: toStored(this.vault),
-                persisted: this.persisted,
                 lockAfter: this.lockAfter,
                 lastUsedAt: this.lastUsedAt,
             });
@@ -536,7 +534,9 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         this.publish({
             status: this.vault === null ? "locked" : "unlocked",
             currentKeyId: this.vault?.currentKeyId ?? null,
-            persisted: this.persisted,
+            persisted:
+                this.vault !== null &&
+                VAULT_LOCK_AFTER[this.lockAfter].keptOnDevice,
             lockAfter: this.lockAfter,
             pendingReason,
         });
