@@ -334,6 +334,17 @@ impl ServerListener {
             }),
         }
     }
+
+    /// Accepts the next TCP connection and tunes it before TLS or HTTP see it.
+    ///
+    /// Every connection is tuned because the agent websocket cannot be told apart until after
+    /// the HTTP upgrade, and the options suit browser connections as well. Takes the listener
+    /// rather than `self` so the TLS loop can call it while it holds the handshakes.
+    async fn accept_tuned(tcp: &mut TcpListener) -> (TcpStream, SocketAddr) {
+        let (stream, peer) = axum::serve::Listener::accept(tcp).await;
+        redoor_core::tcp_latency::tune_for_latency(&stream);
+        (stream, peer)
+    }
 }
 
 /// TLS handshakes in progress, each in its own task so a stalled client blocks nobody.
@@ -384,12 +395,12 @@ impl axum::serve::Listener for ServerListener {
     /// handshake for TLS, accepting new connections while handshakes run.
     async fn accept(&mut self) -> (Self::Io, Self::Addr) {
         let Some(tls) = &mut self.tls else {
-            let (stream, peer) = axum::serve::Listener::accept(&mut self.tcp).await;
+            let (stream, peer) = Self::accept_tuned(&mut self.tcp).await;
             return (Either::Left(stream), peer);
         };
         loop {
             tokio::select! {
-                accepted = axum::serve::Listener::accept(&mut self.tcp) => tls.start(accepted),
+                accepted = Self::accept_tuned(&mut self.tcp) => tls.start(accepted),
                 Some(joined) = tls.pending.join_next() => {
                     if let Some((stream, peer)) = TlsHandshakes::finished(joined) {
                         return (Either::Right(stream), peer);

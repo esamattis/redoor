@@ -124,6 +124,9 @@ Infrastructure that more than one role needs:
   atomic name reservation).
 - `stream_credit`: the per-stream flow-control primitives that both the agent and server
   transfer paths use.
+- `tcp_latency`: the socket options (`TCP_NODELAY`, and `TCP_NOTSENT_LOWAT` on Linux and
+  Android) the agent sets on its TCP connection and the server sets on every accepted one
+  (see "Kernel backlog" under "One connection per agent").
 - `directory_measurement`: one directory walk that yields content bytes and the predicted
   tar size. The agent uses it for download totals and directory sizes, and the CLI uses it
   for the percentage of local directory uploads.
@@ -520,7 +523,28 @@ request ids, and each id is interpreted per connection:
    the lane's fair queue and streams that have data and credit take turns frame by frame.
 
 Because no data frame exceeds 64 KiB, a control frame never waits behind more than one data
-frame. Terminal frames go ahead of downloads, so typing stays responsive during transfers.
+frame in the writer. Terminal frames go ahead of downloads, so typing stays responsive during
+transfers.
+
+**Kernel backlog.** The lanes only order frames the writer still holds. A frame handed to the
+socket waits in the kernel's send buffer, which Linux autotunes up to megabytes, and a control
+frame written later queues behind all of it. So both ends tune their TCP sockets
+(`redoor-core::tcp_latency`):
+
+- `TCP_NOTSENT_LOWAT` at 32 KiB, on Linux and Android only: the kernel accepts new data only
+  while less than that is unsent, so the backlog waits in the lanes, where control frames can
+  skip it. Bytes in flight are not counted, so throughput is not capped. The cost is more
+  writer wakeups during bulk transfers. macOS is left out because its `send` still fills the
+  whole buffer; there the option only delays the writable notification.
+- `TCP_NODELAY`: Nagle's algorithm would hold a small control frame until earlier data is
+  acknowledged. Messages are written whole, so this adds no extra small packets during bulk
+  transfers.
+
+The server sets both on every accepted connection, browsers included, because it cannot tell
+an agent websocket apart before the HTTP upgrade. They only cover redoor's own sockets: an
+agent on the SSH tunnel's Unix socket gets ssh's buffering, and a reverse proxy keeps its own.
+A fixed smaller `SO_SNDBUF` was rejected because it turns off autotuning and caps throughput
+at buffer size ÷ round-trip time.
 One TCP connection does mean one congestion window: a slow network is shared by all of an
 agent's streams. `tests/raw-upload-toxiproxy.test.ts` and `tests/stream-isolation.test.ts`
 keep that trade-off visible.

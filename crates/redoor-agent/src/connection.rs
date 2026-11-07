@@ -262,14 +262,17 @@ impl AgentConnection {
     }
 
     /// Opens the stream the TLS and WebSocket handshakes run on: the connect address when
-    /// one is set, otherwise the URL's host and port.
+    /// one is set, otherwise the URL's host and port. TCP streams are tuned so control frames
+    /// stay responsive during transfers; a Unix socket tunnel has no such options.
     async fn open_stream(&self) -> Result<Box<dyn ServerStream>, ConnectError> {
         let stream: Box<dyn ServerStream> = match &self.connect_address {
-            Some(ConnectAddress::Tcp(address)) => Box::new(
-                TcpStream::connect(address)
+            Some(ConnectAddress::Tcp(address)) => {
+                let stream = TcpStream::connect(address)
                     .await
-                    .with_context(|| format!("failed to reach routed server through {address}"))?,
-            ),
+                    .with_context(|| format!("failed to reach routed server through {address}"))?;
+                redoor_core::tcp_latency::tune_for_latency(&stream);
+                Box::new(stream)
+            }
             Some(ConnectAddress::Unix(path)) => {
                 Box::new(UnixStream::connect(path).await.with_context(|| {
                     format!(
@@ -285,11 +288,11 @@ impl AgentConnection {
                 let port = url
                     .port_or_known_default()
                     .context("agent websocket URL has no port")?;
-                Box::new(
-                    TcpStream::connect(format!("{host}:{port}"))
-                        .await
-                        .with_context(|| format!("failed to reach the server at {host}:{port}"))?,
-                )
+                let stream = TcpStream::connect(format!("{host}:{port}"))
+                    .await
+                    .with_context(|| format!("failed to reach the server at {host}:{port}"))?;
+                redoor_core::tcp_latency::tune_for_latency(&stream);
+                Box::new(stream)
             }
         };
         Ok(stream)

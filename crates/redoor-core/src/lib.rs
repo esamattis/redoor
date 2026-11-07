@@ -26,6 +26,7 @@ pub mod staging;
 pub mod stream_credit;
 pub mod subprocess;
 pub mod systemd_notify;
+pub mod tcp_latency;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod upgrade;
