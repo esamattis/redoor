@@ -148,6 +148,10 @@ import type { RotateVaultRequest } from "#bindings/RotateVaultRequest";
 import type { DestroyVaultKeyRequest } from "#bindings/DestroyVaultKeyRequest";
 import type { VaultDocument } from "#bindings/VaultDocument";
 import type { RestoreVaultBackupRequest } from "#bindings/RestoreVaultBackupRequest";
+import type { CreateVaultDeviceRequest } from "#bindings/CreateVaultDeviceRequest";
+import type { CreateVaultDeviceResponse } from "#bindings/CreateVaultDeviceResponse";
+import type { OpenVaultDeviceResponse } from "#bindings/OpenVaultDeviceResponse";
+import type { VaultDeviceStatusResponse } from "#bindings/VaultDeviceStatusResponse";
 import type { VaultFileHeaderResponse } from "#bindings/VaultFileHeaderResponse";
 import type { VaultFileWriteResponse } from "#bindings/VaultFileWriteResponse";
 import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
@@ -2386,6 +2390,52 @@ export class ApiClient {
         request: RestoreVaultBackupRequest,
     ): Promise<VaultStatusResponse> {
         return this.vaultRequest("/backup", "PUT", request);
+    }
+
+    /**
+     * Registers this browser's device secret, which wraps the vault key kept in IndexedDB.
+     * The server hands it out again only to this login session and within `lock_after`.
+     */
+    async createVaultDevice(
+        request: CreateVaultDeviceRequest,
+    ): Promise<CreateVaultDeviceResponse> {
+        return this.vaultRequest("/devices", "POST", request);
+    }
+
+    /** Fetches the device secret on a page load, without counting as vault use. */
+    async openVaultDevice(deviceId: string): Promise<OpenVaultDeviceResponse> {
+        return this.vaultRequest(
+            `/devices/${encodeURIComponent(deviceId)}/open`,
+            "POST",
+        );
+    }
+
+    /** Reports vault use, which restarts the device secret's idle lock. */
+    async touchVaultDevice(
+        deviceId: string,
+    ): Promise<VaultDeviceStatusResponse> {
+        return this.vaultRequest(
+            `/devices/${encodeURIComponent(deviceId)}/touch`,
+            "POST",
+        );
+    }
+
+    /** Checks the device secret still opens, without counting as use. */
+    async getVaultDevice(deviceId: string): Promise<VaultDeviceStatusResponse> {
+        return this.vaultRequest(
+            `/devices/${encodeURIComponent(deviceId)}`,
+            "GET",
+        );
+    }
+
+    /** Deletes the device secret, so the key kept in this browser no longer opens. */
+    async deleteVaultDevice(deviceId: string): Promise<void> {
+        const response = await fetch(
+            `${this.baseUrl}/api/v1/vault/devices/${encodeURIComponent(deviceId)}`,
+            withAuthentication({ method: "DELETE" }, this.requestContext()),
+        );
+
+        await requireSuccessfulResponse(response, this.requestContext());
     }
 
     /** Lists every terminal session of the server, so a reloaded window restores its tabs. */

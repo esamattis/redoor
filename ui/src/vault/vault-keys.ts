@@ -131,11 +131,18 @@ export type SlotToWrap = { id: string | null; kek: SlotKek };
  * proof verifier. Passkey KEKs need the vault id for their PRF salt and bind their slot id,
  * so the caller derives the slots through the callback once the id is known. Any slot type
  * is enough; a passphrase is optional.
+ *
+ * The raw key is handed out too, because the session wraps it for this browser; the caller
+ * wipes it once the vault is unlocked. On failure it is wiped here.
  */
 export async function buildNewVault(options: {
     label: string;
     slots: (vaultId: string) => Promise<SlotToWrap[]>;
-}): Promise<{ request: CreateVaultRequest; vault: UnlockedVault }> {
+}): Promise<{
+    request: CreateVaultRequest;
+    vault: UnlockedVault;
+    raw: Uint8Array<ArrayBuffer>;
+}> {
     const vaultId = newVaultId();
     const raw = randomBytes(32);
 
@@ -174,9 +181,12 @@ export async function buildNewVault(options: {
                 currentKeyId: keyId,
                 keys: new Map([[keyId, vaultKey]]),
             },
+            raw,
         };
-    } finally {
+    } catch (error) {
         wipe(raw);
+
+        throw error;
     }
 }
 

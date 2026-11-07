@@ -1,48 +1,33 @@
 /**
  * The browser's vault lock state: which vault keys this tab holds, shared between tabs and
- * optionally kept across reloads.
+ * kept across reloads until the vault locks.
  *
- * Keys are non-extractable `CryptoKey`s. Tabs share them over a `BroadcastChannel`
- * (`CryptoKey` can be cloned between tabs), so unlocking once unlocks every tab, and locking
- * or rotating in one tab locks all of them. The user picks how long the vault stays unlocked
- * without use (`VaultLockAfter`). Every choice but the shortest also keeps the keys in
- * IndexedDB, still non-extractable, so script cannot export them. The idle lock of kept keys
- * is only enforced by this code: with no tab open nothing runs, so expired keys stay on disk
- * until the next page load deletes them, and anyone who can use or copy this browser profile
- * can open the vault until then.
+ * Keys are non-extractable `CryptoKey`s while a tab is open. Tabs share them over a
+ * `BroadcastChannel` (`CryptoKey` can be cloned between tabs), so unlocking once unlocks every
+ * open tab, and locking in one tab locks all of them.
+ *
+ * Across reloads the browser keeps the raw current vault key only encrypted with a device
+ * secret that the server holds in memory (see `POST /api/v1/vault/devices`). The server
+ * hands that secret out only to the login session that created it and only within the idle
+ * time the user picked (`VaultLockAfter`), and forgets it after that window, on sign-out, at
+ * the end of the session or on a server restart. So the idle lock holds even with no redoor
+ * tab open, and a copied browser profile holds ciphertext that nobody can open once the
+ * window has passed. The server never sees the vault key.
  *
  * Code that needs the vault calls `requestUnlock`, which resolves at once while unlocked and
  * otherwise asks the vault dialog (rendered once in the app shell) to create or unlock the
  * vault.
  */
 import { z } from "zod";
+import type { VaultLockAfter } from "#bindings/VaultLockAfter";
+import type { ApiClient } from "#ui/api-client";
+import { ApiError } from "#ui/api-transport";
 import { ExternalStore } from "#ui/utils/external-store";
+import { unwrapForDevice, wipe, wrapForDevice } from "#ui/vault/vault-crypto";
 import { callerStack, vaultDebug } from "#ui/vault/vault-debug";
-import type { UnlockedVault } from "#ui/vault/vault-keys";
+import { openGenerations, type UnlockedVault } from "#ui/vault/vault-keys";
 
-/**
- * How long an unlocked vault stays unlocked, picked in the vault dialog. `idleMs` is the idle
- * lock (null: none). `keptOnDevice` keeps the keys in IndexedDB across reloads and browser
- * restarts: a lock of an hour or more is pointless if closing the tab ends it, while the
- * shortest choice is for users who do not want the key on disk at all. A fixed list, so every
- * tab and kept record agrees on the choices, and the longest idle lock stays below the ~24.8
- * days that `setTimeout` can wait.
- */
-export const VAULT_LOCK_AFTER = {
-    "15_minutes": { idleMs: 15 * 60 * 1000, keptOnDevice: false },
-    "1_hour": { idleMs: 60 * 60 * 1000, keptOnDevice: true },
-    "24_hours": { idleMs: 24 * 60 * 60 * 1000, keptOnDevice: true },
-    "1_week": { idleMs: 7 * 24 * 60 * 60 * 1000, keptOnDevice: true },
-    never: { idleMs: null, keptOnDevice: true },
-} as const satisfies Record<
-    string,
-    { idleMs: number | null; keptOnDevice: boolean }
->;
-
-/** A choice of `VAULT_LOCK_AFTER`. */
-export type VaultLockAfter = keyof typeof VAULT_LOCK_AFTER;
-
-/** The shortest choice, so an unlock without a deliberate pick locks soon and stays off disk. */
+/** The shortest choice, so an unlock without a deliberate pick locks soon. */
 export const DEFAULT_VAULT_LOCK_AFTER: VaultLockAfter = "15_minutes";
 
 /** Parses lock choices that arrive from other tabs and IndexedDB. */
@@ -55,11 +40,11 @@ const lockAfterSchema = z.enum([
 ]) satisfies z.ZodType<VaultLockAfter>;
 
 /**
- * How often a kept vault's last use is written to IndexedDB at most. Every encrypted file
- * read touches the vault, and a minute of slack on a lock measured in quarter hours or more
- * is not worth a database write per read.
+ * How often a vault use is reported to the server at most. Every encrypted file read touches
+ * the vault, and a minute of slack on a lock measured in quarter hours or more is not worth a
+ * request per read.
  */
-const KEPT_LAST_USED_WRITE_INTERVAL_MS = 60 * 1000;
+const TOUCH_INTERVAL_MS = 60 * 1000;
 
 const CHANNEL_NAME = "redoor-vault";
 
@@ -74,15 +59,13 @@ export type VaultLockState = {
     status: "locked" | "unlocked";
     /** The unlocked current generation, so the UI can notice a rotation elsewhere. */
     currentKeyId: string | null;
-    /** Unlocked and kept in IndexedDB, so it survives reloads and browser restarts. */
-    persisted: boolean;
     /** How long the vault stays unlocked without use. */
     lockAfter: VaultLockAfter;
     /** Why the vault dialog is open, or null when no flow waits for an unlock. */
     pendingReason: string | null;
 };
 
-/** The keys as they cross tabs and IndexedDB; parsed because both are outside input. */
+/** The keys as they cross tabs; parsed because messages are outside input. */
 const storedVaultSchema = z.object({
     vaultId: z.string(),
     currentKeyId: z.string(),
@@ -92,42 +75,50 @@ const storedVaultSchema = z.object({
 type StoredVault = z.infer<typeof storedVaultSchema>;
 
 /**
- * The IndexedDB record: the keys plus the idle lock, so a browser that was closed past the
- * lock finds the vault locked when it comes back.
+ * The IndexedDB record: the raw current vault key wrapped with the server's device secret,
+ * and what the wrap is bound to. It holds no key that opens anything by itself. A record of
+ * any other shape fails to parse and is deleted.
  */
-const keptVaultSchema = storedVaultSchema.extend({
-    // TEMPORARY MIGRATION: records kept before the lock choice existed have neither field and
-    // meant "no idle lock", so they default to that. Can go once every kept vault has been
-    // unlocked again with a lock choice, e.g. a few releases after the one that added it.
-    lockAfter: lockAfterSchema.default("never"),
-    lastUsedAt: z.number().default(0),
+const deviceRecordSchema = z.object({
+    vaultId: z.string(),
+    keyId: z.string(),
+    deviceId: z.string(),
+    lockAfter: lockAfterSchema,
+    iv: z.string(),
+    wrappedKey: z.string(),
 });
 
-type KeptVault = z.infer<typeof keptVaultSchema>;
+type DeviceRecord = z.infer<typeof deviceRecordSchema>;
 
 /** Messages between tabs. */
 const channelMessageSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("unlocked"),
         vault: storedVaultSchema,
+        // So every live tab can touch and check the server entry.
+        deviceId: z.string(),
         lockAfter: lockAfterSchema,
-        // The sender's last use, so a tab that joins late gets only the remaining idle time.
-        lastUsedAt: z.number(),
+        // The server's remaining idle time, so tabs agree on when the vault locks.
+        expiresInSeconds: z.number().nullable(),
     }),
     z.object({ type: z.literal("locked") }),
-    z.object({ type: z.literal("ask") }),
-    z.object({ type: z.literal("touched") }),
+    z.object({
+        type: z.literal("touched"),
+        deviceId: z.string(),
+        expiresInSeconds: z.number().nullable(),
+    }),
 ]);
 
 type ChannelMessage = z.infer<typeof channelMessageSchema>;
 
 /** How a set of adopted keys locks, and where they came from. */
 type AdoptOptions = {
+    deviceId: string;
     lockAfter: VaultLockAfter;
-    /** Only feeds the debug log, to tell this tab's unlock from another tab's or IndexedDB's. */
+    /** The server's remaining idle time; null without an idle lock. */
+    expiresInSeconds: number | null;
+    /** Only feeds the debug log, to tell this tab's unlock from another tab's or a reload's. */
     source: string;
-    /** When the idle lock counts from: now, except for kept keys restored on load. */
-    lastUsedAt?: number;
 };
 
 /** A flow waiting for the vault. */
@@ -162,7 +153,16 @@ function fromStored(stored: StoredVault): UnlockedVault {
     };
 }
 
-/** Opens the IndexedDB database that holds kept keys. */
+/**
+ * Whether the server answered that the device entry is gone (expired, locked, another or an
+ * ended session, a server restart). Only then is the kept key useless; a network error says
+ * nothing about the entry.
+ */
+function isDeviceGone(error: Error): boolean {
+    return error instanceof ApiError && error.status === 404;
+}
+
+/** Opens the IndexedDB database that holds the wrapped key. */
 function openDatabase(): Promise<IDBDatabase> {
     return new Promise((resolve, reject) => {
         const request = indexedDB.open(DATABASE_NAME, 1);
@@ -201,32 +201,36 @@ async function withStore<T>(
 /** Owns the lock state of this tab. */
 export class VaultSession extends ExternalStore<VaultLockState> {
     private vault: UnlockedVault | null = null;
+    /** The server entry whose secret wraps the kept key, while unlocked. */
+    private deviceId: string | null = null;
     private lockAfter: VaultLockAfter = DEFAULT_VAULT_LOCK_AFTER;
     private idleTimer: number | null = null;
-    /** When this tab last wrote the kept vault's last use, to throttle those writes. */
-    private keptLastUsedWrittenAt = 0;
-    /** When the idle lock counts from, shared with tabs that join while unlocked. */
-    private lastUsedAt = 0;
+    /** When a use was last reported to the server by any tab, to throttle the reports. */
+    private lastTouchAt = 0;
+    /**
+     * Counts locks of this tab, so a page-load restore that was waiting for the server when
+     * this or another tab locked does not adopt the keys afterwards.
+     */
+    private locks = 0;
     private channel: BroadcastChannel | null = null;
     private readonly pending: PendingUnlock[] = [];
 
-    constructor() {
+    constructor(private readonly api: ApiClient) {
         super({
             status: "locked",
             currentKeyId: null,
-            persisted: false,
             lockAfter: DEFAULT_VAULT_LOCK_AFTER,
             pendingReason: null,
         });
     }
 
     /**
-     * Joins the other tabs and restores kept keys. `currentKeyId` is the server's current
-     * generation: kept keys of another generation were rotated elsewhere, so they are
-     * deleted and the user unlocks again. Kept keys unused for longer than their idle lock
-     * are deleted too, because the vault would have locked had the browser stayed open.
+     * Joins the other tabs and restores the kept key through the server. Every page load asks
+     * the server, even while other tabs are unlocked: a tab that survived a server restart,
+     * an ended session or an expiry would otherwise hand its keys to a fresh tab whose server
+     * entry is gone.
      */
-    async start(currentKeyId: () => Promise<string | null>): Promise<void> {
+    async start(): Promise<void> {
         if ("BroadcastChannel" in globalThis) {
             this.channel = new BroadcastChannel(CHANNEL_NAME);
             this.channel.onmessage = (event: MessageEvent<unknown>) => {
@@ -236,50 +240,23 @@ export class VaultSession extends ExternalStore<VaultLockState> {
                     this.receive(parsed.data);
                 }
             };
-
-            this.channel.postMessage({ type: "ask" } satisfies ChannelMessage);
         }
 
-        const stored = await this.readKept().catch(() => null);
-
-        vaultDebug("session start", {
-            hasKeptKeys: stored !== null,
-            alreadyUnlocked: this.vault !== null,
+        // A page that was hidden may have missed a lock elsewhere, such as an expiry or a
+        // server restart, so it asks the server once it is shown again.
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") {
+                void this.check();
+            }
         });
 
-        if (stored === null || this.vault !== null) {
-            return;
+        const record = await this.readRecord().catch(() => null);
+
+        vaultDebug("session start", { hasKeptKey: record !== null });
+
+        if (record !== null) {
+            await this.restore(record);
         }
-
-        const idleMs = VAULT_LOCK_AFTER[stored.lockAfter].idleMs;
-
-        if (idleMs !== null && Date.now() - stored.lastUsedAt >= idleMs) {
-            vaultDebug("kept keys passed their idle lock, forgetting them", {
-                lockAfter: stored.lockAfter,
-            });
-            await this.forgetKept();
-
-            return;
-        }
-
-        // An unreachable server (or an expired session) cannot prove a rotation, so the kept
-        // keys stay; writes with an outdated generation are refused by the server anyway.
-        const expected = await currentKeyId().catch(() => undefined);
-
-        if (expected !== undefined && expected !== stored.currentKeyId) {
-            vaultDebug(
-                "kept keys are of a rotated generation, forgetting them",
-            );
-            await this.forgetKept();
-
-            return;
-        }
-
-        this.adopt(fromStored(stored), {
-            lockAfter: stored.lockAfter,
-            source: "kept keys",
-            lastUsedAt: stored.lastUsedAt,
-        });
     }
 
     /** The unlocked vault, or null while locked. */
@@ -326,93 +303,293 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
     /**
      * Installs freshly unlocked keys in this tab and every other one, locking after
-     * `lockAfter` without use. Choices kept on the device also go to IndexedDB, so they
-     * survive reloads until that lock.
+     * `lockAfter` without use. `rawCurrent` is the raw current vault key, which is wrapped
+     * with a new server device secret and kept in IndexedDB; the caller wipes it afterwards.
+     * Fails when the server cannot register the secret, because the vault would then not
+     * survive a reload and the idle lock could not be enforced.
      */
     async unlock(
         vault: UnlockedVault,
         lockAfter: VaultLockAfter,
+        rawCurrent: Uint8Array<ArrayBuffer>,
     ): Promise<void> {
         vaultDebug("unlocking", { lockAfter, waiting: this.pending.length });
 
-        if (VAULT_LOCK_AFTER[lockAfter].keptOnDevice) {
-            await this.writeKept({
-                ...toStored(vault),
-                lockAfter,
-                lastUsedAt: Date.now(),
+        const previous = await this.readRecord().catch(() => null);
+
+        const device = await this.api
+            .createVaultDevice({ lock_after: lockAfter })
+            .catch((error: Error) => {
+                throw new Error(
+                    "The server could not keep the vault unlocked for this browser. Try again.",
+                    { cause: error },
+                );
             });
-        } else {
-            await this.forgetKept().catch(() => undefined);
+
+        const wrap = await wrapForDevice(device.secret, rawCurrent, {
+            vaultId: vault.vaultId,
+            keyId: vault.currentKeyId,
+            deviceId: device.device_id,
+        });
+
+        await this.writeRecord({
+            vaultId: vault.vaultId,
+            keyId: vault.currentKeyId,
+            deviceId: device.device_id,
+            lockAfter,
+            iv: wrap.iv,
+            wrappedKey: wrap.ct,
+        });
+
+        this.lastTouchAt = Date.now();
+
+        const options = {
+            deviceId: device.device_id,
+            lockAfter,
+            expiresInSeconds: device.expires_in_seconds,
+        };
+
+        this.adopt(vault, { ...options, source: "this tab" });
+        this.post({ type: "unlocked", vault: toStored(vault), ...options });
+
+        // A kept key that could not be opened before (an unreachable server) has an entry
+        // that nothing uses anymore.
+        if (previous !== null && previous.deviceId !== device.device_id) {
+            void this.api
+                .deleteVaultDevice(previous.deviceId)
+                .catch(() => undefined);
+        }
+    }
+
+    /**
+     * Switches to the keys of a rotation this tab just made. The server deleted every device
+     * entry, because they all wrap the replaced generation, so this browser registers a fresh
+     * one with the lock the user picked at unlock and hands the new keys to its other tabs.
+     * The rotation itself already succeeded, so a failure here only leaves the vault locked.
+     */
+    async rotated(
+        vault: UnlockedVault,
+        rawNext: Uint8Array<ArrayBuffer>,
+    ): Promise<void> {
+        vaultDebug("rotated, registering the new key");
+        const lockAfter = this.lockAfter;
+        await this.lock();
+
+        try {
+            await this.unlock(vault, lockAfter, rawNext);
+        } catch (error) {
+            vaultDebug("keeping the rotated key failed, staying locked", {
+                error: String(error),
+            });
+        }
+    }
+
+    /**
+     * Locks every tab, deletes the kept key and its server entry. The kept copy goes first,
+     * so the lock shown to the user is never undone by a reload that races the deletion. The
+     * server entry goes best effort: if that fails, the server still expires it on its own.
+     */
+    async lock(): Promise<void> {
+        vaultDebug("locking", { stack: callerStack() });
+        const record = await this.readRecord().catch(() => null);
+        const deviceIds = new Set([this.deviceId, record?.deviceId]);
+        await this.forgetRecord().catch(() => undefined);
+        this.drop();
+        this.post({ type: "locked" });
+
+        await Promise.all(
+            [...deviceIds].flatMap((deviceId) =>
+                deviceId === null || deviceId === undefined
+                    ? []
+                    : [
+                          this.api
+                              .deleteVaultDevice(deviceId)
+                              .catch(() => undefined),
+                      ],
+            ),
+        );
+    }
+
+    /**
+     * Reports a vault use to the server, which restarts the idle lock of every tab and of the
+     * kept key. Throttled, because file reads touch the vault constantly.
+     */
+    touch(): void {
+        const deviceId = this.deviceId;
+        const now = Date.now();
+
+        if (
+            this.vault === null ||
+            deviceId === null ||
+            now - this.lastTouchAt < TOUCH_INTERVAL_MS
+        ) {
+            return;
         }
 
-        this.adopt(vault, { lockAfter, source: "this tab" });
-        this.post({
-            type: "unlocked",
-            vault: toStored(vault),
-            lockAfter,
-            lastUsedAt: this.lastUsedAt,
+        this.lastTouchAt = now;
+
+        void this.api.touchVaultDevice(deviceId).then(
+            (status) => {
+                if (this.deviceId !== deviceId) {
+                    return;
+                }
+
+                this.restartIdleTimer(status.expires_in_seconds);
+                this.post({
+                    type: "touched",
+                    deviceId,
+                    expiresInSeconds: status.expires_in_seconds,
+                });
+            },
+            (error: Error) => this.serverCheckFailed(deviceId, error),
+        );
+    }
+
+    /**
+     * Asks the server whether the kept key still opens, unthrottled, and locks every tab if
+     * not. Deleting the server secret does not revoke the `CryptoKey`s an open tab already
+     * holds, so the tab drops them itself. Called when the UI event connection reconnects
+     * (which is how a server restart shows up) and when a hidden page is shown again.
+     */
+    async check(): Promise<void> {
+        const deviceId = this.deviceId;
+
+        if (this.vault === null || deviceId === null) {
+            return;
+        }
+
+        try {
+            const status = await this.api.getVaultDevice(deviceId);
+
+            if (this.deviceId === deviceId) {
+                this.restartIdleTimer(status.expires_in_seconds);
+            }
+        } catch (error) {
+            if (error instanceof Error) {
+                this.serverCheckFailed(deviceId, error);
+            }
+        }
+    }
+
+    /**
+     * Opens a kept key through the server on page load. A gone entry or a key of another
+     * generation (rotated elsewhere) deletes the record; a network error keeps it, so a
+     * later load can retry.
+     */
+    private async restore(record: DeviceRecord): Promise<void> {
+        const locksAtStart = this.locks;
+        let opened;
+
+        try {
+            opened = await this.api.openVaultDevice(record.deviceId);
+        } catch (error) {
+            if (error instanceof Error && isDeviceGone(error)) {
+                vaultDebug("kept key's server entry is gone, forgetting it");
+                await this.forgetRecord(record.deviceId).catch(() => undefined);
+            }
+
+            return;
+        }
+
+        const material = await this.api
+            .getVaultUnlockMaterial()
+            .catch(() => null);
+
+        if (material === null) {
+            return;
+        }
+
+        if (
+            material.vault_id !== record.vaultId ||
+            material.current_key_id !== record.keyId
+        ) {
+            vaultDebug("kept key is of a rotated generation, forgetting it");
+            await this.forgetRecord(record.deviceId).catch(() => undefined);
+            void this.api
+                .deleteVaultDevice(record.deviceId)
+                .catch(() => undefined);
+
+            return;
+        }
+
+        let vault: UnlockedVault;
+
+        try {
+            const raw = await unwrapForDevice(
+                opened.secret,
+                { alg: "A256GCM", iv: record.iv, ct: record.wrappedKey },
+                {
+                    vaultId: record.vaultId,
+                    keyId: record.keyId,
+                    deviceId: record.deviceId,
+                },
+            );
+
+            try {
+                vault = await openGenerations(material, raw);
+            } finally {
+                wipe(raw);
+            }
+        } catch (error) {
+            vaultDebug("kept key does not open, forgetting it", {
+                error: String(error),
+            });
+            await this.forgetRecord(record.deviceId).catch(() => undefined);
+            void this.api
+                .deleteVaultDevice(record.deviceId)
+                .catch(() => undefined);
+
+            return;
+        }
+
+        // A lock in this or another tab while the server answered wins, or the restore
+        // would undo it.
+        if (this.locks !== locksAtStart) {
+            vaultDebug(
+                "locked while the kept key was opening, not adopting it",
+            );
+
+            return;
+        }
+
+        // The user may have unlocked while the server answered; that unlock wins.
+        if (this.vault !== null) {
+            return;
+        }
+
+        this.adopt(vault, {
+            deviceId: record.deviceId,
+            lockAfter: record.lockAfter,
+            expiresInSeconds: opened.expires_in_seconds,
+            source: "kept key",
         });
     }
 
     /**
-     * Switches this tab to the keys of a rotation it just made. Every other tab locks and
-     * kept keys are deleted, because they hold the replaced generation and must unlock
-     * again before writing. This tab keeps the lock the user picked at unlock, so a choice
-     * kept on the device keeps the new keys there.
+     * Locks every tab when the server says the entry is gone. A network error is not a 404:
+     * the keys stay until the server answers.
      */
-    async rotated(vault: UnlockedVault): Promise<void> {
-        vaultDebug("rotated, locking other tabs");
-        const lockAfter = this.lockAfter;
-        await this.lock();
-
-        if (VAULT_LOCK_AFTER[lockAfter].keptOnDevice) {
-            await this.writeKept({
-                ...toStored(vault),
-                lockAfter,
-                lastUsedAt: Date.now(),
-            });
+    private serverCheckFailed(deviceId: string, error: Error): void {
+        if (!isDeviceGone(error) || this.deviceId !== deviceId) {
+            return;
         }
 
-        this.adopt(vault, { lockAfter, source: "rotation" });
+        vaultDebug("server entry is gone, locking");
+        void this.lock();
     }
 
     /**
-     * Locks every tab and deletes kept keys. The kept copy goes first, so the lock shown
-     * to the user is never undone by a reload that races the deletion.
+     * Restarts this tab's idle timer from the server's remaining time, or stops it when the
+     * vault has no idle lock. The server's clock decides, so a wrong browser clock does not
+     * matter.
      */
-    async lock(): Promise<void> {
-        vaultDebug("locking", { stack: callerStack() });
-        await this.forgetKept().catch(() => undefined);
-        this.drop();
-        this.post({ type: "locked" });
-    }
-
-    /**
-     * Restarts the idle timer of every tab, because the vault was just used: one tab must
-     * not lock all of them while another is in use.
-     */
-    touch(): void {
-        this.restartIdleTimer();
-        this.post({ type: "touched" });
-        void this.recordKeptUse().catch(() => undefined);
-    }
-
-    /**
-     * Restarts this tab's idle timer from `lastUsedAt`, or stops it when the vault has no
-     * idle lock. Kept keys restored on load pass their stored last use, so a reload does not
-     * count as use and grant a fresh idle period.
-     */
-    private restartIdleTimer(lastUsedAt = Date.now()): void {
-        this.lastUsedAt = lastUsedAt;
-
+    private restartIdleTimer(expiresInSeconds: number | null): void {
         if (this.idleTimer !== null) {
             window.clearTimeout(this.idleTimer);
             this.idleTimer = null;
         }
 
-        const idleMs = VAULT_LOCK_AFTER[this.lockAfter].idleMs;
-
-        if (this.vault === null || idleMs === null) {
+        if (this.vault === null || expiresInSeconds === null) {
             return;
         }
 
@@ -423,35 +600,12 @@ export class VaultSession extends ExternalStore<VaultLockState> {
                 });
                 void this.lock();
             },
-            Math.max(0, lastUsedAt + idleMs - Date.now()),
+            Math.max(0, expiresInSeconds * 1000),
         );
-    }
-
-    /**
-     * Moves the kept vault's last use forward, so a reload after a long pause measures the
-     * idle lock from the last use rather than from the unlock. Throttled, because file reads
-     * touch the vault constantly.
-     */
-    private async recordKeptUse(): Promise<void> {
-        const now = Date.now();
-
-        if (
-            this.vault === null ||
-            !VAULT_LOCK_AFTER[this.lockAfter].keptOnDevice ||
-            VAULT_LOCK_AFTER[this.lockAfter].idleMs === null ||
-            now - this.keptLastUsedWrittenAt < KEPT_LAST_USED_WRITE_INTERVAL_MS
-        ) {
-            return;
-        }
-
-        this.keptLastUsedWrittenAt = now;
-        await this.updateKeptLastUsed(now);
     }
 
     /** Takes keys in, starts their idle lock and wakes waiting flows. */
     private adopt(vault: UnlockedVault, options: AdoptOptions): void {
-        const lastUsedAt = options.lastUsedAt ?? Date.now();
-
         vaultDebug("adopting unlocked keys", {
             source: options.source,
             lockAfter: options.lockAfter,
@@ -460,11 +614,9 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         });
 
         this.vault = vault;
+        this.deviceId = options.deviceId;
         this.lockAfter = options.lockAfter;
-        // A kept record already holds this time, so the next use writes again only after the
-        // throttle interval.
-        this.keptLastUsedWrittenAt = lastUsedAt;
-        this.restartIdleTimer(lastUsedAt);
+        this.restartIdleTimer(options.expiresInSeconds);
 
         for (const waiting of this.pending.splice(0)) {
             waiting.resolve(vault);
@@ -481,6 +633,8 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         });
 
         this.vault = null;
+        this.deviceId = null;
+        this.locks++;
 
         if (this.idleTimer !== null) {
             window.clearTimeout(this.idleTimer);
@@ -497,23 +651,19 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         }
 
         if (message.type === "unlocked") {
+            this.lastTouchAt = Date.now();
             this.adopt(fromStored(message.vault), {
+                deviceId: message.deviceId,
                 lockAfter: message.lockAfter,
+                expiresInSeconds: message.expiresInSeconds,
                 source: "other tab",
-                lastUsedAt: message.lastUsedAt,
             });
         } else if (message.type === "locked") {
             this.drop();
-        } else if (message.type === "touched") {
-            this.restartIdleTimer();
-        } else if (this.vault !== null) {
-            // A new tab asks; answer so it starts unlocked like the others.
-            this.post({
-                type: "unlocked",
-                vault: toStored(this.vault),
-                lockAfter: this.lockAfter,
-                lastUsedAt: this.lastUsedAt,
-            });
+        } else if (message.deviceId === this.deviceId) {
+            // Another tab reported a use, which counts for this tab's throttle too.
+            this.lastTouchAt = Date.now();
+            this.restartIdleTimer(message.expiresInSeconds);
         }
     }
 
@@ -534,38 +684,61 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         this.publish({
             status: this.vault === null ? "locked" : "unlocked",
             currentKeyId: this.vault?.currentKeyId ?? null,
-            persisted:
-                this.vault !== null &&
-                VAULT_LOCK_AFTER[this.lockAfter].keptOnDevice,
             lockAfter: this.lockAfter,
             pendingReason,
         });
     }
 
-    /** Reads kept keys, or null. */
-    private async readKept(): Promise<KeptVault | null> {
+    /**
+     * Reads the kept key, or null. A record that does not parse (any older shape) is
+     * deleted, since nothing can open it.
+     */
+    private async readRecord(): Promise<DeviceRecord | null> {
         if (!("indexedDB" in globalThis)) {
             return null;
         }
 
-        const parsed = keptVaultSchema.safeParse(
-            await withStore("readonly", (store) => store.get(RECORD_KEY)),
+        const stored: unknown = await withStore("readonly", (store) =>
+            store.get(RECORD_KEY),
         );
 
-        return parsed.success ? parsed.data : null;
+        if (stored === undefined) {
+            return null;
+        }
+
+        const parsed = deviceRecordSchema.safeParse(stored);
+
+        if (!parsed.success) {
+            vaultDebug("kept record has an unknown shape, deleting it");
+            await this.forgetRecord();
+
+            return null;
+        }
+
+        return parsed.data;
     }
 
-    /** Keeps keys in IndexedDB. */
-    private async writeKept(stored: KeptVault): Promise<void> {
-        await withStore("readwrite", (store) => store.put(stored, RECORD_KEY));
+    /** Keeps the wrapped key in IndexedDB. */
+    private async writeRecord(record: DeviceRecord): Promise<void> {
+        await withStore("readwrite", (store) => store.put(record, RECORD_KEY));
     }
 
     /**
-     * Moves the last use of the kept record forward, reading and writing in one transaction.
-     * A record that is gone stays gone: another tab may have locked the vault since this tab
-     * last looked, and writing the keys back would undo that lock on the next reload.
+     * Deletes the kept key. With `deviceId`, only a record of that entry goes, read and
+     * deleted in one transaction: another tab may have unlocked and written a new record
+     * while this one waited for the server.
      */
-    private async updateKeptLastUsed(lastUsedAt: number): Promise<void> {
+    private async forgetRecord(deviceId?: string): Promise<void> {
+        if (!("indexedDB" in globalThis)) {
+            return;
+        }
+
+        if (deviceId === undefined) {
+            await withStore("readwrite", (store) => store.delete(RECORD_KEY));
+
+            return;
+        }
+
         const database = await openDatabase();
 
         try {
@@ -579,10 +752,10 @@ export class VaultSession extends ExternalStore<VaultLockState> {
                 const read = store.get(RECORD_KEY);
 
                 read.onsuccess = () => {
-                    const parsed = keptVaultSchema.safeParse(read.result);
+                    const parsed = deviceRecordSchema.safeParse(read.result);
 
-                    if (parsed.success) {
-                        store.put({ ...parsed.data, lastUsedAt }, RECORD_KEY);
+                    if (!parsed.success || parsed.data.deviceId === deviceId) {
+                        store.delete(RECORD_KEY);
                     }
                 };
 
@@ -595,14 +768,5 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         } finally {
             database.close();
         }
-    }
-
-    /** Deletes kept keys. */
-    private async forgetKept(): Promise<void> {
-        if (!("indexedDB" in globalThis)) {
-            return;
-        }
-
-        await withStore("readwrite", (store) => store.delete(RECORD_KEY));
     }
 }

@@ -9,6 +9,7 @@
 //! The file is tiny and changes rarely, so the store reads it on every request under one
 //! lock instead of caching it; a backup restored by hand is picked up at once.
 
+pub(crate) mod devices;
 mod validate;
 
 use std::path::PathBuf;

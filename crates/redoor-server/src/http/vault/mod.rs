@@ -17,6 +17,8 @@ use redoor_protocol::api::vault::{
 
 use super::{error::ApiError, state::ServerState};
 
+pub(crate) mod devices;
+
 /// Wraps a changed vault in the status response every change returns.
 fn status(vault: redoor_protocol::api::vault::VaultSummary) -> Json<VaultStatusResponse> {
     Json(VaultStatusResponse { vault: Some(vault) })
@@ -111,7 +113,11 @@ pub(crate) async fn rotate_handler(
     State(state): State<ServerState>,
     Json(request): Json<RotateVaultRequest>,
 ) -> Result<Json<VaultStatusResponse>, ApiError> {
-    Ok(status(state.vault.rotate(request).await?))
+    let rotated = state.vault.rotate(request).await?;
+    // Every browser's wrapped key is of the replaced generation; the rotating browser
+    // registers a fresh entry for the new one.
+    state.vault_devices.clear();
+    Ok(status(rotated))
 }
 
 /// Route: `POST /api/v1/vault/keys/{key_id}/destroy`. Refused while an encrypted SSH key
@@ -146,5 +152,8 @@ pub(crate) async fn restore_backup_handler(
     State(state): State<ServerState>,
     Json(request): Json<RestoreVaultBackupRequest>,
 ) -> Result<Json<VaultStatusResponse>, ApiError> {
-    Ok(status(state.vault.restore(request).await?))
+    let restored = state.vault.restore(request).await?;
+    // The stored raw keys belong to the replaced vault, so every browser unlocks again.
+    state.vault_devices.clear();
+    Ok(status(restored))
 }

@@ -3,6 +3,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { z } from "zod";
 import {
     confirmUpload,
     deviceBrowserUrl,
@@ -20,6 +21,16 @@ const MAGIC = Buffer.from("REDOORENCRYPTED\0", "latin1");
 
 /** The Playwright server's data directories, where the account's vault file lives. */
 const SERVER_SHARE = path.resolve(".test-playwright-home/.local/share");
+
+/** The Playwright server's log, whose startup lines prove a restart ran. */
+const SERVER_LOG = path.resolve("log/playwright-redoor.log");
+
+/** Counts server startups in its log, so a restart can be told apart from a no-op. */
+async function countServerStartups(): Promise<number> {
+    const log = await fs.readFile(SERVER_LOG, "utf8").catch(() => "");
+
+    return (log.match(/Loaded server config/g) ?? []).length;
+}
 
 /** Deletes the account's vault, so every test starts without one. */
 async function removeVault() {
@@ -82,6 +93,91 @@ async function signIn(page: Page) {
     await page.getByLabel("Password").fill("test-password");
     await page.getByRole("button", { name: "Sign in" }).click();
     await expect(page).toHaveURL(`${WEB_BASE_URL}/`);
+}
+
+/** The part of the IndexedDB record the tests read: which server entry wraps the key. */
+const keptRecordSchema = z.object({ deviceId: z.string() });
+
+/**
+ * The server entry id of the vault key kept in this browser, read from IndexedDB, or null
+ * when no key is kept.
+ */
+async function keptDeviceId(page: Page): Promise<string | null> {
+    const record = await page.evaluate(
+        () =>
+            new Promise<unknown>((resolve, reject) => {
+                const open = indexedDB.open("redoor-vault", 1);
+
+                open.onupgradeneeded = () => {
+                    open.result.createObjectStore("keys");
+                };
+
+                open.onerror = () => reject(open.error);
+
+                open.onsuccess = () => {
+                    const database = open.result;
+
+                    const read = database
+                        .transaction("keys", "readonly")
+                        .objectStore("keys")
+                        .get("vault");
+
+                    read.onsuccess = () => {
+                        database.close();
+                        resolve(read.result);
+                    };
+
+                    read.onerror = () => {
+                        database.close();
+                        reject(read.error);
+                    };
+                };
+            }),
+    );
+
+    return record === undefined
+        ? null
+        : keptRecordSchema.parse(record).deviceId;
+}
+
+/** The URL of a vault device entry on the server. */
+function deviceEntryUrl(deviceId: string): string {
+    return `${WEB_BASE_URL}/api/v1/vault/devices/${encodeURIComponent(deviceId)}`;
+}
+
+/**
+ * Deletes this browser's server entry through the API, which stands in for an expiry or a
+ * remote lock: the kept key stays in IndexedDB, but nothing can open it anymore.
+ */
+async function deleteServerEntry(page: Page): Promise<string> {
+    const deviceId = await keptDeviceId(page);
+
+    if (deviceId === null) {
+        throw new Error("expected a vault key kept in this browser");
+    }
+
+    const response = await page.request.delete(deviceEntryUrl(deviceId));
+    // The entry existed and belonged to this session.
+    expect(response.status()).toBe(204);
+
+    return deviceId;
+}
+
+/**
+ * Hides the page and shows it again, as switching browser tabs does. Headless pages never
+ * change their visibility, so the events are dispatched with a temporarily hidden state.
+ */
+async function hideAndShowPage(page: Page) {
+    await page.evaluate(() => {
+        Object.defineProperty(document, "visibilityState", {
+            configurable: true,
+            get: () => "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+        // Removing the override brings back the real, visible state.
+        Reflect.deleteProperty(document, "visibilityState");
+        document.dispatchEvent(new Event("visibilitychange"));
+    });
 }
 
 /** Creates an encrypted file from the directory's New menu. */
@@ -179,10 +275,8 @@ test.describe.serial("Vault", () => {
         expect(onDisk.includes(Buffer.from("very-secret"))).toBe(false);
 
         await page.reload();
-        // The default 15 minutes keep the key in open tabs only, so a reload locks the vault and the editor asks first.
-        await page.getByRole("button", { name: "Unlock vault" }).click();
-        await unlockInDialog(page);
-        // The unlocked editor shows the decrypted content.
+        // Even the default 15 minutes survive a reload, since the server hands the secret
+        // back, so the editor shows the decrypted content without asking.
         await expect(editor).toHaveText("API_KEY=very-secret");
 
         await page.getByRole("button", { name: "Editor actions" }).click();
@@ -197,6 +291,9 @@ test.describe.serial("Vault", () => {
             "API_KEY=very-secret",
         );
 
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
         await page.goto(deviceBrowserUrl(ctx.agentName, ctx.testDirPath));
         await page.getByLabel("Choose files to upload").setInputFiles({
             name: "notes.txt",
@@ -210,7 +307,7 @@ test.describe.serial("Vault", () => {
             name: "Encrypt notes.txt",
         });
 
-        // The reload locked the vault again, so encryption cannot be chosen yet.
+        // The vault was locked, so encryption cannot be chosen yet.
         await expect(encrypt).toBeDisabled();
         await upload.getByRole("button", { name: "Unlock vault" }).click();
         await unlockInDialog(page);
@@ -278,7 +375,8 @@ test.describe.serial("Vault", () => {
         await other.close();
 
         await page.reload();
-        // The kept key is from before the rotation, so it is dropped and a fresh unlock asked.
+        // The rotation deleted every browser's server entry, so the kept key no longer opens
+        // and a fresh unlock is asked.
         await expect(
             page.getByRole("button", { name: "Unlock vault" }),
         ).toBeVisible();
@@ -288,17 +386,31 @@ test.describe.serial("Vault", () => {
 
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
         // The fresh unlock was kept too, so the settings page loads unlocked.
-        await expect(page.getByLabel("Vault status")).toHaveText(
-            "Unlocked, kept on this device",
-        );
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+        const deviceId = await keptDeviceId(page);
+        // Precondition: the unlock registered a server entry for the kept key.
+        expect(deviceId).not.toBeNull();
         await page.getByRole("button", { name: "Lock now" }).click();
-        // Locking removes the key from this tab and from the device.
+        // Locking removes the key from this tab and from this browser.
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
+        await expect.poll(() => keptDeviceId(page)).toBeNull();
+
+        if (deviceId !== null) {
+            // "Lock now" deleted the server entry too, so a copy of the record opens nothing.
+            await expect
+                .poll(async () =>
+                    (await page.request.get(deviceEntryUrl(deviceId))).status(),
+                )
+                .toBe(404);
+        }
+
         await page.reload();
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
-    test("logging out locks a vault kept on this device", async ({ page }) => {
+    test("signing out and in again leaves the vault locked", async ({
+        page,
+    }) => {
         // A session of its own, because logging out revokes the session shared by the specs.
         await page.context().clearCookies();
         await signIn(page);
@@ -309,10 +421,8 @@ test.describe.serial("Vault", () => {
         ).toBeVisible();
 
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
-        // Precondition: the key is kept, so only an explicit lock can remove it.
-        await expect(page.getByLabel("Vault status")).toHaveText(
-            "Unlocked, kept on this device",
-        );
+        // Precondition: the vault is unlocked and has no idle lock that could end it.
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
 
         await page
             .getByRole("navigation", { name: "Application" })
@@ -322,11 +432,12 @@ test.describe.serial("Vault", () => {
 
         await signIn(page);
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
-        // Logout deleted the kept key, so the next user of this browser finds the vault locked.
+        // Logout deleted the kept key and its server entry, so signing in again, as the next
+        // user of this browser would, finds the vault locked.
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
-    test("locks the vault after the picked time without use, also across reloads", async ({
+    test("locks the vault after the picked time without use", async ({
         page,
     }) => {
         // A fake clock, so the idle lock can pass without waiting for it.
@@ -335,13 +446,12 @@ test.describe.serial("Vault", () => {
         await page.getByRole("button", { name: "Create vault" }).click();
         const create = page.getByRole("dialog", { name: "Create vault" });
         const createLockAfter = create.getByLabel("Stay unlocked for");
-        // The shortest lock is the default, so an unlock without a deliberate pick locks soon
-        // and never stores the key.
+        // The shortest lock is the default, so an unlock without a deliberate pick locks soon.
         await expect(createLockAfter).toHaveValue("15_minutes");
         await createLockAfter.selectOption({ label: "1 hour" });
-        // Choices that store the key say that the limit is only checked while redoor is open.
+        // Every choice keeps the key in this browser, opened only through this sign-in.
         await expect(create).toContainText(
-            "The time limit is only checked while redoor is open",
+            "Locks after 1 hour without use, when you sign out or your session ends, or when the server restarts.",
         );
         await create.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
         await create.getByLabel("Repeat passphrase").fill(PASSPHRASE);
@@ -350,56 +460,152 @@ test.describe.serial("Vault", () => {
 
         const status = page.getByLabel("Vault status");
         const idleLock = page.getByLabel("Vault idle lock");
-        // An hour is kept on the device, and the settings page names the picked lock.
-        await expect(status).toHaveText("Unlocked, kept on this device");
-        await expect(idleLock).toHaveText("Locks after 1 hour without use");
-
-        await page.reload();
-        // The kept key survives a reload together with its lock choice.
-        await expect(status).toHaveText("Unlocked, kept on this device");
+        // The settings page names the picked lock.
+        await expect(status).toHaveText("Unlocked");
         await expect(idleLock).toHaveText("Locks after 1 hour without use");
 
         await page.clock.fastForward("30:00");
         // Half the picked hour is not enough to lock it.
-        await expect(status).toHaveText("Unlocked, kept on this device");
+        await expect(status).toHaveText("Unlocked");
         await page.clock.fastForward("31:00");
         // Past the picked hour without use, the vault locks itself.
         await expect(status).toHaveText("Locked");
-
-        await page.getByRole("button", { name: "Unlock", exact: true }).click();
-        await unlockInDialog(page, "1 hour");
-        await expect(status).toHaveText("Unlocked, kept on this device");
-
-        // Moving the time without running timers stands in for a browser that was closed.
-        await page.clock.setSystemTime(
-            (await page.evaluate(() => Date.now())) + 61 * 60 * 1000,
-        );
-        await page.reload();
-        // The kept key was unused for longer than its lock, so loading the page forgets it.
-        await expect(status).toHaveText("Locked");
+        // The lock deleted the kept key too.
+        await expect.poll(() => keptDeviceId(page)).toBeNull();
     });
 
-    test("a tab that joins an unlocked vault keeps only the remaining idle time", async ({
-        page,
-        context,
-    }) => {
-        // One fake clock for both tabs, so they agree on when the vault was last used.
-        await context.clock.install();
+    test("every lock choice survives a reload", async ({ page }) => {
         await page.goto(`${WEB_BASE_URL}/settings/vault`);
         await page.getByRole("button", { name: "Create vault" }).click();
         await createVaultInDialog(page);
+        const status = page.getByLabel("Vault status");
+        const idleLock = page.getByLabel("Vault idle lock");
 
-        await context.clock.fastForward("14:00");
-        const joined = await context.newPage();
-        await joined.goto(`${WEB_BASE_URL}/settings/vault`);
-        const status = joined.getByLabel("Vault status");
-        // The new tab gets the keys from the open one instead of asking for an unlock.
+        const choices = [
+            {
+                label: "15 minutes",
+                idle: "Locks after 15 minutes without use",
+            },
+            { label: "1 hour", idle: "Locks after 1 hour without use" },
+            { label: "24 hours", idle: "Locks after 24 hours without use" },
+            { label: "1 week", idle: "Locks after 1 week without use" },
+            {
+                label: "Until I lock it",
+                idle: "Stays unlocked until you lock it or sign out",
+            },
+        ];
+
+        for (const [index, choice] of choices.entries()) {
+            if (index > 0) {
+                await page.getByRole("button", { name: "Lock now" }).click();
+                await expect(status).toHaveText("Locked");
+                await page
+                    .getByRole("button", { name: "Unlock", exact: true })
+                    .click();
+                await unlockInDialog(page, choice.label);
+            }
+
+            await expect(status).toHaveText("Unlocked");
+            await page.reload();
+            // The server hands the secret back, so the kept key opens again after the reload,
+            // together with its lock choice.
+            await expect(status).toHaveText("Unlocked");
+            await expect(idleLock).toHaveText(choice.idle);
+        }
+    });
+
+    test("a reload whose server entry is gone stays locked and forgets the key", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page, "Until I lock it");
+        const status = page.getByLabel("Vault status");
         await expect(status).toHaveText("Unlocked");
 
-        await page.close();
-        await context.clock.fastForward("02:00");
-        // Loading the tab was not a use, so the 15 minutes still count from the unlock.
+        await deleteServerEntry(page);
+        await page.reload();
+        // Without its server secret the kept key opens nothing, so the vault stays locked.
         await expect(status).toHaveText("Locked");
+        // The useless record is deleted rather than retried on every load.
+        await expect.poll(() => keptDeviceId(page)).toBeNull();
+    });
+
+    test("an open tab locks when its server entry is gone and the page is shown again", async ({
+        page,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page, "Until I lock it");
+        const status = page.getByLabel("Vault status");
+        await expect(status).toHaveText("Unlocked");
+
+        await deleteServerEntry(page);
+        // Deleting the secret cannot revoke the keys the tab holds, so it still shows them.
+        await expect(status).toHaveText("Unlocked");
+        await hideAndShowPage(page);
+        // Shown again, the tab asks the server, learns the entry is gone and locks, even
+        // for a choice without an idle lock.
+        await expect(status).toHaveText("Locked");
+    });
+
+    test("a tab opened after the server entry is gone stays locked next to an unlocked one", async ({
+        page,
+        context,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page, "Until I lock it");
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+
+        await deleteServerEntry(page);
+        const joined = await context.newPage();
+        await joined.goto(`${WEB_BASE_URL}/settings/vault`);
+        // The new tab asks the server, not the open tab, so it does not take keys whose
+        // server entry is gone.
+        await expect(joined.getByLabel("Vault status")).toHaveText("Locked");
+        await joined.close();
+    });
+
+    test("a lock in another tab wins over a page load that is opening the kept key", async ({
+        page,
+        context,
+    }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page, "Until I lock it");
+        await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+
+        const joined = await context.newPage();
+        let releaseMaterial = () => {};
+
+        const materialHeld = new Promise<void>((held) => {
+            void joined.route("**/api/v1/vault/unlock-material", (route) => {
+                held();
+                releaseMaterial = () => void route.continue();
+            });
+        });
+
+        const notAdopted = joined.waitForEvent("console", (message) =>
+            message
+                .text()
+                .includes(
+                    "locked while the kept key was opening, not adopting it",
+                ),
+        );
+
+        await joined.goto(`${WEB_BASE_URL}/settings/vault`);
+        // The new tab already got the secret and now waits for the unlock material.
+        await materialHeld;
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
+        releaseMaterial();
+        // The new tab heard the lock while opening the kept key, so it drops the restore
+        // instead of undoing the lock with keys it had already been sent.
+        await notAdopted;
+        await expect(joined.getByLabel("Vault status")).toHaveText("Locked");
+        await joined.unrouteAll({ behavior: "wait" });
+        await joined.close();
     });
 
     test("deletes an encrypted file from the editor while the vault is locked", async ({
@@ -415,8 +621,9 @@ test.describe.serial("Vault", () => {
         await page.getByRole("button", { name: "Save file" }).click();
         await expect(page.getByText("Saved", { exact: true })).toBeVisible();
 
+        await deleteServerEntry(page);
         await page.reload();
-        // The default 15 minutes keep the key in open tabs only, so the reload locks the vault and the editor waits for an unlock.
+        // Without its server entry the kept key does not open, so the editor waits for an unlock.
         await expect(
             page.getByRole("button", { name: "Unlock vault" }),
         ).toBeVisible();
@@ -665,5 +872,39 @@ test.describe.serial("Vault", () => {
         await relockWithPasskey(page);
         // The confirmed passkey wraps the rotated key, so it still unlocks.
         await expect(page.getByLabel("Vault status")).toHaveText("Unlocked");
+    });
+
+    // Last, because restarting the shared server makes the agents reconnect.
+    test("an open tab locks when the server restarts", async ({ page }) => {
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page, "Until I lock it");
+        const status = page.getByLabel("Vault status");
+        await expect(status).toHaveText("Unlocked");
+
+        const startups = await countServerStartups();
+
+        const restart = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/server/restart`,
+        );
+
+        // The server accepted the restart.
+        expect(restart.ok()).toBe(true);
+
+        await expect
+            .poll(countServerStartups, { timeout: 30_000 })
+            .toBeGreaterThan(startups);
+        // Device secrets live in server memory only. The tab notices the restart when its
+        // event connection reconnects, finds its entry gone and locks.
+        await expect(status).toHaveText("Locked", { timeout: 30_000 });
+        // The kept key was deleted too, since it can never open again.
+        await expect.poll(() => keptDeviceId(page)).toBeNull();
+
+        // The agents reconnect before later specs need them.
+        await expect(
+            page
+                .getByRole("navigation", { name: "Devices" })
+                .getByRole("link", { name: /agent1_src/ }),
+        ).toBeVisible({ timeout: 30_000 });
     });
 });

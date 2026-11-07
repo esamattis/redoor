@@ -417,12 +417,15 @@ impl ServerRuntime {
             runtime.paths.data_dir()?,
         );
         let vault = crate::vault::VaultStore::new(runtime.paths.clone());
+        let vault_devices = crate::vault::devices::VaultDeviceStore::default();
+        vault_devices.spawn_prune_task(auth.clone());
         let terminals = crate::terminals::registry::TerminalRegistry::new(
             crate::http::agent_client::AgentClient::new(router.clone()),
             crate::terminals::TerminalsChangedNotifier::new(router.clone()),
         );
         let state = ServerState {
             vault,
+            vault_devices,
             runtime,
             binaries,
             launcher: launcher.clone(),

@@ -345,9 +345,7 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                         {stale
                             ? "Unlocked with an old key; unlock again"
                             : unlocked
-                              ? state.persisted
-                                  ? "Unlocked, kept on this device"
-                                  : "Unlocked"
+                              ? "Unlocked"
                               : "Locked"}
                     </span>
                     {/* Shown apart from the status, so the user sees when it locks by itself. */}
@@ -357,7 +355,7 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                             className="block text-xs text-slate-500"
                         >
                             {state.lockAfter === "never"
-                                ? "Stays unlocked until you lock it or log out"
+                                ? "Stays unlocked until you lock it or sign out"
                                 : `Locks after ${lockAfterLabel} without use`}
                         </span>
                     ) : null}
@@ -370,7 +368,7 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                     <Button
                         type="button"
                         variant="secondary"
-                        tooltip="Forget the vault key in every tab and on this device"
+                        tooltip="Forget the vault key in every tab and in this browser"
                         onClick={() => void session.lock()}
                     >
                         <Lock className="h-4 w-4" aria-hidden="true" />

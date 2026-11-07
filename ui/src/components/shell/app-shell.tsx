@@ -29,12 +29,12 @@ const rootRouteApi = getRouteApi("__root__");
  * such as the server event connection, starts and stops with it.
  */
 export function AppShell() {
-    const { api } = rootRouteApi.useRouteContext();
+    const { api, vault } = rootRouteApi.useRouteContext();
 
     const [isTerminalFullWindow, setIsTerminalFullWindow] =
         React.useState(false);
 
-    useRefreshListener(api);
+    useRefreshListener(api, vault);
     useReloadOnServerBuildChange();
     useTerminalSessionSync();
     useRememberAgentTabLocation();

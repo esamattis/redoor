@@ -61,6 +61,9 @@ pub(crate) struct ServerState {
     pub(crate) editor_buffer_lock: Arc<tokio::sync::Mutex<()>>,
     /// The account's vault (`vault.json`), which encrypts `.redoorencrypted` files.
     pub(crate) vault: crate::vault::VaultStore,
+    /// Browsers' vault device secrets, in memory only, so the vault's idle lock holds even
+    /// with no redoor tab open and a server restart locks every browser.
+    pub(crate) vault_devices: crate::vault::devices::VaultDeviceStore,
     /// Managed SSH keys and pinned host keys of SSH devices.
     pub(crate) ssh_keys: crate::ssh::keys::SshKeyStore,
     /// Decrypted SSH keys of running devices, shared with the launcher's provisioning.

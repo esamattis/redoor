@@ -186,6 +186,23 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(super::vault::export_backup_handler).put(super::vault::restore_backup_handler),
         )
         .route(
+            "/api/v1/vault/devices",
+            post(super::vault::devices::create_device_handler),
+        )
+        .route(
+            "/api/v1/vault/devices/{id}",
+            get(super::vault::devices::check_device_handler)
+                .delete(super::vault::devices::delete_device_handler),
+        )
+        .route(
+            "/api/v1/vault/devices/{id}/open",
+            post(super::vault::devices::open_device_handler),
+        )
+        .route(
+            "/api/v1/vault/devices/{id}/touch",
+            post(super::vault::devices::touch_device_handler),
+        )
+        .route(
             "/api/v1/agents/{agent}/vault/header/{*path}",
             get(super::vault_files::header_handler),
         )

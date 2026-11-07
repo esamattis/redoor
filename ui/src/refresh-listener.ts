@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import { type ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { UiEvent } from "#bindings/UiEvent";
+import type { VaultSession } from "#ui/vault/vault-session";
 import {
     invalidateAgentData,
     invalidateAllAgentData,
@@ -58,6 +59,7 @@ export class RefreshListener {
     constructor(
         private api: ApiClient,
         private queryClient: QueryClient,
+        private vault: Pick<VaultSession, "check">,
     ) {}
 
     /** Starts the UI event connection once for the authenticated shell. */
@@ -161,6 +163,8 @@ export class RefreshListener {
         }
 
         void invalidateAllAgentData(this.queryClient);
+        // A server restart forgets every vault device secret, so tabs holding keys must lock.
+        void this.vault.check();
     }
 
     /** Connects to the event stream and scopes each event to affected data. */
@@ -217,13 +221,16 @@ export class RefreshListener {
  * after the loaders have proven the session valid, and closes when the shell unmounts, so
  * the login page never holds an event socket.
  */
-export function useRefreshListener(api: ApiClient) {
+export function useRefreshListener(
+    api: ApiClient,
+    vault: Pick<VaultSession, "check">,
+) {
     const queryClient = useQueryClient();
 
     React.useEffect(() => {
-        const refreshListener = new RefreshListener(api, queryClient);
+        const refreshListener = new RefreshListener(api, queryClient, vault);
         refreshListener.start();
 
         return () => refreshListener.stop();
-    }, [api, queryClient]);
+    }, [api, queryClient, vault]);
 }

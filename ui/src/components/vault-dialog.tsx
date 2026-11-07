@@ -6,8 +6,9 @@ import {
     useQueryClient,
 } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { Fingerprint, LockKeyhole, TriangleAlert } from "lucide-react";
+import { Fingerprint, LockKeyhole } from "lucide-react";
 
+import type { VaultLockAfter } from "#bindings/VaultLockAfter";
 import type { VaultSummary } from "#bindings/VaultSummary";
 import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
@@ -41,11 +42,7 @@ import {
     newPasskeySlot,
     usablePasskeySlots,
 } from "#ui/vault/vault-passkeys";
-import {
-    DEFAULT_VAULT_LOCK_AFTER,
-    VAULT_LOCK_AFTER,
-    type VaultLockAfter,
-} from "#ui/vault/vault-session";
+import { DEFAULT_VAULT_LOCK_AFTER } from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -66,15 +63,6 @@ export const LOCK_AFTER_OPTIONS = [
     { value: "1_week", label: "1 week" },
     { value: "never", label: "Until I lock it" },
 ] as const satisfies readonly { value: VaultLockAfter; label: string }[];
-
-/**
- * The choices grouped by where the key lives, so the picker itself shows which ones store
- * it in the browser.
- */
-const LOCK_AFTER_GROUPS = [
-    { label: "In open tabs only", keptOnDevice: false },
-    { label: "On this device, across restarts", keptOnDevice: true },
-] as const;
 
 /**
  * The passkey prompt the dialog may be waiting on. Unlike key derivation, the prompt can be
@@ -161,45 +149,23 @@ export function useVaultSession() {
 }
 
 /**
- * Why the picked lock choice behaves as it does. Choices that store the key say plainly that
- * the time limit is only checked while redoor is open: with no tab running, an expired key
- * stays on disk until the next page load deletes it, so the limit does not protect a copied
- * browser profile.
+ * What the picked lock choice does. Every choice works the same way: the key is kept in this
+ * browser wrapped with a secret the server holds, so the server enforces the limit even while
+ * no redoor tab is open, and the key only opens for this sign-in.
  */
-function lockAfterHint(lockAfter: VaultLockAfter) {
+function lockAfterHint(lockAfter: VaultLockAfter): string {
+    if (lockAfter === "never") {
+        return "Stays unlocked until you lock it, sign out, your session ends or the server restarts. The key is kept in this browser, but only opens with this sign-in.";
+    }
+
     const option = LOCK_AFTER_OPTIONS.find(
         (candidate) => candidate.value === lockAfter,
     );
 
-    if (lockAfter === "never") {
-        return {
-            summary:
-                "Stays unlocked across reloads and browser restarts until you lock it or log out.",
-            warning:
-                "The key is stored in this browser. Until you lock the vault, anyone who can use or copy this browser profile can open your encrypted files.",
-        };
-    }
-
-    if (!VAULT_LOCK_AFTER[lockAfter].keptOnDevice) {
-        return {
-            summary: `Locks after ${option?.label ?? lockAfter} without use, or when the last redoor tab is closed or reloaded. The key is never stored on this device.`,
-            warning: null,
-        };
-    }
-
-    return {
-        summary: `Locks after ${option?.label ?? lockAfter} without use, also across reloads and browser restarts.`,
-        warning:
-            "The key is stored in this browser. The time limit is only checked while redoor is open, so once it passes the key stays on disk until redoor is opened again. Until then, anyone who can use or copy this browser profile can open your encrypted files.",
-    };
+    return `Locks after ${option?.label ?? lockAfter} without use, when you sign out or your session ends, or when the server restarts. The key is kept in this browser, but only opens with this sign-in.`;
 }
 
-/**
- * How long the vault stays unlocked, and with it whether the key is stored in the browser.
- * One select instead of a separate "keep on this device" checkbox, so a long lock can never
- * be silently cut short by closing the tab. The default is the shortest choice, which never
- * stores the key.
- */
+/** How long the vault stays unlocked without use. The default is the shortest choice. */
 function LockOptions(props: {
     lockAfter: VaultLockAfter;
     disabled: boolean;
@@ -207,7 +173,6 @@ function LockOptions(props: {
 }) {
     const selectId = React.useId();
     const hintId = React.useId();
-    const hint = lockAfterHint(props.lockAfter);
 
     return (
         <div className="mt-4 grid gap-2">
@@ -234,37 +199,16 @@ function LockOptions(props: {
                     }}
                     containerClassName="min-w-40"
                 >
-                    {LOCK_AFTER_GROUPS.map((group) => (
-                        <optgroup key={group.label} label={group.label}>
-                            {LOCK_AFTER_OPTIONS.flatMap((option) =>
-                                VAULT_LOCK_AFTER[option.value].keptOnDevice ===
-                                group.keptOnDevice
-                                    ? [
-                                          <option
-                                              key={option.value}
-                                              value={option.value}
-                                          >
-                                              {option.label}
-                                          </option>,
-                                      ]
-                                    : [],
-                            )}
-                        </optgroup>
+                    {LOCK_AFTER_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                            {option.label}
+                        </option>
                     ))}
                 </Select>
             </div>
-            <div id={hintId} className="grid gap-1 text-xs">
-                <p className="text-slate-500">{hint.summary}</p>
-                {hint.warning === null ? null : (
-                    <p className="flex gap-1.5 text-amber-300">
-                        <TriangleAlert
-                            className="mt-px h-3.5 w-3.5 shrink-0"
-                            aria-hidden="true"
-                        />
-                        {hint.warning}
-                    </p>
-                )}
-            </div>
+            <p id={hintId} className="text-xs text-slate-500">
+                {lockAfterHint(props.lockAfter)}
+            </p>
         </div>
     );
 }
@@ -300,7 +244,11 @@ function CreateVaultForm(props: {
     const create = useMutation({
         mutationKey: vaultDialogMutationKey,
         mutationFn: async () => {
-            const { request, vault: unlocked } = await buildNewVault({
+            const {
+                request,
+                vault: unlocked,
+                raw,
+            } = await buildNewVault({
                 label: label.trim(),
                 // The passkey prompt comes first, while the click still counts as the user
                 // gesture that some browsers require; Argon2id takes seconds.
@@ -330,10 +278,16 @@ function CreateVaultForm(props: {
                 },
             });
 
-            await api.createVault(request);
-            await vault.unlock(unlocked, lockAfter);
+            try {
+                await api.createVault(request);
+                await vault.unlock(unlocked, lockAfter, raw);
+            } finally {
+                wipe(raw);
+            }
         },
-        onSuccess: () =>
+        // Also after a failure: the vault may exist even though keeping it unlocked failed,
+        // and the dialog must then offer to unlock it instead of creating it again.
+        onSettled: () =>
             queryClient.invalidateQueries({ queryKey: queryKeys.vault() }),
     });
 
@@ -513,6 +467,7 @@ function UnlockVaultForm(props: {
             await vault.unlock(
                 await openGenerations(material, opened.rawVaultKey),
                 lockAfter,
+                opened.rawVaultKey,
             );
         } finally {
             wipe(opened.rawVaultKey);

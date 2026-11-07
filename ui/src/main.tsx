@@ -82,14 +82,10 @@ const editor = new EditorWorkspace(api, queryClient, (caret) => {
 editor.start(window);
 
 // The vault's lock state belongs to the page, not a route: an unlock in one place must serve
-// the editor, uploads and downloads alike, and kept or shared keys are restored once here.
-const vault = new VaultSession();
+// the editor, uploads and downloads alike, and the kept key is restored once here.
+const vault = new VaultSession(api);
 
-void vault.start(async () => {
-    const status = await api.getVault();
-
-    return status.vault?.current_key_id ?? null;
-});
+void vault.start();
 
 // One registry owns every window-level shortcut, so the order in which commands claim a key
 // is decided by explicit priority instead of by whichever component registered first.

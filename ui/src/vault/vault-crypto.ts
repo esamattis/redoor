@@ -373,6 +373,70 @@ export async function unwrapChain(
     );
 }
 
+/**
+ * What a device wrap is bound to: the vault, the generation and the server entry whose
+ * secret wraps it, so a wrapped key cannot be replayed onto another vault, generation or
+ * device entry.
+ */
+export type DeviceContext = {
+    vaultId: string;
+    keyId: string;
+    deviceId: string;
+};
+
+/** The associated data of a device wrap. */
+function deviceAssociatedData(context: DeviceContext): Uint8Array<ArrayBuffer> {
+    return associatedData(
+        "redoor-vault v1 device",
+        context.vaultId,
+        context.keyId,
+        context.deviceId,
+    );
+}
+
+/**
+ * Imports a device secret from the server as a non-extractable AES-GCM key and wipes the
+ * decoded bytes, so the secret only lives in the base64 string the response carried.
+ */
+async function importDeviceSecret(secret: string): Promise<CryptoKey> {
+    const raw = fromBase64Url(secret);
+
+    try {
+        return await importKek(raw);
+    } finally {
+        wipe(raw);
+    }
+}
+
+/**
+ * Wraps the raw current vault key with the server-held device secret, for IndexedDB. The
+ * browser keeps only this wrap: without the secret, which the server hands out only within
+ * the idle window and to the same login session, it opens nothing.
+ */
+export async function wrapForDevice(
+    secret: string,
+    rawVaultKey: Uint8Array<ArrayBuffer>,
+    context: DeviceContext,
+): Promise<VaultKeyWrap> {
+    return wrapRaw(
+        await importDeviceSecret(secret),
+        rawVaultKey,
+        deviceAssociatedData(context),
+    );
+}
+
+/** Opens a device wrap into the raw vault key; the caller wipes it after importing. */
+export async function unwrapForDevice(
+    secret: string,
+    wrap: VaultKeyWrap,
+    context: DeviceContext,
+): Promise<Uint8Array<ArrayBuffer>> {
+    return unwrapRaw(await importDeviceSecret(secret), wrap, {
+        additionalData: deviceAssociatedData(context),
+        failure: "The vault key kept in this browser does not open",
+    });
+}
+
 /** What a file key wrap is bound to, matching the file header fields. */
 export type FileContext = {
     vaultId: string;

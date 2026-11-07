@@ -113,6 +113,12 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("PATCH" | "DELETE", "/api/v1/vault/slots/{id}")
         | ("POST", "/api/v1/vault/slots/{id}/used" | "/api/v1/vault/keys/{key_id}/destroy")
         | ("GET" | "PUT", "/api/v1/vault/backup")
+        | ("POST", "/api/v1/vault/devices")
+        | ("GET" | "DELETE", "/api/v1/vault/devices/{id}")
+        | (
+            "POST",
+            "/api/v1/vault/devices/{id}/open" | "/api/v1/vault/devices/{id}/touch",
+        )
         | ("GET", "/api/v1/agents/{agent}/vault/header")
         | (
             "POST",
@@ -430,6 +436,18 @@ mod tests {
                 Access::SessionOnly,
             ),
             (Method::GET, "/api/v1/vault/ssh-keys", Access::SessionOnly),
+            // Device secrets keep the vault unlocked in one browser session; never a token's.
+            (Method::POST, "/api/v1/vault/devices", Access::SessionOnly),
+            (
+                Method::POST,
+                "/api/v1/vault/devices/{id}/open",
+                Access::SessionOnly,
+            ),
+            (
+                Method::DELETE,
+                "/api/v1/vault/devices/{id}",
+                Access::SessionOnly,
+            ),
             (Method::GET, "/api/v1/tokens", Access::SessionOnly),
             (Method::GET, "/api/v1/tokens/current", Access::AnyPrincipal),
             (

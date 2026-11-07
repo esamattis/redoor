@@ -470,6 +470,9 @@ test.describe.serial("Dedicated SSH device keys", () => {
         await create.getByRole("button", { name: "Create vault" }).click();
         // Argon2id takes a moment; the dialog closes once the vault exists and is unlocked.
         await expect(create).toBeHidden({ timeout: 30_000 });
+        // Locked again, so the key setup below has to ask for it.
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
 
         const createResponse = await page.request.post(
             `${WEB_BASE_URL}/api/v1/agents`,
@@ -513,7 +516,7 @@ test.describe.serial("Dedicated SSH device keys", () => {
             .getByRole("button", { name: "Trust host key and install" })
             .click();
 
-        // The page load locked the vault, and the new key needs it, so the setup asks first.
+        // The vault is locked, and the new key needs it, so the setup asks first.
         const unlock = page.getByRole("dialog", { name: "Unlock vault" });
         await expect(unlock).toBeVisible({ timeout: 30_000 });
         await unlock.getByRole("button", { name: "Cancel" }).first().click();
@@ -556,7 +559,10 @@ test.describe.serial("Dedicated SSH device keys", () => {
             "Encrypted with vault",
         );
 
-        // Loading the page again locks the vault, which was not kept on this device.
+        // Lock the vault, so nothing in the browser can open the key's file key.
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await expect(page.getByLabel("Vault status")).toHaveText("Locked");
         await page.goto(`${WEB_BASE_URL}/agents/${ENCRYPTED_DEVICE}`);
         await page
             .getByRole("button", { name: "Connect", exact: true })
@@ -588,11 +594,19 @@ test.describe.serial("Dedicated SSH device keys", () => {
             page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, stopped` }),
         ).toBeVisible({ timeout: 30_000 });
         expect((await getKeyStatus(page.request, agent.id)).held).toBe(false);
+        // The restart also forgot the browser's vault device secret, so this tab locks once
+        // its event connection reconnects ...
+        await expect(
+            page
+                .getByRole("navigation", { name: "Application" })
+                .getByRole("link", { name: "Manage vault", exact: true }),
+        ).toBeVisible({ timeout: 30_000 });
         await page
             .getByRole("button", { name: "Connect", exact: true })
             .click();
-        // This tab's vault is still unlocked, so the start hands the key over without asking
-        // for the passphrase, and the device connects again.
+        // ... and the start asks for the vault again before it hands the key over, after
+        // which the device connects again.
+        await unlockVault(page);
         await expect(
             page.getByRole("link", { name: `${ENCRYPTED_DEVICE}, connected` }),
         ).toBeVisible({ timeout: 90_000 });

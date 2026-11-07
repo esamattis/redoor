@@ -1092,10 +1092,16 @@ pub(crate) async fn login_handler(
 }
 
 /// Removes the durable session first, then expires the browser cookie even when no file remains.
+///
+/// The session's vault device secrets go first of all, so a logout the page could not finish
+/// (a closed tab, a failed lock) still locks the vault in that browser.
 pub(crate) async fn logout_handler(
     State(state): State<ServerState>,
     headers: HeaderMap,
 ) -> Response {
+    if let Some(session_id) = session_cookie(&headers) {
+        state.vault_devices.delete_session(&session_id);
+    }
     if let Err(error) = state.auth.delete_session(&headers).await {
         log_error!(error, "Failed to delete session");
         return (

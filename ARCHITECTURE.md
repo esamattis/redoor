@@ -238,8 +238,7 @@ The agent runtime and the implementation of every command.
     only writes the file. A file that does not parse keeps the last good logins, and unchanged
     plaintext passwords keep their in-memory hash. The rest of the config is read at startup.
   - `vault` and `vault_files`: the vault REST API and the encrypted file routes (see
-    "Encrypted files"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted
-    with the vault.
+    "Encrypted files"); `vault/devices` serves the browsers' device secrets (see "Vault"). `vault_ssh_keys` lists and rewraps the SSH keys encrypted with the vault.
   - `ssh_keys`: the SSH key and host key routes, and unlocking an encrypted SSH key for a
     device Start (see "SSH device keys").
   - `git/`: Git REST handlers split by the same feature areas as the protocol, sharing
@@ -299,7 +298,8 @@ The agent runtime and the implementation of every command.
     server holds for running devices, and pinned host keys, see "SSH device keys" below.
   - `ssh_agent`: the in-process ssh-agent (OpenSSH key agent protocol, not the redoor
     agent) through which `ssh` gets signatures from a managed key without ever reading it.
-- `vault`: `VaultStore`, the shared `vault.json` with its proof checks and validation.
+- `vault`: `VaultStore`, the shared `vault.json` with its proof checks and validation, and
+  `devices::VaultDeviceStore`, the browsers' device secrets in memory (see "Vault").
 - `startup`: `ServerConfig::resolve`, then `ServerRuntime::build`, then
   `serve_until_restart`.
 - `tls`: built-in HTTPS, see "Built-in HTTPS". `ServerCertificate` loads the operator's PEM
@@ -2823,48 +2823,60 @@ device, or to another device.
   every selected item whose name repeats an earlier one, so two versions never land on one
   destination path.
 
-## Encrypted files
+## Vault
 
-Files ending in `.redoorencrypted` are stored encrypted on devices. The user opens, edits,
-uploads and downloads them through redoor, and the server encrypts and decrypts them as a
-stream. A per-user **vault** holds the key, unlocked in the browser by any of its slots:
-passkeys (WebAuthn PRF) and an optional passphrase.
+The account's vault holds the keys that encrypt `.redoorencrypted` files (see "Encrypted
+files") and managed SSH keys (see "SSH device keys"). Everyone who signs in shares it. The
+browser creates, unlocks and rewraps every vault key; the server stores only wrapped keys,
+decides which changes it accepts, and keeps a browser's unlock alive only as long as the user
+chose. Slots unlock the vault: passkeys (WebAuthn PRF) and an optional passphrase, each
+wrapping the same vault key.
+
+### Trust boundaries
 
 ```mermaid
 flowchart LR
     subgraph Browser
-        VK["vault key VK<br/><i>non-extractable</i>"]
+        VK["vault key VK<br/><i>non-extractable, open tabs</i>"]
+        kept["IndexedDB<br/><i>VK wrapped with a device secret</i>"]
     end
     subgraph Server
         store["vault.json<br/><i>wrapped keys + verifier</i>"]
+        devices["VaultDeviceStore<br/><i>device secrets, memory only</i>"]
         crypt["vault_files<br/><i>STREAM encrypt/decrypt</i>"]
     end
     subgraph Device
         file[".redoorencrypted<br/><i>ciphertext only</i>"]
     end
-    VK -- "file key FK of one file, per request" --> crypt
     store -- "wrapped keys" --> VK
-    crypt <-- "ciphertext (raw download / upload)" --> file
+    devices -- "device secret, same session, within the idle lock" --> kept
+    kept -- "VK on page load" --> VK
+    VK -- "file key FK of one file, per request" --> crypt
+    crypt <-- "ciphertext" --> file
 ```
 
-**Trust boundary.** Agents and their devices only ever see ciphertext and never a key. The
-vault key never leaves the browser. The server only gets the file key of the one file a
-request handles, and only for the duration of that request; `vault.json` holds only wrapped
-keys. This protects against devices (other OS users, stolen disks, backups), a stolen copy of
-the server data directory (the passphrase slot is only as strong as the passphrase) and
-access tokens or MCP clients. It does not protect against a compromised server, which serves
-the UI's JavaScript and can already run commands on every agent.
+| Party | Holds | Never holds |
+|---|---|---|
+| Unlocked browser tab | VK of every reachable generation as non-extractable `CryptoKey`s | |
+| Browser storage (IndexedDB) | The raw current VK wrapped with a device secret | The device secret |
+| Server memory | Device secrets, each bound to one login session; the FK of the file a request handles, for that request; decrypted SSH keys of running devices | VK, the browser's wrapped VK |
+| Server disk | `vault.json` (wrapped keys and a proof verifier), SSH keys encrypted with the vault | VK |
+| Devices and agents | Ciphertext | Any key |
 
-The one exception to "one request" are managed SSH keys encrypted with the vault (see "SSH
-device keys"): the watchdog reconnects devices on its own, long after the browser's Start
-request, so the server holds such a key decrypted in memory from a browser Start until the
-device is stopped or the server process exits.
-
-**Object kinds.** A header's `kind` says what the payload is: `file` for user files on
-devices, `ssh-key` for managed SSH private keys stored on the server. The browser binds the
-kind into the file key wrap's associated data, so a user file's key can never be presented
-as an SSH key's and vice versa. `file` headers have no context; `ssh-key` headers carry
-exactly `device_id` and `public_key`, covered by the header MAC.
+- **Protected against:** devices (other OS users, stolen disks, backups); a stolen copy of
+  the server data directory (the passphrase slot is only as strong as the passphrase);
+  access tokens and MCP clients, which reach no vault route (see "Access control"); a stolen
+  session cookie, which cannot change the vault without a proof of possession (see "Keys");
+  and a copied browser profile once the idle lock has passed, the session ended or the
+  server restarted, because the wrapped VK in IndexedDB and the device secret on the server
+  only open the vault together, and the server forgets the secret.
+- **Not protected against:** a compromised server, which serves the UI's JavaScript and can
+  already run commands on every agent, or anyone using the browser while the vault is
+  unlocked.
+- **Longer than one request.** The server holds an FK only while its request runs, with one
+  exception: SSH keys encrypted with the vault stay decrypted in server memory from a
+  browser Start until the device stops or the server exits, because the watchdog reconnects
+  devices on its own (see "SSH device keys").
 
 ### Keys
 
@@ -2881,10 +2893,8 @@ FK ──HKDF──► header MAC key, payload key (ChaCha20-Poly1305 STREAM)
 
 - The browser keeps VK as a non-extractable HKDF `CryptoKey` and derives every other key
   from it (`ui/src/vault/vault-crypto.ts`), so one key never serves two algorithms. Every
-  wrap binds its context (vault, slot, generation, file kind) in the GCM associated data.
-- **FK** is random and new for every encryption. The header stores it wrapped with the
-  current generation; the browser unwraps it and sends it with the request in the
-  `Redoor-Vault-Key` header (or a JSON or form field), never in a URL.
+  wrap binds its context (vault, slot, generation, file kind, device entry) in the GCM
+  associated data.
 - **Proof of possession.** `vault.json` stores `auth_verifier = SHA-256(HKDF(VK, "auth"))`.
   Every change of the vault (slots, label, rotation, destroying a generation, restoring a
   backup) sends the proof, which the server hashes and compares in constant time, so a
@@ -2899,9 +2909,9 @@ FK ──HKDF──► header MAC key, payload key (ChaCha20-Poly1305 STREAM)
 
 ### Storage
 
-`crate::vault::VaultStore` owns `<data_dir>/vault.json` (0600, written atomically), shared
-by everyone who signs in. The file is small and changes rarely, so the store
-re-reads it under one lock on every request instead of caching it. The document is also the
+`crate::vault::VaultStore` owns `<data_dir>/vault.json` (0600, written atomically), and
+`http/vault` serves it, thin over the store. The file is small and changes rarely, so the
+store re-reads it under one lock on every request instead of caching it. The document is also the
 backup format: it holds only wrapped keys, so "Download vault backup" is safe anywhere.
 The server validates the shape of everything the browser submits (id formats, wrap and
 salt lengths, Argon2id parameters of at least 64 MiB and 3 passes, at least one slot, an
@@ -2909,6 +2919,98 @@ unbroken chain) but never sees a key, so it cannot check that a wrap really wrap
 one. Every slot wraps the same key, so no slot type is required: creation, slot removal,
 rotation and restore only refuse to leave the vault without any slot (`vault_last_slot`),
 because nothing could unlock it again.
+
+### Lock state in the browser
+
+- **`VaultSession`** (router context `vault`) is the page's lock state. It holds the
+  non-extractable keys of every reachable generation, shares them with the open tabs over a
+  `BroadcastChannel`, and locks after the idle time picked in the unlock dialog (15 minutes
+  by default, up to a week, or no idle lock: `VaultLockAfter`, a protocol enum).
+- **Device secrets.** Every lock choice works the same way. On unlock the
+  browser registers a device secret with the server (`POST /api/v1/vault/devices`, with the
+  lock choice), wraps the raw current VK with it (AES-256-GCM, associated data binding vault,
+  generation and device id) and keeps only that wrap in IndexedDB, with no `CryptoKey`s. The
+  server's `VaultDeviceStore` keeps the secret in memory with the lock choice, the last use
+  (a monotonic `Instant`, so a server clock change cannot move the lock) and the login
+  session that created it. It hands the secret out (`POST .../{id}/open`) only to that
+  session and only within the idle window, and deletes it once the window has passed, on
+  "Lock now" (`DELETE .../{id}`), sign-out, the end of the session, a rotation or a backup
+  restore (both replace the generation every stored key wraps), or a server restart. Expired
+  and foreign entries get the same 404 (`vault_device_not_found`). Every access drops expired
+  entries, and a background task drops expired entries and entries of ended sessions every
+  minute. At most 50 entries exist; one more drops the least recently used, so a stolen
+  cookie cannot grow memory. Creating an entry needs no vault proof, because a random secret
+  opens nothing by itself.
+- **Page load.** Every page load opens the kept key through the server, even while other
+  tabs are unlocked, so a tab that survived a restart, an expiry or an ended session can
+  never hand its keys to a new tab. Opening is not use. A 404 or a key of another generation
+  than the server's current one (rotated elsewhere) deletes the record; a network error keeps
+  it for a later load. A record of any other shape fails to parse and is deleted. The idle
+  timer runs on the server's remaining time (`expires_in_seconds`), so a wrong browser clock
+  does not matter.
+- **Use and checks.** Using the vault (`requestUnlock`, file reads) reports a use
+  (`POST .../{id}/touch`) at most once a minute, and the answer restarts the idle timer of
+  every tab. Deleting a server secret cannot revoke the `CryptoKey`s open tabs hold, so tabs
+  check the entry (`GET .../{id}`) when the UI event socket reconnects (which is how a server
+  restart shows up) and when a hidden page is shown again, and a 404 from a touch or check
+  locks every tab. A network error keeps the keys. The guarantee is "locks on the next server
+  check", not "before the next use": reads keep using the keys the tab holds rather than
+  waiting for the server on every file. A rotation in this tab registers a fresh entry for
+  the new key with this tab's lock choice and hands the new keys to the other tabs. "Lock
+  now" deletes the record before it locks, so a reload cannot undo it, then deletes the
+  server entry best effort. Logging out locks the same way before it ends the session, and
+  the logout route deletes the session's entries itself, so a logout the page could not
+  finish still locks.
+
+### Browser flows
+
+`ui/src/vault/` holds the browser side; nothing in it is React except the components that use
+it.
+
+- `vault-crypto` (WebCrypto, HKDF, Argon2id through `hash-wasm`) and `vault-keys` (creating,
+  unlocking, the chain walk, rotation and destroy requests) are pure functions, so the
+  integration tests run the same key handling as the UI.
+- Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
+  unlocked and otherwise opens the one `VaultDialog` in the app shell (create with a passkey,
+  a passphrase or both; unlock with one prompt for every passkey of this hostname or the
+  passphrase). The editor, uploads, downloads, file creation and the settings page share it.
+- **Passwordless vaults.** The passphrase is optional and is the user's recovery path; there
+  is no separate recovery code. Wherever a vault ends up without one (creation, removing
+  the passphrase, a rotation that drops it) the UI warns that passkeys only work on their
+  hostname and that losing them loses every file, which a `vault.json` backup cannot fix.
+  New passphrases can be generated (`vault-passphrase`: 25 symbols from a 32-symbol
+  alphabet without look-alikes, drawn with rejection sampling, 125 bits) and copied.
+- **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
+  `evalByCredential` for every registered credential unlocks; registration refuses
+  authenticators without PRF.
+- **Fresh unlock.** Flows that wrap the vault key again (adding a passkey or passphrase,
+  rotation, slot removal, restoring a backup) need the raw key, which the session never
+  holds, so they unwrap a slot again: one prompt for every passkey of this hostname or the
+  passphrase (`FreshUnlockFields`, `openFreshSlots`). Only the passkeys' non-extractable
+  KEKs wait in React state; the raw key exists only while the flow runs. A restore opens
+  the backup's own slots. Rotation keeps only slots opened in the dialog: every kept
+  passkey is confirmed with its own prompt (the first confirmation is also the fresh
+  unlock, so a single-passkey vault rotates with one prompt), a kept passphrase is typed,
+  and anything unconfirmed is removed after a consent that names it.
+- **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
+  (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice
+  where it is optional) and scan the connected devices' default directories for encrypted files
+  with the file search, grouping them by generation and offering rewrap and re-encryption.
+
+## Encrypted files
+
+Files ending in `.redoorencrypted` are stored encrypted on devices. The user opens, edits,
+uploads and downloads them through redoor: the browser unwraps the file key FK with the
+vault (see "Vault") and sends it with the request in the `Redoor-Vault-Key` header (or a JSON
+or form field), never in a URL, and the server encrypts and decrypts the content as a stream.
+FK is random and new for every encryption; the header stores it wrapped with the current
+generation.
+
+**Object kinds.** A header's `kind` says what the payload is: `file` for user files on
+devices, `ssh-key` for managed SSH private keys stored on the server. The browser binds the
+kind into the file key wrap's associated data, so a user file's key can never be presented
+as an SSH key's and vice versa. `file` headers have no context; `ssh-key` headers carry
+exactly `device_id` and `public_key`, covered by the header MAC.
 
 ### File format
 
@@ -2921,8 +3023,8 @@ the sizes are computable in both directions, so `Content-Length` and progress ke
 
 ### Requests
 
-`http/vault` serves the vault itself and `http/vault_files` the files, both thin over the
-store and the existing `OutputStream` and `AgentUpload` services.
+`http/vault_files` serves the files, thin over the vault store and the existing
+`OutputStream` and `AgentUpload` services.
 
 - **Reads** (`header`, `read`, the form-`POST` `download`): `MoveMetadata` gives the file's
   identity, a `RawDownload` pinned to that identity streams it, and `VaultPreamble::read`
@@ -2948,54 +3050,8 @@ store and the existing `OutputStream` and `AgentUpload` services.
   read keys from `/proc/<pid>/mem` or attach a debugger. macOS has no equivalent that keeps
   crash reporting, so there a same-user process remains a risk while a request decrypts.
 
-### Browser vault
+### Encrypted files in the browser
 
-`ui/src/vault/` holds the browser side; nothing in it is React except the components that use
-it.
-
-- `vault-crypto` (WebCrypto, HKDF, Argon2id through `hash-wasm`) and `vault-keys` (creating,
-  unlocking, the chain walk, rotation and destroy requests) are pure functions, so the
-  integration tests run the same key handling as the UI.
-- **`VaultSession`** (router context `vault`) is the page's lock state. It holds the
-  non-extractable keys of every reachable generation, shares them with the other tabs over a
-  `BroadcastChannel`, and locks after the idle time picked in the unlock dialog (15 minutes
-  by default, up to a week, or no idle lock; capped so one `setTimeout` can wait for it).
-  Using the vault (`requestUnlock`, file reads) restarts the idle timer in every tab, and a
-  tab that joins later gets only the remaining time. The one select also decides where the
-  keys live: 15 minutes keeps them in open tabs only, while every longer choice also keeps
-  them in IndexedDB together with the choice and the last use (written at most once a
-  minute, and only onto a record that still exists, so a lock in another tab is never
-  undone), so a reload restores them with only the remaining idle time. The idle lock of
-  kept keys is enforced by page code only: with no tab open nothing runs, so expired keys
-  stay on disk until the next page load deletes them, which does not protect a copied
-  browser profile; the dialog says so. On load, kept keys of another generation than the
-  server's current one are deleted, because the vault was rotated elsewhere; a rotation in
-  this tab locks every other tab, replaces kept keys with the new ones (or deletes them) and
-  keeps this tab's lock choice. "Lock now" deletes the
-  kept copy before it locks, so a reload cannot undo it. Logging out locks the same way
-  before it ends the session, so the next user of a shared browser finds the vault locked.
-- Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while
-  unlocked and otherwise opens the one `VaultDialog` in the app shell (create with a passkey,
-  a passphrase or both; unlock with one prompt for every passkey of this hostname or the
-  passphrase). The editor, uploads, downloads, file creation and the settings page share it.
-- **Passwordless vaults.** The passphrase is optional and is the user's recovery path; there
-  is no separate recovery code. Wherever a vault ends up without one (creation, removing
-  the passphrase, a rotation that drops it) the UI warns that passkeys only work on their
-  hostname and that losing them loses every file, which a `vault.json` backup cannot fix.
-  New passphrases can be generated (`vault-passphrase`: 25 symbols from a 32-symbol
-  alphabet without look-alikes, drawn with rejection sampling, 125 bits) and copied.
-- **Passkeys** use the WebAuthn PRF extension (`vault-passkeys`): one `get` with
-  `evalByCredential` for every registered credential unlocks; registration refuses
-  authenticators without PRF.
-- **Fresh unlock.** Flows that wrap the vault key again (adding a passkey or passphrase,
-  rotation, slot removal, restoring a backup) need the raw key, which the session never
-  holds, so they unwrap a slot again: one prompt for every passkey of this hostname or the
-  passphrase (`FreshUnlockFields`, `openFreshSlots`). Only the passkeys' non-extractable
-  KEKs wait in React state; the raw key exists only while the flow runs. A restore opens
-  the backup's own slots. Rotation keeps only slots opened in the dialog: every kept
-  passkey is confirmed with its own prompt (the first confirmation is also the fresh
-  unlock, so a single-passkey vault rotates with one prompt), a kept passphrase is typed,
-  and anything unconfirmed is removed after a consent that names it.
 - **Editor.** A `.redoorencrypted` path opens in the editor even though the agent cannot call
   ciphertext editable. Its content query (`vault-files`) reads the header, unwraps the file
   key and reads the plaintext; it is keyed by the unlocked generation and has `gcTime: 0`,
@@ -3017,10 +3073,6 @@ it.
   encrypted names; the queue keeps the policy and encryption per file and encrypts each with a
   new file key through the vault upload route. "Download decrypted"
   posts a hidden form into a hidden frame, so the browser streams the plaintext to disk.
-- **Settings** (`/settings/vault`) show the slots, generations and backup, run rotations
-  (manual, on slot removal and on passphrase change, each with a "Rotate vault key" choice
-  where it is optional) and scan the connected devices' default directories for encrypted files
-  with the file search, grouping them by generation and offering rewrap and re-encryption.
 
 ## SSH device keys
 
@@ -3525,7 +3577,7 @@ to the scope.
   reachable with a token until someone classifies it.
 - **Session-only routes.** Server and agent configuration, creating SSH or local agents,
   restart, log levels, terminals, log streams, the UI websocket, user state, editor buffers,
-  the vault and every encrypted-file route (`/api/v1/vault/...`,
+  the vault, its device secrets and every encrypted-file route (`/api/v1/vault/...`,
   `/api/v1/agents/{agent}/vault/...`), the SSH key and host key routes
   (`/api/v1/agents/{agent}/ssh-key...`, `/api/v1/agents/{agent}/ssh-host-key...`) and token
   management are never grantable. Tokens and

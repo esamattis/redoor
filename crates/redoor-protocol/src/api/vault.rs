@@ -5,6 +5,8 @@
 //! access token API. The vault document itself is also the backup format, so a backup is
 //! exactly what the server stores.
 
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -306,6 +308,88 @@ pub struct VaultSlotUsedResponse {
     pub updated: bool,
 }
 
+/// How long an unlocked vault stays unlocked without use, picked in the vault dialog.
+///
+/// The server enforces it: the browser keeps the vault key only encrypted with a device
+/// secret that the server hands out within this idle window (see
+/// `POST /api/v1/vault/devices`). A fixed list, so every tab agrees on the choices, and the
+/// longest idle lock stays below the ~24.8 days a browser `setTimeout` can wait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum VaultLockAfter {
+    /// The default, so an unlock without a deliberate pick locks soon.
+    #[serde(rename = "15_minutes")]
+    FifteenMinutes,
+    #[serde(rename = "1_hour")]
+    OneHour,
+    #[serde(rename = "24_hours")]
+    TwentyFourHours,
+    #[serde(rename = "1_week")]
+    OneWeek,
+    /// No idle lock: only "Lock now", sign-out, the end of the login session or a server
+    /// restart lock the vault.
+    #[serde(rename = "never")]
+    Never,
+}
+
+impl VaultLockAfter {
+    /// The idle time after which the vault locks, or `None` when only an explicit lock or the
+    /// end of the login session does.
+    pub const fn idle_duration(self) -> Option<Duration> {
+        const MINUTE: u64 = 60;
+        const HOUR: u64 = 60 * MINUTE;
+        match self {
+            Self::FifteenMinutes => Some(Duration::from_secs(15 * MINUTE)),
+            Self::OneHour => Some(Duration::from_secs(HOUR)),
+            Self::TwentyFourHours => Some(Duration::from_secs(24 * HOUR)),
+            Self::OneWeek => Some(Duration::from_secs(7 * 24 * HOUR)),
+            Self::Never => None,
+        }
+    }
+}
+
+/// `POST /api/v1/vault/devices`: registers this browser's device secret, which the browser
+/// uses to encrypt the vault key it keeps in IndexedDB.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateVaultDeviceRequest {
+    pub lock_after: VaultLockAfter,
+}
+
+/// Answers `POST /api/v1/vault/devices`.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CreateVaultDeviceResponse {
+    /// Random 128-bit id, base64url: the browser's handle on the secret.
+    pub device_id: String,
+    /// 32 random bytes, base64url. Opens nothing by itself; the browser wraps the vault key
+    /// with it and keeps only the wrapped key.
+    pub secret: String,
+    /// Seconds until the secret expires without use, or null for `never`. The server's clock
+    /// decides, so a wrong browser clock does not matter.
+    #[ts(type = "number | null")]
+    pub expires_in_seconds: Option<u64>,
+}
+
+/// Answers `POST /api/v1/vault/devices/{id}/open`: the secret again, for a page load that
+/// restores the vault from IndexedDB.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct OpenVaultDeviceResponse {
+    pub secret: String,
+    #[ts(type = "number | null")]
+    pub expires_in_seconds: Option<u64>,
+}
+
+/// Answers `POST /api/v1/vault/devices/{id}/touch` and `GET /api/v1/vault/devices/{id}`:
+/// the secret still opens, and for how long. Never carries the secret.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct VaultDeviceStatusResponse {
+    #[ts(type = "number | null")]
+    pub expires_in_seconds: Option<u64>,
+}
+
 /// What kind of object an encrypted file holds; the server compares it with what it expects.
 ///
 /// The browser binds the kind into the file key wrap's associated data, so a file key can
@@ -497,6 +581,10 @@ pub enum ApiErrorCode {
     /// A key generation cannot be destroyed while an SSH key still uses it; rewrap the key
     /// first.
     VaultKeyInUse,
+    /// The browser's vault device secret is gone: it expired, was locked, belongs to another
+    /// or an ended login session, or the server restarted. The browser forgets its wrapped
+    /// key and the vault stays locked.
+    VaultDeviceNotFound,
     /// The device does not run systemd, so it has no units to manage.
     SystemdUnsupported,
     /// The user's systemd manager does not run, typically because the user has no session

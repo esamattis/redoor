@@ -194,7 +194,10 @@ async function applyVaultChange(options: {
             await options.api.rotateVault(request);
 
             const next = await options.api.getVaultUnlockMaterial();
-            await options.vault.rotated(await openGenerations(next, rawNext));
+            await options.vault.rotated(
+                await openGenerations(next, rawNext),
+                rawNext,
+            );
         } finally {
             wipe(rawNext);
         }
