@@ -149,20 +149,27 @@ export function useVaultSession() {
 }
 
 /**
- * What the picked lock choice does. Every choice works the same way: the key is kept in this
- * browser wrapped with a secret the server holds, so the server enforces the limit even while
- * no redoor tab is open, and the key only opens for this sign-in.
+ * Says that keeping the key needs both halves, so the user does not take the stored key for
+ * a usable one: this browser keeps it encrypted, and the server keeps the secret that opens
+ * it for this login session only, until the vault locks.
+ */
+const KEPT_KEY_HINT =
+    "The key is kept in this browser, encrypted with a secret that only the server holds for this login session. Both are needed to open it, and the server forgets its secret when the vault locks.";
+
+/**
+ * What the picked lock choice does. Every choice works the same way, so the server enforces
+ * the limit even while no redoor tab is open.
  */
 function lockAfterHint(lockAfter: VaultLockAfter): string {
     if (lockAfter === "never") {
-        return "Stays unlocked until you lock it, sign out, your session ends or the server restarts. The key is kept in this browser, but only opens with this sign-in.";
+        return `Stays unlocked until you lock it, sign out, your session ends or the server restarts. ${KEPT_KEY_HINT}`;
     }
 
     const option = LOCK_AFTER_OPTIONS.find(
         (candidate) => candidate.value === lockAfter,
     );
 
-    return `Locks after ${option?.label ?? lockAfter} without use, when you sign out or your session ends, or when the server restarts. The key is kept in this browser, but only opens with this sign-in.`;
+    return `Locks after ${option?.label ?? lockAfter} without use, when you sign out or your session ends, or when the server restarts. ${KEPT_KEY_HINT}`;
 }
 
 /** How long the vault stays unlocked without use. The default is the shortest choice. */
