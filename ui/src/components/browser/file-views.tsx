@@ -10,10 +10,7 @@ import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { Button } from "#ui/components/button";
 import { useKeepFileOpen } from "#ui/components/browser/open-file-actions";
-import {
-    CodeEditor,
-    type EditorSelection,
-} from "#ui/components/browser/code-editor";
+import { CodeEditor } from "#ui/components/browser/code-editor";
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
@@ -28,7 +25,9 @@ import {
 } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { openSideMenuAtom } from "#ui/side-menu-state";
-import { isTerminalInputTarget } from "#ui/utils/keyboard";
+import { isEditorInputTarget, isTerminalInputTarget } from "#ui/utils/keyboard";
+import { useAgentSearchNavigation } from "#ui/search-navigation";
+import { directorySearchChord } from "#ui/components/browser/editor-context-menu";
 import {
     getOpenFileKey,
     useUserState,
@@ -138,11 +137,106 @@ function useFileSaveShortcut(onSave: () => void) {
         match: (event) =>
             (event.ctrlKey || event.metaKey) &&
             !event.altKey &&
+            // Mod+Shift+S is the editor's repository search, and macOS reports it as "s".
+            !event.shiftKey &&
             event.key === "s" &&
             !event.defaultPrevented &&
             !isTerminalInputTarget(event.target),
         run: onSave,
     });
+}
+
+/**
+ * Searches the editor's selected text in file contents from the file's directory, for the
+ * editor's context menu, the toolbar's actions menu (which phones can reach) and Mod+Shift+S.
+ * The search dialog has its own control for widening the search to the Git repository root,
+ * so starting narrow costs nothing. Returns null for encrypted vault files, which never offer
+ * it: the search runs on the agent, which must never see their plaintext.
+ */
+function useDirectorySelectionSearch(args: {
+    filePath: string;
+    selectedText: string | null;
+    /** False while a preview hides the editor, so the key reaches the browser instead. */
+    enabled: boolean;
+}): (() => boolean) | null {
+    const { updateSearch } = useAgentSearchNavigation();
+    const available = !isVaultPath(args.filePath);
+    const selectedText = args.selectedText;
+
+    /** Reports false without a selection, so the shortcut leaves the key unclaimed. */
+    const search = () => {
+        if (selectedText === null) {
+            return false;
+        }
+
+        // The dialog searches the open file's directory unless an earlier search picked a
+        // folder or the Git root, so those choices are cleared.
+        void updateSearch({
+            q: selectedText,
+            mode: "content",
+            dir: undefined,
+            gitroot: undefined,
+        });
+
+        return true;
+    };
+
+    // Only from inside the editor, since the key acts on the editor's selection.
+    useShortcut(
+        {
+            name: "editor-search-directory",
+            phase: "capture",
+            priority: shortcutPriority.editor,
+            effect: "swallow",
+            match: (event) =>
+                (event.ctrlKey || event.metaKey) &&
+                event.shiftKey &&
+                !event.altKey &&
+                event.key.toLowerCase() === directorySearchChord.key &&
+                !event.defaultPrevented &&
+                isEditorInputTarget(event.target),
+            run: search,
+        },
+        args.enabled && available,
+    );
+
+    return available ? search : null;
+}
+
+/**
+ * Owns the editor's find panel and selection search, which the editor's context menu and the
+ * toolbar's actions menu both offer. The menu actions are null while they cannot run, so the
+ * toolbar can show them disabled.
+ */
+function useEditorSearchActions(args: {
+    filePath: string;
+    hasEditor: boolean;
+    /** A preview hides the editor, its find panel and its selection. */
+    isPreviewShown: boolean;
+}) {
+    const [isOpen, setIsOpen] = React.useState(false);
+    const handleRef = React.useRef<EditorSearchHandle | null>(null);
+
+    const [selectedText, setSelectedText] = React.useState<string | null>(null);
+
+    const searchDirectory = useDirectorySelectionSearch({
+        filePath: args.filePath,
+        selectedText,
+        enabled: !args.isPreviewShown,
+    });
+
+    const isEditorShown = args.hasEditor && !args.isPreviewShown;
+
+    return {
+        isOpen,
+        setIsOpen,
+        handleRef,
+        setSelectedText,
+        searchDirectory,
+        findInFile: isEditorShown ? () => handleRef.current?.open() : null,
+        searchSelection:
+            isEditorShown && selectedText !== null ? searchDirectory : null,
+    };
 }
 
 /**
@@ -215,9 +309,10 @@ function FileEditorSurface(props: {
     onDoubleClick?: () => void;
     onFocus: () => void;
     onSave: () => void;
-    onSelectionChange: (selection: EditorSelection | null) => void;
     onClosePreview: () => void;
     gitGutter: GitGutterSource;
+    onSelectionChange: (selectedText: string | null) => void;
+    onSearchDirectory: (() => boolean) | null;
 }) {
     if (props.isPending) {
         return <p className="p-4 text-sm text-slate-400">Loading file...</p>;
@@ -251,12 +346,13 @@ function FileEditorSurface(props: {
                     onDoubleClick={props.onDoubleClick}
                     onFocus={props.onFocus}
                     onSave={props.onSave}
-                    onSelectionChange={props.onSelectionChange}
                     searchHandleRef={props.searchHandleRef}
                     isSearchOpen={props.isSearchOpen}
                     onSearchOpenChange={props.onSearchOpenChange}
                     captureFindKeys={!props.preview}
                     gitGutter={props.gitGutter}
+                    onSelectionChange={props.onSelectionChange}
+                    onSearchDirectory={props.onSearchDirectory}
                 />
             </div>
             <div
@@ -624,12 +720,6 @@ export function FileEditView(props: FileEditViewProps) {
     const saveMutation = buffer.saveMutation;
     const isDirty = buffer.isDirty;
 
-    const [selection, setSelection] = React.useState<EditorSelection | null>(
-        null,
-    );
-
-    const [isSearchOpen, setIsSearchOpen] = React.useState(false);
-    const searchHandleRef = React.useRef<EditorSearchHandle | null>(null);
     const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
     const isSavingRef = React.useRef(false);
 
@@ -703,6 +793,13 @@ export function FileEditView(props: FileEditViewProps) {
 
     useFileSaveShortcut(handleSave);
 
+    const search = useEditorSearchActions({
+        filePath: props.filePath,
+        // The editor and its find panel exist only once the text loaded.
+        hasEditor: contentQuery.isSuccess && !buffer.vaultFile.isLocked,
+        isPreviewShown,
+    });
+
     const statusMessage = getFileEditorStatus({
         readOnly: buffer.readOnly,
         isVaultLocked: buffer.vaultFile.isLocked,
@@ -739,19 +836,14 @@ export function FileEditView(props: FileEditViewProps) {
                     agent={props.agent}
                     filePath={props.filePath}
                     executable={props.executable === true && !buffer.readOnly}
-                    selection={selection}
                     preview={previewKind === null ? undefined : props.preview}
                     previewKind={previewKind}
-                    isSearchOpen={isSearchOpen}
                     isReloading={contentQuery.isFetching}
                     downloadUrl={props.downloadUrl}
                     isFullWindow={fullWindow.isFullWindow}
                     onSave={handleSave}
-                    onToggleSearch={() => {
-                        if (!searchHandleRef.current?.close()) {
-                            searchHandleRef.current?.open();
-                        }
-                    }}
+                    onFindInFile={search.findInFile}
+                    onSearchDirectory={search.searchSelection}
                     onPreviewChange={
                         previewKind === null ? undefined : props.onPreviewChange
                     }
@@ -813,12 +905,13 @@ export function FileEditView(props: FileEditViewProps) {
                             }
                             onFocus={reloadFile}
                             onSave={handleSave}
-                            onSelectionChange={setSelection}
-                            searchHandleRef={searchHandleRef}
-                            isSearchOpen={isSearchOpen}
-                            onSearchOpenChange={setIsSearchOpen}
+                            searchHandleRef={search.handleRef}
+                            isSearchOpen={search.isOpen}
+                            onSearchOpenChange={search.setIsOpen}
                             onClosePreview={() => props.onPreviewChange(false)}
                             gitGutter={gitGutter}
+                            onSelectionChange={search.setSelectedText}
+                            onSearchDirectory={search.searchDirectory}
                         />
                     )}
                 </div>

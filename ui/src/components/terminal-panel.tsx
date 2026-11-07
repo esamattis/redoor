@@ -1,14 +1,19 @@
 import * as React from "react";
 import { useAtomValue } from "jotai";
+import { ClipboardPaste, Copy, Search } from "lucide-react";
 
 import type { Agent } from "#ui/api-client";
-import { ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { Tooltip } from "#ui/components/tooltip";
-import { ContextMenu } from "#ui/components/context-menu";
+import {
+    ContextMenu,
+    ContextMenuItem,
+    ContextMenuSeparator,
+} from "#ui/components/context-menu";
 import { TerminalTabActions } from "#ui/components/terminal-tabs";
 import { TerminalToolbar } from "#ui/components/terminal-toolbar";
 import { Toast } from "#ui/components/toast";
+import { useAgentSearchNavigation } from "#ui/search-navigation";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { resolvedThemeAtom } from "#ui/theme-state";
 import type {
@@ -19,13 +24,33 @@ import type {
     ActiveTerminalTarget,
     TerminalSessions,
 } from "#ui/terminal/terminal-sessions";
+import { useBrowserLocation } from "#ui/use-browser-location";
 import { useTerminals, useTerminalsSnapshot } from "#ui/use-terminals";
 import { cn } from "#ui/utils/cn";
 import {
+    formatKeyChord,
+    isApplePlatform,
     isEditorInputTarget,
     isPlainKey,
     isUnmodifiedAltKey,
 } from "#ui/utils/keyboard";
+
+/**
+ * The shell owns plain Ctrl+C and Ctrl+V, so other systems copy and paste with Shift added,
+ * while Apple platforms keep Command free for the browser's own clipboard keys.
+ */
+const terminalCopyShortcut = formatKeyChord({
+    mod: true,
+    shift: !isApplePlatform(),
+    key: "c",
+});
+
+/** Pairs with the copy shortcut so the menu shows the chord that works on this platform. */
+const terminalPasteShortcut = formatKeyChord({
+    mod: true,
+    shift: !isApplePlatform(),
+    key: "v",
+});
 
 /**
  * Registers the open-terminal shortcuts: `t` outside text entry, and Alt+t from the editor,
@@ -138,6 +163,54 @@ export function TerminalPanel(props: {
 }
 
 /**
+ * Searches text selected in a terminal from the directory open in the file browser, through
+ * the page's own search dialog. The search is only offered while the file browser shows the
+ * terminal's device: other views have no directory to start from, and a terminal of another
+ * device would otherwise search the wrong machine.
+ */
+function useTerminalSelectionSearch(tab: TerminalTabSnapshot) {
+    const { updateSearch } = useAgentSearchNavigation();
+    const browser = useBrowserLocation();
+    const showsTerminalDevice = browser?.agentId === tab.agent.id;
+
+    /**
+     * Content search matches one line at a time, so a query spanning lines could never
+     * match; the trim drops the line breaks a terminal selection tends to pick up.
+     */
+    const queryFrom = (text: string) => {
+        const query = text.trim();
+
+        return !showsTerminalDevice || query === "" || query.includes("\n")
+            ? null
+            : query;
+    };
+
+    return {
+        /** Tells the menu why the search is off when it is the page, not the selection. */
+        tooltip: showsTerminalDevice
+            ? "Search the selected text in file contents"
+            : "Open this device in the file browser to search",
+        canSearch: (text: string) => queryFrom(text) !== null,
+        search: (text: string) => {
+            const query = queryFrom(text);
+
+            if (query === null) {
+                return;
+            }
+
+            // Clears any earlier folder or Git root choice, so the search starts from the
+            // directory on screen.
+            void updateSearch({
+                q: query,
+                mode: "content",
+                dir: undefined,
+                gitroot: undefined,
+            });
+        },
+    };
+}
+
+/**
  * Hosts one shell's element in the page. The session owns the emulator and the socket, so
  * this view only attaches and detaches the element, retries focusing after renders, and
  * offers the clipboard menu.
@@ -236,6 +309,8 @@ function TerminalView(props: {
         }
     };
 
+    const selectionSearch = useTerminalSelectionSearch(props.tab);
+
     /** Sends sanitized clipboard text with the shell's requested paste framing. */
     const pasteClipboard = async () => {
         if (!session.isInitialized) {
@@ -278,23 +353,49 @@ function TerminalView(props: {
             >
                 {(close) => (
                     <>
-                        <Tooltip content="Copy terminal selection (Ctrl+Shift+C or ⌘C)">
-                            <ActionMenuButton
+                        <Tooltip
+                            content={`Copy terminal selection (${terminalCopyShortcut})`}
+                        >
+                            <ContextMenuItem
+                                icon={<Copy className="h-4 w-4" />}
+                                shortcut={terminalCopyShortcut}
                                 disabled={!contextMenu?.text}
                                 onClick={() => {
                                     void copySelection().finally(close);
                                 }}
                             >
                                 Copy
-                            </ActionMenuButton>
+                            </ContextMenuItem>
                         </Tooltip>
-                        <ActionMenuButton
+                        <ContextMenuItem
+                            icon={<ClipboardPaste className="h-4 w-4" />}
+                            shortcut={terminalPasteShortcut}
                             onClick={() => {
                                 void pasteClipboard().finally(close);
                             }}
                         >
                             Paste
-                        </ActionMenuButton>
+                        </ContextMenuItem>
+                        <ContextMenuSeparator />
+                        <Tooltip content={selectionSearch.tooltip}>
+                            <ContextMenuItem
+                                icon={<Search className="h-4 w-4" />}
+                                disabled={
+                                    !selectionSearch.canSearch(
+                                        contextMenu?.text ?? "",
+                                    )
+                                }
+                                onClick={() => {
+                                    // No refocus: the search dialog takes the keyboard.
+                                    setContextMenu(null);
+                                    selectionSearch.search(
+                                        contextMenu?.text ?? "",
+                                    );
+                                }}
+                            >
+                                Search in files
+                            </ContextMenuItem>
+                        </Tooltip>
                     </>
                 )}
             </ContextMenu>

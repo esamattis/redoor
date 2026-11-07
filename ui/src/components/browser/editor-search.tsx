@@ -14,6 +14,7 @@ import {
     Replace,
     ReplaceAll,
     SlidersHorizontal,
+    X,
 } from "lucide-react";
 import { Checkbox } from "#ui/components/checkbox";
 import { Button } from "#ui/components/button";
@@ -256,6 +257,9 @@ export function EditorSearch(props: {
                             applyQuery(query);
                             replaceAll(props.view);
                         }}
+                        onClose={() => {
+                            closeSearch();
+                        }}
                     />
                     {advanced && (
                         <SearchOptions
@@ -356,6 +360,7 @@ function SearchReplaceFields(props: {
     onFindPrevious: () => void;
     onReplaceNext: () => void;
     onReplaceAll: () => void;
+    onClose: () => void;
 }) {
     return (
         <div className="space-y-2">
@@ -427,6 +432,15 @@ function SearchReplaceFields(props: {
                           ? props.matchCount
                           : "Invalid regular expression"}
                 </span>
+                {/* The toolbar has no search toggle and phones have no Escape key, so the
+                    panel carries its own way out. */}
+                <SearchActionButton
+                    label="Close search"
+                    tooltip="Close search (Esc)"
+                    icon={<X className="h-4 w-4" aria-hidden="true" />}
+                    disabled={false}
+                    onClick={props.onClose}
+                />
             </div>
             {props.advanced && props.editable && (
                 <div className="flex items-center gap-2">

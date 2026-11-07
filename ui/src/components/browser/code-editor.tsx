@@ -3,6 +3,7 @@ import type { EditorState } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { getRouteApi, useRouterState } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
+import { EditorContextMenu } from "#ui/components/browser/editor-context-menu";
 import {
     EditorSearch,
     type EditorSearchHandle,
@@ -18,12 +19,6 @@ import type { OpenFileReveal } from "#ui/user-state";
 import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
 
 const rootRouteApi = getRouteApi("__root__");
-
-/** Carries only the editor selection details needed by actions outside CodeMirror. */
-export type EditorSelection = {
-    text: string;
-    startLine: number;
-};
 
 /**
  * Reclaims editor focus from an active shell with Alt-e, and drops a pending delayed
@@ -84,18 +79,13 @@ function useFocusEditorShortcut(view: EditorView | null) {
     );
 }
 
-/** Reads the current range so chrome and tests can follow the editor selection. */
-function editorSelectionFromState(state: EditorState): EditorSelection | null {
+/** Reads the main selection's text, which the selection actions outside the editor act on. */
+function selectedTextFromState(state: EditorState): string | null {
     const selection = state.selection.main;
 
-    if (selection.empty) {
-        return null;
-    }
-
-    return {
-        text: state.sliceDoc(selection.from, selection.to),
-        startLine: state.doc.lineAt(selection.from).number,
-    };
+    return selection.empty
+        ? null
+        : state.sliceDoc(selection.from, selection.to);
 }
 
 /** The props the shared view reads when a file is shown, kept in a ref between renders. */
@@ -126,7 +116,6 @@ type CodeEditorProps = {
      * click still selects a word as usual, so reading is never interrupted.
      */
     onDoubleClick?: () => void;
-    onSelectionChange: (selection: EditorSelection | null) => void;
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
     isSearchOpen: boolean;
     onSearchOpenChange: (open: boolean) => void;
@@ -134,6 +123,10 @@ type CodeEditorProps = {
     captureFindKeys: boolean;
     /** What the Git gutter shows; a stable value, since a new one recomputes the marks. */
     gitGutter: GitGutterSource;
+    /** Reports the selected text, which the toolbar's selection search acts on. */
+    onSelectionChange: (selectedText: string | null) => void;
+    /** Searches the selection from the file's directory; null when the file must not be. */
+    onSearchDirectory: (() => boolean) | null;
 };
 
 /**
@@ -161,6 +154,11 @@ export function CodeEditor(props: CodeEditorProps) {
     const [documentRevision, setDocumentRevision] = React.useState(0);
     const [caretLine, setCaretLine] = React.useState<number | null>(null);
     const [selectedText, setSelectedText] = React.useState<string | null>(null);
+
+    const [contextMenuPosition, setContextMenuPosition] = React.useState<{
+        x: number;
+        y: number;
+    } | null>(null);
 
     const settings = {
         vimMode: props.vimMode,
@@ -193,9 +191,9 @@ export function CodeEditor(props: CodeEditorProps) {
     const syncFromState = React.useCallback((state: EditorState) => {
         setDocumentRevision((revision) => revision + 1);
         setCaretLine(state.doc.lineAt(state.selection.main.head).number);
-        const nextSelection = editorSelectionFromState(state);
-        setSelectedText(nextSelection?.text ?? null);
-        propsRef.current.onSelectionChange(nextSelection);
+        const nextSelectedText = selectedTextFromState(state);
+        setSelectedText(nextSelectedText);
+        propsRef.current.onSelectionChange(nextSelectedText);
     }, []);
 
     // The workspace calls these for whichever file is shown, so they read the latest props.
@@ -305,6 +303,18 @@ export function CodeEditor(props: CodeEditorProps) {
                 role="region"
                 aria-label="Editor viewport"
                 onDoubleClick={props.onDoubleClick}
+                onContextMenu={(event) => {
+                    // Shift keeps the browser menu reachable, as in the terminal.
+                    if (event.shiftKey || view === null) {
+                        return;
+                    }
+
+                    event.preventDefault();
+                    setContextMenuPosition({
+                        x: event.clientX,
+                        y: event.clientY,
+                    });
+                }}
                 className="relative min-h-0 flex-1 overflow-hidden after:pointer-events-none after:absolute after:inset-0 after:z-20 after:border after:border-transparent focus-within:after:border-blue-500"
             >
                 {caretLine === null ? null : (
@@ -319,6 +329,17 @@ export function CodeEditor(props: CodeEditorProps) {
                 )}
                 <div ref={containerRef} className="h-full min-h-0" />
             </div>
+            {view === null ? null : (
+                <EditorContextMenu
+                    view={view}
+                    filePath={props.filePath}
+                    editable={props.editable}
+                    position={contextMenuPosition}
+                    onFindInFile={() => props.searchHandleRef.current?.open()}
+                    onSearchDirectory={props.onSearchDirectory}
+                    onClose={() => setContextMenuPosition(null)}
+                />
+            )}
         </div>
     );
 }

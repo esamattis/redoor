@@ -25,6 +25,18 @@ async function fillEditor(editor: Locator, text: string) {
     await editor.fill(text);
 }
 
+/**
+ * Opens the editor's right-click menu. The event is dispatched rather than clicked, because a
+ * real right-click also lets the browser move the caret and would disturb the selection.
+ */
+async function openEditorContextMenu(page: Page, editor: Locator) {
+    await editor.dispatchEvent("contextmenu", { clientX: 40, clientY: 40 });
+    const menu = page.getByRole("dialog", { name: "Editor context menu" });
+    await expect(menu).toBeVisible();
+
+    return menu;
+}
+
 /** Opens the editor overflow so secondary actions can be exercised by accessible name. */
 async function openEditorActions(page: Page) {
     await page.getByRole("button", { name: "Editor actions" }).click();
@@ -85,41 +97,6 @@ test.describe.serial("File Edit View", () => {
         await expect(
             page.getByRole("button", { name: "Save file" }),
         ).toHaveText("");
-
-        const saveBox = await page
-            .getByRole("button", { name: "Save file" })
-            .boundingBox();
-
-        const copyReferenceButton = page.getByRole("button", {
-            name: "Copy selection with file reference",
-        });
-
-        const searchSelectionButton = page.getByRole("button", {
-            name: "Search selected text",
-        });
-
-        const copyReferenceBox = await copyReferenceButton.boundingBox();
-        const searchSelectionBox = await searchSelectionButton.boundingBox();
-        expect(saveBox).not.toBeNull();
-        expect(copyReferenceBox).not.toBeNull();
-        expect(searchSelectionBox).not.toBeNull();
-
-        if (
-            saveBox === null ||
-            copyReferenceBox === null ||
-            searchSelectionBox === null
-        ) {
-            throw new Error("expected editor action measurements");
-        }
-
-        // Copy reference follows Save and stays unavailable without selected editor text.
-        expect(copyReferenceBox.x).toBeGreaterThan(saveBox.x);
-        // Search selection follows Copy reference so the same selection can be grepped from git root.
-        expect(searchSelectionBox.x).toBeGreaterThan(copyReferenceBox.x);
-        await expect(copyReferenceButton).toBeDisabled();
-        await expect(searchSelectionButton).toBeDisabled();
-        await expect(copyReferenceButton).toHaveText("");
-        await expect(searchSelectionButton).toHaveText("");
         const editorActions = await openEditorActions(page);
         await expect(
             editorActions.getByRole("button", { name: "Reload", exact: true }),
@@ -769,6 +746,104 @@ test.describe.serial("File Edit View", () => {
         await expect(editor).toBeFocused();
     });
 
+    test("should cut, paste and toggle comments from the editor context menu", async ({
+        page,
+        context,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "context-menu.js");
+        await fs.writeFile(
+            filePath,
+            `const a = 1;
+const b = 2;`,
+        );
+        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
+            origin: WEB_BASE_URL,
+        });
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expectEditorText(editor, "const a = 1;const b = 2;");
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+Home");
+
+        let menu = await openEditorContextMenu(page, editor);
+        // Without a selection there is nothing to copy or cut.
+        await expect(
+            menu.getByRole("button", { name: "Cut", exact: true }),
+        ).toBeDisabled();
+        await expect(
+            menu.getByRole("button", { name: "Copy", exact: true }),
+        ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(menu).toHaveCount(0);
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+Home");
+        await page.keyboard.press("Shift+End");
+        menu = await openEditorContextMenu(page, editor);
+        await menu.getByRole("button", { name: "Cut", exact: true }).click();
+        // Cut removes the selected line text from the buffer.
+        await expectEditorText(editor, "const b = 2;");
+        // Cut puts the removed text on the clipboard so it can be pasted elsewhere.
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+            .toBe("const a = 1;");
+
+        // The menu hands focus back, so the keyboard keeps editing at the caret.
+        await page.keyboard.press("ControlOrMeta+End");
+        await page.keyboard.press("Enter");
+        menu = await openEditorContextMenu(page, editor);
+        await menu.getByRole("button", { name: "Paste", exact: true }).click();
+        // Paste inserts the clipboard text at the caret.
+        await expectEditorText(editor, "const b = 2;const a = 1;");
+
+        // The caret stays on the pasted last line, which the comment toggles.
+        menu = await openEditorContextMenu(page, editor);
+        await menu
+            .getByRole("button", { name: "Toggle comment", exact: true })
+            .click();
+        // The comment uses the JavaScript line comment syntax of the file's language.
+        await expectEditorText(editor, "const b = 2;// const a = 1;");
+
+        menu = await openEditorContextMenu(page, editor);
+        await menu
+            .getByRole("button", { name: "Toggle comment", exact: true })
+            .click();
+        // A second toggle removes the comment again.
+        await expectEditorText(editor, "const b = 2;const a = 1;");
+
+        await page.keyboard.press("Home");
+        await page.keyboard.press("Shift+End");
+        menu = await openEditorContextMenu(page, editor);
+        await menu
+            .getByRole("button", { name: "Find in file", exact: true })
+            .click();
+        // Find in file opens the editor's own find panel with the one-line selection as its query.
+        await expect(
+            page.getByRole("searchbox", { name: "Find in file" }),
+        ).toHaveValue("const a = 1;");
+        await page.keyboard.press("Escape");
+        await expect(
+            page.getByRole("searchbox", { name: "Find in file" }),
+        ).toHaveCount(0);
+
+        menu = await openEditorContextMenu(page, editor);
+        // The menu teaches the keyboard chord for the comment toggle.
+        await expect(
+            menu.getByRole("button", { name: "Toggle comment", exact: true }),
+        ).toContainText("Alt+C");
+        await page.keyboard.press("Escape");
+        await expect(menu).toHaveCount(0);
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+End");
+        await page.keyboard.press("Alt+c");
+        // Alt+C toggles the comment like the menu item does, instead of typing a character.
+        await expectEditorText(editor, "const b = 2;// const a = 1;");
+    });
+
     test("should copy selected text with its file and starting line reference", async ({
         page,
         context,
@@ -789,10 +864,6 @@ gamma`,
 
         const editor = page.getByLabel("File editor", { exact: true });
 
-        const copyReferenceButton = page.getByRole("button", {
-            name: "Copy selection with file reference",
-        });
-
         // CodeMirror renders line breaks between sibling elements, so DOM text is concatenated.
         await expect(editor).toHaveText("alphabetagamma");
         await editor.focus();
@@ -802,12 +873,18 @@ gamma`,
         await page.keyboard.press("Shift+ArrowDown");
         await page.keyboard.press("Shift+End");
 
-        // A non-empty CodeMirror selection enables the adjacent reference action.
+        const menu = await openEditorContextMenu(page, editor);
+
+        const copyReferenceButton = menu.getByRole("button", {
+            name: "Copy with file reference",
+        });
+
+        // A non-empty CodeMirror selection enables the reference action.
         await expect(copyReferenceButton).toBeEnabled();
         await copyReferenceButton.hover();
         // The tooltip explains both the copied syntax and why it is useful with AI agents.
         await expect(page.getByRole("tooltip")).toHaveText(
-            "Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents.",
+            "Copy as a path#Lline code block for AI prompts",
         );
         await copyReferenceButton.click();
 
@@ -824,7 +901,7 @@ gamma
         );
     });
 
-    test("should search selected editor text from the git repository root", async ({
+    test("should search selected editor text from the file's directory", async ({
         page,
     }) => {
         const filePath = path.join(ctx.testDirPath, "search-selection.txt");
@@ -834,51 +911,141 @@ gamma
         );
 
         const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("search-selection-token");
 
-        const searchSelectionButton = page.getByRole("button", {
-            name: "Search selected text",
+        let menu = await openEditorContextMenu(page, editor);
+
+        let searchDirectoryItem = menu.getByRole("button", {
+            name: "Search in file's directory",
         });
 
-        await expect(editor).toHaveText("search-selection-token");
-        await expect(searchSelectionButton).toBeDisabled();
+        // Without a selection there is no text to search for.
+        await expect(searchDirectoryItem).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(menu).toHaveCount(0);
+
         await editor.focus();
         await page.keyboard.press("ControlOrMeta+a");
-
-        // A non-empty CodeMirror selection enables the adjacent agent content search action.
         await expect(page.getByLabel("Editor selected text")).toHaveText(
             "search-selection-token",
         );
-        await expect(searchSelectionButton).toBeEnabled();
-        await searchSelectionButton.hover();
-        // The tooltip explains that gitroot=true uses the worktree root when one exists.
+
+        menu = await openEditorContextMenu(page, editor);
+
+        searchDirectoryItem = menu.getByRole("button", {
+            name: "Search in file's directory",
+        });
+
+        // A non-empty CodeMirror selection enables the agent content search action.
+        await expect(searchDirectoryItem).toBeEnabled();
+        // The menu teaches the keyboard chord for the same search.
+        await expect(searchDirectoryItem).toContainText("Ctrl+Shift+S");
+        await searchDirectoryItem.hover();
+        // The tooltip says what is searched, which the label leaves out.
         await expect(page.getByRole("tooltip")).toHaveText(
-            "Search the selected text from the git repository root when the file is in a worktree.",
+            "Search the selected text in file contents",
         );
 
         const grepRequest = page.waitForRequest((request) =>
             new URL(request.url()).pathname.includes("/grep-stream/"),
         );
 
-        await searchSelectionButton.click();
+        await searchDirectoryItem.click();
 
         const dialog = page.getByRole("dialog", {
             name: "Search device",
         });
 
-        // The URL-owned dialog must open with the editor selection and git-root scope requested.
+        // The URL-owned dialog must open with the editor selection as a content search.
         await expect(
             dialog.getByRole("searchbox", { name: "Search file contents" }),
         ).toHaveValue("search-selection-token");
         await expect(page).toHaveURL(/[?&]q=search-selection-token/);
         await expect(page).toHaveURL(/[?&]mode=content/);
-        await expect(page).toHaveURL(/[?&]gitroot=true/);
+        // The search starts from the file's directory; the dialog offers the Git root itself.
+        await expect(page).not.toHaveURL(/[?&]gitroot=/);
         const requestBody: unknown = (await grepRequest).postDataJSON();
-        // Agent identity and repository root are carried by the scoped grep URL.
-        expect(new URL((await grepRequest).url()).pathname).toContain(
+        const grepPath = new URL((await grepRequest).url()).pathname;
+        // Agent identity is carried by the scoped grep URL.
+        expect(grepPath).toContain(
             `/api/v1/agents/${encodeURIComponent(ctx.agentId)}/grep-stream/`,
         );
+        // The grep runs in the file's directory, not the checkout above it.
+        expect(decodeURIComponent(grepPath)).toContain(ctx.testDirPath);
         // The grep POST body proves editor selection bypasses the default path mode.
         expect(requestBody).toMatchObject({ query: "search-selection-token" });
+    });
+
+    test("should search the editor selection from the editor actions menu", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "search-actions-menu.txt");
+        await fs.writeFile(filePath, "search-menu-token");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("search-menu-token");
+
+        let actions = await openEditorActions(page);
+
+        // Without a selection there is no text to search for.
+        await expect(
+            actions.getByRole("button", {
+                name: "Search selection in file's directory",
+            }),
+        ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(actions).toHaveCount(0);
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+a");
+        await expect(page.getByLabel("Editor selected text")).toHaveText(
+            "search-menu-token",
+        );
+        actions = await openEditorActions(page);
+        // Phones reach the selection search through this menu, without a right click.
+        await actions
+            .getByRole("button", {
+                name: "Search selection in file's directory",
+            })
+            .click();
+        // The menu opens the same content search as the editor's context menu.
+        await expect(
+            page
+                .getByRole("dialog", { name: "Search device" })
+                .getByRole("searchbox", { name: "Search file contents" }),
+        ).toHaveValue("search-menu-token");
+        await expect(page).not.toHaveURL(/[?&]gitroot=/);
+    });
+
+    test("should search the editor selection from the file's directory with Ctrl+Shift+S", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "search-shortcut.txt");
+        await fs.writeFile(filePath, "search-shortcut-token");
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("search-shortcut-token");
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+a");
+        await expect(page.getByLabel("Editor selected text")).toHaveText(
+            "search-shortcut-token",
+        );
+        await page.keyboard.press("ControlOrMeta+Shift+s");
+
+        // The shortcut opens the same content search as the menu item.
+        await expect(
+            page
+                .getByRole("dialog", { name: "Search device" })
+                .getByRole("searchbox", { name: "Search file contents" }),
+        ).toHaveValue("search-shortcut-token");
+        // Like the menu item, the shortcut starts from the file's directory.
+        await expect(page).not.toHaveURL(/[?&]gitroot=/);
     });
 
     test("should open shell-style files in the file editor", async ({

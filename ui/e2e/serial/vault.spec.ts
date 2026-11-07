@@ -149,10 +149,24 @@ test.describe.serial("Vault", () => {
         await editor.click();
         await editor.fill("API_KEY=very-secret");
         await page.keyboard.press("ControlOrMeta+a");
+        await editor.dispatchEvent("contextmenu", { clientX: 40, clientY: 40 });
+
+        const editorMenu = page.getByRole("dialog", {
+            name: "Editor context menu",
+        });
+
+        // The selection enables copying, so the search below is off for the vault alone.
+        await expect(
+            editorMenu.getByRole("button", { name: "Copy", exact: true }),
+        ).toBeEnabled();
         // Agent-side search would send the decrypted selection to the device.
         await expect(
-            page.getByRole("button", { name: "Search selected text" }),
+            editorMenu.getByRole("button", {
+                name: "Search in file's directory",
+            }),
         ).toBeDisabled();
+        await page.keyboard.press("Escape");
+        await expect(editorMenu).toHaveCount(0);
         await page.getByRole("button", { name: "Save file" }).click();
         // The save went through the encrypted write endpoint.
         await expect(page.getByText("Saved", { exact: true })).toBeVisible();

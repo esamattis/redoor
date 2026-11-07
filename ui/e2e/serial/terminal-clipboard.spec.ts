@@ -162,4 +162,93 @@ test.describe("Terminal clipboard", () => {
             .poll(() => page.evaluate(() => navigator.clipboard.readText()))
             .toBe("retry copy");
     });
+
+    test("searches selected terminal text from the browsed directory", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const terminalHost = page
+            .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
+            .filter({ has: page.locator("textarea") });
+
+        const terminalInput = terminalHost.locator("textarea");
+        await terminalInput.focus();
+        // Octal escapes print the marker without putting it in the echoed command.
+        await terminalInput.pressSequentially(
+            "printf '\\164\\145\\162\\155\\055\\163\\145\\141\\162\\143\\150\\n'",
+        );
+        await terminalInput.press("Enter");
+
+        // Selects only the printed marker, since a search query must be a single line.
+        await expect(async () => {
+            await terminalHost.evaluate((host, marker) => {
+                const walker = document.createTreeWalker(
+                    host,
+                    NodeFilter.SHOW_TEXT,
+                );
+
+                for (
+                    let node = walker.nextNode();
+                    node !== null;
+                    node = walker.nextNode()
+                ) {
+                    const start = node.textContent?.indexOf(marker) ?? -1;
+
+                    if (start === -1) {
+                        continue;
+                    }
+
+                    const range = document.createRange();
+                    range.setStart(node, start);
+                    range.setEnd(node, start + marker.length);
+                    const selection = window.getSelection();
+
+                    if (!selection) {
+                        throw new Error("browser selection is unavailable");
+                    }
+
+                    selection.removeAllRanges();
+                    selection.addRange(range);
+
+                    return;
+                }
+
+                throw new Error("the marker is not rendered yet");
+            }, "term-search");
+        }).toPass();
+
+        await terminalHost.dispatchEvent("contextmenu", {
+            clientX: 12,
+            clientY: 12,
+        });
+
+        const actions = page.getByRole("dialog", { name: "Terminal actions" });
+
+        const searchItem = actions.getByRole("button", {
+            name: "Search in files",
+            exact: true,
+        });
+
+        // A single-line selection on the terminal's own device can be searched.
+        await expect(searchItem).toBeEnabled();
+        await searchItem.click();
+
+        // The page's search dialog opens with the selection as a content search.
+        await expect(
+            page
+                .getByRole("dialog", { name: "Search device" })
+                .getByRole("searchbox", { name: "Search file contents" }),
+        ).toHaveValue("term-search");
+        await expect(page).toHaveURL(/[?&]mode=content/);
+        // The search starts from the browsed directory, not a Git root.
+        await expect(page).not.toHaveURL(/[?&]gitroot=/);
+    });
 });

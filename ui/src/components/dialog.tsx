@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { IconButton } from "#ui/components/icon-button";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
+import { cn } from "#ui/utils/cn";
 import { useFocusTrap } from "#ui/utils/use-focus-trap";
 
 /**
@@ -40,6 +41,11 @@ export type DialogProps = {
     anchorPoint?: { x: number; y: number };
     /** Focuses the non-tooltip panel surface instead of an action when opening. */
     initialFocus?: "panel";
+    /**
+     * Overrides the anchored panel's size and padding, so a pointer context menu can be
+     * denser than the trigger-anchored action menus without changing them.
+     */
+    anchoredPanelClassName?: string;
 };
 
 /** A native dialog in the stack and the control focused in it when a dialog covered it. */
@@ -154,7 +160,10 @@ export function Dialog(props: DialogProps) {
             tabIndex={props.initialFocus === "panel" ? -1 : undefined}
             className={
                 isAnchored
-                    ? "absolute w-56 rounded-xl border border-slate-700 bg-surface p-3 shadow-2xl shadow-black/40"
+                    ? cn(
+                          "absolute w-56 rounded-xl border border-slate-700 bg-surface p-3 shadow-2xl shadow-black/40",
+                          props.anchoredPanelClassName,
+                      )
                     : props.size === "search"
                       ? "min-h-dvh w-full bg-surface p-4 text-left shadow-2xl shadow-black/40 sm:min-h-0 sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
                       : "w-full rounded-xl border border-slate-700 bg-surface p-6 text-left shadow-2xl shadow-black/40"

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -8,6 +8,15 @@ import {
     WEB_BASE_URL,
     type TestContext,
 } from "./helpers";
+
+/** Opens the find panel from the editor actions menu, the route phones have to it. */
+async function findInFileFromMenu(page: Page) {
+    await page.getByRole("button", { name: "Editor actions" }).click();
+    await page
+        .getByRole("dialog", { name: "Editor actions" })
+        .getByRole("button", { name: "Find in file", exact: true })
+        .click();
+}
 
 test.describe.serial("File editor search and replace", () => {
     let ctx: TestContext;
@@ -20,7 +29,9 @@ test.describe.serial("File editor search and replace", () => {
         await teardownTestDir(ctx.testDirPath);
     });
 
-    test("should toggle search from the editor actions", async ({ page }) => {
+    test("should open search from the editor actions menu", async ({
+        page,
+    }) => {
         const filePath = path.join(ctx.testDirPath, "title-open.txt");
         await fs.writeFile(filePath, "alpha foo beta foo gamma");
         await page.goto(
@@ -33,11 +44,7 @@ test.describe.serial("File editor search and replace", () => {
         // Search stays out of the editor until its dedicated action is used.
         await expect(page.getByLabel("Find in file")).toBeHidden();
 
-        const toggle = page.getByRole("button", {
-            name: "Toggle search and replace",
-        });
-
-        await toggle.click();
+        await findInFileFromMenu(page);
         await expect(page.getByLabel("Find in file")).toBeVisible();
         await expect(
             page.getByRole("region", { name: "Search & Replace" }),
@@ -97,9 +104,12 @@ test.describe.serial("File editor search and replace", () => {
             page.getByRole("button", { name: "Match case", exact: true }),
         ).toBeHidden();
         await advanced.click();
-        await toggle.click();
+        // The panel's own close button is the way out on phones, which lack Escape.
+        await page
+            .getByRole("button", { name: "Close search", exact: true })
+            .click();
         await expect(page.getByLabel("Find in file")).toBeHidden();
-        await toggle.click();
+        await findInFileFromMenu(page);
         // Reopening starts in compact search mode even if replace was enabled before closing.
         await expect(advanced).toHaveAttribute("aria-pressed", "false");
         await expect(page.getByLabel("Replace with")).toBeHidden();
@@ -144,9 +154,7 @@ test.describe.serial("File editor search and replace", () => {
         );
         const editor = page.getByLabel("File editor", { exact: true });
         await expect(editor).toBeVisible();
-        await page
-            .getByRole("button", { name: "Toggle search and replace" })
-            .click();
+        await findInFileFromMenu(page);
         const findInput = page.getByLabel("Find in file");
         await findInput.fill("");
         await editor.click();
@@ -215,9 +223,7 @@ test.describe.serial("File editor search and replace", () => {
         );
     });
 
-    test("should expose the search shortcut on the editor action", async ({
-        page,
-    }) => {
+    test("should explain the search panel controls", async ({ page }) => {
         const filePath = path.join(ctx.testDirPath, "tooltip.txt");
         await fs.writeFile(filePath, "content");
         await page.goto(
@@ -228,23 +234,16 @@ test.describe.serial("File editor search and replace", () => {
             page.getByLabel("File editor", { exact: true }),
         ).toBeVisible();
 
-        const searchToggle = page.getByRole("button", {
-            name: "Toggle search and replace",
-        });
-
-        await searchToggle.hover();
-        // The action tooltip advertises the keyboard path to the same panel.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Search and replace in the file (Ctrl+F)",
-        );
-        await searchToggle.click();
+        await findInFileFromMenu(page);
         await expect(
             page.getByRole("region", { name: "Search & Replace" }),
         ).toBeVisible();
-        await searchToggle.hover();
-        // Once the panel is open, the same control must name closing it.
+        await page
+            .getByRole("button", { name: "Close search", exact: true })
+            .hover();
+        // The close tooltip advertises the keyboard path out of the panel.
         await expect(page.getByRole("tooltip")).toHaveText(
-            "Close search and replace (Ctrl+F)",
+            "Close search (Esc)",
         );
         await page
             .getByRole("button", { name: "Advanced", exact: true })

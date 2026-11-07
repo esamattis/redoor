@@ -9,6 +9,7 @@ import {
     history,
     historyKeymap,
     indentWithTab,
+    toggleComment,
 } from "@codemirror/commands";
 import {
     bracketMatching,
@@ -53,6 +54,7 @@ import {
     type GitGutterSource,
 } from "./git-gutter";
 import { languageFromFileName } from "#ui/utils/editor-language";
+import { isUnmodifiedAltKey, type KeyChord } from "#ui/utils/keyboard";
 import { getBaseName } from "#ui/utils/path";
 
 /**
@@ -321,6 +323,36 @@ export class EditorConfiguration {
 }
 
 /**
+ * Toggles line comments with Alt+C (⌥C on Apple keyboards). Ctrl+/ needs two hands on many
+ * layouts, where the slash sits behind Shift. The context menu reads this chord for its hint.
+ */
+export const toggleCommentChord: KeyChord = { alt: true, key: "c" };
+
+/**
+ * Runs the comment toggle for `toggleCommentChord`. It matches the physical key rather than
+ * using a keymap entry, because on macOS Option+C types "ç" and CodeMirror deliberately
+ * skips its key-code fallback for Option chords there, so an `Alt-c` binding never fires.
+ * Highest precedence keeps Vim's own keydown handling from consuming the chord first.
+ */
+const toggleCommentOnChord = Prec.highest(
+    EditorView.domEventHandlers({
+        keydown: (event, view) => {
+            if (
+                !isUnmodifiedAltKey(event, toggleCommentChord.key) ||
+                !view.state.facet(EditorView.editable)
+            ) {
+                return false;
+            }
+
+            event.preventDefault();
+            toggleComment(view);
+
+            return true;
+        },
+    }),
+);
+
+/**
  * CodeMirror's usual editing features, matching what the former React wrapper set up, but
  * without the search keymap: the find keys belong to the application's own search panel.
  */
@@ -342,6 +374,7 @@ function basicSetup(): Extension[] {
         rectangularSelection(),
         highlightActiveLine(),
         highlightSelectionMatches(),
+        toggleCommentOnChord,
         keymap.of([
             ...closeBracketsKeymap,
             ...defaultKeymap,

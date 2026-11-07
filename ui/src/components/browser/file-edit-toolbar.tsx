@@ -4,17 +4,15 @@ import {
     useDecryptedDownload,
 } from "#ui/components/vault/decrypted-download-button";
 import { isVaultPath } from "#ui/vault/vault-path";
-import { useMutation } from "@tanstack/react-query";
 import {
-    ClipboardCopy,
     Download,
     LoaderCircle,
     MoreHorizontal,
     PanelLeftOpen,
     RefreshCw,
-    Replace,
-    Save,
     Search,
+    TextSearch,
+    Save,
     ScanText,
     Trash2,
 } from "lucide-react";
@@ -23,7 +21,6 @@ import type { Agent } from "#ui/api-client";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { BookmarkMenuButton } from "#ui/components/browser/bookmark-action";
-import type { EditorSelection } from "#ui/components/browser/code-editor";
 import type { FilePreviewKind } from "#ui/utils/sandboxed-preview-document";
 import { SelectPathMenuButton } from "#ui/components/browser/path-actions";
 import { RunInTerminalButton } from "#ui/components/browser/run-in-terminal-button";
@@ -32,13 +29,10 @@ import { ViewToolbar } from "#ui/components/browser/view-toolbar-slot";
 import { Checkbox } from "#ui/components/checkbox";
 import { FullWindowToggle } from "#ui/components/full-window-toggle";
 import { IconButton } from "#ui/components/icon-button";
-import { Toast } from "#ui/components/toast";
 import { ToggleButton } from "#ui/components/toggle-button";
-import { useAgentSearchNavigation } from "#ui/search-navigation";
 import { openSideMenuAtom, sideMenuDrawerIds } from "#ui/side-menu-state";
 import { useUserState } from "#ui/user-state";
 import { cn } from "#ui/utils/cn";
-import { getErrorMessage } from "#ui/utils/error";
 
 /** Toolbar buttons share one size so the row reads as a single quiet strip. */
 const toolbarButtonClassName = "h-8 w-8 rounded-md p-0";
@@ -70,35 +64,39 @@ function FileEditActions(props: {
         name: string;
         entryType: "file";
     };
-    selection: EditorSelection | null;
     /** Offers running the file in a terminal; the caller already excludes Git revisions. */
     executable: boolean;
     agent: Agent;
     preview?: boolean;
     previewKind: FilePreviewKind | null;
-    isSearchOpen: boolean;
     onSave: () => void;
-    onToggleSearch: () => void;
     onPreviewChange?: (preview: boolean) => void;
 }) {
-    const { updateSearch } = useAgentSearchNavigation();
-
-    const copyMutation = useMutation({
-        mutationFn: async () => {
-            if (props.selection === null) {
-                throw new Error("Select text in the editor before copying");
-            }
-
-            const reference = `\`\`\`${props.bookmark.path}#L${props.selection.startLine}
-${props.selection.text}
-\`\`\``;
-
-            await navigator.clipboard.writeText(reference);
-        },
-    });
+    const showsPreviewToggle =
+        props.preview !== undefined &&
+        props.previewKind !== null &&
+        props.onPreviewChange !== undefined;
 
     return (
         <>
+            {/* Leads the group, so the save state reads as a label for the editor's actions
+                instead of splitting them from the window controls. */}
+            {props.statusMessage ? (
+                <span
+                    role="status"
+                    aria-label="File edit status"
+                    aria-live="polite"
+                    className={`whitespace-nowrap px-2 text-xs ${
+                        props.hasError
+                            ? "text-red-300"
+                            : props.isSaved
+                              ? "text-emerald-300"
+                              : "text-slate-400"
+                    }`}
+                >
+                    {props.statusMessage}
+                </span>
+            ) : null}
             {props.readOnly ? null : (
                 <Button
                     tooltip="Save file (Ctrl+S)"
@@ -128,10 +126,12 @@ ${props.selection.text}
                     className={toolbarButtonClassName}
                 />
             ) : null}
-            {props.readOnly ? null : <ToolbarDivider />}
-            {props.preview !== undefined &&
-            props.previewKind !== null &&
-            props.onPreviewChange ? (
+            {/* Only between the buttons and the preview toggle; alone it would sit beside the
+                divider in front of the window controls. */}
+            {!props.readOnly && showsPreviewToggle ? <ToolbarDivider /> : null}
+            {showsPreviewToggle &&
+            props.preview !== undefined &&
+            props.previewKind !== null ? (
                 <ToggleButton
                     pressed={props.preview}
                     label="Preview"
@@ -146,89 +146,6 @@ ${props.selection.text}
                 >
                     <ScanText className="h-4 w-4" aria-hidden="true" />
                 </ToggleButton>
-            ) : null}
-            <ToggleButton
-                pressed={props.isSearchOpen}
-                label="Toggle search and replace"
-                tooltip={
-                    props.isSearchOpen
-                        ? "Close search and replace (Ctrl+F)"
-                        : "Search and replace in the file (Ctrl+F)"
-                }
-                onClick={props.onToggleSearch}
-                variant="subtle"
-                className={toolbarToggleClassName}
-            >
-                <Replace className="h-4 w-4" aria-hidden="true" />
-            </ToggleButton>
-            <Button
-                tooltip="Copy the selection as a fenced code block headed by path#Lline, ready to reference this file in prompts to AI agents."
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label="Copy selection with file reference"
-                disabled={props.selection === null}
-                isLoading={copyMutation.isPending}
-                onClick={() => copyMutation.mutate()}
-                className={toolbarButtonClassName}
-            >
-                <ClipboardCopy className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            <Button
-                tooltip="Search the selected text from the git repository root when the file is in a worktree."
-                type="button"
-                variant="ghost"
-                size="sm"
-                aria-label="Search selected text"
-                // The search runs on the agent, which must never see an encrypted file's plaintext.
-                disabled={
-                    props.selection === null || isVaultPath(props.bookmark.path)
-                }
-                onClick={() => {
-                    if (props.selection === null) {
-                        return;
-                    }
-
-                    void updateSearch({
-                        q: props.selection.text,
-                        mode: "content",
-                        gitroot: true,
-                    });
-                }}
-                className={toolbarButtonClassName}
-            >
-                <Search className="h-4 w-4" aria-hidden="true" />
-            </Button>
-            {props.statusMessage ? (
-                <span
-                    role="status"
-                    aria-label="File edit status"
-                    aria-live="polite"
-                    className={`whitespace-nowrap px-2 text-xs ${
-                        props.hasError
-                            ? "text-red-300"
-                            : props.isSaved
-                              ? "text-emerald-300"
-                              : "text-slate-400"
-                    }`}
-                >
-                    {props.statusMessage}
-                </span>
-            ) : null}
-            {copyMutation.isSuccess || copyMutation.isError ? (
-                <Toast
-                    tone={copyMutation.isError ? "error" : "success"}
-                    icon={<ClipboardCopy className="h-4 w-4" />}
-                    dismissAriaLabel="Dismiss copy reference message"
-                    onDismiss={() => copyMutation.reset()}
-                >
-                    {copyMutation.isError
-                        ? getErrorMessage(
-                              copyMutation.error,
-                              "Could not copy the file reference",
-                          )
-                        : "Copied selection with file reference"}
-                </Toast>
             ) : null}
         </>
     );
@@ -247,6 +164,12 @@ function EditorActionsMenu(props: {
     isReloading: boolean;
     isSaving: boolean;
     downloadUrl: string | null;
+    /**
+     * Repeat the editor context menu's find and selection search, because phones have no
+     * right click or keyboard shortcut to reach them.
+     */
+    onFindInFile: (() => void) | null;
+    onSearchDirectory: (() => void) | null;
     onReload: () => void;
     onDelete: () => void;
 }) {
@@ -266,6 +189,27 @@ function EditorActionsMenu(props: {
             >
                 {(close) => (
                     <>
+                        <ActionMenuButton
+                            disabled={props.onFindInFile === null}
+                            onClick={() => {
+                                close();
+                                props.onFindInFile?.();
+                            }}
+                        >
+                            <TextSearch className="h-4 w-4 text-slate-400" />
+                            Find in file
+                        </ActionMenuButton>
+                        <ActionMenuButton
+                            disabled={props.onSearchDirectory === null}
+                            onClick={() => {
+                                close();
+                                props.onSearchDirectory?.();
+                            }}
+                        >
+                            <Search className="h-4 w-4 text-slate-400" />
+                            Search selection in file&apos;s directory
+                        </ActionMenuButton>
+                        <div className="my-1 border-t border-slate-800" />
                         {props.readOnly ? null : (
                             <>
                                 <ActionMenuButton
@@ -393,6 +337,8 @@ function FileEditorSecondaryActions(props: {
     downloadUrl: string | null;
     isFullWindow: boolean;
     onToggleFullWindow: () => void;
+    onFindInFile: (() => void) | null;
+    onSearchDirectory: (() => void) | null;
     onReload: () => void;
     onDelete: () => void;
 }) {
@@ -413,6 +359,8 @@ function FileEditorSecondaryActions(props: {
                 isReloading={props.isReloading}
                 isSaving={props.isSaving}
                 downloadUrl={props.downloadUrl}
+                onFindInFile={props.onFindInFile}
+                onSearchDirectory={props.onSearchDirectory}
                 onReload={props.onReload}
                 onDelete={props.onDelete}
             />
@@ -463,15 +411,16 @@ export function FileEditHeader(props: {
     agent: Agent;
     filePath: string;
     executable: boolean;
-    selection: EditorSelection | null;
     preview: boolean | undefined;
     previewKind: FilePreviewKind | null;
-    isSearchOpen: boolean;
     isReloading: boolean;
     downloadUrl: string | null;
     isFullWindow: boolean;
     onSave: () => void;
-    onToggleSearch: () => void;
+    /** Opens the editor's find panel; null while there is no editor to search. */
+    onFindInFile: (() => void) | null;
+    /** Searches the selection from the file's directory; null without a searchable one. */
+    onSearchDirectory: (() => void) | null;
     onPreviewChange: ((preview: boolean) => void) | undefined;
     onToggleFullWindow: () => void;
     onReload: () => void;
@@ -512,14 +461,11 @@ export function FileEditHeader(props: {
                                 name: props.fileName,
                                 entryType: "file",
                             }}
-                            selection={props.selection}
                             executable={props.executable}
                             agent={props.agent}
                             preview={props.preview}
                             previewKind={props.previewKind}
-                            isSearchOpen={props.isSearchOpen}
                             onSave={props.onSave}
-                            onToggleSearch={props.onToggleSearch}
                             onPreviewChange={props.onPreviewChange}
                         />
                         {props.isFullWindow ? (
@@ -553,6 +499,8 @@ export function FileEditHeader(props: {
                         downloadUrl={props.downloadUrl}
                         isFullWindow={props.isFullWindow}
                         onToggleFullWindow={props.onToggleFullWindow}
+                        onFindInFile={props.onFindInFile}
+                        onSearchDirectory={props.onSearchDirectory}
                         onReload={props.onReload}
                         onDelete={props.onDelete}
                     />

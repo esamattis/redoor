@@ -91,3 +91,49 @@ export function shouldIgnoreKeyboardShortcut(
         isTypingTarget(event.target)
     );
 }
+
+/**
+ * Apple keyboards label their modifiers ⌘ and ⌥ and the shortcuts use Command where
+ * other systems use Ctrl, so shortcut hints must follow the user's platform to be right.
+ */
+export function isApplePlatform(): boolean {
+    return (
+        typeof navigator !== "undefined" &&
+        /^(Mac|iPhone|iPad|iPod)/.test(navigator.platform)
+    );
+}
+
+/**
+ * A key chord described once and shown in each platform's own notation. `mod` is the
+ * primary command modifier: Command on Apple platforms and Ctrl elsewhere.
+ */
+export type KeyChord = {
+    key: string;
+    mod?: boolean;
+    alt?: boolean;
+    shift?: boolean;
+};
+
+/**
+ * Formats a chord the way the platform's own menus do: `⌥⇧⌘C` on Apple platforms, where
+ * modifiers are symbols in a fixed order without separators, and `Ctrl+Shift+C` elsewhere.
+ */
+export function formatKeyChord(
+    chord: KeyChord,
+    applePlatform: boolean = isApplePlatform(),
+): string {
+    const key = chord.key.toUpperCase();
+
+    if (applePlatform) {
+        return `${chord.alt ? "⌥" : ""}${chord.shift ? "⇧" : ""}${chord.mod ? "⌘" : ""}${key}`;
+    }
+
+    return [
+        chord.mod ? "Ctrl" : null,
+        chord.alt ? "Alt" : null,
+        chord.shift ? "Shift" : null,
+        key,
+    ]
+        .filter((part) => part !== null)
+        .join("+");
+}
