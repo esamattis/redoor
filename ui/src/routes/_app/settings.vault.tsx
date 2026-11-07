@@ -20,7 +20,10 @@ import { Button } from "#ui/components/button";
 import { DetailCard } from "#ui/components/detail-card";
 import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
-import { useVaultSession } from "#ui/components/vault-dialog";
+import {
+    LOCK_AFTER_OPTIONS,
+    useVaultSession,
+} from "#ui/components/vault-dialog";
 import {
     RotateVaultDialog,
     type RotationIntent,
@@ -306,6 +309,10 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
     const [error, setError] = React.useState<string | null>(null);
     const unlocked = state.status === "unlocked";
 
+    const lockAfterLabel = LOCK_AFTER_OPTIONS.find(
+        (option) => option.value === state.lockAfter,
+    )?.label;
+
     // The tab holds another generation than the server: it was rotated elsewhere.
     const stale =
         unlocked && state.currentKeyId !== props.summary.current_key_id;
@@ -343,6 +350,17 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                                   : "Unlocked"
                               : "Locked"}
                     </span>
+                    {/* Shown apart from the status, so the user sees when it locks by itself. */}
+                    {unlocked && !stale && lockAfterLabel !== undefined ? (
+                        <span
+                            aria-label="Vault idle lock"
+                            className="block text-xs text-slate-500"
+                        >
+                            {state.lockAfter === "never"
+                                ? "Does not lock when idle"
+                                : `Locks after ${lockAfterLabel} without use`}
+                        </span>
+                    ) : null}
                     <span className="block text-xs text-slate-500">
                         Fingerprint {fingerprint(props.summary.vault_id)} ·
                         created {formatDate(props.summary.created_at)}

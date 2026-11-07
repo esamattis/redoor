@@ -14,7 +14,9 @@ import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { Password } from "#ui/components/password";
+import { Select } from "#ui/components/select";
 import { TextField } from "#ui/components/text-field";
+import { Tooltip } from "#ui/components/tooltip";
 import { queryKeys, vaultStatusQueryOptions } from "#ui/queries";
 import { wipe } from "#ui/vault/vault-crypto";
 import { vaultDebug } from "#ui/vault/vault-debug";
@@ -40,7 +42,10 @@ import {
     newPasskeySlot,
     usablePasskeySlots,
 } from "#ui/vault/vault-passkeys";
-import { AUTO_LOCK_MS } from "#ui/vault/vault-session";
+import {
+    DEFAULT_VAULT_LOCK_AFTER,
+    type VaultLockAfter,
+} from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -49,6 +54,18 @@ const rootRouteApi = getRouteApi("__root__");
  * passkey prompt or key derivation is running without lifting each form's state.
  */
 const vaultDialogMutationKey = ["vault-dialog"] as const;
+
+/**
+ * The idle lock choices the dialog offers, shortest first, with their labels. Exported so
+ * the settings page names the active choice with the same words.
+ */
+export const LOCK_AFTER_OPTIONS = [
+    { value: "15_minutes", label: "15 minutes" },
+    { value: "1_hour", label: "1 hour" },
+    { value: "24_hours", label: "24 hours" },
+    { value: "1_week", label: "1 week" },
+    { value: "never", label: "Until locked" },
+] as const satisfies readonly { value: VaultLockAfter; label: string }[];
 
 /**
  * The passkey prompt the dialog may be waiting on. Unlike key derivation, the prompt can be
@@ -135,36 +152,73 @@ export function useVaultSession() {
 }
 
 /**
- * The "Keep unlocked on this device" choice. Off by default, and worded plainly: the key
- * stays non-extractable, which only stops script from exporting it.
+ * How long the vault stays unlocked: the idle lock and "Keep unlocked on this device". Both
+ * default to the safest choice, and the wording is plain about the kept key: it stays
+ * non-extractable, which only stops script from exporting it.
  */
-function KeepUnlockedOption(props: {
-    checked: boolean;
+function LockOptions(props: {
+    lockAfter: VaultLockAfter;
+    keep: boolean;
     disabled: boolean;
-    onChange: (checked: boolean) => void;
+    onLockAfterChange: (lockAfter: VaultLockAfter) => void;
+    onKeepChange: (keep: boolean) => void;
 }) {
+    const selectId = React.useId();
     const descriptionId = React.useId();
 
     return (
-        <div className="mt-4">
-            <Checkbox
-                role="checkbox"
-                checked={props.checked}
-                disabled={props.disabled}
-                onCheckedChange={props.onChange}
-                aria-describedby={descriptionId}
-                title={false}
-            >
-                Keep unlocked on this device
-            </Checkbox>
-            <p id={descriptionId} className="mt-1 text-xs text-slate-500">
-                When unticked, the vault locks after {AUTO_LOCK_MS / 60_000}{" "}
-                minutes without use, when you log out, or when the last redoor
-                tab is closed or reloaded. When ticked, it stays unlocked across
-                reloads and browser restarts until you lock it or log out, and
-                anyone who can use or copy this browser profile can open your
-                encrypted files until then.
-            </p>
+        <div className="mt-4 grid gap-3">
+            <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+                <label
+                    htmlFor={selectId}
+                    className="text-sm font-medium text-slate-300"
+                >
+                    Stay unlocked for
+                </label>
+                <Tooltip content="The vault locks after this long without use. Opening, saving, uploading or downloading encrypted files starts the time again.">
+                    <Select
+                        id={selectId}
+                        value={props.lockAfter}
+                        disabled={props.disabled}
+                        onChange={(event) => {
+                            const choice = LOCK_AFTER_OPTIONS.find(
+                                (option) => option.value === event.target.value,
+                            );
+
+                            if (choice !== undefined) {
+                                props.onLockAfterChange(choice.value);
+                            }
+                        }}
+                        containerClassName="min-w-36"
+                    >
+                        {LOCK_AFTER_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                                {option.label}
+                            </option>
+                        ))}
+                    </Select>
+                </Tooltip>
+            </div>
+            <div>
+                <Checkbox
+                    role="checkbox"
+                    checked={props.keep}
+                    disabled={props.disabled}
+                    onCheckedChange={props.onKeepChange}
+                    aria-describedby={descriptionId}
+                    title={false}
+                >
+                    Keep unlocked on this device
+                </Checkbox>
+                <p id={descriptionId} className="mt-1 text-xs text-slate-500">
+                    The vault always locks when you lock it or log out. When
+                    unticked, it also locks when the last redoor tab is closed
+                    or reloaded. When ticked, it stays unlocked across reloads
+                    and browser restarts, and anyone who can use or copy this
+                    browser profile can open your encrypted files until it
+                    locks.
+                </p>
+            </div>
         </div>
     );
 }
@@ -189,6 +243,11 @@ function CreateVaultForm(props: {
     const [passphrase, setPassphrase] = React.useState("");
     const [confirmation, setConfirmation] = React.useState("");
     const [keep, setKeep] = React.useState(false);
+
+    const [lockAfter, setLockAfter] = React.useState<VaultLockAfter>(
+        DEFAULT_VAULT_LOCK_AFTER,
+    );
+
     const [validation, setValidation] = React.useState<string | null>(null);
     const withPasskey = passkeysSupported && usePasskey;
     const withPassphrase = usePassphrase || !passkeysSupported;
@@ -227,7 +286,7 @@ function CreateVaultForm(props: {
             });
 
             await api.createVault(request);
-            await vault.unlock(unlocked, keep);
+            await vault.unlock(unlocked, keep, lockAfter);
         },
         onSuccess: () =>
             queryClient.invalidateQueries({ queryKey: queryKeys.vault() }),
@@ -329,10 +388,12 @@ function CreateVaultForm(props: {
             {withPasskey && !withPassphrase ? (
                 <PasswordlessWarning hosts={[hostname]} />
             ) : null}
-            <KeepUnlockedOption
-                checked={keep}
+            <LockOptions
+                lockAfter={lockAfter}
+                keep={keep}
                 disabled={create.isPending}
-                onChange={setKeep}
+                onLockAfterChange={setLockAfter}
+                onKeepChange={setKeep}
             />
             {error === null ? null : (
                 <p role="alert" className="text-sm text-red-300">
@@ -372,6 +433,10 @@ function UnlockVaultForm(props: {
     const [passphrase, setPassphrase] = React.useState("");
     const [keep, setKeep] = React.useState(false);
 
+    const [lockAfter, setLockAfter] = React.useState<VaultLockAfter>(
+        DEFAULT_VAULT_LOCK_AFTER,
+    );
+
     // Logged because a remount drops the pending mutations, which could make the user
     // press the passkey button again while the first prompt is still open.
     React.useEffect(() => {
@@ -406,6 +471,7 @@ function UnlockVaultForm(props: {
             await vault.unlock(
                 await openGenerations(material, opened.rawVaultKey),
                 keep,
+                lockAfter,
             );
         } finally {
             wipe(opened.rawVaultKey);
@@ -521,10 +587,12 @@ function UnlockVaultForm(props: {
                     onChange={setPassphrase}
                 />
             ) : null}
-            <KeepUnlockedOption
-                checked={keep}
+            <LockOptions
+                lockAfter={lockAfter}
+                keep={keep}
                 disabled={isBusy}
-                onChange={setKeep}
+                onLockAfterChange={setLockAfter}
+                onKeepChange={setKeep}
             />
             {failure ? (
                 <p role="alert" className="text-sm text-red-300">

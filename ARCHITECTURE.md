@@ -2958,10 +2958,16 @@ it.
   integration tests run the same key handling as the UI.
 - **`VaultSession`** (router context `vault`) is the page's lock state. It holds the
   non-extractable keys of every reachable generation, shares them with the other tabs over a
-  `BroadcastChannel`, locks after 15 idle minutes, and with "Keep unlocked on this device"
-  keeps them in IndexedDB instead (no idle lock). On load, kept keys of another generation
-  than the server's current one are deleted, because the vault was rotated elsewhere; a
-  rotation in this tab locks every other tab and deletes kept keys. "Lock now" deletes the
+  `BroadcastChannel`, and locks after the idle time picked in the unlock dialog (15 minutes
+  by default, up to a week, or no idle lock; capped so one `setTimeout` can wait for it).
+  Using the vault (`requestUnlock`, file reads) restarts the idle timer in every tab. With
+  "Keep unlocked on this device" the keys are also kept in IndexedDB together with the idle
+  choice and the last use (written at most once a minute, and only onto a record that still
+  exists, so a lock in another tab is never undone), so a reload restores them with only the
+  remaining idle time and a browser that was closed past the lock finds the vault locked. On
+  load, kept keys of another generation than the server's current one are deleted, because
+  the vault was rotated elsewhere; a rotation in this tab locks every other tab, deletes kept
+  keys and keeps this tab's idle choice. "Lock now" deletes the
   kept copy before it locks, so a reload cannot undo it. Logging out locks the same way
   before it ends the session, so the next user of a shared browser finds the vault locked.
 - Code that needs the vault calls `requestUnlock(reason)`, which resolves at once while

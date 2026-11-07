@@ -323,6 +323,83 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
+    test("locks the vault after the picked time without use, also across reloads", async ({
+        page,
+    }) => {
+        // A fake clock, so the idle lock can pass without waiting for it.
+        await page.clock.install();
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        const create = page.getByRole("dialog", { name: "Create vault" });
+        const createLockAfter = create.getByLabel("Stay unlocked for");
+        // The shortest lock is the default, so an unlock without a deliberate pick locks soon.
+        await expect(createLockAfter).toHaveValue("15_minutes");
+        await createLockAfter.selectOption({ label: "1 hour" });
+        await create.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+        await create.getByLabel("Repeat passphrase").fill(PASSPHRASE);
+        await create.getByRole("button", { name: "Create vault" }).click();
+        await expect(create).toBeHidden({ timeout: 30_000 });
+
+        const status = page.getByLabel("Vault status");
+        const idleLock = page.getByLabel("Vault idle lock");
+        // The settings page names the picked lock, so the user can see when it locks.
+        await expect(idleLock).toHaveText("Locks after 1 hour without use");
+
+        await page.clock.fastForward("30:00");
+        // Half the picked hour is not enough to lock it.
+        await expect(status).toHaveText("Unlocked");
+        await page.clock.fastForward("31:00");
+        // Past the picked hour without use, the vault locks itself.
+        await expect(status).toHaveText("Locked");
+
+        await page.getByRole("button", { name: "Unlock", exact: true }).click();
+        const unlock = page.getByRole("dialog", { name: "Unlock vault" });
+        await unlock.getByLabel("Passphrase", { exact: true }).fill(PASSPHRASE);
+        await unlock
+            .getByRole("checkbox", { name: "Keep unlocked on this device" })
+            .click();
+        await unlock
+            .getByRole("button", { name: "Unlock", exact: true })
+            .click();
+        await expect(unlock).toBeHidden({ timeout: 30_000 });
+
+        await page.reload();
+        // The kept key survives a reload together with its lock choice.
+        await expect(status).toHaveText("Unlocked, kept on this device");
+        await expect(idleLock).toHaveText("Locks after 15 minutes without use");
+
+        // Moving the time without running timers stands in for a browser that was closed.
+        await page.clock.setSystemTime(
+            (await page.evaluate(() => Date.now())) + 16 * 60 * 1000,
+        );
+        await page.reload();
+        // The kept key was unused for longer than its lock, so loading the page forgets it.
+        await expect(status).toHaveText("Locked");
+    });
+
+    test("a tab that joins an unlocked vault keeps only the remaining idle time", async ({
+        page,
+        context,
+    }) => {
+        // One fake clock for both tabs, so they agree on when the vault was last used.
+        await context.clock.install();
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        await createVaultInDialog(page);
+
+        await context.clock.fastForward("14:00");
+        const joined = await context.newPage();
+        await joined.goto(`${WEB_BASE_URL}/settings/vault`);
+        const status = joined.getByLabel("Vault status");
+        // The new tab gets the keys from the open one instead of asking for an unlock.
+        await expect(status).toHaveText("Unlocked");
+
+        await page.close();
+        await context.clock.fastForward("02:00");
+        // Loading the tab was not a use, so the 15 minutes still count from the unlock.
+        await expect(status).toHaveText("Locked");
+    });
+
     test("deletes an encrypted file from the editor while the vault is locked", async ({
         page,
     }) => {
