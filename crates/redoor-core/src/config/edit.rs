@@ -2,6 +2,7 @@
 //! survive programmatic changes.
 
 use anyhow::{Context, Result, bail};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use tokio::io::AsyncWriteExt;
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
@@ -88,6 +89,32 @@ pub async fn edit_local_agent(
     if let Some(config) = replacement {
         agents.insert(index, local_agent_table(config));
     }
+    transaction.commit().await
+}
+
+/// Replaces only the `terminal_env` of the managed device `agent_id`, SSH or local, and
+/// leaves the rest of its entry untouched.
+///
+/// The device edits above rebuild the whole entry and stop the agent first; terminal
+/// variables only affect shells started later, so they are written on their own and a
+/// running agent keeps its shells.
+pub async fn set_terminal_env(
+    path: &Path,
+    agent_id: &AgentId,
+    env: &BTreeMap<String, String>,
+) -> Result<()> {
+    let mut transaction = ConfigTransaction::begin(path).await?;
+    let entry = transaction
+        .document
+        .get_mut("agents")
+        .and_then(Item::as_array_of_tables_mut)
+        .and_then(|agents| {
+            agents
+                .iter_mut()
+                .find(|table| table.get("id").and_then(Item::as_str) == Some(agent_id.as_str()))
+        })
+        .with_context(|| format!("Managed agent '{agent_id}' was not found"))?;
+    insert_terminal_env(entry, env);
     transaction.commit().await
 }
 
@@ -200,6 +227,7 @@ fn ssh_agent_table(config: &SshBackedAgentConfig) -> Table {
     if config.managed_ssh_key {
         table.insert("managed_ssh_key", value(true));
     }
+    insert_terminal_env(&mut table, &config.terminal_env);
     table
 }
 
@@ -210,7 +238,24 @@ fn local_agent_table(config: &LocalAgentConfig) -> Table {
     table.insert("local", value(true));
     insert_optional_string(&mut table, "name", &config.name);
     insert_optional_string(&mut table, "home", &config.home);
+    insert_terminal_env(&mut table, &config.terminal_env);
     table
+}
+
+/// Writes `terminal_env` as an inline table on the entry, so it stays inside the entry's
+/// lines instead of becoming a separate `[agents.terminal_env]` header operators could
+/// mistake for a new entry. An empty set removes the key, keeping untouched entries as
+/// they were.
+fn insert_terminal_env(table: &mut Table, env: &BTreeMap<String, String>) {
+    if env.is_empty() {
+        table.remove("terminal_env");
+        return;
+    }
+    let inline: toml_edit::InlineTable = env
+        .iter()
+        .map(|(name, setting)| (name.as_str(), toml_edit::Value::from(setting.as_str())))
+        .collect();
+    table.insert("terminal_env", value(inline));
 }
 
 /// Whether a table is the entry with this id and kind, so an SSH edit can never replace a

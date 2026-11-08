@@ -500,6 +500,7 @@ mod tests {
                 title: "t".to_string(),
                 number: 1,
                 size: crate::wire::terminal::TerminalSize::new(24, 80).unwrap(),
+                env: Default::default(),
             }),
             Command::CloseTerminal(request::CloseTerminal {
                 id: crate::ids::TerminalSessionId::new(),

@@ -167,6 +167,7 @@ async fn create_ssh_agent(
 /// break every token scope that refers to the device. `managed_ssh_key` is carried over the same
 /// way, otherwise any edit, even a rename, would drop the managed key and fall back to the
 /// server user's credentials.
+/// `terminal_env` too, because it has its own endpoint and the form never sends it.
 ///
 /// A new username points at another account where the key is not installed, so the key is
 /// dropped but the pinned host key stays (same machine). A new target may be another
@@ -184,6 +185,8 @@ async fn update_ssh_agent(
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent(state, agent_id).await?;
     config.id = existing_config.id.clone();
+    // Edited on its own endpoint, so the form never sends it.
+    config.terminal_env = existing_config.terminal_env.clone();
     config.password = apply_password_update(
         config.password,
         clear_password,
@@ -287,7 +290,8 @@ async fn create_local_agent(
 
 /// Replaces durable and runtime local configuration while the old supervisor is dormant.
 ///
-/// Carries the stored id over for the same reason as [`update_ssh_agent`].
+/// Carries the stored id and terminal variables over for the same reason as
+/// [`update_ssh_agent`].
 async fn update_local_agent(
     state: &ServerState,
     agent_id: &AgentId,
@@ -297,6 +301,8 @@ async fn update_local_agent(
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_local_agent(state, agent_id).await?;
     config.id = existing_config.id;
+    // Edited on its own endpoint, so the form never sends it.
+    config.terminal_env = existing_config.terminal_env;
     let agent_config = AgentConfig::Local(config.clone());
     let name = agent_config.effective_name();
     with_name_reserved(state, agent_id, &name, async {
@@ -538,7 +544,7 @@ async fn find_local_agent(
 }
 
 /// Distinguishes a missing row from a local entry so SSH APIs cannot mutate non-SSH agents.
-pub(super) async fn find_configured_agent(
+pub(crate) async fn find_configured_agent(
     state: &ServerState,
     agent_id: &AgentId,
 ) -> Result<Option<AgentConfig>, ApiError> {
@@ -634,6 +640,7 @@ fn validate_local_request(request: CreateLocalAgentRequest) -> Result<LocalAgent
         id: None,
         name,
         home: optional_text(request.home),
+        terminal_env: Default::default(),
     })
 }
 
@@ -674,6 +681,8 @@ fn validate_request(request: CreateSshAgentRequest) -> Result<SshBackedAgentConf
         password: optional_password(request.password),
         // Never part of a request: only enrollment sets it and edits copy it over.
         managed_ssh_key: false,
+        // Edited on its own endpoint; updates copy the stored variables over.
+        terminal_env: Default::default(),
     };
     // Without an explicit name the target host becomes the name, so it must pass the rules too.
     validate_device_name(&AgentConfig::SshBacked(config.clone()).effective_name())

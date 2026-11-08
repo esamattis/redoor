@@ -56,6 +56,7 @@ use super::{
     retry_agent_start::retry_agent_start_handler,
     server_info::server_info_handler,
     state::ServerState,
+    terminal_env::update_terminal_env_handler,
     terminal_sessions::{
         create_terminal_session_handler, delete_terminal_session_handler,
         list_terminal_sessions_handler,
@@ -277,6 +278,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
         .route(
             "/api/v1/agents/{agent}/configuration",
             get(get_ssh_agent_configuration_handler),
+        )
+        .route(
+            "/api/v1/agents/{agent}/terminal-env",
+            put(update_terminal_env_handler),
         )
         .route(
             "/api/v1/agents/{agent}/ssh-host-key",

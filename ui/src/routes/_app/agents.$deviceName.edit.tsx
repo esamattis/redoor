@@ -13,6 +13,7 @@ import {
     type ManagedAgentSubmitRequest,
 } from "#ui/components/managed-agent-form";
 import { SshKeySection } from "#ui/components/ssh-key-section";
+import { TerminalEnvSection } from "#ui/components/terminal-env-section";
 import { Toast } from "#ui/components/toast";
 import {
     agentConfigurationQueryOptions,
@@ -172,13 +173,19 @@ function EditManagedAgentPage() {
                     <DeviceBreadcrumb agent={agent} current="Edit device" />
                 }
                 beforeForm={
-                    configuration.kind === "ssh" ? (
-                        <SshKeySection
+                    <>
+                        {configuration.kind === "ssh" ? (
+                            <SshKeySection
+                                agentId={agent.id}
+                                deviceName={agent.name}
+                                configuration={configuration.value}
+                            />
+                        ) : null}
+                        <TerminalEnvSection
                             agentId={agent.id}
-                            deviceName={agent.name}
-                            configuration={configuration.value}
+                            env={configuration.value.terminal_env}
                         />
-                    ) : null
+                    </>
                 }
                 configPath={serverInfo.config_path}
                 isSubmitting={updateMutation.isPending}

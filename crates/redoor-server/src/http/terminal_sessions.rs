@@ -46,9 +46,10 @@ pub(crate) async fn create_terminal_session_handler(
     if request.title.chars().count() > MAX_TERMINAL_TITLE_CHARS {
         return Err(ApiError::bad_request("Terminal title is too long"));
     }
+    let env = super::terminal_env::terminal_shell_env(&state, &agent_id).await?;
     let session = state
         .terminals
-        .create(agent_id, request)
+        .create(agent_id, request, env)
         .await
         .map_err(|error| match error {
             // A device that is known but away cannot start a shell; that is a conflict the

@@ -14,6 +14,7 @@ pub mod server;
 pub mod sessions;
 pub mod ssh_keys;
 pub mod systemd;
+pub mod terminal_env;
 pub mod terminals;
 pub mod tokens;
 pub mod transfers;

@@ -3,11 +3,66 @@
 use crate::api::terminals::TerminalSessionStatus;
 use crate::ids::{TerminalSessionId, UnixTimestampMillis};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use thiserror::Error;
 use ts_rs::TS;
 
 /// Largest accepted terminal dimension, preventing unreasonable PTY ioctls.
 pub const MAX_TERMINAL_DIMENSION: u16 = 1000;
+
+/// Variable every terminal shell gets with the redoor server's hostname, so prompts and
+/// scripts can tell which server a shell was opened through.
+pub const REDOOR_SERVER_ENV: &str = "REDOOR_SERVER";
+
+/// Most variables one device's `terminal_env` may hold; a bound because every shell start
+/// carries them in one control frame.
+pub const MAX_TERMINAL_ENV_VARIABLES: usize = 256;
+
+/// Longest accepted `terminal_env` value in bytes, generous for PATH-like lists but small
+/// enough that the whole set always fits a control frame.
+pub const MAX_TERMINAL_ENV_VALUE_BYTES: usize = 4096;
+
+/// Checks a device's `terminal_env` before it is saved or used.
+///
+/// Names are limited to the portable shell identifier form, because a shell cannot `export`
+/// or expand anything else. A NUL byte cannot pass through `execve`, so spawning the shell
+/// would fail. [`REDOOR_SERVER_ENV`] is set by redoor itself and refused, so a config never
+/// claims a value the shell will not see.
+pub fn validate_terminal_env(env: &BTreeMap<String, String>) -> Result<(), String> {
+    if env.len() > MAX_TERMINAL_ENV_VARIABLES {
+        return Err(format!(
+            "terminal_env must have at most {MAX_TERMINAL_ENV_VARIABLES} variables"
+        ));
+    }
+    for (name, value) in env {
+        let mut characters = name.chars();
+        let valid_name = characters
+            .next()
+            .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+            && characters.all(|character| character.is_ascii_alphanumeric() || character == '_');
+        if !valid_name {
+            return Err(format!(
+                "terminal_env name '{name}' must start with a letter or '_' and contain only letters, digits and '_'"
+            ));
+        }
+        if name == REDOOR_SERVER_ENV {
+            return Err(format!(
+                "terminal_env must not set {REDOOR_SERVER_ENV}; redoor sets it to the server's hostname"
+            ));
+        }
+        if value.contains('\0') {
+            return Err(format!(
+                "terminal_env value of '{name}' must not contain NUL bytes"
+            ));
+        }
+        if value.len() > MAX_TERMINAL_ENV_VALUE_BYTES {
+            return Err(format!(
+                "terminal_env value of '{name}' must be at most {MAX_TERMINAL_ENV_VALUE_BYTES} bytes"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Reports dimensions that cannot safely be passed to the PTY ioctl.
 #[derive(Debug, Clone, Error, PartialEq, Eq)]
@@ -104,6 +159,28 @@ mod tests {
         assert!(TerminalSize::new(0, 1).is_err());
         // Values above the bound cannot reach a PTY resize ioctl.
         assert!(TerminalSize::new(1, 1001).is_err());
+    }
+
+    /// Builds a one-variable environment for the validation cases below.
+    fn env(name: &str, value: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(name.to_string(), value.to_string())])
+    }
+
+    #[test]
+    fn validates_terminal_env() {
+        // Ordinary shell identifiers, including a leading underscore, are accepted.
+        assert!(validate_terminal_env(&env("_EDITOR_2", "vim -u NONE")).is_ok());
+        // A name a shell cannot export is refused.
+        assert!(validate_terminal_env(&env("2FA", "x")).is_err());
+        assert!(validate_terminal_env(&env("MY-VAR", "x")).is_err());
+        assert!(validate_terminal_env(&env("", "x")).is_err());
+        // redoor owns REDOOR_SERVER, so the config cannot pretend to set it.
+        assert!(validate_terminal_env(&env(REDOOR_SERVER_ENV, "x")).is_err());
+        // execve cannot pass a NUL byte, so the shell would fail to start.
+        assert!(validate_terminal_env(&env("A", "a\0b")).is_err());
+        // An oversized value would bloat every shell start's control frame.
+        let long = "x".repeat(MAX_TERMINAL_ENV_VALUE_BYTES + 1);
+        assert!(validate_terminal_env(&env("A", &long)).is_err());
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! local-vs-SSH entries, duplicate identities, platform support) lives in
 //! the `validate` methods, which produce the public, already-checked config types.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 
 use redoor_protocol::ids::{AgentId, validate_device_name};
@@ -122,13 +122,12 @@ struct RawAgentEntry {
     username: Option<String>,
     ssh_port: Option<u16>,
     name: Option<String>,
-    /// TEMPORARY MIGRATION: read only to reject it with a pointer to `install_dir`; see
-    /// [`RawAgentEntry::reject_removed_keys`].
-    remote_bin: Option<String>,
     install_dir: Option<String>,
     home: Option<String>,
     password: Option<String>,
     managed_ssh_key: Option<bool>,
+    #[serde(default)]
+    terminal_env: BTreeMap<String, String>,
 }
 
 /// One `[[relays]]` row.
@@ -588,31 +587,14 @@ impl RawAgentSection {
 impl RawAgentEntry {
     /// Splits the row into the SSH or local model selected by `local`.
     fn validate(mut self, index: usize) -> Result<AgentConfig, Invalid> {
-        self.reject_removed_keys(index)?;
+        redoor_protocol::wire::terminal::validate_terminal_env(&self.terminal_env)
+            .map_err(|error| invalid(format!("agents entry #{index}: {error}")))?;
         let home = self.home.take();
         if self.local {
             self.validate_local(index, home)
         } else {
-            self.validate_ssh(index)
+            self.validate_ssh(index, home)
         }
-    }
-
-    /// TEMPORARY MIGRATION: SSH entries lost `remote_bin` and `home` after 2.4.0. Without
-    /// this the server would refuse to start with serde's bare "unknown field" error, so it
-    /// names the replacement instead. Can go once configs from 2.4.0 and earlier have been
-    /// updated, a few releases after the change.
-    fn reject_removed_keys(&self, index: usize) -> Result<(), Invalid> {
-        if self.remote_bin.is_some() {
-            return Err(invalid(format!(
-                "agents entry #{index} has 'remote_bin', which is no longer supported; remove it. The server installs its own binary on the device, and 'install_dir' chooses where"
-            )));
-        }
-        if !self.local && self.home.is_some() {
-            return Err(invalid(format!(
-                "agents entry #{index} has 'home', which SSH devices no longer support; remove it. The device opens the remote user's home directory"
-            )));
-        }
-        Ok(())
     }
 
     /// Rejects SSH-only keys so a pasted SSH row with `local = true` fails clearly instead of
@@ -639,11 +621,19 @@ impl RawAgentEntry {
             id: parse_optional_id(self.id, &format!("agents entry #{index} 'id'"))?,
             name: self.name,
             home,
+            terminal_env: self.terminal_env,
         }))
     }
 
     /// Requires the SSH destination; every other field defers to OpenSSH or agent defaults.
-    fn validate_ssh(self, index: usize) -> Result<AgentConfig, Invalid> {
+    /// `home` is refused like SSH-only keys on local rows, because an SSH device always opens
+    /// the remote user's home directory and would silently ignore it.
+    fn validate_ssh(self, index: usize, home: Option<String>) -> Result<AgentConfig, Invalid> {
+        if home.is_some() {
+            return Err(invalid(format!(
+                "agents entry #{index} has 'home' which only applies to local agents (local = true); remove 'home'"
+            )));
+        }
         let target = self.target.ok_or_else(|| {
             invalid(format!(
                 "agents entry #{index} is missing a 'target' string"
@@ -683,6 +673,7 @@ impl RawAgentEntry {
             log: None,
             password: self.password,
             managed_ssh_key,
+            terminal_env: self.terminal_env,
         }))
     }
 }
@@ -741,6 +732,8 @@ impl RawRelay {
                 password: non_blank(self.password, "password")?,
                 // Relays keep using the account's own credentials; managed keys are server-only.
                 managed_ssh_key: false,
+                // Relayed agents start their shells for a server that has no entry for them.
+                terminal_env: BTreeMap::new(),
             },
         })
     }

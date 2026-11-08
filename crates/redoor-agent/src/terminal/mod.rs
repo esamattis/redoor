@@ -38,7 +38,7 @@ use session::{
     AttachedViewer, DetachReason, InputChunk, PtyInput, PtyIo, PtyOutput, SessionCommand,
     TerminalSessionHandle, ViewerFrame,
 };
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::{ffi::OsString, os::unix::process::ExitStatusExt, time::Duration};
 use tokio::{
@@ -460,10 +460,12 @@ async fn watch_shell(
     teardown_process_group(&mut child, process_group_id).await;
 }
 
-/// Allocates the PTY, starts the login shell in `cwd` and wires it for a session.
+/// Allocates the PTY, starts the login shell in `cwd` with the extra variables `env` from the
+/// server and wires it for a session.
 pub(crate) fn start_pty(
     size: TerminalSize,
     cwd: &str,
+    env: &BTreeMap<String, String>,
 ) -> Result<PtyIo<LivePtyOutput, LivePtyInput>> {
     let (pty, pts) = pty_process::open().context("failed to allocate PTY")?;
     pty.resize(pty_process::Size::new(size.rows, size.cols))
@@ -473,14 +475,28 @@ pub(crate) fn start_pty(
     let shell = std::env::var_os("SHELL").unwrap_or_else(|| OsString::from("sh"));
     // Login mode restores the user's profile environment when the agent was started by
     // a service manager such as launchd, which otherwise supplies only a minimal PATH.
-    let command = pty_process::Command::new(shell)
+    let mut command = pty_process::Command::new(shell)
         .arg("-l")
         .env("TERM", "xterm-256color")
         .env("COLORTERM", "truecolor")
-        // The token would let anything running in the shell pass as the server.
-        .env_remove(redoor_core::process::AGENT_TOKEN_ENV)
         .current_dir(cwd)
         .kill_on_drop(true);
+    // After TERM, so a device's `terminal_env` can override it too.
+    for (name, value) in env {
+        command = command.env(name, value);
+    }
+    // The device's own variables count first, so a LANG set there is kept.
+    let locale = utf8_locale_override(|name| {
+        env.get(name)
+            .map(OsString::from)
+            .or_else(|| std::env::var_os(name))
+    });
+    if let Some(variable) = locale {
+        command = command.env(variable, UTF8_FALLBACK_LOCALE);
+    }
+    // Last, so nothing above can put it back: the token would let anything running in the
+    // shell pass as the server.
+    let command = command.env_remove(redoor_core::process::AGENT_TOKEN_ENV);
     let child = command
         .spawn(pts)
         .context("failed to spawn terminal shell")?;
@@ -554,6 +570,38 @@ async fn terminal_session_processes(session_id: i32) -> Vec<Pid> {
     processes
 }
 
+/// The locale a terminal shell gets when it would otherwise run without UTF-8. glibc, musl
+/// and Android's bionic all build `C.UTF-8` in, so it works without installed locales; macOS
+/// has no `C.UTF-8` on older releases but always ships `en_US.UTF-8`.
+#[cfg(target_os = "macos")]
+const UTF8_FALLBACK_LOCALE: &str = "en_US.UTF-8";
+#[cfg(not(target_os = "macos"))]
+const UTF8_FALLBACK_LOCALE: &str = "C.UTF-8";
+
+/// Picks the locale variable a terminal shell needs set to [`UTF8_FALLBACK_LOCALE`], or `None`
+/// when the inherited locale is already UTF-8.
+///
+/// The browser terminal always speaks UTF-8, and terminal emulators normally say so through the
+/// locale, as iTerm2 does and SSH forwards. The agent is started over a non-interactive SSH
+/// command or by a service manager, so it often inherits `LANG=C` or no locale at all, and
+/// programs such as btop then refuse to start or draw mojibake. Only the variable that decides
+/// the character type (`LC_ALL`, then `LC_CTYPE`, then `LANG`) is replaced, so the user's other
+/// locale categories stay as they were.
+fn utf8_locale_override(var: impl Fn(&str) -> Option<OsString>) -> Option<&'static str> {
+    let deciding = ["LC_ALL", "LC_CTYPE", "LANG"].into_iter().find_map(|name| {
+        var(name)
+            .filter(|value| !value.is_empty())
+            .map(|value| (name, value))
+    });
+    match deciding {
+        Some((name, value)) => {
+            let value = value.to_string_lossy().to_ascii_lowercase();
+            (!value.contains("utf-8") && !value.contains("utf8")).then_some(name)
+        }
+        None => Some("LANG"),
+    }
+}
+
 /// Extracts the session field while allowing spaces and parentheses in a process name.
 fn process_session_id(stat: &str) -> Option<i32> {
     stat.rsplit_once(") ")?
@@ -574,7 +622,55 @@ fn signal_process_group(process_group_id: i32, signal: Signal) {
 
 #[cfg(test)]
 mod tests {
-    use super::process_session_id;
+    use super::{process_session_id, utf8_locale_override};
+    use std::ffi::OsString;
+
+    /// Runs [`utf8_locale_override`] against a fixed environment instead of the process one.
+    fn locale_override(env: &[(&str, &str)]) -> Option<&'static str> {
+        utf8_locale_override(|name| {
+            env.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        })
+    }
+
+    /// A shell must not be left without UTF-8 when the agent's environment has no locale or
+    /// a non-UTF-8 one, and only the variable deciding the character type is replaced.
+    #[test]
+    fn non_utf8_locale_is_overridden_in_the_deciding_variable() {
+        // No locale at all, as under a bare service manager, gets LANG.
+        assert_eq!(locale_override(&[]), Some("LANG"));
+        // Debian hosts without a configured locale default to LANG=C.
+        assert_eq!(locale_override(&[("LANG", "C")]), Some("LANG"));
+        // An empty LC_ALL does not count, so LC_CTYPE decides and is the one replaced.
+        assert_eq!(
+            locale_override(&[
+                ("LC_ALL", ""),
+                ("LC_CTYPE", "POSIX"),
+                ("LANG", "en_US.UTF-8")
+            ]),
+            Some("LC_CTYPE")
+        );
+        // LC_ALL overrides everything else, so setting LANG alone would not help.
+        assert_eq!(
+            locale_override(&[("LC_ALL", "C"), ("LANG", "en_US.UTF-8")]),
+            Some("LC_ALL")
+        );
+    }
+
+    /// A UTF-8 locale the user already has is kept, whatever spelling it uses.
+    #[test]
+    fn utf8_locale_is_kept() {
+        // The common glibc spelling.
+        assert_eq!(locale_override(&[("LANG", "fi_FI.UTF-8")]), None);
+        // `locale -a` lists names in the lowercase `utf8` form.
+        assert_eq!(locale_override(&[("LANG", "C.utf8")]), None);
+        // macOS terminals set only LC_CTYPE=UTF-8, which wins over a non-UTF-8 LANG.
+        assert_eq!(
+            locale_override(&[("LC_CTYPE", "UTF-8"), ("LANG", "C")]),
+            None
+        );
+    }
 
     /// Verifies process names cannot shift the session field parsed from procfs.
     #[test]

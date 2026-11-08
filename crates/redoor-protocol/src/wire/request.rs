@@ -42,6 +42,7 @@ use crate::wire::log::Level;
 use crate::wire::terminal::{TerminalSessionRecord, TerminalSize};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 /// A command together with the type of its successful response.
 pub trait AgentRequest: Into<Command> {
@@ -629,6 +630,12 @@ pub struct CreateTerminal {
     /// Per-device tab number, kept for the same reason.
     pub number: u32,
     pub size: TerminalSize,
+    /// Variables the shell starts with on top of the agent's own environment: the device's
+    /// `terminal_env` and `REDOOR_SERVER`. Chosen by the server, because only it has the
+    /// device's configuration and knows its own hostname. Defaulted so an agent still accepts
+    /// a request from a server that predates it.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Kills a session's shell and forgets the session; answers whether it existed.

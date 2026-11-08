@@ -44,6 +44,7 @@ mod sessions;
 pub(crate) mod ssh_keys;
 pub mod state;
 mod systemd;
+mod terminal_env;
 mod terminal_sessions;
 mod terminals;
 pub(crate) mod tokens;

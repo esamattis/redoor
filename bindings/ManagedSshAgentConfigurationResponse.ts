@@ -42,4 +42,9 @@ has_managed_ssh_key: boolean,
  * Whether a host key is pinned for the device. Setting up a key again then needs no
  * host key confirmation, and a target edit is about to discard the pin.
  */
-has_pinned_host_key: boolean, };
+has_pinned_host_key: boolean, 
+/**
+ * Extra environment variables for the device's terminal shells, edited apart from the
+ * other fields (see [`crate::api::terminal_env::UpdateTerminalEnvRequest`]) so changing them never stops the agent.
+ */
+terminal_env: { [key in string]: string }, };

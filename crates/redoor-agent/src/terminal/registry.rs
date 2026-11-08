@@ -84,7 +84,7 @@ impl TerminalSessions {
                 "Too many terminal sessions are open; close some terminal tabs",
             ));
         }
-        let io = super::start_pty(request.size, &request.cwd).map_err(|error| {
+        let io = super::start_pty(request.size, &request.cwd, &request.env).map_err(|error| {
             log!(
                 Level::Warning,
                 "Failed to start a terminal: cwd={}, error={:#}",
@@ -174,6 +174,7 @@ mod tests {
             title: "t".to_string(),
             number: 1,
             size: TerminalSize::new(24, 80).unwrap(),
+            env: Default::default(),
         }
     }
 

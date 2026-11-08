@@ -97,6 +97,8 @@ import type { DeleteSshAgentRequest } from "#bindings/DeleteSshAgentRequest";
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateLocalAgentResponse } from "#bindings/CreateLocalAgentResponse";
 import type { ManagedLocalAgentConfigurationResponse } from "#bindings/ManagedLocalAgentConfigurationResponse";
+import type { TerminalEnvResponse } from "#bindings/TerminalEnvResponse";
+import type { UpdateTerminalEnvRequest } from "#bindings/UpdateTerminalEnvRequest";
 import type { UpdateLocalAgentResponse } from "#bindings/UpdateLocalAgentResponse";
 import type { UpdateLocalAgentRequest } from "#bindings/UpdateLocalAgentRequest";
 import type { DeleteManagedAgentResponse } from "#bindings/DeleteManagedAgentResponse";
@@ -2114,6 +2116,25 @@ export class ApiClient {
         return apiRequest<ManagedLocalAgentConfigurationResponse>(
             `${this.baseUrl}/api/v1/local-agents/${encodeURIComponent(agentId)}/configuration`,
             undefined,
+            this.requestContext(),
+        );
+    }
+
+    /**
+     * Replaces the environment variables new terminal shells on a managed SSH or local device
+     * start with. Works while the agent runs, unlike the device edits.
+     */
+    async updateTerminalEnv(
+        agentId: string,
+        request: UpdateTerminalEnvRequest,
+    ): Promise<TerminalEnvResponse> {
+        return apiRequest<TerminalEnvResponse>(
+            `${this.baseUrl}/api/v1/agents/${encodeURIComponent(agentId)}/terminal-env`,
+            {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
             this.requestContext(),
         );
     }

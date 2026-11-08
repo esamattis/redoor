@@ -14,6 +14,7 @@ mod import;
 mod local_agent;
 
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub use bootstrap::{
@@ -22,6 +23,7 @@ pub use bootstrap::{
 pub use edit::{
     DeviceIdScope, ServerPasswordEditError, append_local_agent, append_ssh_agent,
     assign_missing_device_ids, edit_local_agent, edit_ssh_agent, set_server_password,
+    set_terminal_env,
 };
 pub use import::import_agent_config_from_stdin;
 pub use local_agent::LocalServerEndpoint;
@@ -111,6 +113,10 @@ pub struct SshBackedAgentConfig {
     /// so a connected agent is not stopped. The config never holds key material. Never set
     /// together with `password`.
     pub managed_ssh_key: bool,
+    /// Extra environment variables for the device's terminal shells (`terminal_env`). Kept in
+    /// the server's config rather than on the device, because the server starts every shell
+    /// and a device's own profile is not always editable. Always empty for relays.
+    pub terminal_env: BTreeMap<String, String>,
 }
 
 impl std::fmt::Debug for SshBackedAgentConfig {
@@ -126,6 +132,7 @@ impl std::fmt::Debug for SshBackedAgentConfig {
             .field("log", &self.log)
             .field("password", &self.password.as_ref().map(|_| "***"))
             .field("managed_ssh_key", &self.managed_ssh_key)
+            .field("terminal_env", &self.terminal_env)
             .finish()
     }
 }
@@ -148,6 +155,9 @@ pub struct LocalAgentConfig {
     pub name: Option<String>,
     /// Home directory the daemon publishes for UI tab navigation.
     pub home: Option<String>,
+    /// Extra environment variables for the device's terminal shells, like
+    /// [`SshBackedAgentConfig::terminal_env`].
+    pub terminal_env: BTreeMap<String, String>,
 }
 
 /// One configured agent entry from the agents toml. The variant decides
@@ -167,6 +177,14 @@ impl AgentConfig {
         match self {
             AgentConfig::SshBacked(config) => config.id.as_ref(),
             AgentConfig::Local(config) => config.id.as_ref(),
+        }
+    }
+
+    /// Extra environment variables the device's terminal shells start with.
+    pub fn terminal_env(&self) -> &BTreeMap<String, String> {
+        match self {
+            AgentConfig::SshBacked(config) => &config.terminal_env,
+            AgentConfig::Local(config) => &config.terminal_env,
         }
     }
 
@@ -600,6 +618,7 @@ impl From<LocalAgentConfig>
         Self {
             name: config.name,
             home: config.home,
+            terminal_env: config.terminal_env,
         }
     }
 }
@@ -620,6 +639,7 @@ impl From<SshBackedAgentConfig>
             has_managed_ssh_key: config.managed_ssh_key,
             // Only the server knows its data dir; the handler fills this in.
             has_pinned_host_key: false,
+            terminal_env: config.terminal_env,
         }
     }
 }
@@ -976,24 +996,24 @@ local = true
         }
     }
 
-    /// SSH entries written before `remote_bin` and `home` were removed fail with an error
-    /// that names the key and its replacement instead of serde's bare unknown-field error.
+    /// `home` on an SSH entry is refused with the reason, because the device would silently
+    /// open the remote user's home directory instead.
     #[tokio::test]
-    async fn test_parse_config_file_rejects_removed_ssh_keys() {
-        for (line, replacement) in [
-            ("remote_bin = \"/opt/redoor\"", "install_dir"),
-            ("home = \"/srv/app\"", "home directory"),
-        ] {
-            let (_directory, temp) = test_config_path();
-            let content = format!("[[agents]]\ntarget = \"prod-db\"\n{line}\n");
-            write_test_config(&temp, &content).unwrap();
+    async fn test_parse_config_file_rejects_home_on_ssh_entries() {
+        let (_directory, temp) = test_config_path();
+        write_test_config(
+            &temp,
+            "[[agents]]\ntarget = \"prod-db\"\nhome = \"/srv/app\"\n",
+        )
+        .unwrap();
 
-            let error = format!("{:#}", parse_config_file(&temp).await.unwrap_err());
+        let error = format!("{:#}", parse_config_file(&temp).await.unwrap_err());
 
-            // The operator learns which key to delete and what to use instead.
-            assert!(error.contains("no longer"), "{error}");
-            assert!(error.contains(replacement), "{error}");
-        }
+        // The operator learns which key to delete and why it does not apply.
+        assert!(
+            error.contains("'home' which only applies to local agents"),
+            "{error}"
+        );
     }
 
     /// A blank or multi-line `install_dir` is refused at load time, because it would install
@@ -1630,6 +1650,87 @@ name = "dev_box"
         .unwrap();
         // Other names that merely start with `dev_` are fine.
         assert!(config.validate_managed_agent_names(path).is_ok());
+    }
+
+    /// `terminal_env` is written on its own without touching the rest of the entry, and a full
+    /// device edit keeps it.
+    #[tokio::test]
+    async fn terminal_env_round_trips_through_edits() {
+        let (_directory, path) = test_config_path();
+        write_test_config(
+            &path,
+            r#"[[agents]]
+id = "dev_abcdefghijklmnopqrst"
+# keep me
+target = "pi"
+
+[[agents]]
+id = "dev_bbbbbbbbbbbbbbbbbbbb"
+local = true
+"#,
+        )
+        .unwrap();
+        let ssh_id = AgentId::parse("dev_abcdefghijklmnopqrst").unwrap();
+        let env = BTreeMap::from([
+            ("EDITOR".to_string(), "vim".to_string()),
+            (
+                "PATH_EXTRA".to_string(),
+                "/opt/bin:/usr/local/bin".to_string(),
+            ),
+        ]);
+        set_terminal_env(&path, &ssh_id, &env).await.unwrap();
+        let written = tokio::fs::read_to_string(&path).await.unwrap();
+        // Writing the variables alone leaves the operator's comment in the entry.
+        assert!(written.contains("# keep me"), "{written}");
+        let config = parse_config_file(&path).await.unwrap();
+        // The variables read back as written, and only on the edited device.
+        assert_eq!(config.agents[0].terminal_env(), &env);
+        assert!(config.agents[1].terminal_env().is_empty());
+
+        let AgentConfig::SshBacked(agent) = &config.agents[0] else {
+            panic!("the entry is SSH-backed");
+        };
+        let renamed = SshBackedAgentConfig {
+            name: Some("renamed".to_string()),
+            ..agent.clone()
+        };
+        edit_ssh_agent(&path, &ssh_id, Some(&renamed))
+            .await
+            .unwrap();
+        let config = parse_config_file(&path).await.unwrap();
+        // The device edit rebuilds the entry, which must not drop the variables.
+        assert_eq!(config.agents[0].terminal_env(), &env);
+
+        set_terminal_env(&path, &ssh_id, &BTreeMap::new())
+            .await
+            .unwrap();
+        // Clearing removes the key instead of leaving an empty table behind.
+        assert!(
+            !tokio::fs::read_to_string(&path)
+                .await
+                .unwrap()
+                .contains("terminal_env")
+        );
+    }
+
+    /// A hand-written variable that a shell could not use fails at load with the entry named.
+    #[tokio::test]
+    async fn invalid_terminal_env_is_rejected_at_load() {
+        let (_directory, path) = test_config_path();
+        write_test_config(
+            &path,
+            r#"[[agents]]
+target = "pi"
+terminal_env = { "MY-VAR" = "x" }
+"#,
+        )
+        .unwrap();
+        let error = parse_config_file(&path).await.unwrap_err().to_string();
+        // The message points at the offending entry and name.
+        assert!(
+            error.contains("agents entry #0") && error.contains("MY-VAR"),
+            "{error}"
+        );
     }
 
     /// A managed key is recorded as a flag and survives the formatting-preserving rewrite

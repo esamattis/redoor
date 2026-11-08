@@ -20,6 +20,7 @@ use redoor_protocol::{
         terminal::{TerminalServerMessage, TerminalSessionRecord},
     },
 };
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::oneshot;
 
@@ -156,12 +157,14 @@ impl TerminalRegistry {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Starts a shell on the agent and lists its session. The session is listed before the
-    /// reply, so a list fetched after the reply already contains it.
+    /// Starts a shell with the extra variables `env` on the agent and lists its session. The
+    /// session is listed before the reply, so a list fetched after the reply already contains
+    /// it.
     pub(crate) async fn create(
         &self,
         agent_id: AgentId,
         request: CreateTerminalSessionRequest,
+        env: BTreeMap<String, String>,
     ) -> Result<TerminalSessionInfo, ApiError> {
         let call = CreateTerminal {
             id: TerminalSessionId::new(),
@@ -169,6 +172,7 @@ impl TerminalRegistry {
             title: request.title,
             number: request.number,
             size: request.size,
+            env,
         };
         let record = self.agents.call(&agent_id, call).await?;
         let mut state = self.state();

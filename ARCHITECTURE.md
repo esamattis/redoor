@@ -315,6 +315,12 @@ any browser can pick it up again with a snapshot of the screen.
 - Terminal frames use the interactive lane, and stream credit holds back a shell whose viewer
   is slow, so memory stays bounded.
 - Terminal and log routes are session-only, so tokens and MCP cannot open or take over shells.
+- The server picks a new shell's extra environment and sends it with `CreateTerminal`: the
+  device's `terminal_env` from the config, read on every create so edits need no restart, plus
+  `REDOOR_SERVER` with the server's hostname. The agent adds a UTF-8 locale when the inherited
+  one is not UTF-8, because the browser terminal always speaks UTF-8 and agents started over
+  SSH or by a service manager often inherit `LANG=C`. `terminal_env` has its own endpoint, so
+  saving it does not stop the agent like the device edit does.
 - Live logs stream NDJSON log events over a stream of the same connection.
 
 ## Systemd units

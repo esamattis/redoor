@@ -1204,6 +1204,7 @@ ssh-ed25519 AAAAlong redoor:dev_abcd:{fingerprint}
                 log: None,
                 password: None,
                 managed_ssh_key: true,
+                terminal_env: Default::default(),
             },
             Some(keys),
             held.clone(),

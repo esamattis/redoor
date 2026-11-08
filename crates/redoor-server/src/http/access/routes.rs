@@ -69,6 +69,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
             "/api/v1/agents/{agent}/configuration" | "/api/v1/local-agents/{agent}/configuration",
         )
         | ("GET" | "PUT", "/api/v1/agents/{agent}/logging-level")
+        // Variables every new shell starts with, so as sensitive as opening the shell.
+        | ("PUT", "/api/v1/agents/{agent}/terminal-env")
         | ("POST", "/api/v1/agents/{agent}/echo") => Access::SessionOnly,
 
         // Systemd unit management is a UI feature; tokens and MCP manage units through exec,
@@ -424,6 +426,11 @@ mod tests {
             (
                 Method::DELETE,
                 "/api/v1/terminals/{id}",
+                Access::SessionOnly,
+            ),
+            (
+                Method::PUT,
+                "/api/v1/agents/{agent}/terminal-env",
                 Access::SessionOnly,
             ),
             (

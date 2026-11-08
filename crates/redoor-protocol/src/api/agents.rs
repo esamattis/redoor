@@ -3,6 +3,7 @@
 use crate::identity::BinaryIdentity;
 use crate::ids::{AgentId, SocketId, UnixTimestampMillis, UnixTimestampSeconds};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use ts_rs::TS;
 
 /// Selects which server-side executable should replace a connected agent.
@@ -174,6 +175,9 @@ pub struct ManagedSshAgentConfigurationResponse {
     /// Whether a host key is pinned for the device. Setting up a key again then needs no
     /// host key confirmation, and a target edit is about to discard the pin.
     pub has_pinned_host_key: bool,
+    /// Extra environment variables for the device's terminal shells, edited apart from the
+    /// other fields (see [`crate::api::terminal_env::UpdateTerminalEnvRequest`]) so changing them never stops the agent.
+    pub terminal_env: BTreeMap<String, String>,
 }
 
 /// Returns the replacement dormant inventory record after an SSH configuration edit.
@@ -218,6 +222,9 @@ pub struct ManagedLocalAgentConfigurationResponse {
     pub name: Option<String>,
     /// Optional initial browser directory advertised before the first connection.
     pub home: Option<String>,
+    /// Extra environment variables for the device's terminal shells, like
+    /// [`ManagedSshAgentConfigurationResponse::terminal_env`].
+    pub terminal_env: BTreeMap<String, String>,
 }
 
 /// Returns the replacement dormant inventory record after a local configuration edit.

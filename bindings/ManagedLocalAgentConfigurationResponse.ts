@@ -12,4 +12,9 @@ name: string | null,
 /**
  * Optional initial browser directory advertised before the first connection.
  */
-home: string | null, };
+home: string | null, 
+/**
+ * Extra environment variables for the device's terminal shells, like
+ * [`ManagedSshAgentConfigurationResponse::terminal_env`].
+ */
+terminal_env: { [key in string]: string }, };

@@ -236,10 +236,9 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `name`        | string        | no       | Device name. Defaults to the host portion of `target`.                                                                                                           |
 | `install_dir` | string        | no       | Directory on the device under which the server installs the redoor binary, as `<install_dir>/<app-name>/binaries/<version>/redoor`. Defaults to `${XDG_DATA_HOME:-$HOME/.local/share}`. |
 | `password`    | string        | no       | Plaintext SSH login password. When set, the server answers OpenSSH via `SSH_ASKPASS`. Prefer keys or `ssh-agent` when possible.                                  |
+| `terminal_env` | table        | no       | Extra environment variables for the device's terminals. See [Terminal environment](#terminal-environment).                                                      |
 
 The server always installs and updates the binary itself, and the device opens the remote user's home directory. Set `install_dir` when programs cannot run from the home directory because it is mounted `noexec`, as on TrueNAS: the server then stops before uploading and says which mount refuses to run programs. `install_dir` is used literally on the device, except that a leading `~/`, `$HOME/` or `${HOME}/` is expanded to the remote user's home directory. Other shell syntax such as variables or `$(...)` is not interpreted.
-
-`[[agents]]` SSH entries no longer accept `remote_bin` or `home`; remove them from older configs.
 
 ```toml
 [[agents]]
@@ -261,8 +260,9 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 | `id`    | string | no       | Stable device id. Written by the server; see [Device ids and names](#device-ids-and-names).          |
 | `name`  | string | no       | Device name. Defaults to the system hostname.                                                        |
 | `home`  | string | no       | Home directory opened in the UI. Defaults to the spawned process user's home directory.              |
+| `terminal_env` | table | no | Extra environment variables for the device's terminals. See [Terminal environment](#terminal-environment). |
 
-SSH-only keys (`target`, `username`, `ssh_port`, `install_dir`, `password`) are rejected on local entries.
+SSH-only keys (`target`, `username`, `ssh_port`, `install_dir`, `password`) are rejected on local entries, and `home` is rejected on SSH entries.
 
 ```toml
 [[agents]]
@@ -270,6 +270,28 @@ local = true
 name = "local"
 home = "/home/me/projects"
 ```
+
+### Terminal environment
+
+`terminal_env` sets extra environment variables in every terminal opened on the device, on top of what the agent itself was started with. Edit it on the device's **Edit device** page under **Terminal environment**. Saving there does not stop the agent: open terminals keep their environment and the next terminal gets the new variables.
+
+```toml
+[[agents]]
+target = "user@example.com"
+terminal_env = { EDITOR = "vim", KUBECONFIG = "/srv/cluster/kubeconfig" }
+```
+
+- Names must start with a letter or `_` and contain only letters, digits and `_`. Values are used literally; `$VAR` is not expanded.
+- At most 256 variables, each value at most 4096 bytes and without NUL bytes.
+- They are set before the login shell reads its profile, so the profile can still change them. Many systems' `/etc/profile` resets `PATH`, so extend `PATH` in the profile instead.
+- `TERM` (default `xterm-256color`) and `LANG` can be overridden here too.
+
+Redoor also sets these in every terminal, including those of standalone agents:
+
+| Variable        | Value                                                                                                              |
+| --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `REDOOR_SERVER` | Hostname of the Redoor server the terminal was opened through. It cannot be set in `terminal_env`.                 |
+| `LANG`          | `C.UTF-8` (`en_US.UTF-8` on macOS), only when the inherited locale is not UTF-8, for example `LANG=C` or no locale at all. Agents started over SSH or by a service manager often get no locale, and programs such as btop refuse to start without one. If `LC_ALL` or `LC_CTYPE` decides the locale, that variable is replaced instead. |
 
 ### Managed agent daemons
 
