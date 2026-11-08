@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.7.0
+
+_2026-11-08_
+
+### Features
+
+- Terminals render with WebGL, so full-screen redraws and fast output are much smoother.
+- Each managed device can set extra terminal environment variables with `terminal_env` in `config.toml`, also editable on the device's edit page without stopping the agent. Every shell also gets `REDOOR_SERVER`, naming the server it was opened through.
+- Shells fall back to a UTF-8 locale when the agent inherited `LANG=C` or no locale, so programs such as `btop` run in redoor terminals.
+- Fenced code blocks in the markdown preview have a copy button.
+
+### Fixes
+
+- The Vim insert caret stays visible on empty lines and at the start of a line.
+
 ## v2.6.0
 
 _2026-11-08_
