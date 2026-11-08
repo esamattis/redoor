@@ -1,9 +1,7 @@
-// Serial: changing the login password signs out every other browser session, including the
-// shared one every spec loads from global setup, so this spec restores the password and
-// writes a fresh shared session before the next spec starts.
-import path from "node:path";
-
-import { expect, request, test } from "@playwright/test";
+// Serial: changing the login password signs out every other browser session of the test
+// account, which any spec running at the same time would be using, so this spec restores the
+// password before the next spec starts.
+import { expect, request, test } from "../fixtures";
 
 import { WEB_BASE_URL } from "../helpers";
 
@@ -13,14 +11,8 @@ const ORIGINAL_PASSWORD = "test-password";
 
 const NEW_PASSWORD = "e2e-changed-password";
 
-/** Path global setup stores the shared session in, resolved the same way. */
-const STORAGE_PATH = path.resolve(".test-playwright-auth.json");
-
-/**
- * Puts the original password back if the test changed it, then signs in again and saves
- * the session where the following specs load it, like global setup does.
- */
-async function restorePasswordAndSharedSession(): Promise<void> {
+/** Puts the original password back if the test changed it, so later specs can sign in. */
+async function restorePassword(): Promise<void> {
     const context = await request.newContext({ baseURL: WEB_BASE_URL });
 
     try {
@@ -50,15 +42,13 @@ async function restorePasswordAndSharedSession(): Promise<void> {
         if (!login.ok()) {
             throw new Error(`Signing in again failed: ${login.status()}`);
         }
-
-        await context.storageState({ path: STORAGE_PATH });
     } finally {
         await context.dispose();
     }
 }
 
 test.describe("Change password", () => {
-    test.afterEach(restorePasswordAndSharedSession);
+    test.afterEach(restorePassword);
 
     test("changes the login password from the server home and stays signed in", async ({
         page,

@@ -96,6 +96,10 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             post(super::session_activity::session_activity_handler),
         )
         .route(
+            "/api/v1/session/rotate",
+            post(super::session_rotation::rotate_session_handler),
+        )
+        .route(
             "/api/v1/sessions",
             get(super::sessions::list_sessions_handler)
                 .delete(super::sessions::sign_out_other_sessions_handler),

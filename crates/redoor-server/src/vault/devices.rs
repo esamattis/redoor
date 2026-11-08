@@ -16,9 +16,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
+use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::vault::{
-    ApiErrorCode, CreateVaultDeviceResponse, OpenVaultDeviceResponse, VaultDeviceStatusResponse,
-    VaultLockAfter,
+    CreateVaultDeviceResponse, OpenVaultDeviceResponse, VaultDeviceStatusResponse, VaultLockAfter,
 };
 use zeroize::Zeroizing;
 
@@ -234,10 +234,7 @@ impl VaultDeviceStore {
     /// within a prune interval.
     pub(crate) async fn prune(&self, auth: &crate::http::auth::AuthState) {
         for session_id in self.session_ids() {
-            if matches!(
-                auth.check_session_id(&session_id).await,
-                crate::http::auth::SessionCheck::Invalid
-            ) {
+            if auth.check_session_id(&session_id).await != crate::http::auth::SessionStatus::Live {
                 self.delete_session(&session_id);
             }
         }

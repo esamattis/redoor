@@ -183,12 +183,12 @@ impl Viewer {
         let (ready, ready_rx) = watch::channel(false);
         let (mut sink, source) = browser.split();
         let session_ended = tokio::select! {
-            () = forward_browser_to_agent(source, &input, &resizes, stream, ready_rx) => false,
-            () = forward_agent_to_browser(output, events, reason, &mut sink, timeouts, ready) => false,
-            () = session_watch.ended() => true,
+            () = forward_browser_to_agent(source, &input, &resizes, stream, ready_rx) => None,
+            () = forward_agent_to_browser(output, events, reason, &mut sink, timeouts, ready) => None,
+            end = session_watch.ended() => Some(end),
         };
-        if session_ended {
-            close_for_ended_session(&mut sink).await;
+        if let Some(end) = session_ended {
+            close_for_ended_session(&mut sink, end).await;
         }
     }
 }

@@ -1,9 +1,20 @@
-import { afterAll, beforeAll, describe, expect, it, onTestFinished } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
-import { type Agent, ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
+import {
+    type Agent,
+    ApiClient,
+    SESSION_ENDED_CLOSE_CODE,
+} from "#ui/api-client";
 import type { LoginRequest } from "#bindings/LoginRequest";
 import type { SessionLength } from "#bindings/SessionLength";
 import {
@@ -80,7 +91,8 @@ async function signIn(
     expect(response.status).toBe(200);
     const setCookie = response.headers.get("set-cookie") ?? "";
     const cookie = setCookie.split(";", 1)[0] ?? "";
-    const sessionId = cookie.split("=", 2)[1] ?? "";
+    // The stable session id names the file; the secret after the dot rotates.
+    const sessionId = cookie.split("=", 2)[1]?.split(".", 1)[0] ?? "";
     onTestFinished(async () => {
         await fetch(`${baseUrl}/api/v1/logout`, {
             method: "POST",
@@ -116,6 +128,13 @@ function setExpiresIn(session: BrowserSession, seconds: number): number {
     writeFileSync(session.file, JSON.stringify(stored));
 
     return stored.expires_at;
+}
+
+/** Makes the session's secret a minute old, so the next activity report rotates it. */
+function makeRotationDue(session: BrowserSession): void {
+    const stored = JSON.parse(readFileSync(session.file, "utf8"));
+    stored.current.issued_at -= 60;
+    writeFileSync(session.file, JSON.stringify(stored));
 }
 
 /** Reports user activity with the browser's cookie. */
@@ -169,6 +188,7 @@ describe("Session lifetimes", () => {
         // Ordinary requests leave the expiry alone, so polling does not keep a page alive.
         expect(readSession(session).expires_at).toBe(aged);
 
+        makeRotationDue(session);
         const activity = await reportActivity(session);
 
         expect(activity.status).toBe(200);
@@ -176,11 +196,17 @@ describe("Session lifetimes", () => {
         // Activity moves the expiry a full hour ahead and reports it.
         expect(expiry.expires_in_seconds).toBeGreaterThan(3500);
         expect(readSession(session).expires_at).toBeGreaterThan(aged + 3000);
-        // A renewal that was written re-sends the same session cookie with the fixed
-        // Max-Age, so a session kept active for over a year does not lose its cookie.
-        expect(activity.headers.get("set-cookie")).toMatch(
-            new RegExp(`^${session.cookie}; .*; Max-Age=31536000$`),
+        const sessionId = session.cookie.split("=", 2)[1]?.split(".", 1)[0];
+        // Activity rotates the secret once it is a minute old, so the cookie it sends is a
+        // different one for the same session, with the fixed Max-Age, so a session kept
+        // active for over a year does not lose its cookie.
+        const renewedCookie = activity.headers.get("set-cookie") ?? "";
+        expect(renewedCookie).toMatch(
+            new RegExp(
+                `^redoor_session=${sessionId}\\.[^;]+; .*; Max-Age=31536000$`,
+            ),
         );
+        expect(renewedCookie.split(";", 1)[0]).not.toBe(session.cookie);
     });
 
     it("does not let activity revive an expired session", async () => {

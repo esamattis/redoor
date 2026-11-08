@@ -9,10 +9,10 @@ use std::collections::HashMap;
 
 use axum::{Json, extract::State as AxumState, http::StatusCode};
 use redoor_core::log;
+use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::ssh_keys::{
     RewrapSshKeyRequest, SshKeyStatusResponse, VaultSshKey, VaultSshKeysResponse,
 };
-use redoor_protocol::api::vault::ApiErrorCode;
 use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::log::Level;
 

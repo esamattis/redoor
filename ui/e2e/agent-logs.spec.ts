@@ -5,7 +5,7 @@ import {
     expect,
     test,
     type WebSocket as PlaywrightWebSocket,
-} from "@playwright/test";
+} from "./fixtures";
 
 import {
     WEB_BASE_URL,

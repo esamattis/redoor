@@ -109,12 +109,12 @@ async fn handle_ui_socket(
     }
 
     let session_ended = tokio::select! {
-        _ = forward_ui_events(&mut sender, &mut rx_out, timeouts) => false,
-        _ = wait_for_ui_disconnect(&mut receiver) => false,
-        () = watch.ended() => true,
+        _ = forward_ui_events(&mut sender, &mut rx_out, timeouts) => None,
+        _ = wait_for_ui_disconnect(&mut receiver) => None,
+        end = watch.ended() => Some(end),
     };
-    if session_ended {
-        close_for_ended_session(&mut sender).await;
+    if let Some(end) = session_ended {
+        close_for_ended_session(&mut sender, end).await;
     }
 
     if let Err(error) = router_ref

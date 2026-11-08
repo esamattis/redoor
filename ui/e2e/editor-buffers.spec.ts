@@ -2,7 +2,7 @@
 // edits also add the files to the shared open files list, which no parallel spec asserts on.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, signedInStorageState, test } from "./fixtures";
 
 import { ApiClient } from "#ui/api-client";
 import { parseStoredBuffer } from "#ui/editor/stored-buffer";
@@ -57,6 +57,7 @@ test.describe.serial("Unsaved editor buffers", () => {
     test("keeps unsaved edits with their undo history across a reload and on another computer", async ({
         page,
         browser,
+        playwright,
     }) => {
         const filePath = await writeTallFile(
             "buffer-survives-reload.txt",
@@ -85,8 +86,9 @@ test.describe.serial("Unsaved editor buffers", () => {
         // The caret came back on the edited line.
         await expect(page.getByLabel("Editor caret line")).toHaveText("300");
 
+        // Another computer signs in on its own, as a real one would.
         const other = await browser.newContext({
-            storageState: ".test-playwright-auth.json",
+            storageState: await signedInStorageState(playwright.request),
         });
 
         const otherPage = await other.newPage();

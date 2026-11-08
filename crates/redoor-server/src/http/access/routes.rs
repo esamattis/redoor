@@ -94,6 +94,8 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         ("PUT", "/api/v1/auth/password") => Access::SessionOnly,
         // Keeping a browser session alive; tokens do not idle out.
         ("POST", "/api/v1/session/activity") => Access::SessionOnly,
+        // Rotating a browser session's cookie secret; tokens have no cookie to rotate.
+        ("POST", "/api/v1/session/rotate") => Access::SessionOnly,
         // Listing and signing out browser sessions: a token must never end the user's browsers
         // or see where they signed in from.
         ("GET" | "DELETE", "/api/v1/sessions") | ("DELETE", "/api/v1/sessions/{id}") => {
@@ -302,6 +304,7 @@ mod tests {
                 "/api/v1/session/activity",
                 Access::SessionOnly,
             ),
+            (Method::POST, "/api/v1/session/rotate", Access::SessionOnly),
             (Method::GET, "/api/v1/sessions", Access::SessionOnly),
             (Method::DELETE, "/api/v1/sessions", Access::SessionOnly),
             (Method::DELETE, "/api/v1/sessions/{id}", Access::SessionOnly),

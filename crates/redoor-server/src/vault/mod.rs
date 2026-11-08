@@ -18,12 +18,12 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use jiff::{Timestamp, Unit};
 use redoor_core::log_error;
+use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::vault::{
-    AddVaultSlotRequest, ApiErrorCode, CreateVaultRequest, DestroyVaultKeyRequest,
-    RestoreVaultBackupRequest, RotateVaultRequest, VAULT_DOCUMENT_VERSION, VaultDocument,
-    VaultFileHeader, VaultFileKeyStatus, VaultGenerationSummary, VaultKeyEntry, VaultRetiredKey,
-    VaultSlot, VaultSlotInput, VaultSlotKind, VaultSlotSummary, VaultSlotType, VaultSummary,
-    VaultUnlockMaterialResponse,
+    AddVaultSlotRequest, CreateVaultRequest, DestroyVaultKeyRequest, RestoreVaultBackupRequest,
+    RotateVaultRequest, VAULT_DOCUMENT_VERSION, VaultDocument, VaultFileHeader, VaultFileKeyStatus,
+    VaultGenerationSummary, VaultKeyEntry, VaultRetiredKey, VaultSlot, VaultSlotInput,
+    VaultSlotKind, VaultSlotSummary, VaultSlotType, VaultSummary, VaultUnlockMaterialResponse,
 };
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;

@@ -47,6 +47,7 @@ import type { LoginResponse } from "#bindings/LoginResponse";
 import type { LoginMethodsResponse } from "#bindings/LoginMethodsResponse";
 import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
 import type { SessionExpiry } from "#bindings/SessionExpiry";
+import type { SessionRotationResponse } from "#bindings/SessionRotationResponse";
 import type { SessionLength } from "#bindings/SessionLength";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
 import type { BrowserSessionListResponse } from "#bindings/BrowserSessionListResponse";
@@ -179,6 +180,7 @@ import {
     streamNdjson,
     withAuthentication,
     type RequestContext,
+    type SessionEndReason,
 } from "#ui/api-transport";
 import * as apiPaths from "#ui/api-paths";
 import type { LsResponse } from "#ui/ls-response";
@@ -194,6 +196,34 @@ export const VAULT_KEY_HEADER = "Redoor-Vault-Key";
  * reconnecting, because every reconnect would be refused.
  */
 export const SESSION_ENDED_CLOSE_CODE = 4401;
+
+/**
+ * Close code of a browser websocket whose session the server revoked because its cookie was
+ * used by two browsers. Leads to the login page like `SESSION_ENDED_CLOSE_CODE`, which then
+ * tells the user why.
+ */
+export const SESSION_REUSED_CLOSE_CODE = 4409;
+
+/** Why a websocket closed with `code` ended the session, or `null` when it did not. */
+export function sessionEndReasonFromCloseCode(
+    code: number,
+): SessionEndReason | null {
+    switch (code) {
+        case SESSION_ENDED_CLOSE_CODE:
+            return "ended";
+        case SESSION_REUSED_CLOSE_CODE:
+            return "reused";
+        default:
+            return null;
+    }
+}
+
+/** The `name=value` pair of a session `Set-Cookie`, or `null` for any other cookie. */
+function sessionCookiePair(setCookie: string): string | null {
+    const pair = setCookie.split(";", 1)[0] ?? "";
+
+    return pair.startsWith("redoor_session=") ? pair : null;
+}
 
 /** The revision a vault read returns and a save sends back. */
 export const VAULT_REVISION_HEADER = "Redoor-Vault-Revision";
@@ -1537,7 +1567,8 @@ export class ApiClient {
     baseUrl: string;
     private sessionCookie: string | null = null;
     private accessToken: string | null = null;
-    private unauthorizedHandler: (() => void) | undefined;
+    private unauthorizedHandler:
+        ((reason: SessionEndReason) => void) | undefined;
     /** A deliberate logout owns navigation until a new session is established. */
     private logoutStarted = false;
     private agentClients = new WeakMap<AgentInfoResponse, Agent>();
@@ -1547,7 +1578,7 @@ export class ApiClient {
     }
 
     /** Installs navigation behavior after the router exists, avoiding an API-to-router dependency. */
-    setUnauthorizedHandler(handler: () => void): void {
+    setUnauthorizedHandler(handler: (reason: SessionEndReason) => void): void {
         this.unauthorizedHandler = handler;
     }
 
@@ -1555,8 +1586,8 @@ export class ApiClient {
      * Reports a session end noticed outside a REST response, such as a websocket closed with
      * `SESSION_ENDED_CLOSE_CODE`, so it leads to the login page exactly like a 401 does.
      */
-    notifySessionEnded(): void {
-        if (!this.logoutStarted) this.unauthorizedHandler?.();
+    notifySessionEnded(reason: SessionEndReason = "ended"): void {
+        if (!this.logoutStarted) this.unauthorizedHandler?.(reason);
     }
 
     /** Returns authentication headers for direct streaming requests outside this wrapper. */
@@ -1577,8 +1608,16 @@ export class ApiClient {
         return {
             getSessionCookie: () => this.sessionCookie,
             getAccessToken: () => this.accessToken,
-            onUnauthorized: () => {
-                if (!this.logoutStarted) this.unauthorizedHandler?.();
+            onUnauthorized: (reason) => {
+                if (!this.logoutStarted) this.unauthorizedHandler?.(reason);
+            },
+            // Follows rotations of the session secret, which a browser does by itself.
+            onSetCookie: (setCookie) => {
+                const pair = sessionCookiePair(setCookie);
+
+                if (pair && this.sessionCookie !== null) {
+                    this.sessionCookie = pair;
+                }
             },
         };
     }
@@ -1691,6 +1730,19 @@ export class ApiClient {
         );
     }
 
+    /**
+     * Replaces the session cookie's secret without extending the session, which an open tab
+     * does every few minutes so a copied cookie cannot be used quietly next to it. The
+     * browser stores the new cookie by itself; Node clients pick it up from the response.
+     */
+    async rotateSession(): Promise<SessionRotationResponse> {
+        return apiRequest<SessionRotationResponse>(
+            `${this.baseUrl}/api/v1/session/rotate`,
+            { method: "POST" },
+            this.requestContext(),
+        );
+    }
+
     /** Lists every signed-in browser session, for the sessions page. */
     async listBrowserSessions(): Promise<BrowserSessionListResponse> {
         return apiRequest<BrowserSessionListResponse>(
@@ -1751,7 +1803,9 @@ export class ApiClient {
             this.logoutStarted = false;
 
             if (error instanceof ApiError && error.status === 401) {
-                this.unauthorizedHandler?.();
+                this.unauthorizedHandler?.(
+                    error.code === "session_reused" ? "reused" : "ended",
+                );
             }
 
             throw error;

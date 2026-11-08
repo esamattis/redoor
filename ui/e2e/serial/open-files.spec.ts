@@ -1,7 +1,7 @@
 // Serial: replaces the shared user settings to seed open files and asserts on the saved list.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../fixtures";
 import {
     dragReorderRow,
     keyboardReorder,

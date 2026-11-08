@@ -5,12 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { $ } from "zx";
 import { z } from "zod";
-import {
-    expect,
-    test,
-    type APIRequestContext,
-    type Page,
-} from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page } from "../fixtures";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";

@@ -1,6 +1,6 @@
 // Serial: the vault belongs to the one test account, so creating, unlocking or rotating it
 // changes state every other spec would share.
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, signedInStorageState, type Page } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -341,6 +341,7 @@ test.describe.serial("Vault", () => {
     test("keeps the vault unlocked on this device until it is locked or rotated", async ({
         page,
         browser,
+        playwright,
     }) => {
         const fileName = "kept.txt.redoorencrypted";
         await createVaultFile(page, ctx, fileName);
@@ -355,8 +356,12 @@ test.describe.serial("Vault", () => {
             page.getByRole("button", { name: "Unlock vault" }),
         ).toBeHidden();
 
-        // Another browser rotates the vault, which the kept key does not know about.
-        const other = await browser.newContext();
+        // Another browser, signed in on its own, rotates the vault, which the kept key does not
+        // know about.
+        const other = await browser.newContext({
+            storageState: await signedInStorageState(playwright.request),
+        });
+
         const otherPage = await other.newPage();
         await otherPage.goto(`${WEB_BASE_URL}/settings/vault`);
         await otherPage

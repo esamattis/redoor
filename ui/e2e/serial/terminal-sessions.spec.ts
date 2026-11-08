@@ -1,6 +1,6 @@
 // Serial: terminal sessions outlive pages and every page restores them as tabs, so another
 // spec's pages would show (and could take over) the shells these tests open.
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../fixtures";
 import {
     deleteAllTerminalSessions,
     setupTestDir,

@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 import { hostname } from "node:os";
 import { ApiClient } from "#ui/api-client";
 import {

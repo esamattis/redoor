@@ -1,7 +1,7 @@
 // Serial: opening files in the background writes the shared user settings' open files list.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../fixtures";
 import { $ } from "zx";
 
 import { ApiClient } from "#ui/api-client";

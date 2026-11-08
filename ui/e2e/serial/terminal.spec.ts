@@ -4,7 +4,7 @@ import {
     expect,
     test,
     type WebSocket as PlaywrightWebSocket,
-} from "@playwright/test";
+} from "../fixtures";
 import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import { dragReorderRow } from "../reorder";

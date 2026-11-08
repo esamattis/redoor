@@ -1,21 +1,25 @@
 //! REST authentication and coarse authorization, run after routing so the route table can
 //! key on the matched route template and read its `{agent}` parameter.
 
+use std::net::SocketAddr;
+
 use axum::{
     RequestPartsExt,
     body::Body,
-    extract::{MatchedPath, RawPathParams, Request, State},
-    http::{HeaderMap, StatusCode, header, request::Parts},
+    extract::{ConnectInfo, MatchedPath, RawPathParams, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     middleware::Next,
     response::{IntoResponse, Response},
 };
+use redoor_protocol::api::ApiErrorCode;
 
 use super::{
     Principal, ResolvedDevice,
     routes::{self, Access},
 };
 use crate::http::{
-    auth::{ActiveSession, SessionCheck},
+    auth::{ActiveSession, SessionCheck, sets_session_cookie},
+    client_address::ClientAddress,
     error::ApiError,
     session_activity::TransferBody,
     state::ServerState,
@@ -42,11 +46,19 @@ pub(crate) async fn access_control(
     let public = access == Access::Public
         || routes::is_one_time_token_raw_request(request.method(), request.uri());
     // Authenticating before resolving keeps anonymous callers from probing device names.
-    let (principal, session) = if public {
-        (None, None)
+    let Authenticated {
+        principal,
+        session,
+        recovery_cookie,
+    } = if public {
+        Authenticated::default()
     } else {
-        match authenticate(&state, request.headers()).await {
-            Ok((principal, session)) => (Some(principal), session),
+        let client = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ConnectInfo(peer)| ClientAddress::new(*peer, request.headers()));
+        match authenticate(&state, request.headers(), client.as_ref()).await {
+            Ok(authenticated) => authenticated,
             Err(error) => return error.into_response(),
         }
     };
@@ -79,30 +91,65 @@ pub(crate) async fn access_control(
     if let Some(session) = session {
         parts.extensions.insert(session);
     }
-    let response =
+    let mut response =
         redoor_core::logging::user_scope(user, next.run(Request::from_parts(parts, body))).await;
+    // Websocket upgrades included, so a browser that missed a rotation recovers on any
+    // request. A handler that set its own session cookie wins, because a stale secret after a
+    // new session or logout's clearing cookie would sign the browser out.
+    if let Some(cookie) = recovery_cookie
+        && !sets_session_cookie(response.headers())
+    {
+        response.headers_mut().append(header::SET_COOKIE, cookie);
+    }
     match transfer {
         Some(hold) => response.map(|body| Body::new(TransferBody::new(body, hold))),
         None => response,
     }
 }
 
+/// Who a request was authenticated as; empty for public routes.
+#[derive(Default)]
+struct Authenticated {
+    principal: Option<Principal>,
+    /// The browser session behind a session principal, for the handlers that renew, hold
+    /// or watch it.
+    session: Option<ActiveSession>,
+    /// `Set-Cookie` re-sending the current secret to a browser that missed a rotation.
+    recovery_cookie: Option<HeaderValue>,
+}
+
 /// A bearer token alone decides when present, so a stale cookie can never upgrade a rejected
-/// token; otherwise the browser session cookie is used. Also returns the browser session
-/// behind a session principal, for the handlers that renew, hold or watch it.
+/// token; otherwise the browser session cookie is used. `client` is the caller's address,
+/// named in the warning when its cookie turns out to be used by two browsers.
 async fn authenticate(
     state: &ServerState,
     headers: &HeaderMap,
-) -> Result<(Principal, Option<ActiveSession>), ApiError> {
+    client: Option<&ClientAddress>,
+) -> Result<Authenticated, ApiError> {
     if let Some(secret) = bearer_token(headers) {
         return match state.tokens.authenticate(secret).await {
-            Some(grant) => Ok((Principal::Token(grant), None)),
+            Some(grant) => Ok(Authenticated {
+                principal: Some(Principal::Token(grant)),
+                ..Authenticated::default()
+            }),
             None => Err(unauthorized("Access token is invalid, expired or revoked")),
         };
     }
     match state.auth.check_session(headers).await {
         SessionCheck::Invalid => Err(unauthorized("Authentication required")),
-        SessionCheck::Valid(user, session) => Ok((Principal::Session(user), Some(session))),
+        SessionCheck::Valid(user, session, recovery_cookie) => Ok(Authenticated {
+            principal: Some(Principal::Session(user)),
+            session: Some(session),
+            recovery_cookie,
+        }),
+        SessionCheck::Reused(reused) => {
+            reused.forget(state, client);
+            Err(ApiError::coded(
+                StatusCode::UNAUTHORIZED,
+                ApiErrorCode::SessionReused,
+                "This session was signed out because it was used from another browser at the same time",
+            ))
+        }
     }
 }
 

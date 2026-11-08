@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use redoor_protocol::{
-    api::{ErrorResponse, vault::ApiErrorCode},
+    api::{ApiErrorCode, ErrorResponse},
     wire::command::CommandErrorKind,
 };
 use std::time::Duration;

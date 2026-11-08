@@ -112,7 +112,8 @@ const router = createRouter({
 
 // Any 401 means the session ended, so reload into the login form with the current URL as the
 // return path. The reload also drops cached server state that belongs to the old session.
-api.setUnauthorizedHandler(() => {
+// A session revoked for reuse says so on the login page.
+api.setUnauthorizedHandler((reason) => {
     // The login form's own requests answer 401 for wrong credentials, which must not loop.
     if (router.matchRoute({ to: "/login" })) {
         return;
@@ -123,7 +124,10 @@ api.setUnauthorizedHandler(() => {
     window.location.replace(
         router.buildLocation({
             to: "/login",
-            search: { redirect: returnPath },
+            search: {
+                redirect: returnPath,
+                reason: reason === "reused" ? "reused" : undefined,
+            },
         }).href,
     );
 });

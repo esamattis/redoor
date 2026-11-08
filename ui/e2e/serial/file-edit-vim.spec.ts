@@ -1,5 +1,5 @@
 // Serial: turns on the shared vim mode and wrap preferences, which change every editor.
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";

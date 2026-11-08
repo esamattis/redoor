@@ -1,6 +1,6 @@
 // Serial: seeds the shared open files list and asserts on what the menu shows.
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../fixtures";
 
 import { ApiClient } from "#ui/api-client";
 import {

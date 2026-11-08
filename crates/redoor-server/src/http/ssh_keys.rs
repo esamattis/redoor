@@ -10,12 +10,12 @@ use std::sync::{Arc, Mutex};
 use axum::{Json, extract::State as AxumState, http::StatusCode};
 use redoor_core::config::{AgentConfig, SshBackedAgentConfig, edit_ssh_agent};
 use redoor_core::log;
+use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::ssh_keys::{
     ConfirmManualSshKeyRequest, EnrollSshKeyRequest, ManualSshKeyResponse, PinSshHostKeyRequest,
     PrepareManualSshKeyRequest, RemoveSshKeyRequest, SshHostKeyPinResponse, SshHostKeyResponse,
     SshKeyEnrollmentResponse, SshKeyRemovalResponse, SshKeyStatusResponse, SshKeyVaultSeal,
 };
-use redoor_protocol::api::vault::ApiErrorCode;
 use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::log::Level;
 use zeroize::Zeroizing;

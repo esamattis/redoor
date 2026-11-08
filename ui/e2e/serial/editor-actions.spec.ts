@@ -1,5 +1,5 @@
 // Serial: rewrites the whole shared user settings document to drop its pins afterwards.
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Page } from "../fixtures";
 import fs from "node:fs/promises";
 import { ApiClient } from "#ui/api-client";
 import { userStateSchema } from "#ui/user-state";

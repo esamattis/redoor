@@ -93,12 +93,12 @@ async fn run_log_relay(
     );
     let (mut browser_sink, browser_stream) = browser.split();
     let session_ended = tokio::select! {
-        _ = forward_agent_events(output, &mut browser_sink, state.runtime.ws_timeouts) => false,
-        _ = wait_for_browser_disconnect(browser_stream) => false,
-        () = watch.ended() => true,
+        _ = forward_agent_events(output, &mut browser_sink, state.runtime.ws_timeouts) => None,
+        _ = wait_for_browser_disconnect(browser_stream) => None,
+        end = watch.ended() => Some(end),
     };
-    if session_ended {
-        close_for_ended_session(&mut browser_sink).await;
+    if let Some(end) = session_ended {
+        close_for_ended_session(&mut browser_sink, end).await;
     }
     log!(
         Level::Info,

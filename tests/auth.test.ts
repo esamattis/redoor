@@ -28,9 +28,9 @@ beforeAll(async () => {
 
 afterAll(() => processManager.killAll());
 
-/** Extracts the opaque identifier while keeping cookie attributes out of request headers. */
+/** Extracts the stable session id, which names the session file, from `<id>.<secret>`. */
 function sessionIdFromCookie(cookie: string): string {
-    const value = cookie.split("=", 2)[1];
+    const value = cookie.split("=", 2)[1]?.split(".", 1)[0];
 
     if (!value) {
         throw new Error("Session cookie did not contain an identifier");
@@ -92,8 +92,11 @@ describe("HTTP authentication", () => {
         const api = new ApiClient(baseUrl);
         await api.login(TEST_USERNAME, TEST_PASSWORD);
         const cookie = api.getAuthHeaders().Cookie;
-        // Node clients must retain the same opaque cookie a browser receives automatically.
-        expect(cookie).toMatch(/^redoor_session=[0-9a-f-]{36}$/);
+        // Node clients must retain the same cookie a browser receives automatically: the
+        // stable session id and its rotating secret.
+        expect(cookie).toMatch(
+            /^redoor_session=[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/,
+        );
 
         if (!cookie) {
             throw new Error("Login did not return a session cookie");
@@ -159,7 +162,7 @@ describe("HTTP authentication", () => {
 
         const tamperedResponse = await fetch(`${baseUrl}/api/v1/agents`, {
             headers: {
-                Cookie: "redoor_session=00000000-0000-4000-8000-000000000000",
+                Cookie: "redoor_session=00000000-0000-4000-8000-000000000000.c2VjcmV0",
             },
         });
 

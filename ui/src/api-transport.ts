@@ -28,6 +28,7 @@ const API_ERROR_CODES = [
     "vault_device_not_found",
     "systemd_unsupported",
     "systemd_user_manager_not_running",
+    "session_reused",
 ] as const satisfies readonly ApiErrorCode[];
 
 /** Fails to compile when the server gains a code this list does not name. */
@@ -46,12 +47,25 @@ const errorResponseSchema: z.ZodType<ErrorResponse> = z.object({
     code: z.enum(API_ERROR_CODES).optional().catch(undefined),
 });
 
+/**
+ * Why the browser session ended: `reused` when the server signed it out because its cookie
+ * was used by two browsers, so the login page can tell the user; `ended` for everything
+ * else (expiry, logout, a password change).
+ */
+export type SessionEndReason = "ended" | "reused";
+
 /** Supplies browser or Node-managed authentication without coupling transport to the router. */
 export type RequestContext = {
     getSessionCookie?: () => string | null;
     /** An access token takes precedence over the cookie on the server, as for the CLI. */
     getAccessToken?: () => string | null;
-    onUnauthorized?: () => void;
+    onUnauthorized?: (reason: SessionEndReason) => void;
+    /**
+     * Receives every `Set-Cookie` a response carries. Only Node-based clients see it (browsers
+     * hide the header and keep the cookie themselves), and they need it because the server
+     * rotates the session cookie's secret.
+     */
+    onSetCookie?: (setCookie: string) => void;
 };
 
 /** Preserves HTTP status so authentication failures stay distinct from agent errors. */
@@ -108,35 +122,45 @@ export function withAuthentication(
     return { ...options, credentials: "same-origin", headers };
 }
 
+/** Parses a structured error body, or `null` for anything else. */
+function parseErrorResponse(text: string): ErrorResponse | null {
+    try {
+        return errorResponseSchema.parse(JSON.parse(text));
+    } catch {
+        return null;
+    }
+}
+
 /** Converts failed responses into typed errors and reports expired browser sessions once. */
 export async function requireSuccessfulResponse(
     response: Response,
     context: RequestContext,
 ): Promise<void> {
+    const setCookie = response.headers.get("set-cookie");
+
+    if (setCookie) {
+        context.onSetCookie?.(setCookie);
+    }
+
     if (response.ok) {
         return;
     }
 
+    const text = await response.text();
+    const parsed = text ? parseErrorResponse(text) : null;
+
     if (response.status === 401) {
-        context.onUnauthorized?.();
+        context.onUnauthorized?.(
+            parsed?.code === "session_reused" ? "reused" : "ended",
+        );
     }
 
-    const text = await response.text();
-
     if (text) {
-        try {
-            const error = errorResponseSchema.parse(JSON.parse(text));
-
-            if (error.error.length > 0) {
-                throw new ApiError(response.status, error.error, {
-                    body: text,
-                    code: error.code ?? null,
-                });
-            }
-        } catch (error) {
-            if (error instanceof ApiError) {
-                throw error;
-            }
+        if (parsed && parsed.error.length > 0) {
+            throw new ApiError(response.status, parsed.error, {
+                body: text,
+                code: parsed.code ?? null,
+            });
         }
 
         const trimmed = text.trim();

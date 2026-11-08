@@ -24,6 +24,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use redoor_core::config::{OidcConfig, ServerPasswordEditError};
 use redoor_core::{log, log_error};
 use redoor_protocol::api::{
@@ -33,6 +34,7 @@ use redoor_protocol::api::{
 use redoor_protocol::wire::log::Level;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
 use super::client_address::ClientAddress;
@@ -41,7 +43,8 @@ use password_logins::{Logins, PasswordLogins};
 
 mod password_logins;
 
-/// Cookie carrying the opaque browser session id.
+/// Cookie carrying the browser session as `<id>.<secret>`: the stable session id and the
+/// secret that rotates while the user works (see [`SecretState`]).
 const SESSION_COOKIE_NAME: &str = "redoor_session";
 /// `Max-Age` of every session cookie: the longest session length. The server alone enforces
 /// the idle expiry, so the cookie is never refreshed; a cookie tied to the lifetime would
@@ -52,6 +55,17 @@ const SESSION_COOKIE_MAX_AGE: Duration = SessionLength::Year.duration();
 /// finishing transfers do not turn every renewal into a disk write. Also the granularity
 /// of the expiry the UI is told.
 const SESSION_RENEWAL_INTERVAL: Duration = Duration::from_secs(60);
+/// Shortest time between two rotations of a session's secret. Counted from when the current
+/// secret was issued rather than from the last expiry write, because a finished transfer
+/// moves the expiry too: an attacker finishing a download every minute would otherwise keep
+/// the victim's activity from ever rotating.
+const ROTATION_INTERVAL: Duration = Duration::from_secs(60);
+/// How long the secret a rotation replaced keeps working without counting as reuse. Covers
+/// requests the browser sent before the rotation response arrived.
+const ROTATION_GRACE: Duration = Duration::from_secs(30);
+// A browser must never be two rotations behind with a request that is legitimately in
+// flight, or its own stale secret would sign it out.
+const _: () = assert!(ROTATION_GRACE.as_secs() < ROTATION_INTERVAL.as_secs());
 /// Caps online brute force against a single source address.
 const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
 /// Caps coordinated multi-source brute force against the whole process.
@@ -154,8 +168,67 @@ impl SessionUser {
 pub(crate) enum SessionCheck {
     /// No usable session; the request must be treated as unauthenticated.
     Invalid,
-    /// The session is valid: who it belongs to and which session it is.
-    Valid(SessionUser, ActiveSession),
+    /// The session is valid: who it belongs to, which session it is, and a `Set-Cookie` to
+    /// add to the response when the browser missed a rotation ([`SecretState::LostRotation`]).
+    Valid(SessionUser, ActiveSession, Option<HeaderValue>),
+    /// The cookie was used by two browsers, so the session is revoked for both. Answered
+    /// with its own error code, so the UI can tell the user why they were signed out.
+    Reused(ReusedSession),
+}
+
+/// Where a session stands, for callers that know only its id and no secret: websockets
+/// watching their session end and the vault device prune task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SessionStatus {
+    /// Still signed in.
+    Live,
+    /// Expired, logged out, signed out from another browser or revoked by a credential
+    /// change.
+    Ended,
+    /// Revoked because its cookie was used by two browsers.
+    Reused,
+}
+
+/// A session revoked because two browsers used its cookie.
+pub(crate) struct ReusedSession {
+    /// The stable session id, to drop what else the server keeps for the session.
+    pub(crate) id: String,
+    pub(crate) user: SessionUser,
+    /// Set only for the request that detected the reuse and revoked the session, so the
+    /// warning is logged once rather than for every request the two browsers send after.
+    pub(crate) detection: Option<ReuseDetection>,
+}
+
+/// How a reuse was detected, for the warning that tells false positives (a slow network
+/// outlasting [`ROTATION_GRACE`]) apart from a stolen cookie.
+pub(crate) struct ReuseDetection {
+    /// Seconds since the secret the request presented was rotated away; `None` when it was
+    /// no secret this session ever had.
+    pub(crate) since_rotation: Option<i64>,
+}
+
+impl ReusedSession {
+    /// Drops what the server keeps for the revoked session besides its tombstone and logs
+    /// the detection. The vault device secrets go at once, as when signing a session out
+    /// from the session list, rather than at the prune task's next pass. `client` is the
+    /// browser that presented the stale secret, when known.
+    pub(crate) fn forget(&self, state: &ServerState, client: Option<&ClientAddress>) {
+        state.vault_devices.delete_session(&self.id);
+        let Some(detection) = &self.detection else {
+            return;
+        };
+        let client = client.map_or_else(|| "an unknown address".to_string(), ToString::to_string);
+        let timing = match detection.since_rotation {
+            Some(seconds) => format!("{seconds} s after it was rotated away"),
+            None => "a secret the session never had".to_string(),
+        };
+        log!(
+            Level::Warning,
+            "Signed out session {} of {}: its cookie was used by two browsers (stale secret from {client}, {timing})",
+            public_session_id(&self.id),
+            self.user.log_label()
+        );
+    }
 }
 
 /// The browser session behind a request, put into the request extensions next to
@@ -163,7 +236,9 @@ pub(crate) enum SessionCheck {
 /// it end from a websocket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ActiveSession {
-    /// The opaque session id from the cookie, already validated as a UUID.
+    /// The stable session id from the cookie, already validated as a UUID. It names the
+    /// session file and stays the same across rotations, so everything keyed on it (transfer
+    /// holds, websocket watches, vault devices) survives them.
     pub(crate) id: String,
     /// The session length chosen at sign-in. A password change issues its new session with
     /// the same length.
@@ -172,25 +247,33 @@ pub(crate) struct ActiveSession {
     /// the session open this is at least a full lifetime away, because the transfer renews
     /// the session when it finishes.
     pub(crate) expires_at: i64,
+    /// Hash of the secret the request presented. Renewing and rotating classify it again
+    /// under the session file lock, because another tab may have rotated the session since
+    /// the access check.
+    pub(crate) presented: String,
 }
 
-/// A renewal that succeeded: the new expiry, and the session cookie when the renewal was
-/// written (not throttled), so the browser's copy restarts its fixed `Max-Age` and a session
-/// kept active for longer than that never loses its cookie.
-pub(crate) struct RenewedSession {
+/// A renewal or rotation that succeeded: the expiry, and the new session cookie when the
+/// secret was rotated.
+pub(crate) struct UpdatedSession {
     /// Unix seconds after which the session ends without further activity.
     pub(crate) expires_at: i64,
-    /// `Set-Cookie` for the session, present only when the file was written.
+    /// `Set-Cookie` with the new secret, present only when the session rotated.
     pub(crate) cookie: Option<HeaderValue>,
 }
 
-/// Why a session is renewed, because a finished transfer may renew a session that only the
-/// transfer kept alive past its expiry, while explicit activity may not revive one.
+/// Why a session file is updated, because each cause may change different parts of it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenewalCause {
-    /// The UI reported user interaction.
-    Activity,
-    /// An upload or download of the session finished.
+enum SessionUpdate<'a> {
+    /// The UI reported user interaction: slides the expiry and rotates the secret.
+    /// `presented` is the hash of the secret the request carried.
+    Activity { presented: &'a str },
+    /// An open tab asked for a new secret: rotates without moving the expiry, so an idle
+    /// tab keeps the secret moving without keeping the session alive.
+    Rotate { presented: &'a str },
+    /// An upload or download of the session finished: slides the expiry, and may renew a
+    /// session that only the transfer kept alive past its expiry. Never rotates, because no
+    /// response is left to carry a new cookie.
     TransferFinished,
 }
 
@@ -306,6 +389,211 @@ struct SessionFile {
     created_at: i64,
     /// The browser that signed in, shown in the session list so the user can recognise it.
     client: SessionClient,
+    /// The secret the browser should present now. Required: files written before rotation
+    /// existed do not parse and are dropped, so that upgrade signed everyone out once.
+    current: CurrentSecret,
+    /// The secret the last rotation replaced, kept to tell a request sent before the
+    /// rotation response arrived ([`SecretState::Grace`]) from a second browser.
+    #[serde(default)]
+    previous: Option<PreviousSecret>,
+    /// Set once the cookie was used by two browsers. The file then stays as a tombstone until
+    /// `expires_at`, so a browser returning to an idle tab days later still learns why it was
+    /// signed out.
+    #[serde(default)]
+    revoked: Option<Revocation>,
+}
+
+/// The secret a browser presents in its cookie now.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CurrentSecret {
+    /// SHA-256 of the secret ([`secret_hash`]), so the data directory holds no working cookie
+    /// once the browser has used the secret.
+    hash: String,
+    /// Unix seconds of the rotation (or sign-in) that issued it; drives [`ROTATION_INTERVAL`].
+    issued_at: i64,
+    /// The plaintext, kept only until a request presents it, so a lost or delayed rotation
+    /// response can be repaired by re-sending the same secret ([`SecretState::LostRotation`]).
+    #[serde(default)]
+    unconfirmed: Option<String>,
+}
+
+/// The secret the last rotation replaced.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PreviousSecret {
+    /// SHA-256 of the secret ([`secret_hash`]).
+    hash: String,
+    /// Unix seconds when it stopped being current; starts [`ROTATION_GRACE`].
+    retired_at: i64,
+}
+
+/// Marks a session revoked for reuse.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+struct Revocation {
+    /// Unix seconds of the detection.
+    at: i64,
+}
+
+/// What the secret a request presented means for its session. Any secret that is neither
+/// `current` nor a recent `previous` proves a split: the session id only ever leaves the
+/// server inside a cookie, so whoever sends it with a wrong secret once had a real cookie of
+/// this session. The server therefore needs no history of older secrets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SecretState {
+    /// The current secret.
+    Current,
+    /// The previous secret within [`ROTATION_GRACE`] of its rotation: a request sent before
+    /// the rotation response arrived. Accepted without changing the cookie.
+    Grace,
+    /// The previous secret after the grace period while the current one was never presented:
+    /// the rotation response never reached the browser, or has not yet. Accepted, and the same
+    /// current secret is sent again, so a late rotation response installs the same cookie.
+    LostRotation,
+    /// A secret the session has moved past: two browsers share the session.
+    Reused,
+}
+
+/// Where a stored session stands, before looking at any secret.
+enum StoredState {
+    /// Signed in until `expires_at` (Unix seconds), or longer while a transfer runs.
+    Live { expires_at: i64 },
+    /// A tombstone of a session revoked for reuse, kept until its expiry.
+    Revoked,
+    /// Expired, or its login no longer matches; the file can go.
+    Ended,
+}
+
+impl SessionFile {
+    /// Classifies the hash of a presented secret at `now`; see [`SecretState`]. Pure, so
+    /// every row of the table can be tested with any clock.
+    fn classify(&self, presented: &str, now: i64) -> SecretState {
+        if hashes_match(&self.current.hash, presented) {
+            return SecretState::Current;
+        }
+        match &self.previous {
+            Some(previous) if hashes_match(&previous.hash, presented) => {
+                if now - previous.retired_at < ROTATION_GRACE.as_secs() as i64 {
+                    SecretState::Grace
+                } else if self.current.unconfirmed.is_some() {
+                    SecretState::LostRotation
+                } else {
+                    SecretState::Reused
+                }
+            }
+            _ => SecretState::Reused,
+        }
+    }
+
+    /// Replaces the current secret with a new one and returns its plaintext for the cookie.
+    /// The old one becomes `previous`, starting its grace period.
+    fn rotate(&mut self, now: i64) -> anyhow::Result<String> {
+        let secret = new_session_secret()?;
+        let retired = std::mem::replace(
+            &mut self.current,
+            CurrentSecret {
+                hash: secret_hash(&secret),
+                issued_at: now,
+                unconfirmed: Some(secret.clone()),
+            },
+        );
+        self.previous = Some(PreviousSecret {
+            hash: retired.hash,
+            retired_at: now,
+        });
+        Ok(secret)
+    }
+
+    /// Re-sends the unconfirmed current secret to a browser that missed its rotation, and
+    /// returns it. Restarts both clocks: the previous secret's grace period, so the same
+    /// browser's other requests still in flight with it are accepted, and the rotation
+    /// throttle, so a second recovery response cannot arrive after a newer rotation's cookie
+    /// and overwrite it with this older one.
+    fn recover_lost_rotation(&mut self, now: i64) -> Option<String> {
+        let secret = self.current.unconfirmed.clone()?;
+        self.current.issued_at = now;
+        if let Some(previous) = &mut self.previous {
+            previous.retired_at = now;
+        }
+        Some(secret)
+    }
+
+    /// Turns the session into a tombstone because its cookie was used by two browsers.
+    /// Returns how long ago the presented secret was rotated away, for the warning.
+    fn revoke_for_reuse(&mut self, presented: &str, now: i64) -> ReuseDetection {
+        let since_rotation = self
+            .previous
+            .as_ref()
+            .filter(|previous| hashes_match(&previous.hash, presented))
+            .map(|previous| now - previous.retired_at);
+        self.revoked = Some(Revocation { at: now });
+        // A tombstone needs no working cookie on disk.
+        self.current.unconfirmed = None;
+        ReuseDetection { since_rotation }
+    }
+
+    /// Who the session belongs to.
+    fn user(&self) -> SessionUser {
+        SessionUser {
+            name: self.username.clone(),
+            method: self.method,
+        }
+    }
+}
+
+/// A fresh random session secret: 32 bytes from the OS CSPRNG, base64url so it needs no
+/// escaping in a cookie and never contains the `.` that separates it from the id.
+fn new_session_secret() -> anyhow::Result<String> {
+    let mut bytes = [0_u8; 32];
+    getrandom::fill(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("failed to read OS randomness: {error}"))?;
+    Ok(URL_SAFE_NO_PAD.encode(bytes))
+}
+
+/// The stored form of a session secret: SHA-256, like access tokens. The secret has 256 bits
+/// of entropy, so a plain hash needs no salt or slow KDF.
+fn secret_hash(secret: &str) -> String {
+    URL_SAFE_NO_PAD.encode(Sha256::digest(secret.as_bytes()))
+}
+
+/// Compares two secret hashes in constant time, so timing does not reveal how much of a
+/// guessed secret matched.
+fn hashes_match(stored: &str, presented: &str) -> bool {
+    stored.as_bytes().ct_eq(presented.as_bytes()).into()
+}
+
+/// The session cookie a request carried, split into its parts.
+struct SessionCookie {
+    /// The stable session id, validated as a UUID before it becomes a path.
+    id: String,
+    /// The secret as the browser sent it.
+    secret: String,
+}
+
+impl SessionCookie {
+    /// Extracts `<id>.<secret>` without accepting similarly named cookie prefixes, and
+    /// rejects any other shape, such as the bare id of the format before rotation.
+    fn from_headers(headers: &HeaderMap) -> Option<Self> {
+        let value = headers
+            .get(header::COOKIE)?
+            .to_str()
+            .ok()?
+            .split(';')
+            .filter_map(|cookie| cookie.trim().split_once('='))
+            .find_map(|(name, value)| (name == SESSION_COOKIE_NAME).then_some(value))?;
+        let (id, secret) = value.split_once('.')?;
+        Uuid::parse_str(id).ok()?;
+        if secret.is_empty() {
+            return None;
+        }
+        Some(Self {
+            id: id.to_string(),
+            secret: secret.to_string(),
+        })
+    }
+
+    /// The hash the session file is compared against.
+    fn presented_hash(&self) -> String {
+        secret_hash(&self.secret)
+    }
 }
 
 /// What the server saw of the browser when it signed in, so the session list can tell the
@@ -343,10 +631,11 @@ impl SessionClient {
     }
 }
 
-/// A signed-in session as the session list shows it. Carries the secret session id only
-/// so the server can delete it; handlers must expose `public_id` instead.
+/// A signed-in session as the session list shows it. Carries the session id only so the
+/// server can delete it; handlers must expose `public_id` instead.
 pub(crate) struct ListedSession {
-    /// The cookie value, a bearer secret that never leaves the server.
+    /// The stable session id. Never leaves the server: anyone who knows it could sign the
+    /// session out by sending it with a made-up secret, which counts as reuse.
     pub(crate) id: String,
     /// See [`public_session_id`].
     pub(crate) public_id: String,
@@ -359,15 +648,17 @@ pub(crate) struct ListedSession {
     pub(crate) client: SessionClient,
 }
 
-/// Domain of the public session id digest, so the digest of a cookie value is never equal to
+/// Domain of the public session id digest, so the digest of a session id is never equal to
 /// a digest the server computes for any other purpose.
 const PUBLIC_SESSION_ID_DOMAIN: &[u8] = b"redoor-public-session-id-v1:";
 
-/// The identifier the session list shows for a session, derived from its cookie value.
+/// The identifier the session list and the logs show for a session, derived from its stable
+/// id, so it survives rotations of the secret.
 ///
-/// Every signed-in browser can read the session list, and the cookie value is a bearer
-/// secret, so the list names sessions by a one-way digest instead. Deriving it rather than
-/// storing a second random id means it can never get out of step with the cookie it names.
+/// Every signed-in browser can read the session list, and the session id must stay unknown
+/// (see [`ListedSession::id`]), so the list names sessions by a one-way digest instead.
+/// Deriving it rather than storing a second random id means it can never get out of step
+/// with the session it names.
 pub(crate) fn public_session_id(session_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(PUBLIC_SESSION_ID_DOMAIN);
@@ -445,59 +736,160 @@ impl AuthState {
     }
 
     /// Reads the session file on every request so logout and server restarts share one
-    /// source of truth.
+    /// source of truth, and classifies the presented secret ([`SecretState`]).
+    ///
+    /// Most requests only read. Confirming a new secret, re-sending a lost rotation and
+    /// revoking for reuse write the file, so they run a second time under the session file
+    /// lock with a fresh read: another request may have rotated the session in between.
     pub(crate) async fn check_session(&self, headers: &HeaderMap) -> SessionCheck {
-        let Some(session_id) = session_cookie(headers) else {
+        let Some(cookie) = SessionCookie::from_headers(headers) else {
             return SessionCheck::Invalid;
         };
-        self.check_session_id(&session_id).await
+        if let Some(check) = self.check_cookie(&cookie, None).await {
+            return check;
+        }
+        let guard = self.session_file_lock.lock().await;
+        self.check_cookie(&cookie, Some(&guard))
+            .await
+            .unwrap_or(SessionCheck::Invalid)
     }
 
-    /// Checks one session by id, for the request path and for websockets that watch their
-    /// session end. Never renews; an expired session is only kept while a transfer of it
-    /// is still running.
-    pub(crate) async fn check_session_id(&self, session_id: &str) -> SessionCheck {
-        let Some(path) = self.session_path(session_id) else {
-            return SessionCheck::Invalid;
+    /// One pass of [`Self::check_session`]. Without `lock` it returns `None` as soon as the
+    /// outcome needs a write; with it, `lock` proves the caller holds the session file lock,
+    /// so writing is safe.
+    async fn check_cookie(
+        &self,
+        cookie: &SessionCookie,
+        lock: Option<&tokio::sync::MutexGuard<'_, ()>>,
+    ) -> Option<SessionCheck> {
+        let Some(path) = self.session_path(&cookie.id) else {
+            return Some(SessionCheck::Invalid);
         };
-        let Some(session) = read_session_file(&path).await else {
-            return SessionCheck::Invalid;
+        let Some(mut session) = read_session_file(&path).await else {
+            return Some(SessionCheck::Invalid);
         };
-
         let now = jiff::Timestamp::now().as_second();
         let logins = self.logins.current().await;
-        let expires_at = self.effective_expiry(&session, &logins, now);
-        let Some(expires_at) = expires_at.filter(|_| session.session_id == session_id) else {
-            // Remove expired or credential-mismatched files so disk does not retain stealable IDs.
-            let _ = tokio::fs::remove_file(path).await;
-            return SessionCheck::Invalid;
+        let state = if session.session_id == cookie.id {
+            self.stored_state(&session, &logins, now)
+        } else {
+            StoredState::Ended
         };
-        SessionCheck::Valid(
-            SessionUser {
-                name: session.username,
-                method: session.method,
-            },
-            ActiveSession {
-                id: session.session_id,
-                length: session.length,
-                expires_at,
-            },
-        )
+        let expires_at = match state {
+            StoredState::Live { expires_at } => expires_at,
+            StoredState::Revoked => {
+                return Some(SessionCheck::Reused(ReusedSession {
+                    id: session.session_id.clone(),
+                    user: session.user(),
+                    detection: None,
+                }));
+            }
+            StoredState::Ended => {
+                // Remove ended files so disk does not retain stealable sessions.
+                let _ = tokio::fs::remove_file(path).await;
+                return Some(SessionCheck::Invalid);
+            }
+        };
+        let presented = cookie.presented_hash();
+        let secret = session.classify(&presented, now);
+        let active = ActiveSession {
+            id: session.session_id.clone(),
+            length: session.length,
+            expires_at,
+            presented: presented.clone(),
+        };
+        let needs_write = match secret {
+            SecretState::Current => session.current.unconfirmed.is_some(),
+            SecretState::Grace => false,
+            SecretState::LostRotation | SecretState::Reused => true,
+        };
+        if !needs_write {
+            return Some(SessionCheck::Valid(session.user(), active, None));
+        }
+        lock?;
+        let check = match secret {
+            SecretState::Current | SecretState::Grace => {
+                // The browser has the new secret, so the plaintext can leave the disk.
+                session.current.unconfirmed = None;
+                SessionCheck::Valid(session.user(), active, None)
+            }
+            SecretState::LostRotation => {
+                let secret = session.recover_lost_rotation(now)?;
+                let cookie = self.session_set_cookie(&session.session_id, &secret);
+                SessionCheck::Valid(session.user(), active, Some(cookie))
+            }
+            SecretState::Reused => {
+                let detection = session.revoke_for_reuse(&presented, now);
+                SessionCheck::Reused(ReusedSession {
+                    id: session.session_id.clone(),
+                    user: session.user(),
+                    detection: Some(detection),
+                })
+            }
+        };
+        // The answer stands even when the write fails: a reuse is refused all the same, and
+        // a missed confirmation or recovery only repeats on the next request.
+        if let Err(error) = self.write_session(&session).await {
+            log_error!(
+                error,
+                "Failed to update a session after checking its secret"
+            );
+        }
+        Some(check)
     }
 
-    /// When a stored session ends, or `None` when it already has or its login no longer
-    /// matches. Shared by the request check and the session list, so the list shows exactly
-    /// the sessions that would still be let in.
-    fn effective_expiry(&self, session: &SessionFile, logins: &Logins, now: i64) -> Option<i64> {
+    /// Checks one session by id alone, for websockets that watch their session end and for
+    /// the vault device prune task, which have no secret. Never renews; an expired session
+    /// is only kept while a transfer of it is still running.
+    pub(crate) async fn check_session_id(&self, session_id: &str) -> SessionStatus {
+        let Some(path) = self.session_path(session_id) else {
+            return SessionStatus::Ended;
+        };
+        let Some(session) = read_session_file(&path).await else {
+            return SessionStatus::Ended;
+        };
+        let now = jiff::Timestamp::now().as_second();
+        let logins = self.logins.current().await;
+        if session.session_id != session_id {
+            return SessionStatus::Ended;
+        }
+        match self.stored_state(&session, &logins, now) {
+            StoredState::Live { .. } => SessionStatus::Live,
+            StoredState::Revoked => SessionStatus::Reused,
+            StoredState::Ended => {
+                let _ = tokio::fs::remove_file(path).await;
+                SessionStatus::Ended
+            }
+        }
+    }
+
+    /// Where a stored session stands at `now`. Shared by the request check, the watches and
+    /// the session list, so the list shows exactly the sessions that would still be let in.
+    fn stored_state(&self, session: &SessionFile, logins: &Logins, now: i64) -> StoredState {
         if !self.is_current(session, logins) {
-            return None;
+            return StoredState::Ended;
+        }
+        if session.revoked.is_some() {
+            return if session.expires_at > now {
+                StoredState::Revoked
+            } else {
+                StoredState::Ended
+            };
         }
         if !self.has_transfers(&session.session_id) {
-            return (session.expires_at > now).then_some(session.expires_at);
+            return if session.expires_at > now {
+                StoredState::Live {
+                    expires_at: session.expires_at,
+                }
+            } else {
+                StoredState::Ended
+            };
         }
         // The transfer renews the session when it ends, so it cannot expire before then.
         let lifetime = self.lifetime(session.method, session.length).as_secs() as i64;
-        Some(session.expires_at.max(now + lifetime))
+        StoredState::Live {
+            expires_at: session.expires_at.max(now + lifetime),
+        }
     }
 
     /// Every session that is still signed in, newest sign-in first, for the session list.
@@ -518,7 +910,8 @@ impl AuthState {
             if self.session_path(&session.session_id).as_deref() != Some(path.as_path()) {
                 continue;
             }
-            let Some(expires_at) = self.effective_expiry(&session, &logins, now) else {
+            // Tombstones of sessions revoked for reuse are not signed in, so they are left out.
+            let StoredState::Live { expires_at } = self.stored_state(&session, &logins, now) else {
                 continue;
             };
             sessions.push(ListedSession {
@@ -591,25 +984,53 @@ impl AuthState {
         }
     }
 
-    /// Slides a session's expiry a full lifetime forward because the user was active.
-    /// Returns `None` when the session is gone, expired or revoked, so activity can never
-    /// revive a session.
+    /// Slides a session's expiry a full lifetime forward because the user was active, and
+    /// rotates its secret when the request presented the current one. Returns `None` when the
+    /// session is gone, expired or revoked, so activity can never revive a session.
+    ///
+    /// A request with the previous secret renews without rotating, so two tabs reporting
+    /// activity at the same moment do not split the session.
     pub(crate) async fn renew_session(
         &self,
-        session_id: &str,
-    ) -> anyhow::Result<Option<RenewedSession>> {
-        self.renew(session_id, RenewalCause::Activity).await
+        session: &ActiveSession,
+    ) -> anyhow::Result<Option<UpdatedSession>> {
+        self.update(
+            &session.id,
+            SessionUpdate::Activity {
+                presented: &session.presented,
+            },
+        )
+        .await
     }
 
-    /// Writes the renewed expiry, at most once per [`SESSION_RENEWAL_INTERVAL`] per session.
+    /// Rotates the session's secret without moving its expiry, for an open tab that keeps
+    /// the secret moving while nobody uses it. Returns `None` when the session is gone,
+    /// expired or revoked.
+    pub(crate) async fn rotate_session(
+        &self,
+        session: &ActiveSession,
+    ) -> anyhow::Result<Option<UpdatedSession>> {
+        self.update(
+            &session.id,
+            SessionUpdate::Rotate {
+                presented: &session.presented,
+            },
+        )
+        .await
+    }
+
+    /// Applies one [`SessionUpdate`]. The expiry is written at most once per
+    /// [`SESSION_RENEWAL_INTERVAL`] and the secret rotated at most once per
+    /// [`ROTATION_INTERVAL`], each on its own clock.
     ///
-    /// Runs under the session file lock and checks that the file still exists, so a renewal
-    /// racing a logout cannot write the just-deleted session back.
-    async fn renew(
+    /// Runs under the session file lock and reads the file again, so a renewal racing a
+    /// logout cannot write the just-deleted session back, and the presented secret is
+    /// classified against the session as it is now, not as the access check saw it.
+    async fn update(
         &self,
         session_id: &str,
-        cause: RenewalCause,
-    ) -> anyhow::Result<Option<RenewedSession>> {
+        update: SessionUpdate<'_>,
+    ) -> anyhow::Result<Option<UpdatedSession>> {
         let Some(path) = self.session_path(session_id) else {
             return Ok(None);
         };
@@ -622,19 +1043,39 @@ impl AuthState {
         let expired = session.expires_at <= now && !self.has_transfers(session_id);
         if session.session_id != session_id
             || !self.is_current(&session, &logins)
-            || (cause == RenewalCause::Activity && expired)
+            || session.revoked.is_some()
+            || (update != SessionUpdate::TransferFinished && expired)
         {
             return Ok(None);
         }
-        let lifetime = self.lifetime(session.method, session.length);
-        let renewed_until = now + lifetime.as_secs() as i64;
+        let mut changed = false;
         let mut cookie = None;
-        if renewed_until - session.expires_at >= SESSION_RENEWAL_INTERVAL.as_secs() as i64 {
-            session.expires_at = renewed_until;
-            self.write_session(&session).await?;
-            cookie = Some(self.session_set_cookie(session_id));
+        if let SessionUpdate::Activity { presented } | SessionUpdate::Rotate { presented } = update
+        {
+            match session.classify(presented, now) {
+                SecretState::Reused => return Ok(None),
+                SecretState::Current
+                    if now - session.current.issued_at >= ROTATION_INTERVAL.as_secs() as i64 =>
+                {
+                    let secret = session.rotate(now)?;
+                    cookie = Some(self.session_set_cookie(session_id, &secret));
+                    changed = true;
+                }
+                SecretState::Current | SecretState::Grace | SecretState::LostRotation => {}
+            }
         }
-        Ok(Some(RenewedSession {
+        if !matches!(update, SessionUpdate::Rotate { .. }) {
+            let lifetime = self.lifetime(session.method, session.length);
+            let renewed_until = now + lifetime.as_secs() as i64;
+            if renewed_until - session.expires_at >= SESSION_RENEWAL_INTERVAL.as_secs() as i64 {
+                session.expires_at = renewed_until;
+                changed = true;
+            }
+        }
+        if changed {
+            self.write_session(&session).await?;
+        }
+        Ok(Some(UpdatedSession {
             expires_at: session.expires_at,
             cookie,
         }))
@@ -728,6 +1169,7 @@ impl AuthState {
     ) -> anyhow::Result<NewSession> {
         let lifetime = self.lifetime(grant.user.method, length);
         let now = jiff::Timestamp::now();
+        let secret = new_session_secret()?;
         let session = SessionFile {
             session_id: Uuid::new_v4().to_string(),
             username: grant.user.name.clone(),
@@ -737,10 +1179,19 @@ impl AuthState {
             length,
             created_at: now.as_second(),
             client,
+            current: CurrentSecret {
+                hash: secret_hash(&secret),
+                issued_at: now.as_second(),
+                // Nothing to recover: a lost sign-in response leaves the browser without any
+                // cookie, so the plaintext would only sit on disk.
+                unconfirmed: None,
+            },
+            previous: None,
+            revoked: None,
         };
         self.write_session(&session).await?;
         Ok(NewSession {
-            cookie: self.session_set_cookie(&session.session_id),
+            cookie: self.session_set_cookie(&session.session_id, &secret),
             user: grant.user,
         })
     }
@@ -766,10 +1217,12 @@ impl AuthState {
     }
 
     /// Builds the `Set-Cookie` value for a session so every issuer uses the same attributes,
-    /// including the fixed [`SESSION_COOKIE_MAX_AGE`].
-    fn session_set_cookie(&self, session_id: &str) -> HeaderValue {
+    /// including the fixed [`SESSION_COOKIE_MAX_AGE`]. A rotation re-sends the same
+    /// `Max-Age`; that does not lengthen the session, because the server alone enforces the
+    /// idle expiry.
+    fn session_set_cookie(&self, session_id: &str, secret: &str) -> HeaderValue {
         let cookie = format!(
-            "{SESSION_COOKIE_NAME}={session_id}; HttpOnly; SameSite=Lax; Path=/{}; Max-Age={}",
+            "{SESSION_COOKIE_NAME}={session_id}.{secret}; HttpOnly; SameSite=Lax; Path=/{}; Max-Age={}",
             self.secure_flag(),
             SESSION_COOKIE_MAX_AGE.as_secs()
         );
@@ -781,12 +1234,40 @@ impl AuthState {
         if self.cookie_secure { "; Secure" } else { "" }
     }
 
-    /// Deletes the session named by the request's cookie, for logout.
-    async fn delete_session(&self, headers: &HeaderMap) -> anyhow::Result<()> {
-        let Some(session_id) = session_cookie(headers) else {
-            return Ok(());
+    /// Ends the session named by a logout request's cookie.
+    ///
+    /// The cookie is classified first: a stale one turns the session into a tombstone
+    /// instead of deleting it, returned so the caller can log it, because logging out with a
+    /// copied cookie must not erase the evidence the other browser would see. A tombstone
+    /// stays as it is.
+    async fn end_session(&self, cookie: &SessionCookie) -> anyhow::Result<Option<ReusedSession>> {
+        let Some(path) = self.session_path(&cookie.id) else {
+            return Ok(None);
         };
-        self.delete_session_id(&session_id).await
+        let logins = self.logins.current().await;
+        let _guard = self.session_file_lock.lock().await;
+        if let Some(mut session) = read_session_file(&path).await
+            && session.session_id == cookie.id
+        {
+            let now = jiff::Timestamp::now().as_second();
+            match self.stored_state(&session, &logins, now) {
+                StoredState::Revoked => return Ok(None),
+                StoredState::Live { .. } => {
+                    let presented = cookie.presented_hash();
+                    if session.classify(&presented, now) == SecretState::Reused {
+                        let detection = session.revoke_for_reuse(&presented, now);
+                        self.write_session(&session).await?;
+                        return Ok(Some(ReusedSession {
+                            id: session.session_id.clone(),
+                            user: session.user(),
+                            detection: Some(detection),
+                        }));
+                    }
+                }
+                StoredState::Ended => {}
+            }
+        }
+        remove_session_file(&path).await.map(|()| None)
     }
 
     /// Deletes only a syntactically valid session identifier, preventing path traversal via
@@ -796,17 +1277,14 @@ impl AuthState {
             return Ok(());
         };
         let _guard = self.session_file_lock.lock().await;
-        match tokio::fs::remove_file(path).await {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
+        remove_session_file(&path).await
     }
 
     /// Removes sessions that no longer match the running config (a changed password, a
-    /// removed user, OIDC turned off).
+    /// removed user, OIDC turned off) and tombstones whose session would have expired anyway.
     async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
         let logins = self.logins.current().await;
+        let now = jiff::Timestamp::now().as_second();
         let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -823,7 +1301,8 @@ impl AuthState {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
             };
-            if !self.is_current(&session, &logins) {
+            let expired_tombstone = session.revoked.is_some() && session.expires_at <= now;
+            if !self.is_current(&session, &logins) || expired_tombstone {
                 let _ = tokio::fs::remove_file(&path).await;
             }
         }
@@ -1076,6 +1555,27 @@ pub(crate) struct NewSession {
     pub(crate) cookie: HeaderValue,
 }
 
+/// Removes a session file; one that is already gone counts as removed.
+async fn remove_session_file(path: &std::path::Path) -> anyhow::Result<()> {
+    match tokio::fs::remove_file(path).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Whether a response already sets the session cookie, such as the new session of a password
+/// change or logout's clearing cookie. The access layer then leaves out its recovery cookie,
+/// because a stale secret arriving after either would sign the browser out.
+pub(crate) fn sets_session_cookie(headers: &HeaderMap) -> bool {
+    let prefix = format!("{SESSION_COOKIE_NAME}=");
+    headers
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .any(|value| value.starts_with(&prefix))
+}
+
 /// Reads and parses a session file; `None` when it is missing or unreadable, which every
 /// caller treats as no session.
 async fn read_session_file(path: &std::path::Path) -> Option<SessionFile> {
@@ -1105,7 +1605,7 @@ impl Drop for SessionActivityGuard {
         }
         redoor_core::logging::spawn_in_user_scope(async move {
             if let Err(error) = auth
-                .renew(&session_id, RenewalCause::TransferFinished)
+                .update(&session_id, SessionUpdate::TransferFinished)
                 .await
             {
                 log_error!(error, "Failed to renew the session after a transfer");
@@ -1154,17 +1654,6 @@ async fn ensure_private_directory(path: &std::path::Path) -> anyhow::Result<()> 
         );
     }
     Ok(())
-}
-
-/// Extracts the opaque session identifier without accepting similarly named cookie prefixes.
-fn session_cookie(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get(header::COOKIE)?
-        .to_str()
-        .ok()?
-        .split(';')
-        .filter_map(|cookie| cookie.trim().split_once('='))
-        .find_map(|(name, value)| (name == SESSION_COOKIE_NAME).then(|| value.to_string()))
 }
 
 /// Verifies a login name and password and persists a new server-side login session.
@@ -1262,24 +1751,34 @@ pub(crate) async fn login_handler(
 /// Removes the durable session first, then expires the browser cookie even when no file remains.
 ///
 /// The session's vault device secrets go first of all, so a logout the page could not finish
-/// (a closed tab, a failed lock) still locks the vault in that browser.
+/// (a closed tab, a failed lock) still locks the vault in that browser. A logout with a stale
+/// cookie revokes the session for reuse instead (see [`AuthState::end_session`]).
 pub(crate) async fn logout_handler(
     State(state): State<ServerState>,
+    client: ClientAddress,
     headers: HeaderMap,
 ) -> Response {
-    if let Some(session_id) = session_cookie(&headers) {
-        state.vault_devices.delete_session(&session_id);
-    }
-    if let Err(error) = state.auth.delete_session(&headers).await {
-        log_error!(error, "Failed to delete session");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(ErrorResponse {
-                code: None,
-                error: "Failed to delete session".to_string(),
-            }),
-        )
-            .into_response();
+    let ended = match SessionCookie::from_headers(&headers) {
+        Some(cookie) => {
+            state.vault_devices.delete_session(&cookie.id);
+            state.auth.end_session(&cookie).await
+        }
+        None => Ok(None),
+    };
+    match ended {
+        Ok(Some(reused)) => reused.forget(&state, Some(&client)),
+        Ok(None) => {}
+        Err(error) => {
+            log_error!(error, "Failed to delete session");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    code: None,
+                    error: "Failed to delete session".to_string(),
+                }),
+            )
+                .into_response();
+        }
     }
 
     let secure_flag = state.auth.secure_flag();
@@ -1346,7 +1845,7 @@ password = "password"
             .expect("cookie pair")
             .to_string();
         headers.insert(axum::http::header::COOKIE, pair.parse().expect("cookie"));
-        let SessionCheck::Valid(_, active) = auth.check_session(&headers).await else {
+        let SessionCheck::Valid(_, active, _) = auth.check_session(&headers).await else {
             panic!("a new session must be valid");
         };
         (directory, auth, active)
@@ -1357,10 +1856,12 @@ password = "password"
 mod tests {
     use super::test_support::test_client;
     use super::{
-        AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
-        LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification,
-        PasswordChangeError, SESSION_COOKIE_NAME, SessionCheck, SessionFile, SessionGrant,
-        SessionLength, SessionMethod, SessionUser, oidc_fingerprint, public_session_id,
+        ActiveSession, AuthState, CurrentSecret, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL,
+        LOGIN_MAX_FAILURES_PER_IP, LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter,
+        LoginVerification, PasswordChangeError, PreviousSecret, ROTATION_GRACE, ROTATION_INTERVAL,
+        SESSION_COOKIE_NAME, SecretState, SessionCheck, SessionClient, SessionCookie, SessionFile,
+        SessionGrant, SessionLength, SessionMethod, SessionStatus, SessionUser, oidc_fingerprint,
+        public_session_id, secret_hash, sets_session_cookie,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
     use redoor_core::config::{ConfiguredPassword, ConfiguredUser, OidcConfig};
@@ -1463,8 +1964,8 @@ password = '{password}'
     /// The signed-in user of a session, or `None` when the session is not valid.
     async fn session_user(auth: &AuthState, headers: &HeaderMap) -> Option<SessionUser> {
         match auth.check_session(headers).await {
-            SessionCheck::Invalid => None,
-            SessionCheck::Valid(user, _) => Some(user),
+            SessionCheck::Invalid | SessionCheck::Reused(_) => None,
+            SessionCheck::Valid(user, _, _) => Some(user),
         }
     }
 
@@ -1503,45 +2004,81 @@ password = '{password}'
         headers
     }
 
-    /// Rewrites a stored session's expiry, standing in for the passage of time.
-    async fn set_expiry(directory: &TempDir, headers: &HeaderMap, expires_at: i64) {
-        let value = headers[header::COOKIE].to_str().expect("ASCII");
-        let session_id = value
-            .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
-            .expect("session cookie");
-        let path = directory
+    /// The file of the session a cookie names.
+    fn session_file_path(directory: &TempDir, headers: &HeaderMap) -> std::path::PathBuf {
+        directory
             .path()
             .join("sessions")
-            .join(format!("session_{session_id}.json"));
-        let mut session: SessionFile =
-            serde_json::from_slice(&tokio::fs::read(&path).await.expect("session file"))
-                .expect("session JSON");
-        session.expires_at = expires_at;
-        tokio::fs::write(&path, serde_json::to_vec(&session).expect("JSON"))
-            .await
-            .expect("rewrite session");
+            .join(format!("session_{}.json", session_id(headers)))
     }
 
-    /// The session id carried by request headers built from a cookie.
+    /// The stored session a cookie names.
+    async fn stored_session(directory: &TempDir, headers: &HeaderMap) -> SessionFile {
+        let path = session_file_path(directory, headers);
+        serde_json::from_slice(&tokio::fs::read(&path).await.expect("session file"))
+            .expect("session JSON")
+    }
+
+    /// Rewrites a stored session, standing in for the passage of time.
+    async fn edit_session(
+        directory: &TempDir,
+        headers: &HeaderMap,
+        edit: impl FnOnce(&mut SessionFile),
+    ) {
+        let mut session = stored_session(directory, headers).await;
+        edit(&mut session);
+        tokio::fs::write(
+            session_file_path(directory, headers),
+            serde_json::to_vec(&session).expect("JSON"),
+        )
+        .await
+        .expect("rewrite session");
+    }
+
+    /// Rewrites a stored session's expiry, standing in for the passage of time.
+    async fn set_expiry(directory: &TempDir, headers: &HeaderMap, expires_at: i64) {
+        edit_session(directory, headers, |session| {
+            session.expires_at = expires_at
+        })
+        .await;
+    }
+
+    /// The stable session id carried by request headers built from a cookie.
     fn session_id(headers: &HeaderMap) -> String {
         headers[header::COOKIE]
             .to_str()
             .expect("ASCII")
             .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
+            .and_then(|value| value.split_once('.'))
             .expect("session cookie")
+            .0
             .to_string()
     }
 
     /// The stored expiry of a session, as the activity endpoint and the UI see it.
     async fn stored_expiry(directory: &TempDir, headers: &HeaderMap) -> i64 {
-        let path = directory
-            .path()
-            .join("sessions")
-            .join(format!("session_{}.json", session_id(headers)));
-        let session: SessionFile =
-            serde_json::from_slice(&tokio::fs::read(&path).await.expect("session file"))
-                .expect("session JSON");
-        session.expires_at
+        stored_session(directory, headers).await.expires_at
+    }
+
+    /// The session behind a cookie, as the access layer hands it to handlers.
+    async fn active_session(auth: &AuthState, headers: &HeaderMap) -> ActiveSession {
+        match auth.check_session(headers).await {
+            SessionCheck::Valid(_, session, _) => session,
+            _ => panic!("the session must be valid"),
+        }
+    }
+
+    /// Makes the current secret old enough to rotate on the next activity or rotate call.
+    async fn make_rotation_due(directory: &TempDir, headers: &HeaderMap) {
+        edit_session(directory, headers, |session| {
+            session.current.issued_at -= ROTATION_INTERVAL.as_secs() as i64;
+        })
+        .await;
+    }
+
+    /// Unix seconds now, on the clock the session files use.
+    fn now() -> i64 {
+        jiff::Timestamp::now().as_second()
     }
 
     /// A password session of `admin` with the given length, and the `Set-Cookie` value it
@@ -1589,7 +2126,7 @@ password = '{password}'
             // The request path knows the length, so a password change can reuse it.
             assert!(matches!(
                 auth.check_session(&headers).await,
-                SessionCheck::Valid(_, session) if session.length == length
+                SessionCheck::Valid(_, session, _) if session.length == length
             ));
         }
     }
@@ -1647,8 +2184,10 @@ password = '{password}'
         ));
         assert_eq!(stored_expiry(&directory, &headers).await, now + 60);
 
+        let active = active_session(&auth, &headers).await;
+        make_rotation_due(&directory, &headers).await;
         let renewed = auth
-            .renew_session(&session_id(&headers))
+            .renew_session(&active)
             .await
             .expect("renewal")
             .expect("a valid session is renewed");
@@ -1658,20 +2197,20 @@ password = '{password}'
             stored_expiry(&directory, &headers).await,
             renewed.expires_at
         );
-        // A written renewal restarts the browser cookie's fixed lifetime.
+        let cookie = renewed.cookie.expect("due activity rotates the secret");
+        // The rotated cookie restarts the browser cookie's fixed lifetime.
         assert!(
-            renewed
-                .cookie
-                .expect("a written renewal sends the cookie")
+            cookie
                 .to_str()
                 .expect("ASCII")
                 .ends_with("; Max-Age=31536000")
         );
+        let headers = cookie_headers(&cookie);
 
         set_expiry(&directory, &headers, now - 1).await;
         // Activity reported after the expiry cannot bring the session back.
         assert!(
-            auth.renew_session(&session_id(&headers))
+            auth.renew_session(&active)
                 .await
                 .expect("renewal")
                 .is_none()
@@ -1689,7 +2228,7 @@ password = '{password}'
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
         let (headers, _) = password_session(&auth, SessionLength::Week).await;
-        let id = session_id(&headers);
+        let id = active_session(&auth, &headers).await;
         let first = auth
             .renew_session(&id)
             .await
@@ -1706,7 +2245,7 @@ password = '{password}'
         // Less than a minute since the last renewal: the file is not written again.
         assert_eq!(stored_expiry(&directory, &headers).await, marker);
         assert_eq!(second.expires_at, marker);
-        // A throttled renewal sends no cookie, so the response stays small.
+        // A secret issued less than a minute ago is not rotated, so no cookie is sent.
         assert!(second.cookie.is_none());
 
         set_expiry(&directory, &headers, marker - 60).await;
@@ -1727,10 +2266,7 @@ password = '{password}'
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
         let (headers, _) = password_session(&auth, SessionLength::Week).await;
-        let path = directory
-            .path()
-            .join("sessions")
-            .join(format!("session_{}.json", session_id(&headers)));
+        let path = session_file_path(&directory, &headers);
         let mut stored: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.expect("file")).expect("JSON");
         stored.as_object_mut().expect("object").remove("length");
@@ -1754,9 +2290,7 @@ password = '{password}'
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
         let (headers, _) = password_session(&auth, SessionLength::Hour).await;
-        let SessionCheck::Valid(_, session) = auth.check_session(&headers).await else {
-            panic!("the new session must be valid");
-        };
+        let session = active_session(&auth, &headers).await;
         let guard = auth.hold_for_transfer(&session);
         let now = jiff::Timestamp::now().as_second();
         set_expiry(&directory, &headers, now - 1).await;
@@ -1765,7 +2299,7 @@ password = '{password}'
         // and the UI is told the session lasts at least a lifetime longer.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Valid(_, session) if session.expires_at >= now + 3600
+            SessionCheck::Valid(_, session, _) if session.expires_at >= now + 3600
         ));
 
         drop(guard);
@@ -1871,14 +2405,7 @@ password = '{password}'
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
         let headers = login(&auth, "admin", "password").await;
-        let value = headers[header::COOKIE].to_str().expect("ASCII");
-        let session_id = value
-            .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
-            .expect("session cookie");
-        let path = directory
-            .path()
-            .join("sessions")
-            .join(format!("session_{session_id}.json"));
+        let path = session_file_path(&directory, &headers);
         let mut stored: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.expect("file")).expect("JSON");
         stored.as_object_mut().expect("object").remove("method");
@@ -1959,7 +2486,7 @@ password = '{stored}'
         // The new session keeps the length the changing browser signed in with.
         assert!(matches!(
             auth.check_session(&cookie_headers(&session.cookie)).await,
-            SessionCheck::Valid(_, renewed) if renewed.length == SessionLength::Week
+            SessionCheck::Valid(_, renewed, _) if renewed.length == SessionLength::Week
         ));
         let stored = stored_password(&config_path).await;
         // The file never gets the plaintext; it gets a hash the config parser accepts.
@@ -2407,14 +2934,7 @@ port = "not-a-port"
         let directory = TempDir::create();
         let auth = auth_with(&directory, vec![user("admin", "password")], None).await;
         let headers = login(&auth, "admin", "password").await;
-        let value = headers[header::COOKIE].to_str().expect("ASCII");
-        let session_id = value
-            .strip_prefix(&format!("{SESSION_COOKIE_NAME}="))
-            .expect("session cookie");
-        let path = directory
-            .path()
-            .join("sessions")
-            .join(format!("session_{session_id}.json"));
+        let path = session_file_path(&directory, &headers);
         let mut stored: serde_json::Value =
             serde_json::from_slice(&tokio::fs::read(&path).await.unwrap()).unwrap();
         stored["method"] = "pam".into();
@@ -2636,5 +3156,364 @@ port = "not-a-port"
         assert!(session_user(&auth, &second).await.is_none());
         // The caller keeps working.
         assert!(session_user(&auth, &own).await.is_some());
+    }
+
+    /// A session file with a current secret `current` and, when given, a previous secret
+    /// `previous` that was retired at `retired_at`, for the pure classification table.
+    fn classified_file(previous: Option<(&str, i64)>, unconfirmed: Option<&str>) -> SessionFile {
+        SessionFile {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            username: "admin".to_string(),
+            credentials_fingerprint: String::new(),
+            expires_at: 0,
+            method: SessionMethod::Password,
+            length: SessionLength::Hour,
+            created_at: 0,
+            client: SessionClient {
+                user_agent: None,
+                ip: Ipv4Addr::LOCALHOST.into(),
+                forwarded_for: None,
+            },
+            current: CurrentSecret {
+                hash: secret_hash("current"),
+                issued_at: 0,
+                unconfirmed: unconfirmed.map(str::to_string),
+            },
+            previous: previous.map(|(secret, retired_at)| PreviousSecret {
+                hash: secret_hash(secret),
+                retired_at,
+            }),
+            revoked: None,
+        }
+    }
+
+    /// Every row of the classification table, at both sides of the grace boundary.
+    #[test]
+    fn presented_secrets_are_classified() {
+        let grace = ROTATION_GRACE.as_secs() as i64;
+        let retired_at = 1_000;
+        let unconfirmed = classified_file(Some(("previous", retired_at)), Some("current"));
+        let confirmed = classified_file(Some(("previous", retired_at)), None);
+        let classify = |file: &SessionFile, secret: &str, after: i64| {
+            file.classify(&secret_hash(secret), retired_at + after)
+        };
+        // The current secret is always accepted, whatever the clock says.
+        assert_eq!(
+            classify(&confirmed, "current", grace * 10),
+            SecretState::Current
+        );
+        // Requests sent before the rotation response arrived are accepted, with or without
+        // the new secret confirmed.
+        assert_eq!(
+            classify(&unconfirmed, "previous", grace - 1),
+            SecretState::Grace
+        );
+        assert_eq!(
+            classify(&confirmed, "previous", grace - 1),
+            SecretState::Grace
+        );
+        // From the end of the grace period, an unconfirmed rotation counts as lost ...
+        assert_eq!(
+            classify(&unconfirmed, "previous", grace),
+            SecretState::LostRotation
+        );
+        // ... while after the new secret was used, the old one proves a second browser.
+        assert_eq!(classify(&confirmed, "previous", grace), SecretState::Reused);
+        // A secret the session never had is reuse, at any time and without a previous one.
+        assert_eq!(classify(&unconfirmed, "made-up", 0), SecretState::Reused);
+        assert_eq!(
+            classify(&classified_file(None, None), "made-up", 0),
+            SecretState::Reused
+        );
+    }
+
+    /// The cookie must be `<id>.<secret>`; the bare id of the old format and an empty secret
+    /// are no session at all.
+    #[test]
+    fn session_cookies_need_an_id_and_a_secret() {
+        let parse = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, value.parse().expect("cookie"));
+            SessionCookie::from_headers(&headers).map(|cookie| (cookie.id, cookie.secret))
+        };
+        let id = "00000000-0000-4000-8000-000000000000";
+        // The two parts are split at the first dot.
+        assert_eq!(
+            parse(&format!("other=1; redoor_session={id}.c2VjcmV0")),
+            Some((id.to_string(), "c2VjcmV0".to_string()))
+        );
+        // Cookies from before rotation carry no secret and are refused.
+        assert!(parse(&format!("redoor_session={id}")).is_none());
+        assert!(parse(&format!("redoor_session={id}.")).is_none());
+        // The id still has to be a UUID before it becomes a path.
+        assert!(parse("redoor_session=../../etc.secret").is_none());
+    }
+
+    /// Activity rotates a due secret: the old one becomes `previous`, the new one stays
+    /// unconfirmed until a request presents it, and the old one keeps working during the
+    /// grace period without a new cookie.
+    #[tokio::test]
+    async fn rotation_keeps_the_previous_secret_until_confirmed() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (old, _) = password_session(&auth, SessionLength::Hour).await;
+        let before = stored_session(&directory, &old).await;
+        make_rotation_due(&directory, &old).await;
+
+        let renewed = auth
+            .renew_session(&active_session(&auth, &old).await)
+            .await
+            .expect("renewal")
+            .expect("valid");
+        let new = cookie_headers(&renewed.cookie.expect("a due secret rotates"));
+        // The stable id stays, only the secret changes.
+        assert_eq!(session_id(&new), session_id(&old));
+        assert_ne!(new, old);
+        let rotated = stored_session(&directory, &new).await;
+        // The replaced secret is kept to recognise requests that were already in flight.
+        assert_eq!(
+            rotated
+                .previous
+                .as_ref()
+                .map(|previous| previous.hash.as_str()),
+            Some(before.current.hash.as_str())
+        );
+        // The new secret is kept in plaintext only until the browser confirms it.
+        assert!(rotated.current.unconfirmed.is_some());
+
+        // The old secret still works within the grace period, and gets no new cookie.
+        assert!(matches!(
+            auth.check_session(&old).await,
+            SessionCheck::Valid(_, _, None)
+        ));
+        // Presenting the new secret confirms it ...
+        assert!(matches!(
+            auth.check_session(&new).await,
+            SessionCheck::Valid(_, _, None)
+        ));
+        // ... which removes its plaintext from the disk.
+        assert!(
+            stored_session(&directory, &new)
+                .await
+                .current
+                .unconfirmed
+                .is_none()
+        );
+    }
+
+    /// A browser that never received its rotation response gets the same current secret
+    /// again, and both throttle clocks restart.
+    #[tokio::test]
+    async fn lost_rotations_resend_the_current_secret() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (old, _) = password_session(&auth, SessionLength::Hour).await;
+        make_rotation_due(&directory, &old).await;
+        let rotated = auth
+            .rotate_session(&active_session(&auth, &old).await)
+            .await
+            .expect("rotation")
+            .expect("valid")
+            .cookie
+            .expect("a due secret rotates");
+        let long_ago = now() - 10 * ROTATION_INTERVAL.as_secs() as i64;
+        edit_session(&directory, &old, |session| {
+            session.current.issued_at = long_ago;
+            if let Some(previous) = &mut session.previous {
+                previous.retired_at = long_ago;
+            }
+        })
+        .await;
+
+        let SessionCheck::Valid(_, _, Some(recovery)) = auth.check_session(&old).await else {
+            panic!("a lost rotation is repaired, not refused");
+        };
+        // The browser gets the very secret the lost response carried, so that response
+        // arriving late installs the same cookie.
+        assert_eq!(recovery, rotated);
+        let stored = stored_session(&directory, &old).await;
+        // Other requests still in flight with the old secret get a fresh grace period ...
+        assert!(stored.previous.expect("previous").retired_at >= now() - 5);
+        // ... and the rotation throttle restarts, so a second recovery response cannot
+        // overwrite a newer rotation's cookie.
+        assert!(stored.current.issued_at >= now() - 5);
+        // The recovered secret works.
+        assert!(matches!(
+            auth.check_session(&cookie_headers(&recovery)).await,
+            SessionCheck::Valid(..)
+        ));
+    }
+
+    /// A stale secret after the grace period revokes the session for both browsers and
+    /// leaves a tombstone that every later check reports, until the session would have
+    /// expired.
+    #[tokio::test]
+    async fn reuse_leaves_a_tombstone_until_the_expiry() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (old, _) = password_session(&auth, SessionLength::Hour).await;
+        make_rotation_due(&directory, &old).await;
+        let new = cookie_headers(
+            &auth
+                .renew_session(&active_session(&auth, &old).await)
+                .await
+                .expect("renewal")
+                .expect("valid")
+                .cookie
+                .expect("a due secret rotates"),
+        );
+        // Using the new secret confirms it, as the UI's follow-up request does.
+        assert!(matches!(
+            auth.check_session(&new).await,
+            SessionCheck::Valid(..)
+        ));
+        edit_session(&directory, &old, |session| {
+            if let Some(previous) = &mut session.previous {
+                previous.retired_at -= ROTATION_GRACE.as_secs() as i64;
+            }
+        })
+        .await;
+
+        let SessionCheck::Reused(reused) = auth.check_session(&old).await else {
+            panic!("the stale secret must be refused as reuse");
+        };
+        // The detecting request knows how long ago the secret was rotated away.
+        assert!(matches!(
+            reused.detection,
+            Some(detection) if detection.since_rotation >= Some(ROTATION_GRACE.as_secs() as i64)
+        ));
+        // The browser holding the current secret is signed out too, without a second warning.
+        assert!(matches!(
+            auth.check_session(&new).await,
+            SessionCheck::Reused(super::ReusedSession {
+                detection: None,
+                ..
+            })
+        ));
+        // Websockets, which have no secret, see the reuse as well.
+        assert_eq!(
+            auth.check_session_id(&session_id(&new)).await,
+            SessionStatus::Reused
+        );
+        // The tombstone is not a signed-in session.
+        assert!(auth.list_sessions().await.expect("list").is_empty());
+        // Activity cannot renew or rotate a revoked session.
+        assert!(
+            auth.rotate_session(&active_session_unchecked(&new))
+                .await
+                .expect("rotation")
+                .is_none()
+        );
+
+        set_expiry(&directory, &new, now() - 1).await;
+        // Once the session would have expired, the tombstone goes like any ended session.
+        assert!(matches!(
+            auth.check_session(&new).await,
+            SessionCheck::Invalid
+        ));
+        assert!(
+            !tokio::fs::try_exists(session_file_path(&directory, &new))
+                .await
+                .expect("stat")
+        );
+    }
+
+    /// The session behind a cookie without checking it, for calls that a revoked session
+    /// must refuse on their own.
+    fn active_session_unchecked(headers: &HeaderMap) -> ActiveSession {
+        let cookie = SessionCookie::from_headers(headers).expect("session cookie");
+        ActiveSession {
+            id: cookie.id.clone(),
+            length: SessionLength::Hour,
+            expires_at: 0,
+            presented: cookie.presented_hash(),
+        }
+    }
+
+    /// A valid id with a made-up secret proves someone once had a real cookie of the
+    /// session, so it revokes the session at once.
+    #[tokio::test]
+    async fn made_up_secrets_revoke_the_session() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Hour).await;
+        let mut forged = HeaderMap::new();
+        forged.insert(
+            header::COOKIE,
+            format!("{SESSION_COOKIE_NAME}={}.bWFkZS11cA", session_id(&headers))
+                .parse()
+                .expect("cookie"),
+        );
+        // The forged secret is refused as reuse, naming no rotation it was replaced by.
+        assert!(matches!(
+            auth.check_session(&forged).await,
+            SessionCheck::Reused(super::ReusedSession {
+                detection: Some(super::ReuseDetection {
+                    since_rotation: None
+                }),
+                ..
+            })
+        ));
+        // The real browser is signed out too.
+        assert!(matches!(
+            auth.check_session(&headers).await,
+            SessionCheck::Reused(_)
+        ));
+    }
+
+    /// Rotating moves only the secret, never the expiry, and a finished transfer moves only
+    /// the expiry, never the secret.
+    #[tokio::test]
+    async fn rotation_and_transfers_change_one_thing_each() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let (headers, _) = password_session(&auth, SessionLength::Hour).await;
+        let aged = now() + 120;
+        set_expiry(&directory, &headers, aged).await;
+        make_rotation_due(&directory, &headers).await;
+        let before = stored_session(&directory, &headers).await;
+
+        let session = active_session(&auth, &headers).await;
+        drop(auth.hold_for_transfer(&session));
+        while auth.has_transfers(&session.id) {
+            tokio::task::yield_now().await;
+        }
+        let after_transfer = stored_session(&directory, &headers).await;
+        // The finished transfer renewed the session ...
+        assert!(after_transfer.expires_at > aged);
+        // ... but did not rotate, because no response is left to carry a new cookie.
+        assert_eq!(after_transfer.current.hash, before.current.hash);
+
+        let rotated = auth
+            .rotate_session(&session)
+            .await
+            .expect("rotation")
+            .expect("valid");
+        // A transfer just before does not keep a due secret from rotating.
+        assert!(rotated.cookie.is_some());
+        // Rotating leaves the expiry where it was, so an idle tab cannot keep the session.
+        assert_eq!(rotated.expires_at, after_transfer.expires_at);
+        assert_eq!(
+            stored_expiry(&directory, &headers).await,
+            after_transfer.expires_at
+        );
+    }
+
+    /// Only the session cookie counts as a handler setting its own session.
+    #[test]
+    fn recognises_responses_that_set_the_session_cookie() {
+        let mut headers = HeaderMap::new();
+        headers.append(
+            header::SET_COOKIE,
+            HeaderValue::from_static("redoor_oidc_state=x; Max-Age=0"),
+        );
+        // Another cookie leaves room for the recovery cookie.
+        assert!(!sets_session_cookie(&headers));
+        headers.append(
+            header::SET_COOKIE,
+            HeaderValue::from_static("redoor_session=; Max-Age=0"),
+        );
+        // Logout's clearing cookie wins over a recovery cookie.
+        assert!(sets_session_cookie(&headers));
     }
 }

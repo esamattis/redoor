@@ -4,7 +4,7 @@ import {
     expect,
     test,
     type WebSocket as PlaywrightWebSocket,
-} from "@playwright/test";
+} from "./fixtures";
 import { $ } from "zx";
 import { z } from "zod";
 import {

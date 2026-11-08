@@ -1,7 +1,7 @@
 // Serial: changes the shared user settings (hidden files, theme, search, open files) and asserts on them.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures";
 import { dragReorderRow } from "../reorder";
 import { ApiClient } from "#ui/api-client";
 import {

@@ -27,6 +27,21 @@ const ACTIVITY_EVENTS = [
 /** At most one activity report per minute, matching the server's renewal granularity. */
 const ACTIVITY_REPORT_INTERVAL_MS = 60_000;
 
+/**
+ * How often an open tab rotates the session cookie's secret, hidden tabs included. Keeps the
+ * secret moving while nobody uses the page, so a copied cookie cannot be used quietly next
+ * to an open tab. Chrome's heaviest throttling of background timers still fires about once
+ * a minute, so the interval holds in hidden tabs too.
+ */
+const SESSION_ROTATION_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Web Lock that lets only one tab of the browser rotate at a time. Two tabs rotating at once
+ * would be safe (the second presents the previous secret and the server does not rotate
+ * again), but it would be a needless write.
+ */
+const ROTATION_LOCK_NAME = "redoor-session-rotation";
+
 /** How long before the expiry the sign-out warning appears. */
 const WARNING_LEAD_MS = 60_000;
 
@@ -76,12 +91,16 @@ function nextCheckDelay(deadline: number | null, now: number): number | false {
 }
 
 /**
- * Keeps the browser session alive while the user works and warns before it ends.
+ * Keeps the browser session alive while the user works, rotates its cookie secret while the
+ * tab is open, and warns before the session ends.
  *
  * The server renews a session only when told about activity, never on ordinary requests, so
  * background polling of an unattended page cannot keep it signed in. Reports are sent only
  * while the page is visible and at most once a minute. When the session ends, the next
  * session check answers 401, which leads to the login page with a way back.
+ *
+ * Every activity report and rotation can hand the browser a new secret, which is followed
+ * at once by a request that presents it (see `confirmSession`).
  */
 export function SessionActivity() {
     const { api } = rootRouteApi.useRouteContext();
@@ -103,6 +122,19 @@ export function SessionActivity() {
         currentUser.dataUpdatedAt,
     );
 
+    /**
+     * Sends a request with the cookie a rotation just set, which tells the server the browser
+     * has the new secret while the old one is still in its 30 second grace period. Without
+     * it an idle tab, or one used only through a terminal socket, could leave the new secret
+     * unconfirmed for minutes, and a copied browser presenting the old secret meanwhile would
+     * be handed the new one instead of being detected. `auth/me` never renews the session.
+     */
+    const confirmSession = () => {
+        void queryClient.refetchQueries({
+            queryKey: currentUserQueryOptions(api).queryKey,
+        });
+    };
+
     const activity = useMutation({
         mutationFn: () => api.recordSessionActivity(),
         onSuccess: (session) => {
@@ -110,8 +142,52 @@ export function SessionActivity() {
                 currentUserQueryOptions(api).queryKey,
                 (previous) => (previous ? { ...previous, session } : previous),
             );
+            confirmSession();
         },
     });
+
+    const rotation = useMutation({
+        mutationFn: () => api.rotateSession(),
+        onSuccess: confirmSession,
+    });
+
+    const rotateSession = React.useEffectEvent(() => {
+        // Access tokens have no cookie to rotate.
+        if (!currentUser.data?.session) {
+            return;
+        }
+
+        // Web Locks only exist in secure contexts; plain HTTP rotates in every tab.
+        if (!("locks" in navigator)) {
+            rotation.mutate();
+
+            return;
+        }
+
+        void navigator.locks.request(
+            ROTATION_LOCK_NAME,
+            { ifAvailable: true },
+            async (lock) => {
+                // Another tab is rotating right now, which covers this one too.
+                if (!lock) {
+                    return;
+                }
+
+                // A failure leaves the cookie as it was; a 401 already leads to the login page.
+                await rotation.mutateAsync().catch(() => undefined);
+            },
+        );
+    });
+
+    // Only schedules the rotation; the request itself is a mutation.
+    React.useEffect(() => {
+        const timer = window.setInterval(
+            () => rotateSession(),
+            SESSION_ROTATION_INTERVAL_MS,
+        );
+
+        return () => window.clearInterval(timer);
+    }, []);
 
     const lastReportRef = React.useRef(Number.NEGATIVE_INFINITY);
 

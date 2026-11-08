@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { ApiClient } from "#ui/api-client";
 import {
     API_BASE_URL,

@@ -62,3 +62,71 @@ it("restores session-expiry handling when a logged-out client signs in again", a
     // Reusing the client for a new session must re-enable the normal expiry redirect.
     expect(expired).toHaveBeenCalledOnce();
 });
+
+it("tells the sign-out handler when the session was revoked for reuse", async () => {
+    const transport = vi
+        .fn()
+        .mockResolvedValueOnce(
+            Response.json(
+                { error: "Session used elsewhere", code: "session_reused" },
+                { status: 401 },
+            ),
+        )
+        .mockResolvedValueOnce(
+            Response.json({ error: "Session expired" }, { status: 401 }),
+        );
+
+    vi.stubGlobal("fetch", transport);
+    onTestFinished(() => {
+        vi.unstubAllGlobals();
+    });
+    const api = new ApiClient("http://redoor.test");
+    const ended = vi.fn();
+    api.setUnauthorizedHandler(ended);
+
+    await expect(api.getCurrentUser()).rejects.toMatchObject({
+        status: 401,
+        code: "session_reused",
+    });
+    // The login page can tell the user why they were signed out.
+    expect(ended).toHaveBeenLastCalledWith("reused");
+    await expect(api.getCurrentUser()).rejects.toMatchObject({ status: 401 });
+    // Any other 401 is an ordinary end of the session.
+    expect(ended).toHaveBeenLastCalledWith("ended");
+});
+
+it("follows rotations of the session cookie in Node clients", async () => {
+    const transport = vi
+        .fn()
+        .mockResolvedValueOnce(
+            Response.json(
+                { username: "test-user" },
+                {
+                    headers: {
+                        "Set-Cookie": "redoor_session=id.first; Path=/",
+                    },
+                },
+            ),
+        )
+        .mockResolvedValueOnce(
+            Response.json(
+                { rotated: true },
+                {
+                    headers: {
+                        "Set-Cookie":
+                            "redoor_session=id.second; HttpOnly; Path=/",
+                    },
+                },
+            ),
+        );
+
+    vi.stubGlobal("fetch", transport);
+    onTestFinished(() => {
+        vi.unstubAllGlobals();
+    });
+    const api = new ApiClient("http://redoor.test");
+    await api.login("test-user", "test-password");
+    await api.rotateSession();
+    // The next request presents the rotated secret, as a browser's cookie jar would.
+    expect(api.getAuthHeaders().Cookie).toBe("redoor_session=id.second");
+});

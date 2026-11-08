@@ -48,7 +48,9 @@ export default defineConfig({
 
         /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
         trace: "on-first-retry",
-        storageState: ".test-playwright-auth.json",
+        // No shared signed-in state: `e2e/fixtures.ts` signs every test in with a session of
+        // its own, because the server rotates session cookies and treats one cookie used by
+        // two browsers as a stolen copy.
     },
 
     // The projects run one after another: early logs, then everything isolated in parallel,

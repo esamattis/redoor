@@ -37,6 +37,7 @@ mod server_info;
 mod server_upgrade;
 pub(crate) mod services;
 mod session_activity;
+mod session_rotation;
 mod session_watch;
 mod sessions;
 pub(crate) mod ssh_keys;

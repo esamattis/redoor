@@ -215,7 +215,8 @@ function cookiePair(cookie: string): string {
 /** Seconds until the session a callback created ends, read from its stored session file. */
 function storedExpiresIn(callback: Response): number {
     const pair = cookiePair(setCookie(callback, "redoor_session") ?? "");
-    const sessionId = pair.split("=", 2)[1] ?? "";
+    // The stable session id names the file; the secret after the dot rotates.
+    const sessionId = pair.split("=", 2)[1]?.split(".", 1)[0] ?? "";
 
     const stored = JSON.parse(
         readFileSync(
@@ -350,7 +351,7 @@ describe("OIDC sign-in", () => {
         const session = setCookie(callback, "redoor_session");
         // Every session cookie outlasts the longest session; the server enforces the length.
         expect(session).toMatch(
-            /^redoor_session=[0-9a-f-]{36}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=31536000$/,
+            /^redoor_session=[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=31536000$/,
         );
         // The length picked on the login page survives the provider round trip.
         expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
@@ -359,7 +360,7 @@ describe("OIDC sign-in", () => {
         expect(setCookie(callback, "redoor_oidc_state")).toMatch(/Max-Age=0/);
 
         const cookie = cookiePair(session ?? "");
-        const sessionId = cookie.split("=", 2)[1] ?? "";
+        const sessionId = cookie.split("=", 2)[1]?.split(".", 1)[0] ?? "";
 
         const stored = JSON.parse(
             readFileSync(

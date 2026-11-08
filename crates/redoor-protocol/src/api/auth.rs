@@ -148,6 +148,19 @@ pub struct SessionExpiry {
     pub expires_in_seconds: u64,
 }
 
+/// Answer of `POST /api/v1/session/rotate`, which an open tab calls every few minutes so the
+/// session cookie's secret keeps changing even while nobody uses the page.
+///
+/// The new cookie itself travels in `Set-Cookie`; the flag only says whether there was one,
+/// because the server rotates at most once a minute and a call inside that minute changes
+/// nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct SessionRotationResponse {
+    /// Whether this response carries a new session cookie.
+    pub rotated: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

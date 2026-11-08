@@ -1,5 +1,5 @@
 // Serial: adds and removes a local device in the shared device list.
-import { expect, test, type APIRequestContext } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "../fixtures";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import { WEB_BASE_URL } from "../helpers";

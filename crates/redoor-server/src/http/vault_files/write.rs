@@ -14,11 +14,12 @@ use axum::{
 };
 use futures_util::TryStreamExt;
 use redoor_protocol::api::{
+    ApiErrorCode,
     transfers::CopyExistingMode,
     vault::{
-        ApiErrorCode, ReencryptVaultFileRequest, RewrapVaultFileRequest, VAULT_PAYLOAD_ALG,
-        VAULT_WRAP_ALG, VaultDocument, VaultFileHeader, VaultFileWriteResponse, VaultKeyWrap,
-        VaultObjectKind, VaultPayloadParams,
+        ReencryptVaultFileRequest, RewrapVaultFileRequest, VAULT_PAYLOAD_ALG, VAULT_WRAP_ALG,
+        VaultDocument, VaultFileHeader, VaultFileWriteResponse, VaultKeyWrap, VaultObjectKind,
+        VaultPayloadParams,
     },
 };
 use redoor_protocol::ids::AgentId;

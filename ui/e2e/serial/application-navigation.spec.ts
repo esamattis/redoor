@@ -1,5 +1,5 @@
 // Serial: cycles the shared color theme, which other specs' colour assertions depend on.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures";
 
 import { WEB_BASE_URL } from "../helpers";
 

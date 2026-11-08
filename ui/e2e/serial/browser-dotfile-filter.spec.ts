@@ -1,5 +1,5 @@
 // Serial: persists "hide hidden files", which hides the `.test-*` directories other specs browse.
-import { test, expect } from "@playwright/test";
+import { test, expect } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";

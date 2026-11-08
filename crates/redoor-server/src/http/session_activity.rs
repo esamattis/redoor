@@ -30,14 +30,14 @@ use super::{
 /// Slides the caller's session a full idle lifetime forward and answers with the new expiry.
 ///
 /// The route sits behind the normal access layer, so an expired session gets the usual 401
-/// and can never revive itself here. A renewal that was written (at most once a minute)
-/// also re-sends the session cookie with its fixed `Max-Age`, so a session kept active for
-/// longer than that does not lose its cookie in the browser.
+/// and can never revive itself here. Activity also rotates the cookie's secret (at most once
+/// a minute) and sends the new cookie, so keeping a session alive always moves its secret
+/// on, and a copied cookie used alongside it is detected.
 pub(crate) async fn session_activity_handler(
     State(state): State<ServerState>,
     Extension(session): Extension<ActiveSession>,
 ) -> Result<Response, ApiError> {
-    let renewed = match state.auth.renew_session(&session.id).await {
+    let renewed = match state.auth.renew_session(&session).await {
         Ok(Some(renewed)) => renewed,
         // Expired or logged out between the access check and the renewal.
         Ok(None) => {

@@ -23,7 +23,8 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::Response,
 };
-use redoor_protocol::api::vault::{ApiErrorCode, VAULT_FILE_SUFFIX, VaultFileHeaderResponse};
+use redoor_protocol::api::ApiErrorCode;
+use redoor_protocol::api::vault::{VAULT_FILE_SUFFIX, VaultFileHeaderResponse};
 use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::{command::Command, command::MoveSourceIdentity, request};
 use redoor_vault::{

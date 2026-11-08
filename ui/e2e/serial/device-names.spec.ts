@@ -1,7 +1,7 @@
 // Serial: renames devices and creates local agents in the shared device list.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../fixtures";
 import type { AgentConnectionStatus } from "#bindings/AgentConnectionStatus";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import { ApiClient } from "#ui/api-client";

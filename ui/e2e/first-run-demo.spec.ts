@@ -3,7 +3,7 @@ import { createServer } from "node:net";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { z } from "zod";
 
 const PROJECT_ROOT = path.resolve(import.meta.dirname, "../..");

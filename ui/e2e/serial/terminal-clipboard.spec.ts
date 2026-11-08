@@ -1,5 +1,5 @@
 // Serial: reads and writes the system clipboard, which is shared across browser contexts.
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures";
 import { z } from "zod";
 import {
     deleteAllTerminalSessions,

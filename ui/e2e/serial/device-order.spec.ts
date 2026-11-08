@@ -1,6 +1,6 @@
 // Serial: saves the device order and asserts the exact number of devices.
 import path from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../fixtures";
 
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import { ApiClient } from "#ui/api-client";

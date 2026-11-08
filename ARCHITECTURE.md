@@ -3352,9 +3352,9 @@ own endpoints:
   choice is a search parameter of the login route, so it survives that redirect. The file
   stores the enum, and the lifetime is derived on every use, so lowering the OIDC cap also
   shortens existing OIDC sessions. Every session cookie gets the same fixed `Max-Age`, the
-  longest length (365 days), set at sign-in and again by each written activity renewal so a
-  session kept active for over a year keeps its cookie: the server alone enforces the idle
-  expiry. A cookie tied to the lifetime would expire in the browser while a long transfer
+  longest length (365 days), set at sign-in and again with every rotated secret (see
+  "Session cookie rotation") so a session kept active for over a year keeps its cookie: the
+  server alone enforces the idle expiry. A cookie tied to the lifetime would expire in the browser while a long transfer
   still holds the session open, and a dead session id left in the browser is harmless
   because the server rejects it. A password change re-issues the session with the same
   length. The field is
@@ -3366,13 +3366,17 @@ own endpoints:
   `ClientAddress`), taken at login, OIDC callback and password change. Both fields are
   required, so files from before the list existed fail to parse and are removed, which
   signed everyone out once. `GET /api/v1/sessions` lists every session the request check
-  would still let in (the same `effective_expiry`), for every user, since all share the one
-  account, and marks the caller's own. The cookie value is a bearer secret and the list is
-  readable by every browser, so sessions are named by `public_session_id`, a
-  domain-separated SHA-256 of the cookie value, never by the value itself.
+  would still let in (the same `stored_state`, so tombstones of reused sessions are left
+  out), for every user, since all share the one account, and marks the caller's own by its
+  stable id. The list is readable by every browser and the session id must stay unknown
+  (anyone who knows it could revoke the session by sending it with a made-up secret), so
+  sessions are named by `public_session_id`, a domain-separated SHA-256 of the stable id.
+  Hashing the id rather than the cookie keeps a session's listed id the same across
+  rotations of its secret.
   `DELETE /api/v1/sessions/{id}` signs out one session and `DELETE /api/v1/sessions` every
   session except the caller's, so a user who suspects a stolen cookie can end the others
-  without locking themselves out. Both delete through `delete_session_id` (under the session
+  without locking themselves out (`keep` is the caller's stable id, so it survives
+  rotations). Both delete through `delete_session_id` (under the session
   file lock, so a racing renewal cannot write the file back), drop the session's vault device
   secrets like logout does, and log the sign-out; the signed-out browser's websockets close
   at their next `SessionWatch` check. The forwarded-for value is shown as a claim only, like
@@ -3384,8 +3388,8 @@ own endpoints:
     expired session gets 401 and cannot revive itself) sets the expiry to now plus the
     lifetime, writing the file at most once a minute per session under the session file
     lock with an existence check, so a renewal racing a logout cannot write the file back.
-    It answers `SessionExpiry` (RFC 3339 expiry and seconds left); a renewal that was
-    written also re-sends the session cookie with its fixed `Max-Age`.
+    It also rotates the cookie's secret (see "Session cookie rotation") and sends the new
+    cookie. It answers `SessionExpiry` (RFC 3339 expiry and seconds left).
     `GET /api/v1/auth/me` returns the same expiry for browser sessions.
   - The UI shell (`components/shell/session-activity.tsx`) listens on the document, in the
     capture phase so terminal keystrokes count, for `pointerdown`, `keydown`, `wheel` and
@@ -3409,10 +3413,105 @@ own endpoints:
   terminal sockets are authenticated once, at the upgrade, so each runs a `SessionWatch`
   (`http/session_watch.rs`) next to its relay: every 30 s it checks the session without
   renewing it, and once the session expired, was logged out or was revoked it closes the
-  socket with code 4401. The UI treats that code like a 401 (`ApiClient.notifySessionEnded`)
-  and goes to the login page instead of reconnecting; a terminal's shell keeps running.
-  The access layer puts the session (`ActiveSession`: id, length, expiry) into the request
-  extensions next to `Principal::Session` for these handlers.
+  socket with code 4401, or 4409 when it was revoked because two browsers used its cookie
+  (`SessionEnd`). The UI treats those codes like a 401 (`ApiClient.notifySessionEnded`,
+  with the reason) and goes to the login page instead of reconnecting; a terminal's shell
+  keeps running. The watch keys on the stable session id, which has no secret, so it only
+  sees that the session still exists and is not revoked (`check_session_id`).
+  The access layer puts the session (`ActiveSession`: stable id, length, expiry and the hash
+  of the secret the request presented) into the request extensions next to
+  `Principal::Session` for these handlers.
+- **Session cookie rotation and reuse detection** (`http/auth.rs`). A copied browser profile
+  (an infostealer, a stolen backup, a copied disk) holds a working cookie. Rotation makes
+  such a copy noisy and short-lived: the cookie's secret changes while the user works, and a
+  browser that presents a secret the session has already moved past proves that two
+  browsers share it, so the server revokes the session for both ("mutual logout") and tells
+  the user why. This is OAuth refresh token rotation with reuse detection (RFC 9700) applied
+  to the session cookie, which already behaves like a refresh token.
+  - **Cookie and stored state.** The cookie is `<id>.<secret>`. The id is a UUID fixed for
+    the session's life: it names the file and keys everything that keys on a session
+    (transfer holds, websocket watches, vault devices, the session list). It is never logged
+    or shown. The secret is 32 random bytes, base64url. The file keeps `current` (SHA-256 of
+    the secret, when it was issued, and its plaintext only until a request presents it),
+    `previous` (the hash the last rotation replaced and when) and `revoked`. Hashes are
+    compared in constant time, and once the browser used its secret the data directory holds
+    no working cookie. Cookies and files of the format before rotation are refused, which
+    signed everyone out once.
+  - **Classifying a secret** (`SessionFile::classify`, pure so the table is unit tested at
+    any clock). The id only ever leaves the server inside a cookie, so a valid id with a
+    secret that is neither `current` nor a recent `previous` came from someone who once had
+    a real cookie of this session; the server needs no history of older secrets.
+
+    | Presented | Condition | Result |
+    |---|---|---|
+    | `current` | | `Current`; clears the stored plaintext if still set |
+    | `previous` | within `ROTATION_GRACE` (30 s) of its rotation | `Grace`: accepted, cookie unchanged (requests sent before the rotation response arrived) |
+    | `previous` | after the grace period, new secret never presented | `LostRotation`: accepted, and the same current secret is sent again |
+    | `previous` | after the grace period, new secret presented | `Reused` |
+    | anything else | | `Reused` |
+
+    The grace period stays shorter than `ROTATION_INTERVAL` (60 s, a compile-time assert), so
+    a legitimate browser is never two rotations behind. `LostRotation` re-sends the same
+    secret instead of minting one, so a late or out-of-order rotation response installs the
+    same cookie, and resets both clocks: the previous secret's grace period, for the same
+    browser's other requests in flight, and the rotation throttle, so a second recovery
+    response cannot arrive after a newer rotation's cookie and overwrite it. If the stale
+    secret came from an attacker instead, the two browsers share a secret again, the same
+    position as a copy taken after the rotation; the next rotation splits them. The access
+    layer adds that recovery `Set-Cookie` to any response, websocket upgrades included,
+    unless the handler set a session cookie itself (a password change's new session,
+    logout's clearing cookie), because a stale secret after those would sign the browser
+    out. The request check only reads; confirming, recovering and revoking run a second time
+    under the session file lock with a fresh read, because another request may have rotated
+    in between.
+  - **Rotation.** Activity reports and `POST /api/v1/session/rotate`
+    (`http/session_rotation.rs`, session only) share `AuthState::update` under the session
+    file lock: the secret rotates when the request presented `current` and it was issued at
+    least `ROTATION_INTERVAL` ago. The throttle is the secret's own `issued_at`, not the
+    expiry write's, because a finished transfer moves the expiry: an attacker finishing a
+    download every minute would otherwise keep the victim's activity from ever rotating. A
+    request with `previous` renews without rotating, so two tabs reporting at once do not
+    split the session. `rotate` never moves the expiry, so an idle tab keeps the secret moving
+    without keeping the session alive; the rotated cookie's fixed `Max-Age` does not lengthen
+    the session either. A finished transfer renews without rotating, because no response is
+    left to carry the cookie. Keeping a session alive past its idle window therefore always
+    forks the secret chain; a copy that never renews only gets what is left of the window.
+  - **The UI** (`SessionActivity`) also calls `rotate` every 5 minutes while a tab is open,
+    hidden tabs included (Chrome's heaviest background throttling still fires about once a
+    minute). A Web Lock lets one tab rotate at a time, where the browser offers it (secure
+    contexts); two tabs rotating at once are safe anyway. After every successful `activity`
+    or `rotate` it refetches `auth/me`, which carries the new cookie and confirms it within
+    the grace period without renewing anything. Without that, an idle tab or one used only
+    through a terminal socket could leave a new secret unconfirmed for minutes, and a copy
+    presenting the old secret would be handed the new one through `LostRotation` every time
+    instead of being detected. Node clients (`ApiClient` in scripts and tests) follow
+    rotations from `Set-Cookie`; browsers store the `HttpOnly` cookie themselves.
+  - **Revocation.** `Reused` turns the file into a tombstone (`revoked`, the plaintext
+    dropped) that stays until the session's `expires_at`, so a victim returning to an idle
+    tab days later still learns why; the request check and the startup purge remove it after
+    that. Every request of either browser then gets 401 with `code: "session_reused"`
+    (`ApiErrorCode` lives in `api`, no longer vault-only), websockets close with 4409, and
+    the UI opens the login page with `reason=reused`, which says the session was used from
+    another browser and points to changing the password and the session list. The detecting
+    request drops the session's vault device secrets at once and logs a warning naming the
+    public session id, the user, the stale request's client address and how long ago its
+    secret was rotated away (to tell a slow network from theft); never the id or a secret.
+    Logout classifies its cookie first: a stale one leaves a tombstone instead of deleting
+    the file, so logging out with a copy cannot erase the evidence.
+  - **Limits.** This is detection, not prevention. Malware still running in the victim's
+    browser can read every new cookie, and a compromised server is out of scope. An open tab
+    rotates even while idle, so a copy can only be used quietly while the victim has no
+    redoor tab open, and only until the idle expiry. Websockets opened before a split are not
+    covered: the cookie is checked only at the upgrade and socket messages carry none, so an
+    attacker working only inside a socket opened with a then-current secret is never seen
+    presenting a stale one, until any HTTP request (a reload, a REST call, a reconnect)
+    presents it and signs out both browsers. The secret is `HttpOnly`, so a socket's owner
+    cannot prove it holds the current one over the socket itself. A session can still create
+    access tokens without the password, which outlive a mutual logout.
+  - **Tests and the browser suite.** One cookie used by two browsers is exactly what the
+    server now refuses, so the Playwright suite no longer shares a signed-in storage state:
+    `ui/e2e/fixtures.ts` signs every test in with a session of its own, and specs that need
+    "another browser" sign that context in separately.
 
   The name of an OIDC session is the ID token's
   `preferred_username`, else `email`, else `sub`; it is only for display, logs and the
@@ -3527,7 +3626,8 @@ own endpoints:
   sessions; attaching still goes to the agent, which refuses ids it does not run, and an agent's report only replaces
   that agent's own records, because the connection, not the frame, names the agent.
 - **Browser protections.**
-  - The cookie is `HttpOnly` and `SameSite=Lax`.
+  - The cookie is `HttpOnly` and `SameSite=Lax`, and its secret rotates with reuse detection
+    (see "Session cookie rotation and reuse detection").
   - JSON endpoints require `Content-Type: application/json`.
   - The terminal attach and log websockets check `Origin` against `Host`, which stops
     cross-site websocket hijacking.

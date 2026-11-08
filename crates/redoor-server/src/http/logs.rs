@@ -120,11 +120,11 @@ async fn handle_server_logs_socket(
 
     let mut live_entries = subscription.receiver;
     let session_ended = tokio::select! {
-        _ = forward_live_entries(&mut sender, &mut live_entries, timeouts) => false,
-        _ = wait_for_disconnect(&mut receiver) => false,
-        () = watch.ended() => true,
+        _ = forward_live_entries(&mut sender, &mut live_entries, timeouts) => None,
+        _ = wait_for_disconnect(&mut receiver) => None,
+        end = watch.ended() => Some(end),
     };
-    if session_ended {
-        close_for_ended_session(&mut sender).await;
+    if let Some(end) = session_ended {
+        close_for_ended_session(&mut sender, end).await;
     }
 }
