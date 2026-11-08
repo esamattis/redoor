@@ -398,48 +398,65 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 
 .connect {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 20px;
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: 40px;
+    align-items: center;
     margin-top: 10px;
 }
-.connect-card {
-    background: linear-gradient(180deg, var(--surface), var(--chrome));
+.net-diagram {
+    padding: 22px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 26px;
-    position: relative;
-    overflow: hidden;
+    background: linear-gradient(180deg, var(--surface), var(--chrome));
 }
-.connect-card p { color: var(--muted); margin: 0 0 18px; font-size: 16px; }
-.flow { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 12.5px; flex-wrap: wrap; }
-.node { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border-strong); background: var(--code); color: var(--text); white-space: nowrap; }
-.node.server { border-color: rgb(59 130 246 / 0.5); color: var(--blue-pale); }
-.node.blocked { border-style: dashed; }
-.arrow { color: var(--faint); white-space: nowrap; }
-.arrow b { color: var(--blue-soft); font-weight: 500; }
-
-.net-diagram { margin-top: 28px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.net-scroll { overflow-x: auto; }
+.net-hint { display: none; margin: 10px 0 0; color: var(--faint); font-size: 13px; text-align: center; }
 .net-diagram svg { display: block; width: 100%; height: auto; font-family: var(--mono); font-size: 13px; }
 .net-diagram .box { fill: var(--code); stroke: var(--border-strong); stroke-width: 1.2; }
-.net-diagram .box.server { stroke: rgb(59 130 246 / 0.6); }
+.net-diagram .box.server { stroke: rgb(59 130 246 / 0.7); fill: rgb(37 99 235 / 0.08); }
 .net-diagram .box.blocked { stroke-dasharray: 5 4; }
 .net-diagram text { fill: var(--text); text-anchor: middle; }
 .net-diagram .cmd { fill: var(--blue-pale); }
-.net-diagram .line { stroke: var(--faint); stroke-width: 1.4; fill: none; }
+.net-diagram .line { stroke: var(--faint); stroke-width: 1.4; fill: none; transition: stroke 0.15s, stroke-width 0.15s; }
 .net-diagram .line.no { stroke: var(--red-bright); stroke-dasharray: 5 4; }
 .net-diagram .lbl { fill: var(--blue-soft); font-size: 12px; }
 .net-diagram .lbl-bg { fill: var(--surface); }
 .net-diagram .lbl.no { fill: var(--red-bright); }
-.badge-num {
-    position: absolute;
-    top: 18px;
-    right: 20px;
-    font-family: var(--mono);
-    font-size: 40px;
-    font-weight: 700;
-    color: rgb(148 163 184 / 0.08);
-    line-height: 1;
+.nd-badge circle { fill: var(--surface); stroke: rgb(59 130 246 / 0.7); stroke-width: 1.2; }
+.nd-badge text { fill: var(--blue-pale); font-size: 12px; font-weight: 700; }
+
+.connect-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 14px; }
+.step {
+    display: flex;
+    gap: 16px;
+    padding: 20px 22px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: linear-gradient(180deg, var(--surface), var(--chrome));
+    transition: border-color 0.15s;
+    outline: none;
 }
+.step:hover, .step:focus-visible { border-color: rgb(59 130 246 / 0.5); }
+.step h3 { margin-bottom: 6px; font-size: 19px; }
+.step p { color: var(--muted); margin: 0; font-size: 16px; }
+.step-num {
+    flex: none;
+    width: 28px;
+    height: 28px;
+    margin-top: -1px;
+    display: grid;
+    place-items: center;
+    border-radius: 50%;
+    border: 1px solid rgb(59 130 246 / 0.7);
+    color: var(--blue-pale);
+    font-family: var(--mono);
+    font-size: 14px;
+    font-weight: 700;
+}
+/* Hovering or focusing a step lights up the connections it describes in the diagram. */
+.connect:has(.step[data-k="1"]:is(:hover, :focus-visible)) .line[data-k="1"],
+.connect:has(.step[data-k="2"]:is(:hover, :focus-visible)) .line[data-k="2"],
+.connect:has(.step[data-k="3"]:is(:hover, :focus-visible)) .line[data-k="3"]:not(.no) { stroke: var(--blue-soft); stroke-width: 2.4; }
 
 /* ---------- Feature grid ---------- */
 
@@ -600,11 +617,14 @@ footer p { margin: 6px 0; }
     section { padding: 80px 0; }
     .showcase, .showcase.reverse { grid-template-columns: 1fr; gap: 36px; margin-bottom: 100px; }
     .showcase.reverse .showcase-text { order: 0; }
-    .connect { grid-template-columns: 1fr; }
+    .connect { grid-template-columns: minmax(0, 1fr); gap: 28px; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 600px) {
     body { font-size: 16px; }
+    .net-diagram { padding: 14px; }
+    .net-diagram svg { min-width: 560px; }
+    .net-hint { display: block; }
     .hero { padding-top: 48px; }
     .hero-logo { width: 88px; height: 88px; }
     .hero-shot { margin-top: 44px; }
@@ -901,38 +921,53 @@ footer p { margin: 6px 0; }
             <h2><a class="anchor" href="#connect">One server. Any network.</a></h2>
             <p>Run the server once, then attach devices in whichever way their network allows.</p>
         </div>
-        <div class="connect">
-            <div class="connect-card reveal">
-                <span class="badge-num">01</span>
-                <h3>Over SSH</h3>
-                <p>Point the server at an SSH target and it spawns the agent for you. Nothing to install by hand.</p>
-                <div class="flow"><span class="node server">redoor server</span><span class="arrow">─<b>ssh</b>→</span><span class="node">Linux server</span></div>
+        <div class="connect reveal">
+            <div class="net-diagram">
+                <div class="net-scroll">
+                <svg viewBox="0 0 760 420" role="img" aria-label="Network diagram: Linux desktop, Termux and a macOS laptop connect to the redoor server over http/ws. The server reaches Linux Server 1 over ssh. The macOS laptop reaches a firewalled Linux server through an ssh relay, while the server cannot reach it directly.">
+                    <defs><marker id="nd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker></defs>
+                    <path class="line" data-k="2" d="M110 100V150H300V195" marker-end="url(#nd-arrow)"/>
+                    <path class="line" data-k="2" d="M360 100V195" marker-end="url(#nd-arrow)"/>
+                    <path class="line" data-k="2" d="M570 100V150H420V195" marker-end="url(#nd-arrow)"/>
+                    <path class="line" data-k="1" d="M330 260V300H190V335" marker-end="url(#nd-arrow)"/>
+                    <path class="line no" data-k="3" d="M400 260V300H520V335"/>
+                    <path class="line" data-k="3" d="M650 100V335" marker-end="url(#nd-arrow)"/>
+                    <rect class="box" x="20" y="30" width="180" height="70" rx="8"/><text x="110" y="60">Linux desktop</text><text class="cmd" x="110" y="79">$ redoor agent</text>
+                    <rect class="box" x="270" y="30" width="180" height="70" rx="8"/><text x="360" y="60">Termux on Android</text><text class="cmd" x="360" y="79">$ redoor agent</text>
+                    <rect class="box" x="560" y="30" width="180" height="70" rx="8"/><text x="650" y="52">macOS laptop</text><text class="cmd" x="650" y="70">$ redoor agent</text><text class="cmd" x="650" y="88">$ redoor relay</text>
+                    <rect class="box server" x="270" y="195" width="180" height="65" rx="8"/><text x="360" y="223">Web UI</text><text class="cmd" x="360" y="242">$ redoor server</text>
+                    <rect class="box" x="100" y="335" width="180" height="65" rx="8"/><text x="190" y="363">Linux Server 1</text><text class="cmd" x="190" y="382">$ redoor agent</text>
+                    <rect class="box blocked" x="520" y="335" width="200" height="65" rx="8"/><text x="620" y="363">Firewalled Linux Server</text><text class="cmd" x="620" y="382">$ redoor agent</text>
+                    <rect class="lbl-bg" x="80" y="120" width="60" height="20"/><text class="lbl " x="110" y="134">http/ws</text><rect class="lbl-bg" x="330" y="120" width="60" height="20"/><text class="lbl " x="360" y="134">http/ws</text><rect class="lbl-bg" x="470" y="140" width="60" height="20"/><text class="lbl " x="500" y="154">http/ws</text><rect class="lbl-bg" x="172" y="290" width="36" height="20"/><text class="lbl " x="190" y="304">ssh</text><rect class="lbl-bg" x="429" y="290" width="62" height="20"/><text class="lbl no" x="460" y="304">blocked</text><rect class="lbl-bg" x="580" y="220" width="140" height="20"/><text class="lbl " x="650" y="234">redoor ssh relay</text>
+                    <g class="nd-badge"><circle cx="62" cy="130" r="11"/><text x="62" y="134">2</text></g><g class="nd-badge"><circle cx="312" cy="130" r="11"/><text x="312" y="134">2</text></g><g class="nd-badge"><circle cx="548" cy="150" r="11"/><text x="548" y="154">2</text></g><g class="nd-badge"><circle cx="156" cy="300" r="11"/><text x="156" y="304">1</text></g><g class="nd-badge"><circle cx="507" cy="300" r="11"/><text x="507" y="304">3</text></g><g class="nd-badge"><circle cx="566" cy="230" r="11"/><text x="566" y="234">3</text></g>
+                </svg>
+                </div>
+                <p class="net-hint">Swipe sideways to see the whole diagram</p>
             </div>
-            <div class="connect-card reveal">
-                <span class="badge-num">02</span>
-                <h3>Agent dials in</h3>
-                <p>Laptops, desktops and phones run <code>redoor agent</code> and connect out over WebSocket. Works from behind NAT.</p>
-                <div class="flow"><span class="node">macOS / Termux</span><span class="arrow">─<b>ws</b>→</span><span class="node server">redoor server</span></div>
-            </div>
-            <div class="connect-card reveal">
-                <span class="badge-num">03</span>
-                <h3>Through a relay</h3>
-                <p>Reach firewalled hosts the server can’t see: a relay starts the agent over SSH and routes it through your machine.</p>
-                <div class="flow"><span class="node blocked">firewalled</span><span class="arrow">─<b>relay</b>→</span><span class="node">laptop</span><span class="arrow">→</span><span class="node server">server</span></div>
-            </div>
+            <ol class="connect-steps">
+                <li class="step" data-k="1" tabindex="0">
+                    <span class="step-num">1</span>
+                    <div>
+                        <h3>Over SSH</h3>
+                        <p>Point the server at an SSH target and it spawns the agent for you. Nothing to install by hand.</p>
+                    </div>
+                </li>
+                <li class="step" data-k="2" tabindex="0">
+                    <span class="step-num">2</span>
+                    <div>
+                        <h3>Agent dials in</h3>
+                        <p>Laptops, desktops and phones run <code>redoor agent</code> and connect out over WebSocket. Works from behind NAT.</p>
+                    </div>
+                </li>
+                <li class="step" data-k="3" tabindex="0">
+                    <span class="step-num">3</span>
+                    <div>
+                        <h3>Through a relay</h3>
+                        <p>Reach firewalled hosts the server can’t see: a relay starts the agent over SSH and routes it through your machine.</p>
+                    </div>
+                </li>
+            </ol>
         </div>
-<div class="net-diagram reveal">
-<svg viewBox="0 0 760 420" role="img" aria-label="Network diagram: Linux desktop, Termux and a macOS laptop connect to the redoor server over http/ws. The server reaches Linux Server 1 over ssh. The macOS laptop reaches a firewalled Linux server through an ssh relay, while the server cannot reach it directly.">
-<defs><marker id="nd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker></defs>
-<path class="line" d="M110 100V150H300V195" marker-end="url(#nd-arrow)"/>
-<path class="line" d="M360 100V195" marker-end="url(#nd-arrow)"/>
-<path class="line" d="M570 100V150H420V195" marker-end="url(#nd-arrow)"/>
-<path class="line" d="M330 260V300H190V335" marker-end="url(#nd-arrow)"/>
-<path class="line no" d="M400 260V300H520V335"/>
-<path class="line" d="M650 100V335" marker-end="url(#nd-arrow)"/>
-<rect class="box " x="20" y="30" width="180" height="70" rx="8"/><text x="110.0" y="60.5">Linux desktop</text><text class="cmd" x="110.0" y="78.5">$ redoor agent</text><rect class="box " x="270" y="30" width="180" height="70" rx="8"/><text x="360.0" y="60.5">Termux on Android</text><text class="cmd" x="360.0" y="78.5">$ redoor agent</text><rect class="box " x="560" y="30" width="180" height="70" rx="8"/><text x="650.0" y="51.5">macOS laptop</text><text class="cmd" x="650.0" y="69.5">$ redoor agent</text><text class="cmd" x="650.0" y="87.5">$ redoor relay</text><rect class="box server" x="270" y="195" width="180" height="65" rx="8"/><text x="360.0" y="223.0">Web UI</text><text class="cmd" x="360.0" y="241.0">$ redoor server</text><rect class="box " x="100" y="335" width="180" height="65" rx="8"/><text x="190.0" y="363.0">Linux Server 1</text><text class="cmd" x="190.0" y="381.0">$ redoor agent</text><rect class="box blocked" x="520" y="335" width="200" height="65" rx="8"/><text x="620.0" y="363.0">Firewalled Linux Server</text><text class="cmd" x="620.0" y="381.0">$ redoor agent</text><rect class="lbl-bg" x="80.0" y="120" width="60" height="20"/><text class="lbl " x="110" y="134">http/ws</text><rect class="lbl-bg" x="330.0" y="120" width="60" height="20"/><text class="lbl " x="360" y="134">http/ws</text><rect class="lbl-bg" x="470.0" y="140" width="60" height="20"/><text class="lbl " x="500" y="154">http/ws</text><rect class="lbl-bg" x="172.0" y="290" width="36" height="20"/><text class="lbl " x="190" y="304">ssh</text><rect class="lbl-bg" x="429.0" y="290" width="62" height="20"/><text class="lbl no" x="460" y="304">blocked</text><rect class="lbl-bg" x="580.0" y="220" width="140" height="20"/><text class="lbl " x="650" y="234">redoor ssh relay</text>
-</svg>
-</div>
     </div>
 </section>
 
