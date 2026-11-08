@@ -16,6 +16,8 @@ export function ConfirmationDialog(props: {
     isBusy?: boolean;
     confirmDisabled?: boolean;
     errorMessage?: string | null;
+    /** Lets confirmations that list long values, such as paths, use a wider panel. */
+    size?: React.ComponentProps<typeof Dialog>["size"];
     children?: React.ReactNode;
     onClose: () => void;
     onConfirm: () => void;
@@ -29,6 +31,7 @@ export function ConfirmationDialog(props: {
             isBusy={props.isBusy}
             errorMessage={props.errorMessage}
             role="dialog"
+            size={props.size}
             onClose={props.onClose}
         >
             {props.children ? (

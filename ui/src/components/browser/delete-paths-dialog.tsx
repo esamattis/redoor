@@ -120,6 +120,8 @@ export function DeletePathsDialog(props: {
     return (
         <ConfirmationDialog
             isOpen={true}
+            // Absolute paths wrap mid-name at the default width, so give them room.
+            size="medium"
             title={props.title}
             description={
                 canTrash
