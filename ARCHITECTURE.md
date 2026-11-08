@@ -422,8 +422,10 @@ own endpoints:
   background polling. Browser websockets close when their session ends.
 - **Cookie rotation with reuse detection.** The session cookie's secret rotates while the
   user works. A browser presenting a secret the session already moved past proves two
-  browsers share it, so the server revokes the session for both and tells the user, which
-  makes a stolen cookie noisy and short-lived.
+  browsers share it, so the server deletes the session for both and logs a warning, which
+  makes a stolen cookie noisy and short-lived. The server log is the only report: both
+  browsers just see an ordinary sign-out, because keeping extra state and UI for this rare
+  case is not worth its code.
 - **Fresh sign-in for token secrets.** Creating an access token or approving a CLI login
   requires credentials checked within the last minute, so a copied browser profile cannot
   turn its session into a token that outlives it.

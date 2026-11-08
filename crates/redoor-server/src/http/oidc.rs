@@ -757,7 +757,7 @@ pub(crate) async fn oidc_callback_handler(
         );
     }
     // Like a password login, a sign-in from a browser that already has a session replaces it.
-    if let Err(error) = end_cookie_session(&state, &address, &headers).await {
+    if let Err(error) = end_cookie_session(&state, &headers).await {
         log_error!(
             error,
             "Failed to end the previous session of a signing-in browser"

@@ -14,23 +14,11 @@ use super::auth::{ActiveSession, AuthState, SessionStatus};
 /// Close code telling the UI the session ended, so it goes to the login page instead of
 /// reconnecting. In the 4000-4999 range reserved for applications, echoing HTTP 401.
 pub(crate) const SESSION_ENDED_CLOSE_CODE: u16 = 4401;
-/// Close code telling the UI the session was revoked because two browsers used its cookie,
-/// so the login page can say why. Echoes HTTP 409 Conflict.
-pub(crate) const SESSION_REUSED_CLOSE_CODE: u16 = 4409;
 /// How often an open socket checks its session. Bounds how long a socket outlives its
 /// session, while costing only one small file read per socket and interval.
 const SESSION_CHECK_INTERVAL: Duration = Duration::from_secs(30);
 /// How long the close frame may take, so a stalled browser cannot keep the bridge alive.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Why a watched session ended, because the UI tells the user about a reuse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionEnd {
-    /// Expired, logged out, signed out elsewhere or revoked by a credential change.
-    Ended,
-    /// Revoked because its cookie was used by two browsers.
-    Reused,
-}
 
 /// Watches one browser session from a websocket task.
 #[derive(Clone)]
@@ -49,37 +37,29 @@ impl SessionWatch {
     }
 
     /// Resolves once the session is no longer valid: expired, logged out, revoked by a
-    /// password or OIDC change, or revoked for reuse; says which. Checking never renews, so
-    /// an open socket alone does not keep an idle browser signed in.
-    pub(crate) async fn ended(&self) -> SessionEnd {
+    /// password or OIDC change, or deleted for reuse. Checking never renews, so an open
+    /// socket alone does not keep an idle browser signed in.
+    pub(crate) async fn ended(&self) {
         let start = tokio::time::Instant::now() + SESSION_CHECK_INTERVAL;
         let mut checks = tokio::time::interval_at(start, SESSION_CHECK_INTERVAL);
         checks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             checks.tick().await;
-            match self.auth.check_session_id(&self.session_id).await {
-                SessionStatus::Live => {}
-                SessionStatus::Ended => return SessionEnd::Ended,
-                SessionStatus::Reused => return SessionEnd::Reused,
+            if self.auth.check_session_id(&self.session_id).await == SessionStatus::Ended {
+                return;
             }
         }
     }
 }
 
-/// Closes a browser socket with the close code of `end`, bounded by a timeout.
-pub(crate) async fn close_for_ended_session<S>(sink: &mut S, end: SessionEnd)
+/// Closes a browser socket with [`SESSION_ENDED_CLOSE_CODE`], bounded by a timeout.
+pub(crate) async fn close_for_ended_session<S>(sink: &mut S)
 where
     S: Sink<WsMessage> + Unpin,
 {
-    let frame = match end {
-        SessionEnd::Ended => CloseFrame {
-            code: SESSION_ENDED_CLOSE_CODE,
-            reason: Utf8Bytes::from_static("Session ended"),
-        },
-        SessionEnd::Reused => CloseFrame {
-            code: SESSION_REUSED_CLOSE_CODE,
-            reason: Utf8Bytes::from_static("Session used from another browser"),
-        },
+    let frame = CloseFrame {
+        code: SESSION_ENDED_CLOSE_CODE,
+        reason: Utf8Bytes::from_static("Session ended"),
     };
     let _ = tokio::time::timeout(CLOSE_TIMEOUT, sink.send(WsMessage::Close(Some(frame)))).await;
 }
@@ -104,7 +84,7 @@ mod tests {
         auth.delete_session_id(&session.id)
             .await
             .expect("logout must succeed");
-        // The next check notices the logout, so the socket would close with the plain code.
-        assert_eq!(watch.ended().await, SessionEnd::Ended);
+        // The next check notices the logout, so the socket would close.
+        watch.ended().await;
     }
 }

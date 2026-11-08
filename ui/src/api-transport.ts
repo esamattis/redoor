@@ -28,7 +28,6 @@ const API_ERROR_CODES = [
     "vault_device_not_found",
     "systemd_unsupported",
     "systemd_user_manager_not_running",
-    "session_reused",
     "fresh_login_required",
 ] as const satisfies readonly ApiErrorCode[];
 
@@ -48,19 +47,12 @@ const errorResponseSchema: z.ZodType<ErrorResponse> = z.object({
     code: z.enum(API_ERROR_CODES).optional().catch(undefined),
 });
 
-/**
- * Why the browser session ended: `reused` when the server signed it out because its cookie
- * was used by two browsers, so the login page can tell the user; `ended` for everything
- * else (expiry, logout, a password change).
- */
-export type SessionEndReason = "ended" | "reused";
-
 /** Supplies browser or Node-managed authentication without coupling transport to the router. */
 export type RequestContext = {
     getSessionCookie?: () => string | null;
     /** An access token takes precedence over the cookie on the server, as for the CLI. */
     getAccessToken?: () => string | null;
-    onUnauthorized?: (reason: SessionEndReason) => void;
+    onUnauthorized?: () => void;
     /**
      * Receives every `Set-Cookie` a response carries. Only Node-based clients see it (browsers
      * hide the header and keep the cookie themselves), and they need it because the server
@@ -151,9 +143,7 @@ export async function requireSuccessfulResponse(
     const parsed = text ? parseErrorResponse(text) : null;
 
     if (response.status === 401) {
-        context.onUnauthorized?.(
-            parsed?.code === "session_reused" ? "reused" : "ended",
-        );
+        context.onUnauthorized?.();
     }
 
     if (text) {

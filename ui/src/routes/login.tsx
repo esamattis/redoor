@@ -1,7 +1,7 @@
 import * as React from "react";
 import { useMutation } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { KeyRound, LoaderCircle, LogIn, ShieldAlert } from "lucide-react";
+import { createFileRoute } from "@tanstack/react-router";
+import { KeyRound, LoaderCircle, LogIn } from "lucide-react";
 import { z } from "zod";
 import type { SessionLength } from "#bindings/SessionLength";
 import { Button } from "#ui/components/button";
@@ -37,9 +37,6 @@ const loginSearchSchema = z.object({
     // In the URL rather than component state, so the choice survives the server's redirect
     // back here after a failed OIDC sign-in. A bad value falls back to the default.
     session: sessionLengthSchema.optional().catch(undefined),
-    // Why the previous session ended, when the user should know. A fixed value rather than
-    // text, so a crafted link cannot put arbitrary wording on the sign-in page.
-    reason: z.enum(["reused"]).optional().catch(undefined),
     // Set by forms that hand out access tokens: they need a sign-in from the last minute,
     // so the page asks for the credentials again even though the browser is signed in.
     fresh: z.boolean().optional().catch(undefined),
@@ -94,39 +91,6 @@ function messageFromLocationHash(): string | null {
     const message = params.get("message")?.trim();
 
     return message ? message : null;
-}
-
-/**
- * Explains a sign-out caused by the session cookie being used from two browsers, which is
- * what a copied browser profile looks like, and points to what the user can check.
- */
-function SessionReusedNotice() {
-    return (
-        <div
-            role="alert"
-            className="flex gap-3 rounded-xl border border-amber-400/50 bg-amber-500/15 px-5 py-4 text-sm text-amber-50 shadow-2xl shadow-amber-950/40"
-        >
-            <ShieldAlert
-                className="mt-0.5 h-5 w-5 shrink-0 text-amber-200"
-                aria-hidden="true"
-            />
-            <p>
-                You were signed out because this session was used from another
-                browser at the same time. If that wasn't you, change your
-                password and check the{" "}
-                {/* A full page load, so the signed-out app sends the user through this
-                    page with the sessions page as the way back. */}
-                <Link
-                    to="/settings/sessions"
-                    reloadDocument
-                    className="font-medium text-amber-200 underline underline-offset-2 hover:text-amber-100"
-                >
-                    signed-in sessions
-                </Link>
-                .
-            </p>
-        </div>
-    );
 }
 
 /**
@@ -223,7 +187,6 @@ function LoginPage() {
     return (
         <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
             <div className="flex w-full max-w-sm flex-col gap-4">
-                {search.reason === "reused" ? <SessionReusedNotice /> : null}
                 {search.fresh ? <FreshSignInNotice /> : null}
                 {firstRunMessage ? (
                     <div

@@ -14,7 +14,7 @@ import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { Select } from "#ui/components/select";
 import { Toast } from "#ui/components/toast";
-import { sessionEndReasonFromCloseCode } from "#ui/api-client";
+import { SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import { cn } from "#ui/utils/cn";
 
 const rootRouteApi = getRouteApi("__root__");
@@ -489,10 +489,8 @@ export function LogViewer(props: {
                 socket = null;
 
                 // The session ended; reconnecting would only be refused again.
-                const sessionEnd = sessionEndReasonFromCloseCode(event.code);
-
-                if (sessionEnd) {
-                    api.notifySessionEnded(sessionEnd);
+                if (event.code === SESSION_ENDED_CLOSE_CODE) {
+                    api.notifySessionEnded();
 
                     return;
                 }

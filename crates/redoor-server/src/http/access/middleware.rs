@@ -11,7 +11,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use redoor_protocol::api::ApiErrorCode;
 
 use super::{
     Principal, ResolvedDevice,
@@ -144,11 +143,7 @@ async fn authenticate(
         }),
         SessionCheck::Reused(reused) => {
             reused.forget(state, client);
-            Err(ApiError::coded(
-                StatusCode::UNAUTHORIZED,
-                ApiErrorCode::SessionReused,
-                "This session was signed out because it was used from another browser at the same time",
-            ))
+            Err(unauthorized("Authentication required"))
         }
     }
 }

@@ -299,7 +299,7 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
                 exists: (sessionId) => this.sessionExists(sessionId),
                 attachUrl: (sessionId, size) =>
                     this.api.getTerminalSessionWebSocketUrl(sessionId, size),
-                onSessionEnded: (reason) => this.api.notifySessionEnded(reason),
+                onSessionEnded: () => this.api.notifySessionEnded(),
             },
             onChange: () => this.emit(),
         });

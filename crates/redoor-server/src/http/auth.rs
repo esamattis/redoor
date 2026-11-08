@@ -176,8 +176,9 @@ pub(crate) enum SessionCheck {
     /// The session is valid: who it belongs to, which session it is, and a `Set-Cookie` to
     /// add to the response when the browser missed a rotation ([`SecretState::LostRotation`]).
     Valid(SessionUser, ActiveSession, Option<HeaderValue>),
-    /// The cookie was used by two browsers, so the session is revoked for both. Answered
-    /// with its own error code, so the UI can tell the user why they were signed out.
+    /// The cookie was used by two browsers, so the session was deleted for both. Answered
+    /// like [`Self::Invalid`]; the variant exists so the caller can log the detection with
+    /// the request's client address.
     Reused(ReusedSession),
 }
 
@@ -187,51 +188,45 @@ pub(crate) enum SessionCheck {
 pub(crate) enum SessionStatus {
     /// Still signed in.
     Live,
-    /// Expired, logged out, signed out from another browser or revoked by a credential
-    /// change.
+    /// Expired, logged out, signed out from another browser, revoked by a credential change
+    /// or deleted because two browsers used its cookie.
     Ended,
-    /// Revoked because its cookie was used by two browsers.
-    Reused,
 }
 
-/// A session revoked because two browsers used its cookie.
+/// A session deleted because two browsers used its cookie. Only the request that detected
+/// the reuse gets one; later requests of either browser find no session at all.
 pub(crate) struct ReusedSession {
     /// The stable session id, to drop what else the server keeps for the session.
     pub(crate) id: String,
     pub(crate) user: SessionUser,
-    /// Set only for the request that detected the reuse and revoked the session, so the
-    /// warning is logged once rather than for every request the two browsers send after.
-    pub(crate) detection: Option<ReuseDetection>,
-}
-
-/// How a reuse was detected, for the warning that tells false positives (a slow network
-/// outlasting [`ROTATION_GRACE`]) apart from a stolen cookie.
-pub(crate) struct ReuseDetection {
-    /// Seconds since the secret the request presented was rotated away; `None` when it was
-    /// no secret this session ever had.
+    /// Seconds since the secret the request presented was rotated away, to tell false
+    /// positives (a slow network outlasting [`ROTATION_GRACE`]) apart from a stolen cookie;
+    /// `None` when it was no secret this session ever had.
     pub(crate) since_rotation: Option<i64>,
 }
 
 impl ReusedSession {
-    /// Drops what the server keeps for the revoked session besides its tombstone and logs
-    /// the detection. The vault device secrets go at once, as when signing a session out
-    /// from the session list, rather than at the prune task's next pass. `client` is the
-    /// browser that presented the stale secret, when known.
+    /// Drops the session's vault device secrets and logs the detection. The server log is
+    /// the only place the reuse is reported: both browsers just see a signed-out session.
+    /// The vault device secrets go at once, as when signing a session out from the session
+    /// list, rather than at the prune task's next pass. `client` is the browser that
+    /// presented the stale secret, when known.
     pub(crate) fn forget(&self, state: &ServerState, client: Option<&ClientAddress>) {
         state.vault_devices.delete_session(&self.id);
-        let Some(detection) = &self.detection else {
-            return;
-        };
         let client = client.map_or_else(|| "an unknown address".to_string(), ToString::to_string);
-        let timing = match detection.since_rotation {
-            Some(seconds) => format!("{seconds} s after it was rotated away"),
-            None => "a secret the session never had".to_string(),
+        // The timing tells a slow network (a few seconds past the grace period) from a stolen
+        // cookie, so the reader knows how seriously to take the warning.
+        let timing = match self.since_rotation {
+            Some(seconds) => format!("rotated away {seconds} s earlier"),
+            None => "never issued for this session".to_string(),
         };
+        // Worded for someone reading the log with no knowledge of rotation: the warning is
+        // the only report of a possible breach, so it says what it means and what to do.
         log!(
             Level::Warning,
-            "Signed out session {} of {}: its cookie was used by two browsers (stale secret from {client}, {timing})",
-            public_session_id(&self.id),
-            self.user.log_label()
+            "Possible security breach: the session cookie of {} (session {}) was used from two browsers, as a stolen cookie or a copied browser profile would be. Both browsers were signed out. The stale secret came from {client} and was {timing}. Unless this was a slow network, change the password and review the signed-in sessions.",
+            self.user.log_label(),
+            public_session_id(&self.id)
         );
     }
 }
@@ -427,11 +422,6 @@ struct SessionFile {
     /// rotation response arrived ([`SecretState::Grace`]) from a second browser.
     #[serde(default)]
     previous: Option<PreviousSecret>,
-    /// Set once the cookie was used by two browsers. The file then stays as a tombstone until
-    /// `expires_at`, so a browser returning to an idle tab days later still learns why it was
-    /// signed out.
-    #[serde(default)]
-    revoked: Option<Revocation>,
     /// Unix seconds when the credentials were last checked for this session: the login time
     /// for a password login or a password change, and the provider's `auth_time` for an OIDC
     /// sign-in that asked the provider to authenticate again. `None` for a plain OIDC
@@ -465,13 +455,6 @@ struct PreviousSecret {
     retired_at: i64,
 }
 
-/// Marks a session revoked for reuse.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
-struct Revocation {
-    /// Unix seconds of the detection.
-    at: i64,
-}
-
 /// What the secret a request presented means for its session. Any secret that is neither
 /// `current` nor a recent `previous` proves a split: the session id only ever leaves the
 /// server inside a cookie, so whoever sends it with a wrong secret once had a real cookie of
@@ -495,8 +478,6 @@ enum SecretState {
 enum StoredState {
     /// Signed in until `expires_at` (Unix seconds), or longer while a transfer runs.
     Live { expires_at: i64 },
-    /// A tombstone of a session revoked for reuse, kept until its expiry.
-    Revoked,
     /// Expired, or its login no longer matches; the file can go.
     Ended,
 }
@@ -555,18 +536,19 @@ impl SessionFile {
         Some(secret)
     }
 
-    /// Turns the session into a tombstone because its cookie was used by two browsers.
-    /// Returns how long ago the presented secret was rotated away, for the warning.
-    fn revoke_for_reuse(&mut self, presented: &str, now: i64) -> ReuseDetection {
+    /// Describes the session as reused by the presented secret, for the warning: how long
+    /// ago that secret was rotated away.
+    fn reused(&self, presented: &str, now: i64) -> ReusedSession {
         let since_rotation = self
             .previous
             .as_ref()
             .filter(|previous| hashes_match(&previous.hash, presented))
             .map(|previous| now - previous.retired_at);
-        self.revoked = Some(Revocation { at: now });
-        // A tombstone needs no working cookie on disk.
-        self.current.unconfirmed = None;
-        ReuseDetection { since_rotation }
+        ReusedSession {
+            id: self.session_id.clone(),
+            user: self.user(),
+            since_rotation,
+        }
     }
 
     /// Who the session belongs to.
@@ -778,8 +760,8 @@ impl AuthState {
     /// source of truth, and classifies the presented secret ([`SecretState`]).
     ///
     /// Most requests only read. Confirming a new secret, re-sending a lost rotation and
-    /// revoking for reuse write the file, so they run a second time under the session file
-    /// lock with a fresh read: another request may have rotated the session in between.
+    /// deleting a reused session change the file, so they run a second time under the session
+    /// file lock with a fresh read: another request may have rotated the session in between.
     pub(crate) async fn check_session(&self, headers: &HeaderMap) -> SessionCheck {
         let Some(cookie) = SessionCookie::from_headers(headers) else {
             return SessionCheck::Invalid;
@@ -816,13 +798,6 @@ impl AuthState {
         };
         let expires_at = match state {
             StoredState::Live { expires_at } => expires_at,
-            StoredState::Revoked => {
-                return Some(SessionCheck::Reused(ReusedSession {
-                    id: session.session_id.clone(),
-                    user: session.user(),
-                    detection: None,
-                }));
-            }
             StoredState::Ended => {
                 // Remove ended files so disk does not retain stealable sessions.
                 let _ = tokio::fs::remove_file(path).await;
@@ -859,16 +834,16 @@ impl AuthState {
                 SessionCheck::Valid(session.user(), active, Some(cookie))
             }
             SecretState::Reused => {
-                let detection = session.revoke_for_reuse(&presented, now);
-                SessionCheck::Reused(ReusedSession {
-                    id: session.session_id.clone(),
-                    user: session.user(),
-                    detection: Some(detection),
-                })
+                // Deleting signs out both browsers. The answer stands even when it fails: the
+                // file is kept, so the next request with the stale secret detects it again.
+                if let Err(error) = remove_session_file(&path).await {
+                    log_error!(error, "Failed to delete a reused session");
+                }
+                return Some(SessionCheck::Reused(session.reused(&presented, now)));
             }
         };
-        // The answer stands even when the write fails: a reuse is refused all the same, and
-        // a missed confirmation or recovery only repeats on the next request.
+        // The answer stands even when the write fails: a missed confirmation or recovery only
+        // repeats on the next request.
         if let Err(error) = self.write_session(&session).await {
             log_error!(
                 error,
@@ -895,7 +870,6 @@ impl AuthState {
         }
         match self.stored_state(&session, &logins, now) {
             StoredState::Live { .. } => SessionStatus::Live,
-            StoredState::Revoked => SessionStatus::Reused,
             StoredState::Ended => {
                 let _ = tokio::fs::remove_file(path).await;
                 SessionStatus::Ended
@@ -908,13 +882,6 @@ impl AuthState {
     fn stored_state(&self, session: &SessionFile, logins: &Logins, now: i64) -> StoredState {
         if !self.is_current(session, logins) {
             return StoredState::Ended;
-        }
-        if session.revoked.is_some() {
-            return if session.expires_at > now {
-                StoredState::Revoked
-            } else {
-                StoredState::Ended
-            };
         }
         if !self.has_transfers(&session.session_id) {
             return if session.expires_at > now {
@@ -950,7 +917,6 @@ impl AuthState {
             if self.session_path(&session.session_id).as_deref() != Some(path.as_path()) {
                 continue;
             }
-            // Tombstones of sessions revoked for reuse are not signed in, so they are left out.
             let StoredState::Live { expires_at } = self.stored_state(&session, &logins, now) else {
                 continue;
             };
@@ -1083,7 +1049,6 @@ impl AuthState {
         let expired = session.expires_at <= now && !self.has_transfers(session_id);
         if session.session_id != session_id
             || !self.is_current(&session, &logins)
-            || session.revoked.is_some()
             || (update != SessionUpdate::TransferFinished && expired)
         {
             return Ok(None);
@@ -1230,7 +1195,6 @@ impl AuthState {
                 unconfirmed: None,
             },
             previous: None,
-            revoked: None,
             authenticated_at: grant.authenticated_at,
         };
         self.write_session(&session).await?;
@@ -1278,42 +1242,6 @@ impl AuthState {
         if self.cookie_secure { "; Secure" } else { "" }
     }
 
-    /// Ends the session named by a logout request's cookie.
-    ///
-    /// The cookie is classified first: a stale one turns the session into a tombstone
-    /// instead of deleting it, returned so the caller can log it, because logging out with a
-    /// copied cookie must not erase the evidence the other browser would see. A tombstone
-    /// stays as it is.
-    async fn end_session(&self, cookie: &SessionCookie) -> anyhow::Result<Option<ReusedSession>> {
-        let Some(path) = self.session_path(&cookie.id) else {
-            return Ok(None);
-        };
-        let logins = self.logins.current().await;
-        let _guard = self.session_file_lock.lock().await;
-        if let Some(mut session) = read_session_file(&path).await
-            && session.session_id == cookie.id
-        {
-            let now = jiff::Timestamp::now().as_second();
-            match self.stored_state(&session, &logins, now) {
-                StoredState::Revoked => return Ok(None),
-                StoredState::Live { .. } => {
-                    let presented = cookie.presented_hash();
-                    if session.classify(&presented, now) == SecretState::Reused {
-                        let detection = session.revoke_for_reuse(&presented, now);
-                        self.write_session(&session).await?;
-                        return Ok(Some(ReusedSession {
-                            id: session.session_id.clone(),
-                            user: session.user(),
-                            detection: Some(detection),
-                        }));
-                    }
-                }
-                StoredState::Ended => {}
-            }
-        }
-        remove_session_file(&path).await.map(|()| None)
-    }
-
     /// Deletes only a syntactically valid session identifier, preventing path traversal via
     /// cookies. Holds the session file lock, so a renewal in flight cannot write it back.
     pub(crate) async fn delete_session_id(&self, session_id: &str) -> anyhow::Result<()> {
@@ -1325,10 +1253,9 @@ impl AuthState {
     }
 
     /// Removes sessions that no longer match the running config (a changed password, a
-    /// removed user, OIDC turned off) and tombstones whose session would have expired anyway.
+    /// removed user, OIDC turned off).
     async fn purge_stale_sessions(&self) -> anyhow::Result<()> {
         let logins = self.logins.current().await;
-        let now = jiff::Timestamp::now().as_second();
         let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -1345,8 +1272,7 @@ impl AuthState {
                 let _ = tokio::fs::remove_file(&path).await;
                 continue;
             };
-            let expired_tombstone = session.revoked.is_some() && session.expires_at <= now;
-            if !self.is_current(&session, &logins) || expired_tombstone {
+            if !self.is_current(&session, &logins) {
                 let _ = tokio::fs::remove_file(&path).await;
             }
         }
@@ -1759,7 +1685,7 @@ pub(crate) async fn login_handler(
     // A sign-in from a browser that is already signed in, such as the fresh sign-in before
     // creating an access token, replaces its session instead of leaving a stray one in the
     // session list. Not fatal: the old session still expires on its own.
-    if let Err(error) = end_cookie_session(&state, &client, &headers).await {
+    if let Err(error) = end_cookie_session(&state, &headers).await {
         log_error!(
             error,
             "Failed to end the previous session of a signing-in browser"
@@ -1808,10 +1734,9 @@ pub(crate) async fn login_handler(
 /// cookie even when no file remains.
 pub(crate) async fn logout_handler(
     State(state): State<ServerState>,
-    client: ClientAddress,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(error) = end_cookie_session(&state, &client, &headers).await {
+    if let Err(error) = end_cookie_session(&state, &headers).await {
         log_error!(error, "Failed to delete session");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1838,22 +1763,18 @@ pub(crate) async fn logout_handler(
 /// browser that already has a session.
 ///
 /// The session's vault device secrets go first of all, so an end the page could not finish
-/// (a closed tab, a failed lock) still locks the vault in that browser. A stale cookie
-/// revokes the session for reuse instead (see [`AuthState::end_session`]), which is logged
-/// with `client`, the browser that presented it.
+/// (a closed tab, a failed lock) still locks the vault in that browser. The cookie's secret
+/// is not checked for reuse: a stale one only signs out a session its holder already had,
+/// and the rare case is not worth a second detection path.
 pub(crate) async fn end_cookie_session(
     state: &ServerState,
-    client: &ClientAddress,
     headers: &HeaderMap,
 ) -> anyhow::Result<()> {
     let Some(cookie) = SessionCookie::from_headers(headers) else {
         return Ok(());
     };
     state.vault_devices.delete_session(&cookie.id);
-    if let Some(reused) = state.auth.end_session(&cookie).await? {
-        reused.forget(state, Some(client));
-    }
-    Ok(())
+    state.auth.delete_session_id(&cookie.id).await
 }
 
 /// Fixtures other modules' tests use to get a signed-in session without the HTTP layer.
@@ -3259,7 +3180,6 @@ port = "not-a-port"
                 hash: secret_hash(secret),
                 retired_at,
             }),
-            revoked: None,
             authenticated_at: None,
         }
     }
@@ -3421,11 +3341,9 @@ port = "not-a-port"
         ));
     }
 
-    /// A stale secret after the grace period revokes the session for both browsers and
-    /// leaves a tombstone that every later check reports, until the session would have
-    /// expired.
+    /// A stale secret after the grace period deletes the session, signing out both browsers.
     #[tokio::test]
-    async fn reuse_leaves_a_tombstone_until_the_expiry() {
+    async fn reuse_deletes_the_session() {
         let directory = TempDir::create();
         let auth = auth_state(&directory, None).await;
         let (old, _) = password_session(&auth, SessionLength::Hour).await;
@@ -3454,48 +3372,34 @@ port = "not-a-port"
         let SessionCheck::Reused(reused) = auth.check_session(&old).await else {
             panic!("the stale secret must be refused as reuse");
         };
-        // The detecting request knows how long ago the secret was rotated away.
-        assert!(matches!(
-            reused.detection,
-            Some(detection) if detection.since_rotation >= Some(ROTATION_GRACE.as_secs() as i64)
-        ));
-        // The browser holding the current secret is signed out too, without a second warning.
+        // The detecting request knows how long ago the secret was rotated away, for the warning.
+        assert!(reused.since_rotation >= Some(ROTATION_GRACE.as_secs() as i64));
+        // The browser holding the current secret is signed out too.
         assert!(matches!(
             auth.check_session(&new).await,
-            SessionCheck::Reused(super::ReusedSession {
-                detection: None,
-                ..
-            })
+            SessionCheck::Invalid
         ));
-        // Websockets, which have no secret, see the reuse as well.
+        // Websockets, which have no secret, see the session end as well.
         assert_eq!(
             auth.check_session_id(&session_id(&new)).await,
-            SessionStatus::Reused
+            SessionStatus::Ended
         );
-        // The tombstone is not a signed-in session.
-        assert!(auth.list_sessions().await.expect("list").is_empty());
-        // Activity cannot renew or rotate a revoked session.
+        // Nothing of the session is kept on disk.
+        assert!(
+            !tokio::fs::try_exists(session_file_path(&directory, &new))
+                .await
+                .expect("stat")
+        );
+        // Activity cannot write the deleted session back.
         assert!(
             auth.rotate_session(&active_session_unchecked(&new))
                 .await
                 .expect("rotation")
                 .is_none()
         );
-
-        set_expiry(&directory, &new, now() - 1).await;
-        // Once the session would have expired, the tombstone goes like any ended session.
-        assert!(matches!(
-            auth.check_session(&new).await,
-            SessionCheck::Invalid
-        ));
-        assert!(
-            !tokio::fs::try_exists(session_file_path(&directory, &new))
-                .await
-                .expect("stat")
-        );
     }
 
-    /// The session behind a cookie without checking it, for calls that a revoked session
+    /// The session behind a cookie without checking it, for calls that a deleted session
     /// must refuse on their own.
     fn active_session_unchecked(headers: &HeaderMap) -> ActiveSession {
         let cookie = SessionCookie::from_headers(headers).expect("session cookie");
@@ -3509,7 +3413,7 @@ port = "not-a-port"
     }
 
     /// A valid id with a made-up secret proves someone once had a real cookie of the
-    /// session, so it revokes the session at once.
+    /// session, so it deletes the session at once.
     #[tokio::test]
     async fn made_up_secrets_revoke_the_session() {
         let directory = TempDir::create();
@@ -3526,16 +3430,14 @@ port = "not-a-port"
         assert!(matches!(
             auth.check_session(&forged).await,
             SessionCheck::Reused(super::ReusedSession {
-                detection: Some(super::ReuseDetection {
-                    since_rotation: None
-                }),
+                since_rotation: None,
                 ..
             })
         ));
         // The real browser is signed out too.
         assert!(matches!(
             auth.check_session(&headers).await,
-            SessionCheck::Reused(_)
+            SessionCheck::Invalid
         ));
     }
 

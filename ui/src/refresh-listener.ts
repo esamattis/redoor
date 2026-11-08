@@ -3,7 +3,7 @@ import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
-import { type ApiClient, sessionEndReasonFromCloseCode } from "#ui/api-client";
+import { type ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { VaultSession } from "#ui/vault/vault-session";
 import {
@@ -200,10 +200,8 @@ export class RefreshListener {
             this.websocket = null;
 
             // The session ended; reconnecting would only be refused again.
-            const sessionEnd = sessionEndReasonFromCloseCode(event.code);
-
-            if (sessionEnd) {
-                this.api.notifySessionEnded(sessionEnd);
+            if (event.code === SESSION_ENDED_CLOSE_CODE) {
+                this.api.notifySessionEnded();
 
                 return;
             }

@@ -184,7 +184,6 @@ import {
     streamNdjson,
     withAuthentication,
     type RequestContext,
-    type SessionEndReason,
 } from "#ui/api-transport";
 import * as apiPaths from "#ui/api-paths";
 import type { LsResponse } from "#ui/ls-response";
@@ -200,27 +199,6 @@ export const VAULT_KEY_HEADER = "Redoor-Vault-Key";
  * reconnecting, because every reconnect would be refused.
  */
 export const SESSION_ENDED_CLOSE_CODE = 4401;
-
-/**
- * Close code of a browser websocket whose session the server revoked because its cookie was
- * used by two browsers. Leads to the login page like `SESSION_ENDED_CLOSE_CODE`, which then
- * tells the user why.
- */
-export const SESSION_REUSED_CLOSE_CODE = 4409;
-
-/** Why a websocket closed with `code` ended the session, or `null` when it did not. */
-export function sessionEndReasonFromCloseCode(
-    code: number,
-): SessionEndReason | null {
-    switch (code) {
-        case SESSION_ENDED_CLOSE_CODE:
-            return "ended";
-        case SESSION_REUSED_CLOSE_CODE:
-            return "reused";
-        default:
-            return null;
-    }
-}
 
 /** The `name=value` pair of a session `Set-Cookie`, or `null` for any other cookie. */
 function sessionCookiePair(setCookie: string): string | null {
@@ -1571,8 +1549,7 @@ export class ApiClient {
     baseUrl: string;
     private sessionCookie: string | null = null;
     private accessToken: string | null = null;
-    private unauthorizedHandler:
-        ((reason: SessionEndReason) => void) | undefined;
+    private unauthorizedHandler: (() => void) | undefined;
     /** A deliberate logout owns navigation until a new session is established. */
     private logoutStarted = false;
     private agentClients = new WeakMap<AgentInfoResponse, Agent>();
@@ -1582,7 +1559,7 @@ export class ApiClient {
     }
 
     /** Installs navigation behavior after the router exists, avoiding an API-to-router dependency. */
-    setUnauthorizedHandler(handler: (reason: SessionEndReason) => void): void {
+    setUnauthorizedHandler(handler: () => void): void {
         this.unauthorizedHandler = handler;
     }
 
@@ -1590,8 +1567,8 @@ export class ApiClient {
      * Reports a session end noticed outside a REST response, such as a websocket closed with
      * `SESSION_ENDED_CLOSE_CODE`, so it leads to the login page exactly like a 401 does.
      */
-    notifySessionEnded(reason: SessionEndReason = "ended"): void {
-        if (!this.logoutStarted) this.unauthorizedHandler?.(reason);
+    notifySessionEnded(): void {
+        if (!this.logoutStarted) this.unauthorizedHandler?.();
     }
 
     /** Returns authentication headers for direct streaming requests outside this wrapper. */
@@ -1612,8 +1589,8 @@ export class ApiClient {
         return {
             getSessionCookie: () => this.sessionCookie,
             getAccessToken: () => this.accessToken,
-            onUnauthorized: (reason) => {
-                if (!this.logoutStarted) this.unauthorizedHandler?.(reason);
+            onUnauthorized: () => {
+                if (!this.logoutStarted) this.unauthorizedHandler?.();
             },
             // Follows rotations of the session secret, which a browser does by itself.
             onSetCookie: (setCookie) => {
@@ -1817,9 +1794,7 @@ export class ApiClient {
             this.logoutStarted = false;
 
             if (error instanceof ApiError && error.status === 401) {
-                this.unauthorizedHandler?.(
-                    error.code === "session_reused" ? "reused" : "ended",
-                );
+                this.unauthorizedHandler?.();
             }
 
             throw error;

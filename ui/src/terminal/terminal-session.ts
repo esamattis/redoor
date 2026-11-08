@@ -1,7 +1,6 @@
 import { z } from "zod";
 
-import { type Agent, sessionEndReasonFromCloseCode } from "#ui/api-client";
-import type { SessionEndReason } from "#ui/api-transport";
+import { type Agent, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
 import type { TerminalSize } from "#bindings/TerminalSize";
@@ -54,7 +53,7 @@ export type TerminalServer = {
     /** The socket that attaches this window to a session. */
     attachUrl: (sessionId: string, size: TerminalSize) => string;
     /** The browser's sign-in session ended, which the attach socket reported on close. */
-    onSessionEnded: (reason: SessionEndReason) => void;
+    onSessionEnded: () => void;
 };
 
 /** Identifies the exact canonical listing that should reflect command-created entries. */
@@ -803,15 +802,13 @@ export class TerminalSession {
 
         // The sign-in session ended: attaching again would be refused, and the shell keeps
         // running for after the next sign-in.
-        const sessionEnd = sessionEndReasonFromCloseCode(code);
-
-        if (sessionEnd) {
+        if (code === SESSION_ENDED_CLOSE_CODE) {
             this.setState({
                 type: "disconnected",
                 message: "Signed out",
                 canReconnect: false,
             });
-            this.options.server.onSessionEnded(sessionEnd);
+            this.options.server.onSessionEnded();
 
             return;
         }
