@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.2
+
+_2026-11-08_
+
+### Fixes
+
+- Terminals no longer show a large blank area below the prompt after long output, and keep the intended 5000 lines of scrollback instead of a few pages.
+
 ## v2.7.1
 
 _2026-11-08_
