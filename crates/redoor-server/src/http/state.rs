@@ -47,6 +47,8 @@ pub(crate) struct ServerState {
     pub(crate) oidc: Option<Arc<super::oidc::OidcClient>>,
     /// The server-owned access token table used by REST and MCP authentication.
     pub(crate) tokens: TokenStore,
+    /// `redoor remote login` requests waiting for approval in the browser, in memory only.
+    pub(crate) cli_logins: super::cli_logins::CliLoginStore,
     /// Enforces MCP-specific origin, rate, and concurrency policy outside browser auth.
     pub(crate) mcp: McpState,
     /// Absolute path of the TOML config loaded at process start (for the server

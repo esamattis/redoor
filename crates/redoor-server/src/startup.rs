@@ -440,6 +440,7 @@ impl ServerRuntime {
             auth,
             oidc,
             tokens,
+            cli_logins: Default::default(),
             mcp,
             config_path: config.config_path,
             self_signed_tls: matches!(config.tls, Some(ServerTls::SelfSigned)),

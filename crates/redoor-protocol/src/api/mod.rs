@@ -2,6 +2,7 @@
 
 pub mod agents;
 pub mod auth;
+pub mod cli_logins;
 pub mod diffs;
 pub mod editor_buffers;
 pub mod exec;
@@ -100,4 +101,8 @@ pub enum ApiErrorCode {
     /// The session cookie was used by two browsers: a request presented a secret the session
     /// had already rotated past, so the server signed the session out for both of them.
     SessionReused,
+    /// Creating or rotating an access token, or approving a CLI login, needs a session whose
+    /// credentials were checked within the last minute, so a copied browser profile cannot
+    /// mint a long-lived token. The UI sends the user through the sign-in and back.
+    FreshLoginRequired,
 }

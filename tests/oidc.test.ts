@@ -1,10 +1,21 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
+import { $ } from "zx";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
 
 import { ApiClient } from "#ui/api-client";
+import type { AccessTokenSecretResponse } from "#bindings/AccessTokenSecretResponse";
+import type { CliLoginResponse } from "#bindings/CliLoginResponse";
+import type { ErrorResponse } from "#bindings/ErrorResponse";
 import {
     ProcessManager,
     TEST_AGENT_TOKEN,
@@ -15,6 +26,8 @@ import {
     TempFileManager,
     getAvailablePort,
     VITEST_SERVER_PORT,
+    cliLoginApproval,
+    waitForApprovalPrompt,
     waitForLogMessage,
     waitForPort,
 } from "./test-utils";
@@ -52,6 +65,13 @@ class MockProvider {
         preferred_username: "alice",
         groups: ["admins"],
     };
+    /** The query of the last authorization request, to check what Redoor asked for. */
+    lastAuthorize: URLSearchParams | null = null;
+    /**
+     * The `auth_time` the next ID tokens carry: now, as after a real authentication, or an
+     * hour ago, as a provider that ignored `prompt=login` and reused its session would send.
+     */
+    authTime: "now" | "old" = "now";
     private server: Server | null = null;
     issuer = "";
 
@@ -107,6 +127,7 @@ class MockProvider {
 
         if (url.pathname === "/authorize" && method === "GET") {
             const params = url.searchParams;
+            this.lastAuthorize = params;
             const code = randomUUID();
             this.codes.set(code, {
                 nonce: params.get("nonce") ?? "",
@@ -158,6 +179,9 @@ class MockProvider {
                 iss: this.issuer,
                 aud: CLIENT_ID,
                 exp: Math.floor(Date.now() / 1000) + 300,
+                auth_time:
+                    Math.floor(Date.now() / 1000) -
+                    (this.authTime === "old" ? 3600 : 0),
                 nonce: issued.nonce,
                 ...issued.user,
             };
@@ -249,12 +273,13 @@ function hop(url: string, cookie?: string): Promise<Response> {
 async function signIn(
     returnPath: string,
     sessionLength?: string,
+    fresh = false,
 ): Promise<{
     callback: Response;
     callbackUrl: string;
     stateCookie: string;
 }> {
-    const session = sessionLength ? `&session=${sessionLength}` : "";
+    const session = `${sessionLength ? `&session=${sessionLength}` : ""}${fresh ? "&fresh=true" : ""}`;
 
     const start = await hop(
         `${baseUrl}/api/v1/auth/oidc/login?redirect=${encodeURIComponent(returnPath)}${session}`,
@@ -289,6 +314,7 @@ let serverPid = 0;
 async function startServer(
     allowedGroups: string[] | null,
     lifetimeDays = 365,
+    passwordLogin = true,
 ): Promise<void> {
     const allowedGroupsLine =
         allowedGroups === null
@@ -300,8 +326,7 @@ async function startServer(
         content: `agent_token = "${TEST_AGENT_TOKEN}"
 
 [server]
-username = "${TEST_USERNAME}"
-password = "${TEST_PASSWORD}"
+${passwordLogin ? `username = "${TEST_USERNAME}"\npassword = "${TEST_PASSWORD}"` : ""}
 
 [server.oidc]
 issuer = "${provider.issuer}"
@@ -512,6 +537,86 @@ describe("OIDC sign-in", () => {
     });
 });
 
+/** Session cookie pair a finished sign-in set. */
+function sessionCookie(callback: Response): string {
+    return cookiePair(setCookie(callback, "redoor_session") ?? "");
+}
+
+/** Tries to create an access token with a session cookie; returns the response. */
+function createToken(cookie: string): Promise<Response> {
+    return fetch(`${baseUrl}/api/v1/tokens`, {
+        method: "POST",
+        headers: { Cookie: cookie, "Content-Type": "application/json" },
+        body: JSON.stringify({
+            name: "oidc token",
+            permissions: ["files:read"],
+            devices: { kind: "all" },
+            expires_at: null,
+        }),
+    });
+}
+
+/** Deletes a token created by a test, with the session that created it. */
+async function deleteToken(cookie: string, response: Response): Promise<void> {
+    const { metadata }: AccessTokenSecretResponse = await response.json();
+
+    onTestFinished(async () => {
+        await fetch(`${baseUrl}/api/v1/tokens/${metadata.id}`, {
+            method: "DELETE",
+            headers: { Cookie: cookie },
+        });
+    });
+}
+
+describe("OIDC sign-in before creating access tokens", () => {
+    it("asks the provider to authenticate again and lets that session create tokens", async () => {
+        provider.user = {
+            sub: "subject-1",
+            preferred_username: "alice",
+            groups: ["admins"],
+        };
+        const plain = await signIn("/");
+
+        // An ordinary sign-in keeps the provider's single sign-on ...
+        expect(provider.lastAuthorize?.get("prompt")).toBeNull();
+        expect(provider.lastAuthorize?.get("max_age")).toBeNull();
+        const refused = await createToken(sessionCookie(plain.callback));
+        // ... which a copied browser profile could pass too, so it cannot create tokens.
+        expect(refused.status).toBe(403);
+        const error: ErrorResponse = await refused.json();
+        expect(error.code).toBe("fresh_login_required");
+
+        const fresh = await signIn("/settings/tokens", undefined, true);
+
+        // A fresh sign-in asks the provider to check the credentials again.
+        expect(provider.lastAuthorize?.get("prompt")).toBe("login");
+        expect(provider.lastAuthorize?.get("max_age")).toBe("0");
+        // It returns to where the user was creating the token.
+        expect(fresh.callback.headers.get("location")).toBe("/settings/tokens");
+        const cookie = sessionCookie(fresh.callback);
+        const created = await createToken(cookie);
+        // The provider's recent auth_time proves the check, so the token is created.
+        expect(created.status).toBe(200);
+        await deleteToken(cookie, created);
+    });
+
+    it("does not trust a provider that reused its old authentication", async () => {
+        provider.authTime = "old";
+        onTestFinished(() => {
+            provider.authTime = "now";
+        });
+        const fresh = await signIn("/", undefined, true);
+
+        // The sign-in itself still succeeds ...
+        expect(fresh.callback.status).toBe(303);
+        expect(fresh.callback.headers.get("location")).toBe("/");
+        const refused = await createToken(sessionCookie(fresh.callback));
+        // ... but an auth_time from before the sign-in started proves nothing, because
+        // providers may ignore prompt=login.
+        expect(refused.status).toBe(403);
+    });
+});
+
 describe("OIDC sign-in without allowed_groups", () => {
     beforeAll(async () => {
         // Restarted last, so the restricted tests above keep their own server.
@@ -547,5 +652,85 @@ describe("OIDC sign-in without allowed_groups", () => {
         // A year is longer than the configured week, so the session gets a week.
         expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
         expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604800 + 1);
+    });
+});
+
+describe("CLI login on a server with only OIDC sign-in", () => {
+    const binary =
+        process.env.REDOOR_TEST_BINARY ??
+        join(process.cwd(), "target/debug/redoor");
+
+    beforeAll(async () => {
+        // No password login at all, so the CLI has no password it could ever use.
+        await processManager.killAndWait(serverPid);
+        await startServer(["admins"], 365, false);
+    });
+
+    it("logs the CLI in through the browser", async () => {
+        provider.user = {
+            sub: "subject-1",
+            preferred_username: "alice",
+            groups: ["admins"],
+        };
+        const home = tempFiles.tempDirectory();
+
+        const cli = $({
+            env: {
+                ...process.env,
+                HOME: home,
+                REDOOR_APP_NAME: "oidc-cli",
+                REDOOR_REMOTE_SERVER: "",
+                REDOOR_REMOTE_TOKEN: "",
+            },
+            quiet: true,
+            nothrow: true,
+        })`exec ${binary} remote login ${baseUrl}`;
+
+        onTestFinished(async () => {
+            try {
+                await cli.kill();
+            } catch {
+                // Already exited.
+            }
+        });
+        const prompt = await waitForApprovalPrompt(cli);
+        const fresh = await signIn(`/cli-login/${prompt.id}`, undefined, true);
+
+        // The provider sign-in returns to the approval page.
+        expect(fresh.callback.headers.get("location")).toBe(
+            `/cli-login/${prompt.id}`,
+        );
+        const cookie = sessionCookie(fresh.callback);
+        const headers = { Cookie: cookie, "Content-Type": "application/json" };
+
+        const request: CliLoginResponse = await (
+            await fetch(`${baseUrl}/api/v1/cli-logins/${prompt.id}`, {
+                headers,
+            })
+        ).json();
+
+        const approved = await fetch(
+            `${baseUrl}/api/v1/cli-logins/${prompt.id}/approve`,
+            {
+                method: "POST",
+                headers,
+                body: JSON.stringify(
+                    cliLoginApproval(prompt.userCode, request.token),
+                ),
+            },
+        );
+
+        // A fresh OIDC session approves like a password session does.
+        expect(approved.status).toBe(200);
+        const result = await cli;
+        // The CLI got its token without any password.
+        expect(result.exitCode, result.stderr).toBe(0);
+        expect(result.stderr).toContain("Logged in to");
+        expect(
+            readFileSync(
+                join(home, ".local/share/oidc-cli/remote-credentials.json"),
+                "utf8",
+            ),
+        ).toContain("redoor_at_");
     });
 });

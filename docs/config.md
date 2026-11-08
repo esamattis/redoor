@@ -167,6 +167,8 @@ Adds "Sign in with …" to the login page using any OpenID Connect provider (Poc
 
 The provider must support the authorization code flow with PKCE (S256), and its discovered authorization and token endpoints must follow the same `https://` rule as `issuer`. The server uses `client_secret_basic` at the token endpoint unless discovery says only `client_secret_post` is supported. Changing `issuer`, `client_id` or `allowed_groups` (including adding or removing it), or removing the table, signs out all OIDC sessions; password sessions are unaffected. Set `cookie_secure = true` when serving over HTTPS through a reverse proxy; built-in [`[server.tls]`](#servertls-built-in-https) does it automatically.
 
+Creating an access token (in the web UI, or approving `redoor remote login`) needs a sign-in from the last minute. With OIDC, Redoor then asks the provider to check the credentials again (`prompt=login`, `max_age=0`) and only accepts the sign-in for token creation when the ID token's `auth_time` shows an authentication after the sign-in started. A provider that ignores `prompt=login` or sends no `auth_time` still signs users in, but its sessions cannot create tokens; the server log then has a warning.
+
 ```toml
 [server.oidc]
 issuer = "https://id.example.com"

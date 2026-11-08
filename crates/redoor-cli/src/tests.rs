@@ -1,16 +1,17 @@
-//! Exercise token authentication over real HTTP and durable state, and the login prompt flow
-//! with scripted answers, rather than mocking client internals.
+//! Exercise token authentication and the browser login flow over real HTTP and durable
+//! state, rather than mocking client internals.
 
 use axum::{
     Json, Router,
     extract::State,
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
-    routing::{delete, get},
+    routing::{delete, get, post},
 };
 use clap::Parser;
 use redoor_protocol::api::{
-    agents::{AgentInfoResponse, AgentListResponse},
+    agents::AgentListResponse,
+    cli_logins::{CliTokenDefaults, StartCliLoginResponse, TokenLifetime},
     tokens::{DeviceScope, Permission},
 };
 use reqwest::Method;
@@ -28,7 +29,7 @@ use super::{
     client::RemoteClient,
     credentials::{CredentialStore, Credentials, LOGIN_REQUIRED, insecure_tls_from_environment},
     format_agents,
-    login::{Expiry, LoginFlow, Prompter, TokenRequestArgs, TokenRequestPlan},
+    login::{BrowserLogin, TokenRequestArgs},
 };
 
 /// The bearer value the mock server accepts.
@@ -500,126 +501,6 @@ fn agent_json(id: &str, name: &str) -> serde_json::Value {
     })
 }
 
-/// Two agents for the device prompt.
-fn inventory() -> Vec<AgentInfoResponse> {
-    ["a", "b"]
-        .into_iter()
-        .map(|id| serde_json::from_value(agent_json(id, &format!("Agent {id}"))).unwrap())
-        .collect()
-}
-
-/// One scripted answer; `Default` accepts whatever the prompt preselected.
-enum Answer {
-    Default,
-    Indexes(Vec<usize>),
-    Index(usize),
-}
-
-/// What a prompt showed, so tests can check defaults and ordering.
-#[derive(Clone, Debug, PartialEq)]
-struct Asked {
-    prompt: String,
-    defaults: Vec<bool>,
-    default_index: Option<usize>,
-    default_text: Option<String>,
-}
-
-/// Answers prompts from a script and records what was asked.
-struct ScriptedPrompter {
-    answers: Mutex<VecDeque<Answer>>,
-    asked: Arc<Mutex<Vec<Asked>>>,
-}
-
-impl ScriptedPrompter {
-    /// Returns the prompter and a handle to inspect the prompts afterwards.
-    fn new(answers: Vec<Answer>) -> (Self, Arc<Mutex<Vec<Asked>>>) {
-        let asked = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                answers: Mutex::new(answers.into()),
-                asked: asked.clone(),
-            },
-            asked,
-        )
-    }
-
-    /// Records one prompt and takes the next answer; running out is a test bug.
-    fn next(&self, asked: Asked) -> Answer {
-        self.asked.lock().unwrap().push(asked);
-        self.answers
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("the flow asked more questions than the script answers")
-    }
-}
-
-impl Prompter for ScriptedPrompter {
-    /// Accepts the default text.
-    fn input(&self, prompt: &str, default: Option<&str>) -> anyhow::Result<String> {
-        self.next(Asked {
-            prompt: prompt.to_owned(),
-            defaults: vec![],
-            default_index: None,
-            default_text: default.map(str::to_owned),
-        });
-        Ok(default.unwrap_or_default().to_owned())
-    }
-
-    /// Passwords are not part of the planning tests.
-    fn password(&self, prompt: &str) -> anyhow::Result<String> {
-        anyhow::bail!("unexpected password prompt: {prompt}")
-    }
-
-    /// Returns the scripted selection or the preselected items.
-    fn multi_select(
-        &self,
-        prompt: &str,
-        _items: &[String],
-        defaults: &[bool],
-    ) -> anyhow::Result<Vec<usize>> {
-        let answer = self.next(Asked {
-            prompt: prompt.to_owned(),
-            defaults: defaults.to_vec(),
-            default_index: None,
-            default_text: None,
-        });
-        Ok(match answer {
-            Answer::Indexes(indexes) => indexes,
-            _ => defaults
-                .iter()
-                .enumerate()
-                .filter_map(|(index, checked)| checked.then_some(index))
-                .collect(),
-        })
-    }
-
-    /// Returns the scripted index or the default.
-    fn select(&self, prompt: &str, _items: &[String], default: usize) -> anyhow::Result<usize> {
-        let answer = self.next(Asked {
-            prompt: prompt.to_owned(),
-            defaults: vec![],
-            default_index: Some(default),
-            default_text: None,
-        });
-        Ok(match answer {
-            Answer::Index(index) => index,
-            _ => default,
-        })
-    }
-
-    /// Accepts the default.
-    fn confirm(&self, prompt: &str, default: bool) -> anyhow::Result<bool> {
-        self.next(Asked {
-            prompt: prompt.to_owned(),
-            defaults: vec![],
-            default_index: None,
-            default_text: None,
-        });
-        Ok(default)
-    }
-}
-
 /// Parses login flags exactly like the real command line.
 #[derive(Parser)]
 struct LoginCli {
@@ -628,59 +509,38 @@ struct LoginCli {
 }
 
 /// Builds login arguments from a flag list.
-fn login_args(flags: &[&str]) -> TokenRequestArgs {
-    let mut argv = vec!["login", "http://127.0.0.1:7666"];
+fn login_args(server: &str, flags: &[&str]) -> TokenRequestArgs {
+    let mut argv = vec!["login", server];
     argv.extend_from_slice(flags);
     LoginCli::try_parse_from(argv).unwrap().args
 }
 
-/// Accepting every default gives the CLI-oriented policy the plan promises.
-#[tokio::test]
-async fn interactive_defaults_preselect_cli_permissions() {
-    let (prompter, asked) = ScriptedPrompter::new(vec![
-        Answer::Default,
-        Answer::Default,
-        Answer::Default,
-        Answer::Default,
-    ]);
-    let flow = LoginFlow::new(prompter, true, login_args(&[]));
-    let plan = flow.plan(&inventory()).await.unwrap();
-    let asked = asked.lock().unwrap().clone();
-    // Everything but files:delete is preselected, because only rm and mv need it.
-    assert_eq!(asked[0].defaults, vec![true, true, false, true, true]);
-    // All devices is the default scope, and 90 days the default expiry.
-    assert_eq!(asked[1].default_index, Some(0));
-    assert_eq!(asked[3].default_index, Some(1));
-    // The default name says which machine holds the token.
-    assert!(
-        asked[2]
-            .default_text
-            .as_deref()
-            .is_some_and(|name| name.starts_with("redoor remote on "))
-    );
+/// The flags only prefill the browser form; without them the CLI suggests what it needs.
+#[test]
+fn flags_prefill_the_approval_form() {
+    let defaults = login_args("http://127.0.0.1:7666", &[]).defaults("laptop");
+    // Everything but files:delete, because only rm and mv need it.
     assert_eq!(
-        (plan.permissions, plan.devices, plan.expiry),
+        defaults.permissions,
+        vec![
+            Permission::FilesRead,
+            Permission::FilesWrite,
+            Permission::CommandsExecute,
+            Permission::AgentsManage
+        ]
+    );
+    // All devices for 90 days, named after the machine that holds the token.
+    assert_eq!(
+        (defaults.devices, defaults.lifetime, defaults.name.as_str()),
         (
-            vec![
-                Permission::FilesRead,
-                Permission::FilesWrite,
-                Permission::CommandsExecute,
-                Permission::AgentsManage
-            ],
             DeviceScope::All,
-            Expiry::Days90
+            TokenLifetime::Days90,
+            "redoor remote on laptop"
         )
     );
-}
-
-/// Flags answer everything, so scripted logins never block on a prompt.
-#[tokio::test]
-async fn flags_skip_prompts() {
-    let (prompter, asked) = ScriptedPrompter::new(vec![]);
-    let flow = LoginFlow::new(
-        prompter,
-        true,
-        login_args(&[
+    let flagged = login_args(
+        "http://127.0.0.1:7666",
+        &[
             "--permissions",
             "files:read,agents:manage",
             "--devices",
@@ -689,14 +549,13 @@ async fn flags_skip_prompts() {
             "ci",
             "--expires",
             "never",
-        ]),
-    );
-    let plan = flow.plan(&inventory()).await.unwrap();
-    // No prompt was shown.
-    assert!(asked.lock().unwrap().is_empty());
+        ],
+    )
+    .defaults("laptop");
+    // Every flag ends up in the request the browser form starts from.
     assert_eq!(
-        plan,
-        TokenRequestPlan {
+        flagged,
+        CliTokenDefaults {
             name: "ci".into(),
             permissions: vec![Permission::FilesRead, Permission::AgentsManage],
             devices: DeviceScope::Only {
@@ -705,77 +564,175 @@ async fn flags_skip_prompts() {
                     redoor_protocol::ids::AgentId::unchecked("b")
                 ]
             },
-            expiry: Expiry::Never,
+            lifetime: TokenLifetime::Never,
         }
     );
-    let (prompter, _) = ScriptedPrompter::new(vec![]);
-    let all = LoginFlow::new(
-        prompter,
-        false,
-        login_args(&["--permissions", "all", "--name", "ci"]),
-    )
-    .plan(&inventory())
-    .await
-    .unwrap();
-    // "all" expands to every permission, and scripts default to all devices and 90 days.
-    assert_eq!(all.permissions, Permission::ALL.to_vec());
+    // "all" expands to every permission.
     assert_eq!(
-        (all.devices, all.expiry),
-        (DeviceScope::All, Expiry::Days90)
+        login_args("http://127.0.0.1:7666", &["--permissions", "all"])
+            .defaults("laptop")
+            .permissions,
+        Permission::ALL.to_vec()
     );
-    // Unknown permission names are rejected rather than granting less than asked.
-    let mut argv = vec!["login", "http://127.0.0.1:7666"];
-    argv.extend(["--permissions", "devices:read"]);
-    assert!(LoginCli::try_parse_from(argv).is_err());
+    // Unknown permission names are rejected rather than suggesting less than asked.
+    assert!(
+        LoginCli::try_parse_from(["login", "http://127.0.0.1:7666", "--permissions", "x:y"])
+            .is_err()
+    );
+    // The password flags are gone: the browser does the signing in.
+    assert!(
+        LoginCli::try_parse_from(["login", "http://127.0.0.1:7666", "--password-stdin"]).is_err()
+    );
 }
 
-/// An empty permission selection is asked again, and "only" devices needs at least one.
+/// What the mock CLI login server saw and still has to answer.
+#[derive(Default)]
+struct MockCliLogin {
+    /// The body of the start request.
+    started: Mutex<Option<serde_json::Value>>,
+    /// The poll secrets the waits sent.
+    polls: Mutex<Vec<String>>,
+    /// Status and body of each wait, in order.
+    answers: Mutex<VecDeque<(StatusCode, serde_json::Value)>>,
+}
+
+/// Starts a mock server for the CLI login routes behind a path prefix, answering the waits
+/// with `answers`.
+async fn cli_login_server(
+    answers: Vec<(StatusCode, serde_json::Value)>,
+) -> (String, Arc<MockCliLogin>, tokio::task::JoinHandle<()>) {
+    let mock = Arc::new(MockCliLogin {
+        answers: Mutex::new(answers.into()),
+        ..MockCliLogin::default()
+    });
+    let app = Router::new()
+        .route(
+            "/prefix/api/v1/cli-logins",
+            post(
+                |State(mock): State<Arc<MockCliLogin>>, Json(body): Json<serde_json::Value>| async move {
+                    *mock.started.lock().unwrap() = Some(body);
+                    Json(serde_json::json!({
+                        "id": "abc",
+                        "poll_secret": "poll-secret",
+                        "user_code": "BCDF-GHJK",
+                        "approval_path": "/cli-login/abc",
+                        "expires_in_seconds": 600
+                    }))
+                },
+            ),
+        )
+        .route(
+            "/prefix/api/v1/cli-logins/abc/wait",
+            post(
+                |State(mock): State<Arc<MockCliLogin>>, Json(body): Json<serde_json::Value>| async move {
+                    mock.polls
+                        .lock()
+                        .unwrap()
+                        .push(body["poll_secret"].as_str().unwrap_or_default().to_owned());
+                    let (status, body) = mock
+                        .answers
+                        .lock()
+                        .unwrap()
+                        .pop_front()
+                        .expect("the CLI polled after its final answer");
+                    (status, Json(body))
+                },
+            ),
+        )
+        .with_state(mock.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/prefix", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (url, mock, task)
+}
+
+/// The CLI keeps polling while the request is pending and returns the approved token.
 #[tokio::test]
-async fn empty_selections_are_prompted_again() {
-    let (prompter, asked) = ScriptedPrompter::new(vec![
-        Answer::Indexes(vec![]),
-        Answer::Indexes(vec![0]),
-        Answer::Index(1),
-        Answer::Indexes(vec![]),
-        Answer::Indexes(vec![1]),
-        Answer::Default,
-        Answer::Default,
-    ]);
-    let flow = LoginFlow::new(prompter, true, login_args(&[]));
-    let plan = flow.plan(&inventory()).await.unwrap();
-    let prompts = asked
-        .lock()
+async fn browser_login_waits_for_the_approval() {
+    let token = serde_json::json!({
+        "status": "approved",
+        "token": "redoor_at_new",
+        "metadata": {
+            "id": Uuid::new_v4().to_string(), "name": "n", "permissions": ["files:read"],
+            "devices": {"kind": "all"}, "created_at": "2026-01-01T00:00:00Z",
+            "expires_at": null, "last_used_at": null
+        }
+    });
+    let (url, mock, task) = cli_login_server(vec![
+        (StatusCode::OK, serde_json::json!({"status": "pending"})),
+        (StatusCode::OK, token),
+    ])
+    .await;
+    let login = BrowserLogin::new(&url, false).unwrap();
+    let issued = login
+        .issue(login_args(&url, &["--name", "ci"]).defaults("laptop"))
+        .await
+        .unwrap();
+    task.abort();
+    // The token from the approved answer is what the command saves or prints.
+    assert_eq!(issued.token, "redoor_at_new");
+    // A pending answer was followed by another poll, each with the request's secret.
+    assert_eq!(
+        *mock.polls.lock().unwrap(),
+        vec!["poll-secret".to_owned(), "poll-secret".to_owned()]
+    );
+    let started = mock.started.lock().unwrap().clone().unwrap();
+    // The approval page learns the machine and the suggested token.
+    assert!(
+        started["host_name"]
+            .as_str()
+            .is_some_and(|name| !name.is_empty())
+    );
+    assert_eq!(started["token"]["name"], "ci");
+    // The approval URL keeps the server's path prefix.
+    assert_eq!(
+        login
+            .approval_url(&StartCliLoginResponse {
+                id: "abc".into(),
+                poll_secret: String::new(),
+                user_code: String::new(),
+                approval_path: "/cli-login/abc".into(),
+                expires_in_seconds: 0,
+            })
+            .unwrap()
+            .as_str(),
+        format!("{url}/cli-login/abc")
+    );
+}
+
+/// A denial and an expired request end the command with a message that says what to do.
+#[tokio::test]
+async fn denied_and_expired_logins_fail() {
+    let (url, _, task) = cli_login_server(vec![(
+        StatusCode::OK,
+        serde_json::json!({"status": "denied"}),
+    )])
+    .await;
+    let error = BrowserLogin::new(&url, false)
         .unwrap()
-        .iter()
-        .map(|asked| asked.prompt.clone())
-        .collect::<Vec<_>>();
-    // The permission and device lists were each shown twice.
-    assert_eq!(
-        prompts
-            .iter()
-            .filter(|p| p.starts_with("Permissions"))
-            .count(),
-        2
-    );
-    assert_eq!(prompts.iter().filter(|p| *p == "Select devices").count(), 2);
-    assert_eq!(plan.permissions, vec![Permission::FilesRead]);
-    assert_eq!(
-        plan.devices,
-        DeviceScope::Only {
-            device_ids: vec![redoor_protocol::ids::AgentId::unchecked("b")]
-        }
-    );
-}
+        .issue(login_args(&url, &[]).defaults("laptop"))
+        .await
+        .unwrap_err();
+    task.abort();
+    // The user turned it down in the browser.
+    assert_eq!(error.to_string(), "The login was denied in the browser");
 
-/// Without a terminal the missing required flags are named up front, before any request.
-#[tokio::test]
-async fn non_interactive_login_names_missing_flags() {
-    let (prompter, asked) = ScriptedPrompter::new(vec![]);
-    let flow = LoginFlow::new(prompter, false, login_args(&["--username", "user"]));
-    let error = flow.issue().await.unwrap_err().to_string();
-    // Every missing flag is listed, so one retry is enough.
-    assert!(error.contains("--password-stdin") && error.contains("--permissions"));
-    assert!(!error.contains("--username"));
-    // Nothing was prompted.
-    assert!(asked.lock().unwrap().is_empty());
+    let (url, _, task) = cli_login_server(vec![(
+        StatusCode::NOT_FOUND,
+        serde_json::json!({"error": "gone"}),
+    )])
+    .await;
+    let error = BrowserLogin::new(&url, false)
+        .unwrap()
+        .issue(login_args(&url, &[]).defaults("laptop"))
+        .await
+        .unwrap_err();
+    task.abort();
+    // The request is gone after ten minutes, and the user needs a new one.
+    assert!(
+        error.to_string().contains("run the command again"),
+        "{error}"
+    );
 }

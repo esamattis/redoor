@@ -69,7 +69,12 @@ enum RemoteCommand {
     /// Search file contents below a remote directory.
     #[command(after_help = examples::GREP)]
     Grep(search::GrepArgs),
-    /// Log in with the account password, choose the token's permissions and save the token.
+    /// Log in through the browser and save an access token.
+    ///
+    /// Prints a URL and a code. Open the URL in a browser that is signed in to the server,
+    /// enter the code, adjust the token and approve it after signing in again; the command
+    /// continues by itself. Scripts cannot create tokens on their own: a person approves each
+    /// one in the browser.
     #[command(after_help = examples::LOGIN)]
     Login(login::TokenRequestArgs),
     /// Revoke the saved token on the server and remove it locally.
@@ -83,6 +88,8 @@ enum RemoteCommand {
         json: bool,
     },
     /// Like login, but print the new token as JSON (for MCP clients) instead of saving it.
+    ///
+    /// The token is approved in the browser like with `login`, so a person approves each one.
     #[command(name = "create-token", after_help = examples::CREATE_TOKEN)]
     CreateToken(login::TokenRequestArgs),
     /// List device IDs, names, and connection status.

@@ -395,3 +395,72 @@ export function upgradeWithProtocol(protocol: string, version: string) {
         request.end();
     });
 }
+
+/**
+ * Where the Playwright server keeps one file per browser session: its `HOME` is
+ * `.test-playwright-home` (see `scripts/test/playwright-dev.mts`) and its app name the
+ * default `redoor`.
+ */
+const SESSIONS_DIRECTORY = path.join(
+    __dirname,
+    "..",
+    "..",
+    ".test-playwright-home",
+    ".local",
+    "share",
+    "redoor",
+    "sessions",
+);
+
+/**
+ * Makes the page's sign-in two minutes old, so creating, rotating or approving an access
+ * token needs a fresh sign-in, without waiting for the minute to pass. The server rewrites
+ * the session file on activity reports, and one that read the file before this edit would
+ * write the old sign-in time back, so this repeats until the server reports the session
+ * as stale.
+ */
+export async function ageSignIn(page: Page): Promise<void> {
+    await expect(async () => {
+        const cookie = (await page.context().cookies(WEB_BASE_URL)).find(
+            (candidate) => candidate.name === "redoor_session",
+        );
+
+        // The cookie names the session id, then its rotating secret after the dot.
+        const sessionId = cookie?.value.split(".", 1)[0] ?? "";
+
+        expect(sessionId).toMatch(/^[0-9a-f-]{36}$/);
+
+        const file = path.join(SESSIONS_DIRECTORY, `session_${sessionId}.json`);
+
+        const stored = z
+            .record(z.string(), z.unknown())
+            .parse(JSON.parse(await fs.readFile(file, "utf8")));
+
+        stored.authenticated_at = Math.floor(Date.now() / 1000) - 120;
+
+        // Through a rename, so the server never reads a half-written session and signs out.
+        const temporary = path.join(
+            SESSIONS_DIRECTORY,
+            `.playwright-${sessionId}.tmp`,
+        );
+
+        await fs.writeFile(temporary, JSON.stringify(stored), { mode: 0o600 });
+        await fs.rename(temporary, file);
+
+        const me = await page.request.get(`${WEB_BASE_URL}/api/v1/auth/me`);
+
+        expect(me.status()).toBe(200);
+        expect((await me.json()).fresh_login_seconds_left).toBe(0);
+    }).toPass();
+}
+
+/** Signs in on the login page that a token form sent the user to, which returns to the form. */
+export async function signInAgain(page: Page): Promise<void> {
+    await expect(page).toHaveURL(/\/login\?.*fresh=true/);
+    await expect(
+        page.getByText("Sign in again to create an access token"),
+    ).toBeVisible();
+    await page.getByLabel("Username").fill("test-user");
+    await page.getByLabel("Password").fill("test-password");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+}

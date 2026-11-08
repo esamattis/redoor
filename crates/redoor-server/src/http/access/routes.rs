@@ -42,6 +42,9 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
             "GET",
             "/api/v1/auth/methods" | "/api/v1/auth/oidc/login" | "/api/v1/auth/oidc/callback",
         ) => Access::Public,
+        // The CLI login flow: the CLI starts a request and long-polls it before it has any
+        // credential; `wait` authenticates with the request's poll secret itself.
+        ("POST", "/api/v1/cli-logins" | "/api/v1/cli-logins/{id}/wait") => Access::Public,
 
         // Live sockets, server configuration and agent configuration.
         (
@@ -138,6 +141,12 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
             Access::SessionOnly
         }
 
+        // Reading, approving and denying a CLI login: approving mints a token, so like token
+        // management it is never grantable.
+        ("GET", "/api/v1/cli-logins/{id}")
+        | ("POST", "/api/v1/cli-logins/{id}/approve" | "/api/v1/cli-logins/{id}/deny") => {
+            Access::SessionOnly
+        }
         // Token management: never grantable, so a token cannot mint a broader one.
         ("GET" | "POST", "/api/v1/tokens")
         | ("PUT" | "DELETE", "/api/v1/tokens/{token_id}")
@@ -298,6 +307,19 @@ mod tests {
             (Method::POST, "/api/v1/login", Access::Public),
             (Method::GET, "/api/v1/auth/oidc/callback", Access::Public),
             (Method::GET, "/api/v1/auth/methods", Access::Public),
+            (Method::POST, "/api/v1/cli-logins", Access::Public),
+            (Method::POST, "/api/v1/cli-logins/{id}/wait", Access::Public),
+            (Method::GET, "/api/v1/cli-logins/{id}", Access::SessionOnly),
+            (
+                Method::POST,
+                "/api/v1/cli-logins/{id}/approve",
+                Access::SessionOnly,
+            ),
+            (
+                Method::POST,
+                "/api/v1/cli-logins/{id}/deny",
+                Access::SessionOnly,
+            ),
             (Method::PUT, "/api/v1/auth/password", Access::SessionOnly),
             (
                 Method::POST,

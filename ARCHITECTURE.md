@@ -424,6 +424,9 @@ own endpoints:
   user works. A browser presenting a secret the session already moved past proves two
   browsers share it, so the server revokes the session for both and tells the user, which
   makes a stolen cookie noisy and short-lived.
+- **Fresh sign-in for token secrets.** Creating an access token or approving a CLI login
+  requires credentials checked within the last minute, so a copied browser profile cannot
+  turn its session into a token that outlives it.
 - **The signed-in user is logged.** A task-local carries the user through requests, spawned
   tasks and router messages, so log lines name who caused them.
 - **Agents are only partly trusted.** The agent token proves "an agent of this server", not
@@ -445,12 +448,22 @@ token with a set of permissions (`files:read`, `files:write`, `files:delete`,
 - **One route table** (`access/routes.rs`) classifies every route, and a route missing from it
   is session-only, so a new route is not reachable with a token until someone classifies it.
 - **Session-only routes** are everything a token could use to widen its own access or that
-  handles secrets: configuration, terminals, the vault and encrypted files, SSH keys and token
-  management.
+  handles secrets: configuration, terminals, the vault and encrypted files, SSH keys, token
+  management and CLI login approval.
 - **Limit of the model.** Permissions describe what a token may do through redoor, not what
   the device's OS user can reach; write or exec on the server's own local agent is equivalent
   to full access.
 - Tokens are stored only as SHA-256 verifiers; the token embeds its id for O(1) lookup.
+
+### CLI login
+
+`redoor remote login` and `create-token` get their token through the browser, using the OAuth
+device authorization flow (RFC 8628). The CLI starts a request and prints an approval URL and
+a user code; a signed-in browser with a fresh sign-in types the code and approves, choosing
+the token's permissions; the CLI's long poll then receives the token. The CLI never handles a
+password, OIDC-only servers still get CLI logins, and no script can mint a token without a
+person approving it. Requests live in memory only, are single use, expire after 10 minutes
+and are bounded in number.
 
 ## Design rules
 

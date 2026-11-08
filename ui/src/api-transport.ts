@@ -29,6 +29,7 @@ const API_ERROR_CODES = [
     "systemd_unsupported",
     "systemd_user_manager_not_running",
     "session_reused",
+    "fresh_login_required",
 ] as const satisfies readonly ApiErrorCode[];
 
 /** Fails to compile when the server gains a code this list does not name. */

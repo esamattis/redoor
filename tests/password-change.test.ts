@@ -121,6 +121,7 @@ describe("password change", () => {
 
         const { token } = await createAccessToken(api, {
             permissions: ["files:read", "files:write", "agents:manage"],
+            credentials: { username, password: oldPassword },
         });
 
         const tokenClient = new ApiClient(baseUrl);

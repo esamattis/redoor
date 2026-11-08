@@ -27,7 +27,10 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use super::{
-    auth::SessionClient, client_address::ClientAddress, error::ApiError, state::ServerState,
+    auth::{SessionClient, end_cookie_session},
+    client_address::ClientAddress,
+    error::ApiError,
+    state::ServerState,
 };
 
 /// Cookie binding a pending sign-in to the browser that started it, so a callback URL
@@ -41,6 +44,9 @@ const PENDING_LOGIN_LIFETIME: Duration = Duration::from_secs(10 * 60);
 const MAX_PENDING_LOGINS: usize = 1_024;
 /// Keeps a hung provider from tying up sign-in requests indefinitely.
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(15);
+/// How far the provider's clock may be off from ours when a fresh sign-in's `auth_time` is
+/// compared with the time the sign-in started, and how far into the future it may lie.
+const AUTH_TIME_SKEW: i64 = 30;
 
 /// Talks to one configured provider and remembers sign-ins that are in progress.
 pub(crate) struct OidcClient {
@@ -87,7 +93,34 @@ struct PendingLogin {
     /// The session length picked on the login page. Kept here, server-side, because the
     /// provider round trip carries nothing of the login page but the `state`.
     session_length: SessionLength,
+    /// The login page asked for a fresh authentication (before creating an access token),
+    /// so the provider was sent `prompt=login` and `max_age=0`.
+    fresh: bool,
+    /// Unix seconds when the sign-in started; a fresh sign-in's `auth_time` must not be older.
+    started_at: i64,
     expires_at: Instant,
+}
+
+impl PendingLogin {
+    /// When the user's credentials were checked for this sign-in, for the session's
+    /// `authenticated_at`, or `None` when the sign-in proves nothing about that.
+    ///
+    /// A plain sign-in proves nothing: a copied browser profile holds the provider's cookies
+    /// too, so its single sign-on would let a thief in without any credential. A fresh one
+    /// counts only when the ID token's `auth_time` falls after the start of this sign-in,
+    /// because providers may ignore `prompt=login`. It is clamped to `now`, so a provider
+    /// whose clock runs ahead cannot stretch the window, and one further ahead than the skew
+    /// allowance is refused like an old one. The sign-in itself succeeds either way.
+    fn authenticated_at(&self, auth_time: Option<i64>, now: i64) -> Option<i64> {
+        if !self.fresh {
+            return None;
+        }
+        let auth_time = auth_time?;
+        if auth_time < self.started_at - AUTH_TIME_SKEW || auth_time > now + AUTH_TIME_SKEW {
+            return None;
+        }
+        Some(auth_time.min(now))
+    }
 }
 
 /// Values the ID token must match for the sign-in that requested it.
@@ -112,6 +145,9 @@ struct IdTokenClaims {
     email: Option<String>,
     #[serde(default)]
     groups: Vec<String>,
+    /// When the provider last authenticated the user (OIDC Core 2), which decides whether a
+    /// fresh sign-in really checked the credentials.
+    auth_time: Option<i64>,
 }
 
 /// `aud` may be a single string or a list (OIDC Core 2).
@@ -128,6 +164,8 @@ struct SignedInUser {
     subject: String,
     username: Option<String>,
     email: Option<String>,
+    /// The token's `auth_time` claim; see [`PendingLogin::authenticated_at`].
+    auth_time: Option<i64>,
 }
 
 impl SignedInUser {
@@ -250,10 +288,13 @@ impl OidcClient {
     }
 
     /// Records a new pending sign-in and returns the provider URL plus its `state` value.
+    /// A `fresh` sign-in asks the provider to authenticate the user again instead of reusing
+    /// its own session (`prompt=login`, `max_age=0`).
     async fn start(
         &self,
         return_path: String,
         session_length: SessionLength,
+        fresh: bool,
     ) -> anyhow::Result<(String, String)> {
         let discovery = self.discovery().await?;
         let state = random_token()?;
@@ -262,6 +303,8 @@ impl OidcClient {
             pkce_verifier: random_token()?,
             return_path,
             session_length,
+            fresh,
+            started_at: jiff::Timestamp::now().as_second(),
             expires_at: Instant::now() + PENDING_LOGIN_LIFETIME,
         };
         let mut url = url::Url::parse(&discovery.authorization_endpoint)?;
@@ -274,6 +317,11 @@ impl OidcClient {
             .append_pair("nonce", &login.nonce)
             .append_pair("code_challenge", &pkce_challenge(&login.pkce_verifier))
             .append_pair("code_challenge_method", "S256");
+        if fresh {
+            url.query_pairs_mut()
+                .append_pair("prompt", "login")
+                .append_pair("max_age", "0");
+        }
         self.remember(state.clone(), login, Instant::now())?;
         Ok((url.into(), state))
     }
@@ -424,6 +472,7 @@ fn validate_id_token(
         subject: claims.sub,
         username: claims.preferred_username,
         email: claims.email,
+        auth_time: claims.auth_time,
     })
 }
 
@@ -506,20 +555,24 @@ fn see_other(location: &str) -> Response {
 }
 
 /// Sends the browser back to the login page with a failure code, clearing the state cookie.
-/// The session length goes back too when the attempt is known, so the user's choice is still
-/// selected when they try again.
+/// The session length and the fresh flag go back too when the attempt is known, so the
+/// user's choice is still selected when they try again.
 fn fail(
     state: &ServerState,
     failure: SignInFailure,
     return_path: &str,
-    session_length: Option<SessionLength>,
+    retry: Option<(SessionLength, bool)>,
 ) -> Response {
     let mut query = url::form_urlencoded::Serializer::new(String::new());
     query
         .append_pair("redirect", return_path)
         .append_pair("oidc_error", failure.code());
-    if let Some(length) = session_length {
+    if let Some((length, fresh)) = retry {
         query.append_pair("session", length.as_str());
+        // A failed fresh sign-in keeps the login page's explanation of why it is needed.
+        if fresh {
+            query.append_pair("fresh", "true");
+        }
     }
     let query = query.finish();
     let mut response = see_other(&format!("/login?{query}"));
@@ -553,6 +606,10 @@ pub(crate) struct LoginQuery {
     /// The session length picked on the login page; one hour when absent.
     #[serde(default)]
     session: SessionLength,
+    /// Asks the provider to authenticate the user again, so the session may create access
+    /// tokens; see [`PendingLogin::authenticated_at`].
+    #[serde(default)]
+    fresh: bool,
 }
 
 /// Starts sign-in: remembers the attempt and redirects the browser to the provider.
@@ -564,7 +621,10 @@ pub(crate) async fn oidc_login_handler(
         return not_configured();
     };
     let return_path = safe_return_path(query.redirect.as_deref());
-    match client.start(return_path.clone(), query.session).await {
+    match client
+        .start(return_path.clone(), query.session, query.fresh)
+        .await
+    {
         Ok((authorization_url, login_state)) => {
             let mut response = see_other(&authorization_url);
             response.headers_mut().append(
@@ -579,7 +639,7 @@ pub(crate) async fn oidc_login_handler(
                 &state,
                 SignInFailure::Unavailable,
                 &return_path,
-                Some(query.session),
+                Some((query.session, query.fresh)),
             )
         }
     }
@@ -634,7 +694,7 @@ pub(crate) async fn oidc_callback_handler(
             &state,
             failure,
             &login.return_path,
-            Some(login.session_length),
+            Some((login.session_length, login.fresh)),
         );
     }
     let Some(code) = query.code else {
@@ -642,7 +702,7 @@ pub(crate) async fn oidc_callback_handler(
             &state,
             SignInFailure::Failed,
             &login.return_path,
-            Some(login.session_length),
+            Some((login.session_length, login.fresh)),
         );
     };
     let id_token = match client.redeem(&login, &code).await {
@@ -653,7 +713,7 @@ pub(crate) async fn oidc_callback_handler(
                 &state,
                 SignInFailure::Unavailable,
                 &login.return_path,
-                Some(login.session_length),
+                Some((login.session_length, login.fresh)),
             );
         }
     };
@@ -662,7 +722,7 @@ pub(crate) async fn oidc_callback_handler(
             &state,
             SignInFailure::Unavailable,
             &login.return_path,
-            Some(login.session_length),
+            Some((login.session_length, login.fresh)),
         );
     };
     let user = match validate_id_token(
@@ -681,16 +741,35 @@ pub(crate) async fn oidc_callback_handler(
                 &state,
                 failure,
                 &login.return_path,
-                Some(login.session_length),
+                Some((login.session_length, login.fresh)),
             );
         }
     };
+    let now = jiff::Timestamp::now().as_second();
+    let authenticated_at = login.authenticated_at(user.auth_time, now);
+    if login.fresh && authenticated_at.is_none() {
+        // The sign-in still succeeds; the session just cannot mint access tokens.
+        log!(
+            Level::Warning,
+            "OIDC sign-in asked for a fresh authentication, but the provider's auth_time ({}) does not show one",
+            user.auth_time
+                .map_or_else(|| "missing".to_string(), |time| time.to_string())
+        );
+    }
+    // Like a password login, a sign-in from a browser that already has a session replaces it.
+    if let Err(error) = end_cookie_session(&state, &address, &headers).await {
+        log_error!(
+            error,
+            "Failed to end the previous session of a signing-in browser"
+        );
+    }
     let session = match state
         .auth
         .create_oidc_session(
             user.display_name().to_string(),
             login.session_length,
             SessionClient::new(&address, &headers),
+            authenticated_at,
         )
         .await
     {
@@ -701,7 +780,7 @@ pub(crate) async fn oidc_callback_handler(
                 &state,
                 SignInFailure::Failed,
                 &login.return_path,
-                Some(login.session_length),
+                Some((login.session_length, login.fresh)),
             );
         }
     };
@@ -775,7 +854,15 @@ mod tests {
                 subject: "user-1".to_string(),
                 username: Some("alice".to_string()),
                 email: None,
+                auth_time: None,
             })
+        );
+        let mut with_auth_time = claims();
+        with_auth_time["auth_time"] = serde_json::json!(NOW - 5);
+        // The authentication time is read, so a fresh sign-in can be checked.
+        assert_eq!(
+            validate(with_auth_time).map(|user| user.auth_time),
+            Ok(Some(NOW - 5))
         );
         let mut many = claims();
         many["aud"] = serde_json::json!(["redoor", "other"]);
@@ -791,6 +878,7 @@ mod tests {
             subject: "user-1".to_string(),
             username: username.map(str::to_string),
             email: email.map(str::to_string),
+            auth_time: None,
         };
         // The readable username wins when the provider sends one.
         assert_eq!(
@@ -913,8 +1001,44 @@ mod tests {
             pkce_verifier: "v".to_string(),
             return_path: "/".to_string(),
             session_length: SessionLength::Hour,
+            fresh: false,
+            started_at: NOW,
             expires_at,
         }
+    }
+
+    /// Only a fresh sign-in whose `auth_time` falls into it counts as a credential check,
+    /// clamped to the server's clock.
+    #[test]
+    fn fresh_sign_ins_need_a_recent_auth_time() {
+        let plain = pending(Instant::now());
+        let fresh = PendingLogin {
+            fresh: true,
+            ..pending(Instant::now())
+        };
+        let now = NOW + 10;
+        // An ordinary sign-in keeps single sign-on, so it proves nothing even with a recent
+        // auth_time.
+        assert_eq!(plain.authenticated_at(Some(NOW + 5), now), None);
+        // A fresh sign-in authenticated after it started counts from the authentication.
+        assert_eq!(fresh.authenticated_at(Some(NOW + 5), now), Some(NOW + 5));
+        // A provider that does not send auth_time cannot prove anything.
+        assert_eq!(fresh.authenticated_at(None, now), None);
+        // A provider that ignored prompt=login reports its old authentication, which a copied
+        // profile's single sign-on would pass.
+        assert_eq!(fresh.authenticated_at(Some(NOW - 3600), now), None);
+        // Clock skew between the provider and the server is tolerated at the start ...
+        assert_eq!(
+            fresh.authenticated_at(Some(NOW - AUTH_TIME_SKEW), now),
+            Some(NOW - AUTH_TIME_SKEW)
+        );
+        // ... and a time slightly in the future is clamped, so it cannot stretch the window.
+        assert_eq!(fresh.authenticated_at(Some(now + 20), now), Some(now));
+        // Beyond the allowance the future is refused like an old authentication.
+        assert_eq!(
+            fresh.authenticated_at(Some(now + AUTH_TIME_SKEW + 1), now),
+            None
+        );
     }
 
     /// A state value completes once, and only before it expires.
@@ -988,7 +1112,7 @@ mod tests {
             })
             .unwrap();
         let (url, state) = client
-            .start("/agents".to_string(), SessionLength::Week)
+            .start("/agents".to_string(), SessionLength::Week, false)
             .await
             .unwrap();
         let url = url::Url::parse(&url).unwrap();
@@ -1014,6 +1138,20 @@ mod tests {
         // So does the session length, which the provider never sees.
         assert_eq!(login.session_length, SessionLength::Week);
         assert!(!query.values().any(|value| value == "week"));
+        // An ordinary sign-in leaves the provider's single sign-on alone.
+        assert!(!query.contains_key("prompt") && !query.contains_key("max_age"));
+
+        let (url, state) = client
+            .start("/settings/tokens".to_string(), SessionLength::Hour, true)
+            .await
+            .unwrap();
+        let url = url::Url::parse(&url).unwrap();
+        let query: HashMap<_, _> = url.query_pairs().into_owned().collect();
+        // A fresh sign-in asks the provider to check the credentials again.
+        assert_eq!(query["prompt"], "login");
+        assert_eq!(query["max_age"], "0");
+        // The flag is kept for the callback, which checks auth_time against it.
+        assert!(client.take(&state, Instant::now()).unwrap().fresh);
     }
 
     /// The return path can never send the browser to another site.

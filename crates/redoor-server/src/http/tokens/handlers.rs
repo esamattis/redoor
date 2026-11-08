@@ -3,18 +3,21 @@
 use axum::{
     Extension, Json,
     extract::{Path, State},
-    http::{HeaderMap, HeaderValue, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use jiff::Timestamp;
-use redoor_protocol::api::tokens::{
-    AccessTokenListResponse, AccessTokenSecretResponse, CreateAccessTokenRequest,
-    DeleteAccessTokenResponse, DeviceScope, UpdateAccessTokenRequest,
+use redoor_protocol::api::{
+    ApiErrorCode,
+    tokens::{
+        AccessTokenListResponse, AccessTokenSecretResponse, CreateAccessTokenRequest,
+        DeleteAccessTokenResponse, DeviceScope, UpdateAccessTokenRequest,
+    },
 };
 use uuid::Uuid;
 
 use super::store::{IssuedToken, TokenPolicy};
-use crate::http::{access::Principal, error::ApiError, state::ServerState};
+use crate::http::{access::Principal, auth::ActiveSession, error::ApiError, state::ServerState};
 
 /// Route: `GET /api/v1/tokens` lists every token's metadata.
 pub(crate) async fn list(State(state): State<ServerState>) -> Response {
@@ -23,13 +26,26 @@ pub(crate) async fn list(State(state): State<ServerState>) -> Response {
     }))
 }
 
-/// Route: `POST /api/v1/tokens` mints a token and returns its secret once.
+/// Route: `POST /api/v1/tokens` mints a token and returns its secret once. Needs a fresh
+/// sign-in ([`require_fresh_login`]).
 pub(crate) async fn create(
     State(state): State<ServerState>,
+    session: Option<Extension<ActiveSession>>,
     headers: HeaderMap,
     Json(request): Json<CreateAccessTokenRequest>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
+    require_fresh_login(session.as_deref())?;
+    Ok(no_store(Json(mint(&state, request).await?)))
+}
+
+/// Creates a token from a creation request and returns its only copy of the secret. Shared
+/// by `POST /api/v1/tokens` and the CLI login approval, so both validate the same way; the
+/// callers check the fresh sign-in first.
+pub(crate) async fn mint(
+    state: &ServerState,
+    request: CreateAccessTokenRequest,
+) -> Result<AccessTokenSecretResponse, ApiError> {
     let expires_at = request
         .expires_at
         .as_deref()
@@ -39,7 +55,7 @@ pub(crate) async fn create(
                 .map_err(|_| ApiError::bad_request("Token expiry must be an RFC 3339 timestamp"))
         })
         .transpose()?;
-    let devices = resolve_scope(&state, request.devices).await?;
+    let devices = resolve_scope(state, request.devices).await?;
     let issued = state
         .tokens
         .create(
@@ -51,7 +67,24 @@ pub(crate) async fn create(
             expires_at,
         )
         .await?;
-    Ok(secret_response(issued))
+    Ok(secret(issued))
+}
+
+/// Refuses to hand out a token secret unless the session's credentials were checked within
+/// the last minute ([`crate::http::auth::TOKEN_FRESHNESS`]). A copied browser profile holds
+/// an older session, and signing in again needs the credentials, so it cannot turn its
+/// short window into a token that outlives the session. 403 with its own code, so the UI
+/// sends the user through the sign-in instead of treating it as a signed-out session.
+pub(crate) fn require_fresh_login(session: Option<&ActiveSession>) -> Result<(), ApiError> {
+    let now = Timestamp::now().as_second();
+    if session.is_some_and(|session| session.fresh_login_seconds_left(now) > 0) {
+        return Ok(());
+    }
+    Err(ApiError::coded(
+        StatusCode::FORBIDDEN,
+        ApiErrorCode::FreshLoginRequired,
+        "Sign in again to create an access token: the last sign-in was more than a minute ago",
+    ))
 }
 
 /// Route: `PUT /api/v1/tokens/{token_id}` replaces the policy without changing the secret.
@@ -79,14 +112,17 @@ pub(crate) async fn update(
 }
 
 /// Route: `POST /api/v1/tokens/{token_id}/rotate` issues a new secret for the same token.
+/// Hands out a secret like creation, so it needs a fresh sign-in too.
 pub(crate) async fn rotate(
     State(state): State<ServerState>,
+    session: Option<Extension<ActiveSession>>,
     headers: HeaderMap,
     Path(token_id): Path<String>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
+    require_fresh_login(session.as_deref())?;
     let issued = state.tokens.rotate(parse_id(&token_id)?).await?;
-    Ok(secret_response(issued))
+    Ok(no_store(Json(secret(issued))))
 }
 
 /// Route: `DELETE /api/v1/tokens/{token_id}` revokes a token immediately.
@@ -165,7 +201,7 @@ async fn resolve_scope(state: &ServerState, devices: DeviceScope) -> Result<Devi
 
 /// Session-authenticated mutations reject cross-site requests, since the cookie would
 /// otherwise let another site mint tokens in the user's name.
-fn validate_mutation_origin(headers: &HeaderMap) -> Result<(), ApiError> {
+pub(crate) fn validate_mutation_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     if headers
         .get("sec-fetch-site")
         .and_then(|value| value.to_str().ok())
@@ -194,16 +230,16 @@ fn validate_mutation_origin(headers: &HeaderMap) -> Result<(), ApiError> {
     Ok(())
 }
 
-/// Wraps a newly issued secret, which must never be cached.
-fn secret_response(issued: IssuedToken) -> Response {
-    no_store(Json(AccessTokenSecretResponse {
+/// The response body of a newly issued secret; callers send it with [`no_store`].
+fn secret(issued: IssuedToken) -> AccessTokenSecretResponse {
+    AccessTokenSecretResponse {
         token: issued.secret,
         metadata: issued.metadata,
-    }))
+    }
 }
 
 /// Keeps token responses out of browser and proxy caches.
-fn no_store(body: impl IntoResponse) -> Response {
+pub(crate) fn no_store(body: impl IntoResponse) -> Response {
     let mut response = body.into_response();
     response.headers_mut().insert(
         header::CACHE_CONTROL,

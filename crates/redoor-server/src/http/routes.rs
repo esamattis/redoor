@@ -112,6 +112,23 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             "/api/v1/auth/oidc/login",
             get(super::oidc::oidc_login_handler),
         )
+        .route("/api/v1/cli-logins", post(super::cli_logins::start_handler))
+        .route(
+            "/api/v1/cli-logins/{id}",
+            get(super::cli_logins::get_handler),
+        )
+        .route(
+            "/api/v1/cli-logins/{id}/approve",
+            post(super::cli_logins::approve_handler),
+        )
+        .route(
+            "/api/v1/cli-logins/{id}/deny",
+            post(super::cli_logins::deny_handler),
+        )
+        .route(
+            "/api/v1/cli-logins/{id}/wait",
+            post(super::cli_logins::wait_handler),
+        )
         .route(
             "/api/v1/auth/oidc/callback",
             get(super::oidc::oidc_callback_handler),

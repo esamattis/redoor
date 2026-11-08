@@ -29,6 +29,7 @@ const CURRENT_USER: CurrentUserResponse = {
         expires_at: "2026-11-08T12:00:00Z",
         expires_in_seconds: 3600,
     },
+    fresh_login_seconds_left: 0,
 };
 
 /** An API client whose three session requests answer without a server. */

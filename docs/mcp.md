@@ -12,7 +12,10 @@ from an earlier request.
 MCP clients authenticate with an **access token**, the same kind of credential
 the remote CLI uses. Create one under **Access tokens** in Redoor's application
 menu. Choose only the permissions and devices the client needs, create the
-token, and copy both the endpoint and the token from the one-time result. The
+token, and copy both the endpoint and the token from the one-time result. If
+your last sign-in was more than a minute ago, Redoor asks you to sign in again
+before it creates the token (see
+[Access tokens need a fresh sign-in](remote-cli.md#access-tokens-need-a-fresh-sign-in)). The
 result also offers a ready-made **AI agent setup prompt** containing the
 endpoint and token, which you can paste to an AI agent so it configures the
 server for itself.
@@ -35,9 +38,10 @@ A local managed agent runs as the same OS user as the server. Write or command
 access to it can therefore change the server's own files, so leave such devices
 out of the scope of tokens that should not have full control.
 
-On a headless machine, create one with the remote CLI instead. It asks for the
-account password and the permissions (or takes them as flags) and prints the
-token and the MCP endpoint as JSON without saving anything:
+On a headless machine, create one with the remote CLI instead. It prints a URL
+and a code; approve the token in a browser where you are signed in to Redoor
+(on any device), and the command prints the token and the MCP endpoint as JSON
+without saving anything. Its flags suggest the permissions and devices:
 
 ```sh
 redoor remote create-token http://127.0.0.1:7666 --permissions files:read,files:write
@@ -50,9 +54,10 @@ secret for the same token and invalidates the old one at once. Deleting a
 token rejects every later request that uses it. Tokens are independent of the
 login password: changing the password does not invalidate them.
 
-Tokens can only be created and managed by a browser session (or by
-`redoor remote login`, which logs in with the password). A token can never
-create or edit tokens, so it cannot widen its own access.
+Tokens can only be created and managed by a browser session, and creating or
+rotating one needs a sign-in from the last minute; `redoor remote login` and
+`create-token` are approved in such a browser too. A token can never create or
+edit tokens, so it cannot widen its own access.
 
 Old `server mcp-token` credentials are not migrated. The files
 `mcp/machine-tokens.json`, `mcp/machine-tokens.lock` and `mcp/operations/` in

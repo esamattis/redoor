@@ -135,6 +135,8 @@ describe("login methods", () => {
                     expires_at: expect.any(String),
                     expires_in_seconds: expect.any(Number),
                 },
+                // ... and how long a password sign-in may still create tokens.
+                fresh_login_seconds_left: expect.any(Number),
             });
         }
 
@@ -150,6 +152,7 @@ describe("login methods", () => {
         const { token, metadata } = await createAccessToken(api, {
             name: "ci token",
             permissions: ["files:read"],
+            credentials: { username: "alice", password: users.alice },
         });
 
         const tokenClient = new ApiClient(baseUrl);
@@ -161,6 +164,8 @@ describe("login methods", () => {
             token_id: metadata.id,
             // Tokens do not idle out, so they have no session expiry.
             session: null,
+            // Tokens can never manage tokens, so there is no sign-in window to report.
+            fresh_login_seconds_left: null,
         });
     });
 

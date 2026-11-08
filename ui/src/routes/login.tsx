@@ -40,6 +40,9 @@ const loginSearchSchema = z.object({
     // Why the previous session ended, when the user should know. A fixed value rather than
     // text, so a crafted link cannot put arbitrary wording on the sign-in page.
     reason: z.enum(["reused"]).optional().catch(undefined),
+    // Set by forms that hand out access tokens: they need a sign-in from the last minute,
+    // so the page asks for the credentials again even though the browser is signed in.
+    fresh: z.boolean().optional().catch(undefined),
 });
 
 export const Route = createFileRoute("/login")({
@@ -126,6 +129,34 @@ function SessionReusedNotice() {
     );
 }
 
+/**
+ * Says why a signed-in user is asked for the password again, so the extra sign-in before
+ * creating a token does not look like an unexpected sign-out.
+ */
+function FreshSignInNotice() {
+    return (
+        <div
+            role="status"
+            className="flex gap-3 rounded-xl border border-blue-400/40 bg-blue-500/10 px-5 py-4 text-sm text-slate-200 shadow-2xl shadow-blue-950/30"
+        >
+            <KeyRound
+                className="mt-0.5 h-5 w-5 shrink-0 text-blue-300"
+                aria-hidden="true"
+            />
+            <div>
+                <p className="font-semibold text-slate-100">
+                    Sign in again to create an access token
+                </p>
+                <p className="mt-1 text-slate-300">
+                    Access tokens need a sign-in from the last minute, so a
+                    copied browser session cannot create them. You return to the
+                    form afterwards.
+                </p>
+            </div>
+        </div>
+    );
+}
+
 /** Presents the only public UI route and resumes the exact protected URL after login. */
 function LoginPage() {
     const { api } = Route.useRouteContext();
@@ -193,6 +224,7 @@ function LoginPage() {
         <main className="flex min-h-screen items-center justify-center bg-canvas p-6">
             <div className="flex w-full max-w-sm flex-col gap-4">
                 {search.reason === "reused" ? <SessionReusedNotice /> : null}
+                {search.fresh ? <FreshSignInNotice /> : null}
                 {firstRunMessage ? (
                     <div
                         role="status"
@@ -274,6 +306,7 @@ function LoginPage() {
                                 href={api.getOidcLoginUrl(
                                     safeRedirectPath(search.redirect),
                                     sessionLength,
+                                    search.fresh === true,
                                 )}
                                 className="w-full rounded-md"
                             >

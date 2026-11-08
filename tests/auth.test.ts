@@ -138,6 +138,7 @@ describe("HTTP authentication", () => {
                 expires_at: expect.any(String),
                 expires_in_seconds: expect.any(Number),
             },
+            fresh_login_seconds_left: expect.any(Number),
         });
         // When routing discovers an external address, it must not return an empty value.
         expect(

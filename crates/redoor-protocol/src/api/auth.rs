@@ -130,6 +130,12 @@ pub struct CurrentUserResponse {
     /// When the browser session ends without further activity; absent for access tokens,
     /// which do not idle out. The UI schedules its sign-out warning from it on page load.
     pub session: Option<SessionExpiry>,
+    /// Seconds this browser session can still create or rotate access tokens, counted on the
+    /// server's clock from the last time its credentials were checked; 0 once it has to sign
+    /// in again first. Absent for access tokens, which can never manage tokens. Lets the UI
+    /// send the user through the sign-in before the server refuses the request.
+    #[ts(type = "number | null")]
+    pub fresh_login_seconds_left: Option<u64>,
 }
 
 /// When a browser session ends unless the user is active again.

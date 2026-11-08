@@ -134,16 +134,12 @@ pub(crate) const GREP: &str = "Examples:
 
 /// Shown by `redoor remote login --help`.
 pub(crate) const LOGIN: &str = r#"Examples:
-  # Log in interactively and choose the token's permissions
+  # Log in: open the printed URL in a signed-in browser, enter the code and approve
   redoor remote login https://redoor.example.com
 
-  # Log in from a script without prompts
-  printf '%s\n' "$REDOOR_PASSWORD" | redoor remote login https://redoor.example.com \
-    --username admin --password-stdin --permissions files:read,commands:execute \
-    --devices all --expires 30d --yes
-
-  # Limit the token to two devices
-  redoor remote login https://redoor.example.com --devices workstation,nas
+  # Suggest a narrower token; the browser form starts from these values
+  redoor remote login https://redoor.example.com --permissions files:read,commands:execute \
+    --devices workstation,nas --expires 30d
 
   # Log in to a server with a self-signed certificate; later commands remember it
   redoor remote login https://192.168.1.10:7666 --insecure-tls"#;
@@ -163,13 +159,11 @@ pub(crate) const STATUS: &str = "Examples:
 
 /// Shown by `redoor remote create-token --help`.
 pub(crate) const CREATE_TOKEN: &str = r#"Examples:
-  # Create a read/write file token for an MCP client
+  # Create a read/write file token for an MCP client, approved in the browser
   redoor remote create-token http://127.0.0.1:7666 --permissions files:read,files:write
 
-  # Create a token for every permission and device without prompts
-  printf '%s\n' "$REDOOR_PASSWORD" | redoor remote create-token https://redoor.example.com \
-    --username admin --password-stdin --permissions all --devices all \
-    --name ci --expires 90d --yes"#;
+  # Suggest a name and lifetime for the token
+  redoor remote create-token https://redoor.example.com --name ci --expires 90d"#;
 
 /// Shown by `redoor remote devices --help`.
 pub(crate) const DEVICES: &str = "Examples:

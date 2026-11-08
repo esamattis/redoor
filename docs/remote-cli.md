@@ -20,28 +20,48 @@ See `redoor remote --help` for available commands and options.
 
 ## Logging in
 
-`redoor remote login` asks for your username and password, then lets you choose what the
-CLI may do. It creates an **access token** with those permissions and saves only the token;
-the password is not stored:
+`redoor remote login` logs in through your browser, like `gh auth login`. It prints a URL
+and a code:
 
 ```
-Permissions (space toggles, enter accepts):
-  [x] files:read — List, stat, read, search and download files
-  [x] files:write — Upload, create, overwrite and copy into files
-  [ ] files:delete — Trash and delete files, move sources
-  [x] commands:execute — Run commands as the agent's OS user (high trust)
-  [x] agents:manage — Start/stop managed agents, used by auto-start
-Devices: All devices (including devices added later)
-Token name: redoor remote on laptop
-Expires: 90 days
+To approve this login, open this page in a browser where you are signed in to Redoor:
+
+    https://redoor.example.com/cli-login/3q2-7xYm...
+
+and enter the code KTPW-HZRB
+
+Waiting for approval (expires in 10 minutes, Ctrl-C cancels)...
 ```
 
-Every prompt also has a flag (`--username`, `--password-stdin`, `--permissions`,
-`--devices`, `--name`, `--expires`, `--yes`), so scripts can log in without a terminal.
+Open the page in any browser where you are signed in to Redoor, on this machine or another
+one such as your phone. It shows which machine asked, so check it is the one where you
+just ran the command. Type the code from the terminal, choose what the CLI may do
+(permissions, devices, name, expiry) and press **Approve**. Redoor asks you to sign in again
+first if your last sign-in was more than a minute ago (see
+[Access tokens need a fresh sign-in](#access-tokens-need-a-fresh-sign-in)). The command then
+continues by itself and saves the new **access token**; no password is ever typed into or
+stored by the CLI. **Deny** turns the request down, and the command stops.
+
+The flags `--permissions`, `--devices`, `--name` and `--expires` only fill in the form in the
+browser, where you have the final say. Without them the form suggests everything but
+`files:delete` on all devices, named `redoor remote on <hostname>`, expiring in 90 days.
+
+Scripts cannot create tokens on their own: a person approves each one in the browser. For
+CI jobs, create a token once and pass it through the environment (see below).
+
 `redoor remote status` shows the token's permissions, and `redoor remote logout` revokes it.
-Tokens are listed, edited and revoked under **Access tokens** in the web UI. Earlier
-versions saved a browser session in `remote-session.json`; that file is no longer used and
-can be deleted.
+Logging in again replaces and revokes the previous token for the same server. Tokens are
+listed, edited and revoked under **Access tokens** in the web UI. Earlier versions saved a
+browser session in `remote-session.json`; that file is no longer used and can be deleted.
+
+### Access tokens need a fresh sign-in
+
+Creating or rotating an access token, in the web UI or for the CLI, needs a sign-in from the
+last minute. If someone copies your browser profile, they get your signed-in session but
+cannot turn it into a long-lived token without your password. When your sign-in is older,
+Redoor sends you to the sign-in page as the last step and back to the filled-in form, where
+you press the button again. With single sign-on (OIDC) the identity provider is asked to
+check your credentials again, even if you are signed in there.
 
 ## Servers with a self-signed certificate
 
@@ -50,7 +70,7 @@ add `--insecure-tls` to `login` (or `create-token`) to skip certificate verifica
 `login` saves the choice with the token, so later commands need no flag, and
 `redoor remote status` shows `Certificate: not verified`. With the environment override,
 set `REDOOR_REMOTE_INSECURE_TLS=true`. Anyone able to intercept the connection could then
-read your password and token, so only use it on networks you trust.
+read your token, so only use it on networks you trust.
 
 ```sh
 redoor remote login https://192.168.1.10:7666 --insecure-tls
@@ -58,7 +78,8 @@ redoor remote login https://192.168.1.10:7666 --insecure-tls
 
 ## CI jobs and AI agents
 
-Skip the login and pass a token through the environment:
+Skip the login and pass a token through the environment. Create the token under **Access
+tokens** in the web UI or with `redoor remote create-token`:
 
 ```sh
 export REDOOR_REMOTE_SERVER=https://redoor.example.com
@@ -66,5 +87,5 @@ export REDOOR_REMOTE_TOKEN=redoor_at_...
 redoor remote devices
 ```
 
-`redoor remote create-token` creates a token the same way as `login` but prints it as JSON
-instead of saving it, for configuring MCP clients (see [MCP](mcp.md)).
+`redoor remote create-token` creates a token through the browser the same way as `login` but
+prints it as JSON instead of saving it, for configuring MCP clients (see [MCP](mcp.md)).

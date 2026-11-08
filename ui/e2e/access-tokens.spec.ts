@@ -1,5 +1,5 @@
 import { expect, test } from "./fixtures";
-import { WEB_BASE_URL } from "./helpers";
+import { ageSignIn, signInAgain, WEB_BASE_URL } from "./helpers";
 
 test.describe("Access token settings", () => {
     test("creates, copies, edits, rotates, and deletes a device-scoped token", async ({
@@ -41,7 +41,9 @@ test.describe("Access token settings", () => {
             createDialog.getByRole("radio", { name: /All devices/ }),
         ).toBeChecked();
         // The 90 day expiry is the default for new tokens.
-        await expect(createDialog.getByLabel("Token expiry")).toHaveValue("90");
+        await expect(createDialog.getByLabel("Token expiry")).toHaveValue(
+            "90d",
+        );
 
         const submit = createDialog.getByRole("button", {
             name: "Create token",
@@ -70,7 +72,34 @@ test.describe("Access token settings", () => {
         // The device list must offer the connected devices by name.
         expect(deviceName).not.toBe("");
         await deviceCheckboxes.first().click();
+        await createDialog.getByLabel("Token expiry").selectOption("30d");
         await expect(submit).toBeEnabled();
+
+        // A sign-in older than a minute cannot create tokens, so pressing "Create token"
+        // goes through the login page first and back to the form.
+        await ageSignIn(page);
+        await submit.click();
+        await signInAgain(page);
+
+        // The whole form lives in the URL, so it comes back open and filled in and the
+        // user only presses "Create token" again.
+        await expect(createDialog.getByLabel("Token name")).toHaveValue(
+            tokenName,
+        );
+        await expect(
+            createDialog.getByRole("radio", { name: /Selected devices/ }),
+        ).toBeChecked();
+        await expect(
+            createDialog
+                .getByRole("group", { name: "Selected devices" })
+                .getByRole("checkbox", { name: deviceName, exact: true }),
+        ).toBeChecked();
+        await expect(
+            createDialog.getByRole("checkbox", { name: /Read files/ }),
+        ).toBeChecked();
+        await expect(createDialog.getByLabel("Token expiry")).toHaveValue(
+            "30d",
+        );
         await submit.click();
 
         const secretDialog = page.getByRole("dialog", {
@@ -132,6 +161,10 @@ test.describe("Access token settings", () => {
             deviceName,
         );
         await expect(card.getByText("Active")).toBeVisible();
+        // The 30 day choice survived the sign-in round trip and reached the server.
+        await expect(card.getByLabel("Expires", { exact: true })).toHaveText(
+            "in 30 days",
+        );
         // A freshly created token has never been used by a client.
         await expect(card.getByLabel("Last used", { exact: true })).toHaveText(
             "Never",
@@ -183,8 +216,19 @@ test.describe("Access token settings", () => {
         );
 
         await card.getByRole("button", { name: "Rotate" }).click();
-        await page
-            .getByRole("dialog", { name: "Rotate access token?" })
+
+        const rotateDialog = page.getByRole("dialog", {
+            name: "Rotate access token?",
+        });
+
+        // Rotating hands out a new secret too, so it also needs a fresh sign-in.
+        await ageSignIn(page);
+        await rotateDialog
+            .getByRole("button", { name: "Rotate token" })
+            .click();
+        await signInAgain(page);
+        // The token being rotated is in the URL, so its confirmation is open again.
+        await rotateDialog
             .getByRole("button", { name: "Rotate token" })
             .click();
 

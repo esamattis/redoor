@@ -7,12 +7,15 @@ import {
     Power,
     SquareTerminal,
 } from "lucide-react";
+import { z } from "zod";
 
 import type { AccessTokenResponse } from "#bindings/AccessTokenResponse";
 import type { DeviceScope } from "#bindings/DeviceScope";
 import type { Permission } from "#bindings/Permission";
+import type { TokenLifetime } from "#bindings/TokenLifetime";
 import { Checkbox } from "#ui/components/checkbox";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
+import { Select } from "#ui/components/select";
 import { TextField } from "#ui/components/text-field";
 
 /**
@@ -69,51 +72,174 @@ export function isExpired(token: AccessTokenResponse): boolean {
     );
 }
 
+/** The editable values of a token policy, kept apart from where they are stored. */
+export type AccessTokenPolicyValues = {
+    name: string;
+    permissions: Permission[];
+    deviceMode: DeviceScope["kind"];
+    deviceIds: string[];
+};
+
+/** What a new token gets when nobody chose otherwise: read-only on every device. */
+export const DEFAULT_POLICY_VALUES: AccessTokenPolicyValues = {
+    name: "",
+    permissions: ["files:read"],
+    deviceMode: "all",
+    deviceIds: [],
+};
+
 /**
- * Editable policy state shared by the create dialog and the edit page, so both validate a
- * draft the same way before it reaches the server.
+ * Builds the draft the policy fields edit from values stored anywhere: the edit page keeps
+ * them in component state, while the create dialog and the CLI approval page keep them in
+ * the URL so they survive the fresh sign-in round trip. Either way the draft validates the
+ * same, so both reach the server with the same rules.
  */
-export function useAccessTokenPolicyDraft(token: AccessTokenResponse | null) {
-    const [name, setName] = React.useState(token?.name ?? "");
-
-    const [permissions, setPermissions] = React.useState<Permission[]>(
-        token?.permissions ?? ["files:read"],
-    );
-
-    const [deviceMode, setDeviceMode] = React.useState<DeviceScope["kind"]>(
-        token?.devices.kind ?? "all",
-    );
-
-    const [deviceIds, setDeviceIds] = React.useState<string[]>(
-        token?.devices.kind === "only" ? token.devices.device_ids : [],
-    );
-
+export function buildAccessTokenPolicyDraft(
+    values: AccessTokenPolicyValues,
+    update: (patch: Partial<AccessTokenPolicyValues>) => void,
+) {
     const devices: DeviceScope =
-        deviceMode === "all"
+        values.deviceMode === "all"
             ? { kind: "all" }
-            : { kind: "only", device_ids: deviceIds };
+            : { kind: "only", device_ids: values.deviceIds };
 
     return {
-        name,
-        setName,
-        permissions,
-        setPermissions,
-        deviceMode,
-        setDeviceMode,
-        deviceIds,
-        setDeviceIds,
-        policy: { name: name.trim(), permissions, devices },
+        ...values,
+        setName: (name: string) => update({ name }),
+        setPermissions: (permissions: Permission[]) => update({ permissions }),
+        setDeviceMode: (deviceMode: DeviceScope["kind"]) =>
+            update({ deviceMode }),
+        setDeviceIds: (deviceIds: string[]) => update({ deviceIds }),
+        policy: {
+            name: values.name.trim(),
+            permissions: values.permissions,
+            devices,
+        },
         // An explicit device list with no devices would grant nothing, so it is rejected.
         canSubmit:
-            name.trim().length > 0 &&
-            permissions.length > 0 &&
-            (deviceMode === "all" || deviceIds.length > 0),
+            values.name.trim().length > 0 &&
+            values.permissions.length > 0 &&
+            (values.deviceMode === "all" || values.deviceIds.length > 0),
     };
 }
 
 export type AccessTokenPolicyDraft = ReturnType<
-    typeof useAccessTokenPolicyDraft
+    typeof buildAccessTokenPolicyDraft
 >;
+
+/**
+ * A draft in component state, for the edit page: its changes only matter until it saves,
+ * and nothing there leaves the page before that.
+ */
+export function useAccessTokenPolicyDraft(
+    token: AccessTokenResponse | null,
+): AccessTokenPolicyDraft {
+    const [values, setValues] = React.useState<AccessTokenPolicyValues>(() =>
+        token === null
+            ? DEFAULT_POLICY_VALUES
+            : {
+                  name: token.name,
+                  permissions: token.permissions,
+                  deviceMode: token.devices.kind,
+                  deviceIds:
+                      token.devices.kind === "only"
+                          ? token.devices.device_ids
+                          : [],
+              },
+    );
+
+    return buildAccessTokenPolicyDraft(values, (patch) =>
+        setValues((previous) => ({ ...previous, ...patch })),
+    );
+}
+
+const permissionSchema: z.ZodType<Permission> = z.enum([
+    "files:read",
+    "files:write",
+    "files:delete",
+    "commands:execute",
+    "agents:manage",
+]);
+
+const tokenLifetimeSchema: z.ZodType<TokenLifetime> = z.enum([
+    "30d",
+    "90d",
+    "365d",
+    "never",
+]);
+
+/**
+ * The search params of a token form that lives in the URL. A form whose state survives a
+ * full page load lets the user fill it in first and sign in again only as the last step,
+ * so the one fresh minute is spent on one click. Each param falls back to the form's
+ * default when absent or malformed.
+ */
+export const tokenFormSearchSchema = z.object({
+    name: z.string().optional().catch(undefined),
+    permissions: z.array(permissionSchema).optional().catch(undefined),
+    deviceMode: z.enum(["all", "only"]).optional().catch(undefined),
+    deviceIds: z.array(z.string()).optional().catch(undefined),
+    expiry: tokenLifetimeSchema.optional().catch(undefined),
+});
+
+export type TokenFormSearch = z.infer<typeof tokenFormSearchSchema>;
+
+/** Days per lifetime choice; `never` has no automatic expiry. */
+const LIFETIME_DAYS: Record<TokenLifetime, number | null> = {
+    "30d": 30,
+    "90d": 90,
+    "365d": 365,
+    never: null,
+};
+
+/** The default lifetime of new tokens: long enough to be practical, short enough to age out. */
+export const DEFAULT_TOKEN_LIFETIME: TokenLifetime = "90d";
+
+/** Turns a lifetime choice into the timestamp the server stores, counted from now. */
+export function expiresAtFor(lifetime: TokenLifetime): string | null {
+    const days = LIFETIME_DAYS[lifetime];
+
+    return days === null
+        ? null
+        : new Date(Date.now() + days * 86_400_000).toISOString();
+}
+
+/**
+ * The expiry choice of a new token. Shared by the create dialog and the CLI approval page,
+ * so both offer the same lifetimes the CLI's `--expires` flag uses.
+ */
+export function TokenExpiryField(props: {
+    value: TokenLifetime;
+    disabled: boolean;
+    onChange: (value: TokenLifetime) => void;
+}) {
+    return (
+        <label className="text-sm font-medium text-slate-300">
+            Expiry
+            <Select
+                aria-label="Token expiry"
+                value={props.value}
+                disabled={props.disabled}
+                containerClassName="mt-2 block"
+                onChange={(event) => {
+                    const parsed = tokenLifetimeSchema.safeParse(
+                        event.target.value,
+                    );
+
+                    if (parsed.success) props.onChange(parsed.data);
+                }}
+            >
+                <option value="30d">30 days</option>
+                <option value="90d">90 days</option>
+                <option value="365d">365 days</option>
+                <option value="never">Never</option>
+            </Select>
+            <span className="mt-1.5 block text-xs font-normal text-slate-500">
+                Short expiries limit exposure if a client leaks its token.
+            </span>
+        </label>
+    );
+}
 
 /**
  * Renders the name, permission and device controls in one layout so creating and editing a

@@ -20,6 +20,7 @@ import type { FileSearchEntry } from "#bindings/FileSearchEntry";
 import type { FileSearchEvent } from "#bindings/FileSearchEvent";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { Agent, ApiClient } from "#ui/api-client";
+import { ApiError } from "#ui/api-transport";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitBranchScope } from "#bindings/GitBranchScope";
 import type { GitRefSort } from "#bindings/GitRefSort";
@@ -208,6 +209,8 @@ export const queryKeys = {
     editorBuffer: (key: string) =>
         [...queryKeys.all, "editor-buffer", key] as const,
     accessTokens: () => [...queryKeys.all, "access-tokens"] as const,
+    /** One pending `redoor remote login` request, for its approval page. */
+    cliLogin: (id: string) => [...queryKeys.all, "cli-login", id] as const,
     /** Every signed-in browser session, for the sessions page. */
     browserSessions: () => [...queryKeys.all, "browser-sessions"] as const,
     /** The vault status, which every vault change invalidates. */
@@ -525,6 +528,27 @@ export function accessTokensQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.accessTokens(),
         queryFn: () => api.listAccessTokens(),
+    });
+}
+
+/**
+ * A CLI login request for its approval page. A request that is unknown, expired or already
+ * picked up by the CLI reads as null, since the page explains that rather than failing.
+ */
+export function cliLoginQueryOptions(api: ApiClient, id: string) {
+    return queryOptions({
+        queryKey: queryKeys.cliLogin(id),
+        queryFn: async () => {
+            try {
+                return await api.getCliLogin(id);
+            } catch (error) {
+                if (error instanceof ApiError && error.status === 404) {
+                    return null;
+                }
+
+                throw error;
+            }
+        },
     });
 }
 

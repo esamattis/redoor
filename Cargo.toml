@@ -58,7 +58,6 @@ thiserror = "2.0.20"
 reqwest = { version = "0.13.4", default-features = false, features = ["default-tls", "http2", "stream", "system-proxy"] }
 url = "2.5.8"
 # Terminal prompts for `redoor remote login`; only the console backend, no editor/tempfile.
-dialoguer = { version = "0.12", default-features = false, features = ["password"] }
 semver = "1.0.27"
 axum-embed = "0.1.0"
 rust-embed = "8.12.0"

@@ -19,7 +19,13 @@ type StorageState = Awaited<
 export async function signedInStorageState(
     request: APIRequest,
 ): Promise<StorageState> {
-    const context = await request.newContext({ baseURL: WEB_BASE_URL });
+    // Without cookies of its own: inside a test, request contexts inherit the test's signed-in
+    // storage state, and a login that presents a session ends that session, which would sign
+    // out the test's own page.
+    const context = await request.newContext({
+        baseURL: WEB_BASE_URL,
+        storageState: { cookies: [], origins: [] },
+    });
 
     try {
         const response = await context.post("/api/v1/login", {

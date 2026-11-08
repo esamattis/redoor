@@ -66,6 +66,11 @@ const ROTATION_GRACE: Duration = Duration::from_secs(30);
 // A browser must never be two rotations behind with a request that is legitimately in
 // flight, or its own stale secret would sign it out.
 const _: () = assert!(ROTATION_GRACE.as_secs() < ROTATION_INTERVAL.as_secs());
+/// How long after its credentials were checked a session may create or rotate access
+/// tokens. A copied browser profile carries an older session, so it cannot mint a token
+/// that would outlive the session, a password change and the mutual logout of a reused
+/// cookie; the user signs in again as the last step instead.
+pub(crate) const TOKEN_FRESHNESS: Duration = Duration::from_secs(60);
 /// Caps online brute force against a single source address.
 const LOGIN_MAX_FAILURES_PER_IP: u32 = 10;
 /// Caps coordinated multi-source brute force against the whole process.
@@ -251,6 +256,29 @@ pub(crate) struct ActiveSession {
     /// under the session file lock, because another tab may have rotated the session since
     /// the access check.
     pub(crate) presented: String,
+    /// Unix seconds when the session's credentials were last checked; see
+    /// [`SessionFile::authenticated_at`]. Carried here so the token handlers need no second
+    /// read of the session file.
+    pub(crate) authenticated_at: Option<i64>,
+}
+
+impl ActiveSession {
+    /// Seconds this session can still create or rotate access tokens at `now`, 0 when the
+    /// user has to sign in again first ([`TOKEN_FRESHNESS`]). A sign-in that was never
+    /// checked counts as stale, and so does a time in the future: the OIDC callback clamps
+    /// to the server's clock, so only a hand-edited file could hold one, and it must not
+    /// stretch the window.
+    pub(crate) fn fresh_login_seconds_left(&self, now: i64) -> u64 {
+        let Some(authenticated_at) = self.authenticated_at else {
+            return 0;
+        };
+        let age = now - authenticated_at;
+        let window = TOKEN_FRESHNESS.as_secs() as i64;
+        if !(0..window).contains(&age) {
+            return 0;
+        }
+        (window - age) as u64
+    }
 }
 
 /// A renewal or rotation that succeeded: the expiry, and the new session cookie when the
@@ -284,6 +312,9 @@ enum SessionUpdate<'a> {
 struct SessionGrant {
     user: SessionUser,
     fingerprint: String,
+    /// When the credentials behind the grant were checked; see
+    /// [`SessionFile::authenticated_at`].
+    authenticated_at: Option<i64>,
 }
 
 /// The outcome of a login check, carrying the session grant on success so the handler
@@ -401,6 +432,14 @@ struct SessionFile {
     /// signed out.
     #[serde(default)]
     revoked: Option<Revocation>,
+    /// Unix seconds when the credentials were last checked for this session: the login time
+    /// for a password login or a password change, and the provider's `auth_time` for an OIDC
+    /// sign-in that asked the provider to authenticate again. `None` for a plain OIDC
+    /// sign-in, whose single sign-on a copied profile could pass without any credential.
+    /// Gates access token creation ([`TOKEN_FRESHNESS`]). Optional, so files from before it
+    /// existed stay signed in and only have to sign in again to mint a token.
+    #[serde(default)]
+    authenticated_at: Option<i64>,
 }
 
 /// The secret a browser presents in its cookie now.
@@ -797,6 +836,7 @@ impl AuthState {
             length: session.length,
             expires_at,
             presented: presented.clone(),
+            authenticated_at: session.authenticated_at,
         };
         let needs_write = match secret {
             SecretState::Current => session.current.unconfirmed.is_some(),
@@ -1136,11 +1176,13 @@ impl AuthState {
     /// Creates a session for an OIDC sign-in; `name` is the provider's readable name for the
     /// user, recorded for display and logs only, and `length` is the login page's choice
     /// carried through the provider round trip (capped by `session_lifetime_days`).
+    /// `authenticated_at` is set only when the provider proved a fresh authentication.
     pub(crate) async fn create_oidc_session(
         &self,
         name: String,
         length: SessionLength,
         client: SessionClient,
+        authenticated_at: Option<i64>,
     ) -> anyhow::Result<NewSession> {
         let policy = self
             .oidc_sessions
@@ -1153,6 +1195,7 @@ impl AuthState {
                     method: SessionMethod::Oidc,
                 },
                 fingerprint: policy.fingerprint.clone(),
+                authenticated_at,
             },
             length,
             client,
@@ -1188,6 +1231,7 @@ impl AuthState {
             },
             previous: None,
             revoked: None,
+            authenticated_at: grant.authenticated_at,
         };
         self.write_session(&session).await?;
         Ok(NewSession {
@@ -1324,6 +1368,7 @@ impl AuthState {
                     method: SessionMethod::Password,
                 },
                 fingerprint: user.fingerprint.clone(),
+                authenticated_at: Some(jiff::Timestamp::now().as_second()),
             });
         }
         if password_user.is_none() {
@@ -1436,6 +1481,8 @@ impl AuthState {
             SessionGrant {
                 user: user.clone(),
                 fingerprint,
+                // The current password was just checked.
+                authenticated_at: Some(jiff::Timestamp::now().as_second()),
             },
             length,
             client,
@@ -1709,6 +1756,15 @@ pub(crate) async fn login_handler(
         }
     };
 
+    // A sign-in from a browser that is already signed in, such as the fresh sign-in before
+    // creating an access token, replaces its session instead of leaving a stray one in the
+    // session list. Not fatal: the old session still expires on its own.
+    if let Err(error) = end_cookie_session(&state, &client, &headers).await {
+        log_error!(
+            error,
+            "Failed to end the previous session of a signing-in browser"
+        );
+    }
     let session = match state
         .auth
         .issue_session(
@@ -1748,37 +1804,23 @@ pub(crate) async fn login_handler(
     response
 }
 
-/// Removes the durable session first, then expires the browser cookie even when no file remains.
-///
-/// The session's vault device secrets go first of all, so a logout the page could not finish
-/// (a closed tab, a failed lock) still locks the vault in that browser. A logout with a stale
-/// cookie revokes the session for reuse instead (see [`AuthState::end_session`]).
+/// Removes the durable session first (see [`end_cookie_session`]), then expires the browser
+/// cookie even when no file remains.
 pub(crate) async fn logout_handler(
     State(state): State<ServerState>,
     client: ClientAddress,
     headers: HeaderMap,
 ) -> Response {
-    let ended = match SessionCookie::from_headers(&headers) {
-        Some(cookie) => {
-            state.vault_devices.delete_session(&cookie.id);
-            state.auth.end_session(&cookie).await
-        }
-        None => Ok(None),
-    };
-    match ended {
-        Ok(Some(reused)) => reused.forget(&state, Some(&client)),
-        Ok(None) => {}
-        Err(error) => {
-            log_error!(error, "Failed to delete session");
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    code: None,
-                    error: "Failed to delete session".to_string(),
-                }),
-            )
-                .into_response();
-        }
+    if let Err(error) = end_cookie_session(&state, &client, &headers).await {
+        log_error!(error, "Failed to delete session");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(ErrorResponse {
+                code: None,
+                error: "Failed to delete session".to_string(),
+            }),
+        )
+            .into_response();
     }
 
     let secure_flag = state.auth.secure_flag();
@@ -1790,6 +1832,28 @@ pub(crate) async fn logout_handler(
         HeaderValue::from_str(&cookie).expect("generated cookie contains only safe ASCII"),
     );
     response
+}
+
+/// Ends the session named by the request's cookie, if any: logout, and a sign-in from a
+/// browser that already has a session.
+///
+/// The session's vault device secrets go first of all, so an end the page could not finish
+/// (a closed tab, a failed lock) still locks the vault in that browser. A stale cookie
+/// revokes the session for reuse instead (see [`AuthState::end_session`]), which is logged
+/// with `client`, the browser that presented it.
+pub(crate) async fn end_cookie_session(
+    state: &ServerState,
+    client: &ClientAddress,
+    headers: &HeaderMap,
+) -> anyhow::Result<()> {
+    let Some(cookie) = SessionCookie::from_headers(headers) else {
+        return Ok(());
+    };
+    state.vault_devices.delete_session(&cookie.id);
+    if let Some(reused) = state.auth.end_session(&cookie).await? {
+        reused.forget(state, Some(client));
+    }
+    Ok(())
 }
 
 /// Fixtures other modules' tests use to get a signed-in session without the HTTP layer.
@@ -2146,6 +2210,7 @@ password = '{password}'
                 "alice".to_string(),
                 SessionLength::Year,
                 test_client("test"),
+                None,
             )
             .await
             .expect("session");
@@ -2156,7 +2221,12 @@ password = '{password}'
             "{remaining}"
         );
         let short = auth
-            .create_oidc_session("alice".to_string(), SessionLength::Day, test_client("test"))
+            .create_oidc_session(
+                "alice".to_string(),
+                SessionLength::Day,
+                test_client("test"),
+                None,
+            )
             .await
             .expect("session");
         let remaining = stored_expiry(&directory, &cookie_headers(&short.cookie)).await - now;
@@ -2329,6 +2399,7 @@ password = '{password}'
                     "alice".to_string(),
                     SessionLength::Year,
                     test_client("test"),
+                    None,
                 )
                 .await
                 .expect("session")
@@ -2355,6 +2426,7 @@ password = '{password}'
                     "alice".to_string(),
                     SessionLength::Year,
                     test_client("test"),
+                    None,
                 )
                 .await
                 .expect("session")
@@ -2372,7 +2444,8 @@ password = '{password}'
                 .create_oidc_session(
                     "alice".to_string(),
                     SessionLength::Year,
-                    test_client("test")
+                    test_client("test"),
+                    None,
                 )
                 .await
                 .is_err()
@@ -2483,10 +2556,13 @@ password = '{stored}'
             .await
             .expect("the change must succeed");
 
-        // The new session keeps the length the changing browser signed in with.
+        // The new session keeps the length the changing browser signed in with, and counts
+        // as a fresh sign-in, because the current password was just checked.
         assert!(matches!(
             auth.check_session(&cookie_headers(&session.cookie)).await,
-            SessionCheck::Valid(_, renewed, _) if renewed.length == SessionLength::Week
+            SessionCheck::Valid(_, renewed, _)
+                if renewed.length == SessionLength::Week
+                    && renewed.fresh_login_seconds_left(now()) > 0
         ));
         let stored = stored_password(&config_path).await;
         // The file never gets the plaintext; it gets a hash the config parser accepts.
@@ -3184,6 +3260,7 @@ port = "not-a-port"
                 retired_at,
             }),
             revoked: None,
+            authenticated_at: None,
         }
     }
 
@@ -3427,6 +3504,7 @@ port = "not-a-port"
             length: SessionLength::Hour,
             expires_at: 0,
             presented: cookie.presented_hash(),
+            authenticated_at: None,
         }
     }
 
@@ -3515,5 +3593,91 @@ port = "not-a-port"
         );
         // Logout's clearing cookie wins over a recovery cookie.
         assert!(sets_session_cookie(&headers));
+    }
+
+    /// A session with `authenticated_at`, for the pure freshness checks.
+    fn authenticated(authenticated_at: Option<i64>) -> ActiveSession {
+        ActiveSession {
+            id: uuid::Uuid::new_v4().to_string(),
+            length: SessionLength::Hour,
+            expires_at: 0,
+            presented: String::new(),
+            authenticated_at,
+        }
+    }
+
+    /// Token creation is open for a minute after the credentials were checked, and never for
+    /// a session without a check or with one in the future.
+    #[test]
+    fn freshness_ends_after_a_minute() {
+        let now = 1_800_000_000;
+        // Right after the sign-in the whole minute is left.
+        assert_eq!(authenticated(Some(now)).fresh_login_seconds_left(now), 60);
+        // One second before the boundary the session is still fresh ...
+        assert_eq!(
+            authenticated(Some(now - 59)).fresh_login_seconds_left(now),
+            1
+        );
+        // ... and at 60 s it has to sign in again.
+        assert_eq!(
+            authenticated(Some(now - 60)).fresh_login_seconds_left(now),
+            0
+        );
+        // A plain OIDC sign-in never checked the credentials.
+        assert_eq!(authenticated(None).fresh_login_seconds_left(now), 0);
+        // A future time (a hand-edited file) must not stretch the window.
+        assert_eq!(
+            authenticated(Some(now + 30)).fresh_login_seconds_left(now),
+            0
+        );
+    }
+
+    /// Password logins are fresh at once; OIDC sessions only with a checked `auth_time`.
+    #[tokio::test]
+    async fn sign_ins_record_when_the_credentials_were_checked() {
+        let directory = TempDir::create();
+        let oidc = oidc_config(&["admins"]);
+        let auth = auth_state(&directory, Some(&oidc)).await;
+        let (headers, _) = password_session(&auth, SessionLength::Hour).await;
+        // The password was just verified, so the session may create tokens.
+        assert!(
+            active_session(&auth, &headers)
+                .await
+                .fresh_login_seconds_left(now())
+                > 0
+        );
+        let plain = auth
+            .create_oidc_session(
+                "alice".to_string(),
+                SessionLength::Hour,
+                test_client("test"),
+                None,
+            )
+            .await
+            .expect("session");
+        // An OIDC sign-in without proof of a fresh authentication cannot create tokens.
+        assert_eq!(
+            active_session(&auth, &cookie_headers(&plain.cookie))
+                .await
+                .authenticated_at,
+            None
+        );
+        let checked_at = now() - 5;
+        let checked = auth
+            .create_oidc_session(
+                "alice".to_string(),
+                SessionLength::Hour,
+                test_client("test"),
+                Some(checked_at),
+            )
+            .await
+            .expect("session");
+        // The provider's authentication time is what the window counts from.
+        assert_eq!(
+            active_session(&auth, &cookie_headers(&checked.cookie))
+                .await
+                .authenticated_at,
+            Some(checked_at)
+        );
     }
 }

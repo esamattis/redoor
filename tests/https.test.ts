@@ -31,6 +31,8 @@ import {
     restartServerAndWait,
     selfSignedCertificatePath,
     trustSelfSignedCertificate,
+    approveCliLogin,
+    waitForApprovalPrompt,
     waitForAgentReady,
     waitForPort,
     waitForValue,
@@ -258,7 +260,7 @@ describe("Built-in HTTPS with a self-signed certificate", () => {
         onTestFinished(() => rmSync(cliHome, { recursive: true, force: true }));
 
         /** Runs `redoor remote` in its own namespace, without inherited overrides. */
-        const remote = (args: string[], options: { input?: string } = {}) =>
+        const remote = (args: string[]) =>
             $({
                 env: {
                     ...process.env,
@@ -268,7 +270,6 @@ describe("Built-in HTTPS with a self-signed certificate", () => {
                     REDOOR_REMOTE_TOKEN: "",
                     REDOOR_REMOTE_INSECURE_TLS: "",
                 },
-                input: options.input,
                 quiet: true,
                 nothrow: true,
             })`exec ${SERVER_PATH} remote ${args}`;
@@ -276,33 +277,41 @@ describe("Built-in HTTPS with a self-signed certificate", () => {
         const loginArgs = [
             "login",
             origin,
-            "--username",
-            TEST_USERNAME,
-            "--password-stdin",
             "--permissions",
-            "all",
-            "--devices",
             "all",
             "--name",
             "https cli test",
-            "--expires",
-            "never",
-            "--yes",
         ];
 
-        const verified = await remote(loginArgs, { input: `${TEST_PASSWORD}\n` });
+        const verified = await remote(loginArgs);
 
-        // The CLI verifies certificates by default, so the self-signed one is refused.
+        // The CLI verifies certificates by default, so the self-signed one is refused before
+        // any login request starts.
         expect(verified.exitCode).not.toBe(0);
         expect(verified.stderr).toMatch(/certificate/i);
 
-        const insecure = await remote([...loginArgs, "--insecure-tls"], {
-            input: `${TEST_PASSWORD}\n`,
+        const insecure = remote([...loginArgs, "--insecure-tls"]);
+        onTestFinished(async () => {
+            try {
+                await insecure.kill();
+            } catch {
+                // Already exited.
+            }
         });
 
+        const metadata = await approveCliLogin(
+            origin,
+            await waitForApprovalPrompt(insecure),
+        );
+
+        onTestFinished(async () => {
+            await apiClient.deleteAccessToken(metadata.id);
+        });
+        const loggedIn = await insecure;
+
         // The opt-out lets the login through and warns about it.
-        expect(insecure.exitCode, insecure.stderr).toBe(0);
-        expect(insecure.stderr).toContain(
+        expect(loggedIn.exitCode, loggedIn.stderr).toBe(0);
+        expect(loggedIn.stderr).toContain(
             "TLS certificate verification is disabled",
         );
 

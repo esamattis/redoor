@@ -1,15 +1,31 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import {
+    afterAll,
+    beforeAll,
+    describe,
+    expect,
+    it,
+    onTestFinished,
+} from "vitest";
 
 import { ApiClient, type Agent } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
+import { existsSync } from "node:fs";
+
+import type { AccessTokenSecretResponse } from "#bindings/AccessTokenSecretResponse";
+import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
+import type { ErrorResponse } from "#bindings/ErrorResponse";
 import {
     ProcessManager,
     TempFileManager,
     VITEST_SERVER_PORT,
+    ageFreshLogin,
+    browserFetch,
     createAccessToken,
+    signInBrowser,
     startServerAndAgent,
     waitForPort,
     waitForValue,
+    withFreshSession,
 } from "./test-utils";
 
 const processManager = new ProcessManager();
@@ -83,6 +99,129 @@ afterAll(async () => {
     tempFiles.cleanup();
 });
 
+/** A token creation body for the fresh sign-in tests. */
+const freshTokenRequest = {
+    name: "fresh sign-in",
+    permissions: ["files:read"],
+    devices: { kind: "all" },
+    expires_at: null,
+};
+
+describe("Fresh sign-in for token secrets", () => {
+    it("creates and rotates right after a sign-in and refuses both a minute later", async () => {
+        const session = await signInBrowser(baseUrl);
+
+        const me: CurrentUserResponse = await (
+            await browserFetch(baseUrl, session.cookie, {
+                method: "GET",
+                path: "/api/v1/auth/me",
+            })
+        ).json();
+
+        // A password was just checked, so the UI learns how long it may still create tokens.
+        expect(me.fresh_login_seconds_left).toBeGreaterThan(0);
+        expect(me.fresh_login_seconds_left).toBeLessThanOrEqual(60);
+
+        const created = await browserFetch(baseUrl, session.cookie, {
+            method: "POST",
+            path: "/api/v1/tokens",
+            body: freshTokenRequest,
+        });
+
+        // A fresh session creates the token and gets its secret.
+        expect(created.status).toBe(200);
+        const token: AccessTokenSecretResponse = await created.json();
+        onTestFinished(async () => {
+            await api.deleteAccessToken(token.metadata.id);
+        });
+
+        // ... and may rotate it.
+        expect(
+            (
+                await browserFetch(baseUrl, session.cookie, {
+                    method: "POST",
+                    path: `/api/v1/tokens/${token.metadata.id}/rotate`,
+                })
+            ).status,
+        ).toBe(200);
+
+        ageFreshLogin(session, 61);
+
+        const stale: CurrentUserResponse = await (
+            await browserFetch(baseUrl, session.cookie, {
+                method: "GET",
+                path: "/api/v1/auth/me",
+            })
+        ).json();
+
+        // A minute after the sign-in the UI is told to sign in again first.
+        expect(stale.fresh_login_seconds_left).toBe(0);
+
+        for (const [method, path, body] of [
+            ["POST", "/api/v1/tokens", freshTokenRequest],
+            ["POST", `/api/v1/tokens/${token.metadata.id}/rotate`, undefined],
+        ] as const) {
+            const refused = await browserFetch(baseUrl, session.cookie, {
+                method,
+                path,
+                body,
+            });
+
+            const error: ErrorResponse = await refused.json();
+
+            // A copied browser profile holds such an older session, so it cannot get a
+            // secret; the code tells the UI to sign in rather than to give up.
+            expect(refused.status).toBe(403);
+            expect(error.code).toBe("fresh_login_required");
+        }
+
+        // Editing hands out no secret, so the older session still may.
+        expect(
+            (
+                await browserFetch(baseUrl, session.cookie, {
+                    method: "PUT",
+                    path: `/api/v1/tokens/${token.metadata.id}`,
+                    body: {
+                        name: "renamed",
+                        permissions: ["files:read"],
+                        devices: { kind: "all" },
+                    },
+                })
+            ).status,
+        ).toBe(200);
+    });
+
+    it("replaces the session of a browser that signs in again", async () => {
+        const first = await signInBrowser(baseUrl);
+
+        // The first session exists before the browser signs in again.
+        expect(existsSync(first.file)).toBe(true);
+
+        const second = await signInBrowser(baseUrl, { cookie: first.cookie });
+
+        // The old session is gone, so fresh sign-ins leave no stray sessions behind ...
+        expect(existsSync(first.file)).toBe(false);
+        expect(
+            (
+                await browserFetch(baseUrl, first.cookie, {
+                    method: "GET",
+                    path: "/api/v1/auth/me",
+                })
+            ).status,
+        ).toBe(401);
+        // ... and the browser continues with the new one.
+        expect(existsSync(second.file)).toBe(true);
+        expect(
+            (
+                await browserFetch(baseUrl, second.cookie, {
+                    method: "GET",
+                    path: "/api/v1/auth/me",
+                })
+            ).status,
+        ).toBe(200);
+    });
+});
+
 describe("Access token REST API", () => {
     it("returns the secret once and never lists it", async () => {
         const created = await createAccessToken(api, {
@@ -151,10 +290,14 @@ describe("Access token REST API", () => {
             },
         ];
 
-        for (const request of invalid) {
-            // Each invalid policy is refused instead of creating an unusable token.
-            expect(await statusOf(api.createAccessToken(request))).toBe(400);
-        }
+        await withFreshSession(baseUrl, async (fresh) => {
+            for (const request of invalid) {
+                // Each invalid policy is refused instead of creating an unusable token.
+                expect(await statusOf(fresh.createAccessToken(request))).toBe(
+                    400,
+                );
+            }
+        });
 
         const unknownPermission = await fetch(`${baseUrl}/api/v1/tokens`, {
             method: "POST",
@@ -222,7 +365,9 @@ describe("Access token REST API", () => {
             permissions: ["files:read"],
         });
 
-        const rotated = await api.rotateAccessToken(created.metadata.id);
+        const rotated = await withFreshSession(baseUrl, (fresh) =>
+            fresh.rotateAccessToken(created.metadata.id),
+        );
 
         // Rotation keeps the id, so MCP operations owned by the token survive it.
         expect(rotated.metadata.id).toBe(created.metadata.id);
@@ -232,9 +377,9 @@ describe("Access token REST API", () => {
             await statusOf(asToken(created.token).getCurrentAccessToken()),
         ).toBe(401);
         // The new secret works.
-        expect(
-            (await asToken(rotated.token).getCurrentAccessToken()).id,
-        ).toBe(created.metadata.id);
+        expect((await asToken(rotated.token).getCurrentAccessToken()).id).toBe(
+            created.metadata.id,
+        );
     });
 
     it("rejects expired tokens and refuses to revive them", async () => {
@@ -258,7 +403,9 @@ describe("Access token REST API", () => {
         });
         // Rotating or editing an expired token would revive a dead credential.
         expect(
-            await statusOf(api.rotateAccessToken(created.metadata.id)),
+            await withFreshSession(baseUrl, (fresh) =>
+                statusOf(fresh.rotateAccessToken(created.metadata.id)),
+            ),
         ).toBe(409);
         expect(
             await statusOf(
@@ -303,11 +450,14 @@ describe("Access token REST API", () => {
             expires_at: null,
         });
 
+        // A session that may create tokens, so only the origin check can refuse them.
+        const session = await signInBrowser(baseUrl);
+
         for (const [name, value] of [
             ["Sec-Fetch-Site", "cross-site"],
             ["Origin", "https://attacker.example"],
         ] as const) {
-            const headers = new Headers(api.getAuthHeaders());
+            const headers = new Headers({ Cookie: session.cookie });
             headers.set(name, value);
             headers.set("Content-Type", "application/json");
 

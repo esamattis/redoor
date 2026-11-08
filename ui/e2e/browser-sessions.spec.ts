@@ -9,7 +9,13 @@ test.describe("Browser sessions", () => {
     }) => {
         // A unique user agent finds this test's browser among the sessions of parallel specs.
         const userAgent = `Playwright other browser ${Date.now()}`;
-        const other = await browser.newContext({ userAgent });
+
+        // Signed out at first: logging in from a browser that has a session ends that
+        // session, and the context would otherwise share this test's.
+        const other = await browser.newContext({
+            userAgent,
+            storageState: { cookies: [], origins: [] },
+        });
 
         const login = await other.request.post(`${WEB_BASE_URL}/api/v1/login`, {
             data: { username: "test-user", password: "test-password" },

@@ -139,6 +139,10 @@ import type { AccessTokenSecretResponse } from "#bindings/AccessTokenSecretRespo
 import type { CreateAccessTokenRequest } from "#bindings/CreateAccessTokenRequest";
 import type { DeleteAccessTokenResponse } from "#bindings/DeleteAccessTokenResponse";
 import type { UpdateAccessTokenRequest } from "#bindings/UpdateAccessTokenRequest";
+import type { CliLoginResponse } from "#bindings/CliLoginResponse";
+import type { ApproveCliLoginRequest } from "#bindings/ApproveCliLoginRequest";
+import type { ApproveCliLoginResponse } from "#bindings/ApproveCliLoginResponse";
+import type { DenyCliLoginResponse } from "#bindings/DenyCliLoginResponse";
 import type { VaultStatusResponse } from "#bindings/VaultStatusResponse";
 import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
 import type { CreateVaultRequest } from "#bindings/CreateVaultRequest";
@@ -1773,12 +1777,22 @@ export class ApiClient {
     /**
      * Builds the browser navigation target that starts OIDC sign-in and returns to
      * `redirect`; the server keeps `sessionLength` for the session the sign-in creates.
+     * `fresh` makes the identity provider ask for the credentials again instead of reusing
+     * its own session, which is what lets the new session create access tokens.
      */
-    getOidcLoginUrl(redirect: string, sessionLength: SessionLength): string {
+    getOidcLoginUrl(
+        redirect: string,
+        sessionLength: SessionLength,
+        fresh: boolean,
+    ): string {
         const params = new URLSearchParams({
             redirect,
             session: sessionLength,
         });
+
+        if (fresh) {
+            params.set("fresh", "true");
+        }
 
         return `${this.baseUrl}/api/v1/auth/oidc/login?${params.toString()}`;
     }
@@ -2344,6 +2358,43 @@ export class ApiClient {
         return apiRequest<DeleteAccessTokenResponse>(
             `${this.baseUrl}/api/v1/tokens/${encodeURIComponent(tokenId)}`,
             { method: "DELETE" },
+            this.requestContext(),
+        );
+    }
+
+    /** Reads a pending `redoor remote login` request for the browser approval page. */
+    async getCliLogin(id: string): Promise<CliLoginResponse> {
+        return apiRequest<CliLoginResponse>(
+            `${this.baseUrl}/api/v1/cli-logins/${encodeURIComponent(id)}`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /**
+     * Approves a CLI login with the code shown in its terminal. The token secret goes to the
+     * waiting CLI only; this answers with its metadata.
+     */
+    async approveCliLogin(
+        id: string,
+        request: ApproveCliLoginRequest,
+    ): Promise<ApproveCliLoginResponse> {
+        return apiRequest<ApproveCliLoginResponse>(
+            `${this.baseUrl}/api/v1/cli-logins/${encodeURIComponent(id)}/approve`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
+            this.requestContext(),
+        );
+    }
+
+    /** Turns a CLI login down, so the waiting CLI stops and exits. */
+    async denyCliLogin(id: string): Promise<DenyCliLoginResponse> {
+        return apiRequest<DenyCliLoginResponse>(
+            `${this.baseUrl}/api/v1/cli-logins/${encodeURIComponent(id)}/deny`,
+            { method: "POST" },
             this.requestContext(),
         );
     }

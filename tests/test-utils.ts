@@ -16,6 +16,10 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { ApiClient, Agent } from "#ui/api-client";
 import type { AccessTokenResponse } from "#bindings/AccessTokenResponse";
+import type { ApproveCliLoginRequest } from "#bindings/ApproveCliLoginRequest";
+import type { ApproveCliLoginResponse } from "#bindings/ApproveCliLoginResponse";
+import type { CliLoginResponse } from "#bindings/CliLoginResponse";
+import type { CliTokenDefaults } from "#bindings/CliTokenDefaults";
 import type { DeviceScope } from "#bindings/DeviceScope";
 import type { Permission } from "#bindings/Permission";
 import { ApiError } from "#ui/api-transport";
@@ -26,6 +30,7 @@ import { testPorts } from "#test-ports";
 import { INTEGRATION_LANES } from "../integration-test-lanes.ts";
 import { isErrorCode } from "#error-utils";
 import type WebSocket from "ws";
+import type { ProcessPromise } from "zx";
 import { z } from "zod";
 
 const tcpAddressSchema = z.object({ port: z.number().int().positive() });
@@ -1043,8 +1048,38 @@ export const ALL_PERMISSIONS: Permission[] = [
     "agents:manage",
 ];
 
+/** A login name and password the test server accepts. */
+export type TestCredentials = { username: string; password: string };
+
 /**
- * Mints an access token through the session-authenticated REST API. Inside a test the token is
+ * Runs `work` with a browser session signed in just now, and logs it out afterwards.
+ *
+ * Creating or rotating an access token needs a sign-in from the last minute, and a test's
+ * shared session may be older than that by the time it gets there. A session of its own,
+ * signed in right before, keeps such calls independent of how long a test has been running.
+ */
+export async function withFreshSession<T>(
+    baseUrl: string,
+    work: (api: ApiClient) => Promise<T>,
+    credentials: TestCredentials = {
+        username: TEST_USERNAME,
+        password: TEST_PASSWORD,
+    },
+): Promise<T> {
+    const api = new ApiClient(baseUrl);
+    await api.login(credentials.username, credentials.password, "hour");
+
+    try {
+        return await work(api);
+    } finally {
+        // Not leaving the session behind keeps session lists and counts exact.
+        await api.logout();
+    }
+}
+
+/**
+ * Mints an access token through the session-authenticated REST API, with a fresh sign-in
+ * (see `withFreshSession`) for the server `apiClient` talks to. Inside a test the token is
  * deleted when the test finishes, so tests cannot leak credentials into later tests.
  */
 export async function createAccessToken(
@@ -1054,14 +1089,21 @@ export async function createAccessToken(
         permissions: Permission[];
         devices?: DeviceScope;
         expiresAt?: string | null;
+        /** The login to sign in with; the test server's default user when absent. */
+        credentials?: TestCredentials;
     },
 ): Promise<{ token: string; metadata: AccessTokenResponse }> {
-    const created = await apiClient.createAccessToken({
-        name: options.name ?? "integration test token",
-        permissions: options.permissions,
-        devices: options.devices ?? { kind: "all" },
-        expires_at: options.expiresAt ?? null,
-    });
+    const created = await withFreshSession(
+        apiClient.baseUrl,
+        (api) =>
+            api.createAccessToken({
+                name: options.name ?? "integration test token",
+                permissions: options.permissions,
+                devices: options.devices ?? { kind: "all" },
+                expires_at: options.expiresAt ?? null,
+            }),
+        options.credentials,
+    );
 
     try {
         onTestFinished(async () => {
@@ -1079,6 +1121,196 @@ export async function createAccessToken(
     }
 
     return { token: created.token, metadata: created.metadata };
+}
+
+/** A browser signed in through the REST API: its cookie and its session file. */
+export type BrowserSession = { cookie: string; file: string };
+
+/**
+ * Signs in like the login page does, sending `cookie` as a browser that already has a
+ * session would, and logs the new session out when the test ends. `serverHome` is the home
+ * of the server process, which holds the session files.
+ */
+export async function signInBrowser(
+    baseUrl: string,
+    options: { serverHome?: string; cookie?: string } = {},
+): Promise<BrowserSession> {
+    const headers = new Headers({ "Content-Type": "application/json" });
+
+    if (options.cookie) {
+        // A browser that already has a session sends it along.
+        headers.set("Cookie", options.cookie);
+    }
+
+    const response = await fetch(`${baseUrl}/api/v1/login`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+            username: TEST_USERNAME,
+            password: TEST_PASSWORD,
+            session_length: "hour",
+        }),
+    });
+
+    if (!response.ok) {
+        throw new Error(`Sign-in failed with status ${response.status}`);
+    }
+
+    const cookie =
+        (response.headers.get("set-cookie") ?? "").split(";", 1)[0] ?? "";
+
+    // The stable session id names the file; the secret after the dot rotates.
+    const sessionId = cookie.split("=", 2)[1]?.split(".", 1)[0] ?? "";
+
+    onTestFinished(async () => {
+        await fetch(`${baseUrl}/api/v1/logout`, {
+            method: "POST",
+            headers: { Cookie: cookie },
+        });
+    });
+
+    return {
+        cookie,
+        file: join(
+            options.serverHome ?? TEST_SERVER_HOME,
+            ".local/share",
+            TEST_APP_NAME,
+            "sessions",
+            `session_${sessionId}.json`,
+        ),
+    };
+}
+
+/** A REST request as a browser sends it; `GET` without a body when left out. */
+export type BrowserRequest = { method?: string; path: string; body?: object };
+
+/** Sends a request with a browser session's `cookie`, as the UI does. */
+export function browserFetch(
+    baseUrl: string,
+    cookie: string,
+    request: BrowserRequest,
+): Promise<Response> {
+    const headers = new Headers({ Cookie: cookie });
+
+    if (request.body !== undefined) {
+        headers.set("Content-Type", "application/json");
+    }
+
+    return fetch(`${baseUrl}${request.path}`, {
+        method: request.method ?? "GET",
+        headers,
+        body:
+            request.body === undefined
+                ? undefined
+                : JSON.stringify(request.body),
+    });
+}
+
+/**
+ * Moves the session's last credential check `seconds` into the past, standing in for time
+ * passing without real waiting, so the fresh sign-in window can be tested at its edge.
+ */
+export function ageFreshLogin(session: BrowserSession, seconds: number): void {
+    const stored = JSON.parse(readFileSync(session.file, "utf8"));
+    stored.authenticated_at = Math.floor(Date.now() / 1000) - seconds;
+    writeFileSync(session.file, JSON.stringify(stored));
+}
+
+/**
+ * Waits until a running `redoor remote login` or `create-token` has printed its approval URL
+ * and code, which is when a user would switch to the browser.
+ *
+ * Listens instead of iterating the stream, because leaving a `for await` early would destroy
+ * the CLI's stderr and break its later output.
+ */
+export function waitForApprovalPrompt(
+    run: ProcessPromise,
+): Promise<{ id: string; userCode: string }> {
+    return new Promise((resolve, reject) => {
+        let output = "";
+
+        const onData = (chunk: Buffer) => {
+            output += chunk.toString();
+
+            const match = output.match(
+                /\/cli-login\/(\S+)\s[\s\S]*enter the code (\S{4}-\S{4})/,
+            );
+
+            if (match?.[1] && match[2]) {
+                run.stderr.off("data", onData);
+                resolve({ id: match[1], userCode: match[2] });
+            }
+        };
+
+        run.stderr.on("data", onData);
+        void run.then((result) =>
+            reject(
+                new Error(
+                    `The CLI exited without an approval URL:\n${result.stderr}`,
+                ),
+            ),
+        );
+    });
+}
+
+/** The approval the browser form sends for the CLI's `defaults` and the typed `userCode`. */
+export function cliLoginApproval(
+    userCode: string,
+    defaults: CliTokenDefaults,
+): ApproveCliLoginRequest {
+    const days = { "30d": 30, "90d": 90, "365d": 365, never: null }[
+        defaults.lifetime
+    ];
+
+    return {
+        user_code: userCode,
+        token: {
+            name: defaults.name,
+            permissions: defaults.permissions,
+            devices: defaults.devices,
+            expires_at:
+                days === null
+                    ? null
+                    : new Date(Date.now() + days * 86_400_000).toISOString(),
+        },
+    };
+}
+
+/**
+ * Plays the browser for a waiting CLI: signs in fresh, reads the request and approves it with
+ * the CLI's own defaults. Returns the approved token's metadata.
+ */
+export async function approveCliLogin(
+    baseUrl: string,
+    cli: { id: string; userCode: string },
+): Promise<AccessTokenResponse> {
+    const session = await signInBrowser(baseUrl);
+
+    const headers = {
+        Cookie: session.cookie,
+        "Content-Type": "application/json",
+    };
+
+    const request: CliLoginResponse = await (
+        await fetch(`${baseUrl}/api/v1/cli-logins/${cli.id}`, { headers })
+    ).json();
+
+    const approved = await fetch(
+        `${baseUrl}/api/v1/cli-logins/${cli.id}/approve`,
+        {
+            method: "POST",
+            headers,
+            body: JSON.stringify(cliLoginApproval(cli.userCode, request.token)),
+        },
+    );
+
+    if (!approved.ok) {
+        throw new Error(`Approval failed with status ${approved.status}`);
+    }
+
+    const body: ApproveCliLoginResponse = await approved.json();
+
+    return body.metadata;
 }
 
 /** Environment that lets the remote CLI authenticate with a token without a saved login. */
