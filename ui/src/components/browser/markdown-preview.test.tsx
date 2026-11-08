@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import { MarkdownPreview, resolveMarkdownFileLink } from "./markdown-preview";
 
 afterEach(() => {
@@ -88,6 +88,60 @@ const value = true;
     expect(code?.querySelector('[data-token="keyword"]')?.textContent).toBe(
         "const",
     );
+});
+
+test("copies a highlighted fence's source with its copy button", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const clipboard = Object.getOwnPropertyDescriptor(navigator, "clipboard");
+    const secure = Object.getOwnPropertyDescriptor(window, "isSecureContext");
+    Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText },
+    });
+    Object.defineProperty(window, "isSecureContext", {
+        configurable: true,
+        value: true,
+    });
+    onTestFinished(() => {
+        if (clipboard) {
+            Object.defineProperty(navigator, "clipboard", clipboard);
+        } else {
+            Reflect.deleteProperty(navigator, "clipboard");
+        }
+
+        if (secure) {
+            Object.defineProperty(window, "isSecureContext", secure);
+        } else {
+            Reflect.deleteProperty(window, "isSecureContext");
+        }
+    });
+
+    const view = render(
+        <MarkdownPreview
+            deviceName="agent"
+            filePath="/README.md"
+            repositoryRoot={null}
+            content={`\`\`\`typescript
+const value = true;
+console.log(value);
+\`\`\`
+
+Use \`inline\` code.`}
+        />,
+    );
+
+    // Only the fence gets a copy button; inline code has nothing worth a control.
+    expect(view.getAllByRole("button", { name: "Copy code" })).toHaveLength(1);
+
+    fireEvent.click(view.getByRole("button", { name: "Copy code" }));
+
+    // The copy holds the authored source joined from the highlight tokens, without the fence's trailing newline.
+    await waitFor(() => {
+        expect(writeText).toHaveBeenCalledWith(`const value = true;
+console.log(value);`);
+    });
+    // The button confirms the copy so the user knows it worked.
+    expect(view.getByRole("button", { name: "Copied!" })).toBeTruthy();
 });
 
 test("leaves inline code unhighlighted", () => {

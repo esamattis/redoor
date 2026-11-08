@@ -9,12 +9,15 @@ import { Link } from "@tanstack/react-router";
 import ReactMarkdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
-import { LinkIcon } from "lucide-react";
+import { Check, Copy, LinkIcon } from "lucide-react";
 import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { browserRoute } from "#ui/browser-route";
+import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { FoldingSection } from "#ui/components/folding-section";
 import { HighlightedLines } from "#ui/components/highlighted-tokens";
+import { IconButton } from "#ui/components/icon-button";
 import { Tooltip } from "#ui/components/tooltip";
+import { cn } from "#ui/utils/cn";
 import {
     highlightLines,
     languageForName,
@@ -171,6 +174,72 @@ function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
     );
 }
 
+/** A child of a rendered markdown element, typed through react-markdown so hast needs no direct dependency. */
+type MarkdownNodeChild = NonNullable<ExtraProps["node"]>["children"][number];
+
+/**
+ * Collects the authored text under a node. Highlighted fences are split into token
+ * elements, so the copied source comes from the markdown tree rather than the DOM.
+ */
+function markdownNodeText(children: MarkdownNodeChild[]): string {
+    return children
+        .map((child) => {
+            if (child.type === "text") {
+                return child.value;
+            }
+
+            if (child.type === "element") {
+                return markdownNodeText(child.children);
+            }
+
+            return "";
+        })
+        .join("");
+}
+
+/**
+ * Wraps fenced code with a copy button, because selecting a multi-line command or snippet
+ * by hand is fiddly, especially on phones. The button stays visible rather than appearing on
+ * hover so touch screens can reach it.
+ */
+function MarkdownPre(props: ComponentProps<"pre"> & ExtraProps) {
+    const source = markdownNodeText(props.node?.children ?? []).replace(
+        /\n$/,
+        "",
+    );
+
+    const { isCopied, copy } = useCopyFeedback(source);
+
+    return (
+        <div className="relative">
+            {/* Right padding keeps short lines clear of the button. */}
+            <pre className={cn("pr-12", props.className)}>{props.children}</pre>
+            <div className="absolute right-1 top-1">
+                <IconButton
+                    type="button"
+                    size="sm"
+                    label={isCopied ? "Copied!" : "Copy code"}
+                    onClick={() => {
+                        void copy();
+                    }}
+                    className={cn(
+                        "rounded-md border bg-slate-900 transition-colors",
+                        isCopied
+                            ? "border-emerald-400/50 text-emerald-300"
+                            : "border-slate-700 text-slate-400 hover:bg-slate-800 hover:text-slate-100",
+                    )}
+                >
+                    {isCopied ? (
+                        <Check className="size-4" aria-hidden="true" />
+                    ) : (
+                        <Copy className="size-4" aria-hidden="true" />
+                    )}
+                </IconButton>
+            </div>
+        </div>
+    );
+}
+
 /** Keeps heading names intact while exposing a permalink beside their authored content. */
 function MarkdownHeading(props: ComponentProps<"h1"> & ExtraProps) {
     const titleId = useId();
@@ -323,6 +392,7 @@ export function MarkdownPreview(props: {
                     rehypePlugins={[rehypeSlug]}
                     components={{
                         code: MarkdownCode,
+                        pre: MarkdownPre,
                         h1: MarkdownHeading,
                         h2: MarkdownHeading,
                         h3: MarkdownHeading,
