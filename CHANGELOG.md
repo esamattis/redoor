@@ -1,5 +1,11 @@
 # Changelog
 
+## v2.7.1
+
+_2026-11-08_
+
+No user-facing changes since v2.7.0.
+
 ## v2.7.0
 
 _2026-11-08_
