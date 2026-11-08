@@ -215,7 +215,7 @@ export class TerminalSession {
         this.element.setAttribute("tabindex", "0");
         this.element.className =
             "terminal-host h-full w-full caret-transparent outline-none";
-        applyTerminalTheme(this.element, this.theme);
+        applyTerminalTheme(this.element, this.theme, null);
         this.element.addEventListener("keydown", (event) =>
             this.handleHostKeyDown(event),
         );
@@ -380,7 +380,7 @@ export class TerminalSession {
     /** Applies the app theme to the emulator's CSS variables without rebuilding anything. */
     setTheme(theme: "dark" | "light"): void {
         this.theme = theme;
-        applyTerminalTheme(this.element, theme);
+        applyTerminalTheme(this.element, theme, this.terminal);
     }
 
     /**
@@ -579,7 +579,7 @@ export class TerminalSession {
         let terminal: TerminalEmulator;
 
         try {
-            applyTerminalTheme(this.element, this.theme);
+            applyTerminalTheme(this.element, this.theme, null);
 
             const session = await this.options.createEmulator({
                 host: this.element,

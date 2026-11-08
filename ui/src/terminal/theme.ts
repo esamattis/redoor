@@ -1,3 +1,7 @@
+import type { TerminalThemeColors } from "@wterm/dom";
+
+import type { TerminalEmulator } from "#ui/terminal/wterm";
+
 /** Names the CSS variables consumed by the wterm DOM renderer. */
 export type TerminalTheme = Record<`--term-${string}`, string>;
 
@@ -55,10 +59,38 @@ const lightTerminalTheme: TerminalTheme = {
 export function applyTerminalTheme(
     host: HTMLElement,
     mode: "dark" | "light",
+    terminal: Pick<TerminalEmulator, "setThemeColors"> | null,
 ): void {
     const theme = mode === "light" ? lightTerminalTheme : darkTerminalTheme;
 
     for (const [property, value] of Object.entries(theme)) {
         host.style.setProperty(property, value);
     }
+
+    // The WebGL renderer caches the palette and re-reads it only through setThemeColors, so
+    // the CSS variables alone would leave the canvas in the previous theme's colors.
+    terminal?.setThemeColors(toThemeColors(theme));
+}
+
+/** Converts a `#rrggbb` theme value into the 24-bit number wterm takes. */
+function hexColor(theme: TerminalTheme, property: `--term-${string}`): number {
+    const value = theme[property];
+
+    if (value === undefined || !/^#[0-9a-f]{6}$/i.test(value)) {
+        throw new Error(`Terminal theme ${property} must be a #rrggbb color`);
+    }
+
+    return Number.parseInt(value.slice(1), 16);
+}
+
+/** Gives wterm the same colors as the CSS variables, for its renderer and core. */
+function toThemeColors(theme: TerminalTheme): TerminalThemeColors {
+    return {
+        foreground: hexColor(theme, "--term-fg"),
+        background: hexColor(theme, "--term-bg"),
+        cursor: hexColor(theme, "--term-cursor"),
+        palette: Array.from({ length: 16 }, (_, index) =>
+            hexColor(theme, `--term-color-${index}`),
+        ),
+    };
 }

@@ -189,6 +189,12 @@ code {
     box-shadow: none;
     overflow-x: hidden;
     overflow-y: hidden;
+    /*
+     * The scrollbar must not change the grid width. With the WebGL renderer the scrollback
+     * DOM collapses after a resize until output goes idle, so a scrollbar that takes space
+     * would appear and disappear on every burst and resize the shell back and forth.
+     */
+    scrollbar-gutter: stable;
     font-family:
         ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
         "Liberation Mono", monospace;

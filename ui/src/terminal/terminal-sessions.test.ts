@@ -27,6 +27,7 @@ const createIdleEmulator: CreateEmulator = async () => ({
         destroy: () => {},
         focus: () => {},
         getSelectionText: () => "",
+        setThemeColors: () => {},
     },
     core: { dispose: () => {} },
 });
