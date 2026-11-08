@@ -223,7 +223,9 @@ export class EditorConfiguration {
                 "&.cm-focused": { outline: "none" },
                 ".cm-scroller": { overflow: "auto" },
                 ".cm-content": { padding: "0" },
-                ".cm-line": { padding: "0" },
+                // The opaque gutter stacks above the 1px insert caret, so column 0 needs a gap
+                // to keep the caret from hiding under the gutter edge.
+                ".cm-line": { padding: "0 0 0 4px" },
             }),
         ];
     }
