@@ -26,7 +26,9 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
-use super::{error::ApiError, state::ServerState};
+use super::{
+    auth::SessionClient, client_address::ClientAddress, error::ApiError, state::ServerState,
+};
 
 /// Cookie binding a pending sign-in to the browser that started it, so a callback URL
 /// opened in another browser (login CSRF) cannot complete it.
@@ -595,6 +597,7 @@ pub(crate) struct CallbackQuery {
 /// the browser session.
 pub(crate) async fn oidc_callback_handler(
     State(state): State<ServerState>,
+    address: ClientAddress,
     headers: HeaderMap,
     Query(query): Query<CallbackQuery>,
 ) -> Response {
@@ -684,7 +687,11 @@ pub(crate) async fn oidc_callback_handler(
     };
     let session = match state
         .auth
-        .create_oidc_session(user.display_name().to_string(), login.session_length)
+        .create_oidc_session(
+            user.display_name().to_string(),
+            login.session_length,
+            SessionClient::new(&address, &headers),
+        )
         .await
     {
         Ok(session) => session,

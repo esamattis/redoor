@@ -8,15 +8,16 @@ use std::time::Instant;
 
 use axum::{
     Extension, Json,
-    extract::{ConnectInfo, State},
-    http::{StatusCode, header},
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
 use redoor_core::log_error;
 use redoor_protocol::api::auth::{ChangePasswordRequest, ChangePasswordResponse};
 
 use super::access::Principal;
-use super::auth::{ActiveSession, PasswordChangeError};
+use super::auth::{ActiveSession, PasswordChangeError, SessionClient};
+use super::client_address::ClientAddress;
 use super::error::ApiError;
 use super::state::ServerState;
 
@@ -26,7 +27,8 @@ pub(crate) async fn change_password_handler(
     State(state): State<ServerState>,
     Extension(principal): Extension<Principal>,
     Extension(current_session): Extension<ActiveSession>,
-    ConnectInfo(addr): ConnectInfo<std::net::SocketAddr>,
+    client: ClientAddress,
+    headers: HeaderMap,
     Json(request): Json<ChangePasswordRequest>,
 ) -> Result<Response, ApiError> {
     // The route is session-only, so a token never gets here; it is refused anyway rather
@@ -34,7 +36,7 @@ pub(crate) async fn change_password_handler(
     let Principal::Session(user) = principal else {
         return Err(ApiError::forbidden("Requires a browser session"));
     };
-    let client_ip = addr.ip();
+    let client_ip = client.peer.ip();
     // Shares the login throttle, so a stolen session cannot guess the password faster
     // through this form than through the login page.
     if state
@@ -55,6 +57,7 @@ pub(crate) async fn change_password_handler(
             &state.config_path,
             &user,
             current_session.length,
+            SessionClient::new(&client, &headers),
             &request.current_password,
             &request.new_password,
         )

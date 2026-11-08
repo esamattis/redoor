@@ -302,6 +302,82 @@ struct SessionFile {
     /// the choice existed do not parse and are dropped, so that upgrade signed everyone out
     /// once instead of keeping sessions whose lifetime nobody chose.
     length: SessionLength,
+    /// Unix seconds of the sign-in, shown in the session list.
+    created_at: i64,
+    /// The browser that signed in, shown in the session list so the user can recognise it.
+    client: SessionClient,
+}
+
+/// What the server saw of the browser when it signed in, so the session list can tell the
+/// user's browsers apart and reveal one they do not recognise.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct SessionClient {
+    /// The `User-Agent` header, cut to [`MAX_USER_AGENT_LEN`].
+    pub(crate) user_agent: Option<String>,
+    /// IP of the TCP peer; the proxy when there is one.
+    pub(crate) ip: IpAddr,
+    /// The client a reverse proxy claims to forward for, unverified.
+    pub(crate) forwarded_for: Option<String>,
+}
+
+/// Longest `User-Agent` kept. The header is client controlled and stored in a session file
+/// that every session list reads, so an oversized one is cut instead of copied whole.
+const MAX_USER_AGENT_LEN: usize = 512;
+
+impl SessionClient {
+    /// Describes the browser behind a sign-in request.
+    pub(crate) fn new(client: &ClientAddress, headers: &HeaderMap) -> Self {
+        // `to_str` only accepts visible ASCII, so the value cannot carry control characters
+        // into the UI, and cutting at any byte index is a char boundary.
+        let user_agent = headers
+            .get(header::USER_AGENT)
+            .and_then(|value| value.to_str().ok())
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value[..value.len().min(MAX_USER_AGENT_LEN)].to_string());
+        Self {
+            user_agent,
+            ip: client.peer.ip(),
+            forwarded_for: client.forwarded_for.clone(),
+        }
+    }
+}
+
+/// A signed-in session as the session list shows it. Carries the secret session id only
+/// so the server can delete it; handlers must expose `public_id` instead.
+pub(crate) struct ListedSession {
+    /// The cookie value, a bearer secret that never leaves the server.
+    pub(crate) id: String,
+    /// See [`public_session_id`].
+    pub(crate) public_id: String,
+    pub(crate) user: SessionUser,
+    pub(crate) length: SessionLength,
+    /// Unix seconds of the sign-in.
+    pub(crate) created_at: i64,
+    /// Unix seconds after which the session ends without activity.
+    pub(crate) expires_at: i64,
+    pub(crate) client: SessionClient,
+}
+
+/// Domain of the public session id digest, so the digest of a cookie value is never equal to
+/// a digest the server computes for any other purpose.
+const PUBLIC_SESSION_ID_DOMAIN: &[u8] = b"redoor-public-session-id-v1:";
+
+/// The identifier the session list shows for a session, derived from its cookie value.
+///
+/// Every signed-in browser can read the session list, and the cookie value is a bearer
+/// secret, so the list names sessions by a one-way digest instead. Deriving it rather than
+/// storing a second random id means it can never get out of step with the cookie it names.
+pub(crate) fn public_session_id(session_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(PUBLIC_SESSION_ID_DOMAIN);
+    hasher.update(session_id.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .take(16)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 impl AuthState {
@@ -390,21 +466,11 @@ impl AuthState {
 
         let now = jiff::Timestamp::now().as_second();
         let logins = self.logins.current().await;
-        let transferring = self.has_transfers(session_id);
-        if session.session_id != session_id
-            || !self.is_current(&session, &logins)
-            || (session.expires_at <= now && !transferring)
-        {
+        let expires_at = self.effective_expiry(&session, &logins, now);
+        let Some(expires_at) = expires_at.filter(|_| session.session_id == session_id) else {
             // Remove expired or credential-mismatched files so disk does not retain stealable IDs.
             let _ = tokio::fs::remove_file(path).await;
             return SessionCheck::Invalid;
-        }
-        let expires_at = if transferring {
-            // The transfer renews the session when it ends, so it cannot expire before then.
-            let lifetime = self.lifetime(session.method, session.length).as_secs() as i64;
-            session.expires_at.max(now + lifetime)
-        } else {
-            session.expires_at
         };
         SessionCheck::Valid(
             SessionUser {
@@ -417,6 +483,95 @@ impl AuthState {
                 expires_at,
             },
         )
+    }
+
+    /// When a stored session ends, or `None` when it already has or its login no longer
+    /// matches. Shared by the request check and the session list, so the list shows exactly
+    /// the sessions that would still be let in.
+    fn effective_expiry(&self, session: &SessionFile, logins: &Logins, now: i64) -> Option<i64> {
+        if !self.is_current(session, logins) {
+            return None;
+        }
+        if !self.has_transfers(&session.session_id) {
+            return (session.expires_at > now).then_some(session.expires_at);
+        }
+        // The transfer renews the session when it ends, so it cannot expire before then.
+        let lifetime = self.lifetime(session.method, session.length).as_secs() as i64;
+        Some(session.expires_at.max(now + lifetime))
+    }
+
+    /// Every session that is still signed in, newest sign-in first, for the session list.
+    ///
+    /// Read-only: files of ended sessions are left for the request check and the startup
+    /// purge to remove, so listing never races a renewal or a logout.
+    pub(crate) async fn list_sessions(&self) -> anyhow::Result<Vec<ListedSession>> {
+        let logins = self.logins.current().await;
+        let now = jiff::Timestamp::now().as_second();
+        let mut sessions = Vec::new();
+        let mut entries = tokio::fs::read_dir(&self.sessions_directory).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path();
+            let Some(session) = read_session_file(&path).await else {
+                continue;
+            };
+            // A file whose name does not match its id is never let in, so it is not listed.
+            if self.session_path(&session.session_id).as_deref() != Some(path.as_path()) {
+                continue;
+            }
+            let Some(expires_at) = self.effective_expiry(&session, &logins, now) else {
+                continue;
+            };
+            sessions.push(ListedSession {
+                public_id: public_session_id(&session.session_id),
+                id: session.session_id,
+                user: SessionUser {
+                    name: session.username,
+                    method: session.method,
+                },
+                length: session.length,
+                created_at: session.created_at,
+                expires_at,
+                client: session.client,
+            });
+        }
+        sessions.sort_by_key(|session| std::cmp::Reverse(session.created_at));
+        Ok(sessions)
+    }
+
+    /// Signs out the signed-in session the list names `public_id`, or returns `None` when
+    /// there is none. Returns the session so the caller can log it and drop what else
+    /// belongs to it, such as its vault entries.
+    pub(crate) async fn sign_out_session(
+        &self,
+        public_id: &str,
+    ) -> anyhow::Result<Option<ListedSession>> {
+        let Some(session) = self
+            .list_sessions()
+            .await?
+            .into_iter()
+            .find(|session| session.public_id == public_id)
+        else {
+            return Ok(None);
+        };
+        self.delete_session_id(&session.id).await?;
+        Ok(Some(session))
+    }
+
+    /// Signs out every signed-in session except the caller's own `keep`, so a user who
+    /// suspects a stolen cookie can end all other browsers without locking themselves out.
+    pub(crate) async fn sign_out_other_sessions(
+        &self,
+        keep: &str,
+    ) -> anyhow::Result<Vec<ListedSession>> {
+        let mut signed_out = Vec::new();
+        for session in self.list_sessions().await? {
+            if session.id == keep {
+                continue;
+            }
+            self.delete_session_id(&session.id).await?;
+            signed_out.push(session);
+        }
+        Ok(signed_out)
     }
 
     /// The idle lifetime of a session: the length picked at sign-in, capped by
@@ -544,6 +699,7 @@ impl AuthState {
         &self,
         name: String,
         length: SessionLength,
+        client: SessionClient,
     ) -> anyhow::Result<NewSession> {
         let policy = self
             .oidc_sessions
@@ -558,6 +714,7 @@ impl AuthState {
                 fingerprint: policy.fingerprint.clone(),
             },
             length,
+            client,
         )
         .await
     }
@@ -567,15 +724,19 @@ impl AuthState {
         &self,
         grant: SessionGrant,
         length: SessionLength,
+        client: SessionClient,
     ) -> anyhow::Result<NewSession> {
         let lifetime = self.lifetime(grant.user.method, length);
+        let now = jiff::Timestamp::now();
         let session = SessionFile {
             session_id: Uuid::new_v4().to_string(),
             username: grant.user.name.clone(),
             credentials_fingerprint: grant.fingerprint,
-            expires_at: (jiff::Timestamp::now() + lifetime).as_second(),
+            expires_at: (now + lifetime).as_second(),
             method: grant.user.method,
             length,
+            created_at: now.as_second(),
+            client,
         };
         self.write_session(&session).await?;
         Ok(NewSession {
@@ -737,6 +898,7 @@ impl AuthState {
         config_path: &std::path::Path,
         user: &SessionUser,
         length: SessionLength,
+        client: SessionClient,
         current_password: &str,
         new_password: &str,
     ) -> Result<NewSession, PasswordChangeError> {
@@ -797,6 +959,7 @@ impl AuthState {
                 fingerprint,
             },
             length,
+            client,
         )
         .await
         .map_err(|error| {
@@ -1008,6 +1171,7 @@ fn session_cookie(headers: &HeaderMap) -> Option<String> {
 pub(crate) async fn login_handler(
     State(state): State<ServerState>,
     client: ClientAddress,
+    headers: HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Response {
     // The TCP peer, not the forwarded claim: a client could otherwise dodge the limit by
@@ -1058,7 +1222,11 @@ pub(crate) async fn login_handler(
 
     let session = match state
         .auth
-        .issue_session(grant, request.session_length)
+        .issue_session(
+            grant,
+            request.session_length,
+            SessionClient::new(&client, &headers),
+        )
         .await
     {
         Ok(session) => session,
@@ -1128,8 +1296,20 @@ pub(crate) async fn logout_handler(
 /// Fixtures other modules' tests use to get a signed-in session without the HTTP layer.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{ActiveSession, AuthState, LoginVerification, SessionCheck, SessionLength};
+    use super::{
+        ActiveSession, AuthState, LoginVerification, SessionCheck, SessionClient, SessionLength,
+    };
     use redoor_core::test_support::TempDir;
+
+    /// A browser on the loopback address with the given `User-Agent`, for tests that issue
+    /// sessions without the HTTP layer.
+    pub(crate) fn test_client(user_agent: &str) -> SessionClient {
+        SessionClient {
+            user_agent: Some(user_agent.to_string()),
+            ip: std::net::Ipv4Addr::LOCALHOST.into(),
+            forwarded_for: None,
+        }
+    }
 
     /// An auth state with the password user `admin` and a one-hour session of it. The directory must outlive the auth state, so it is returned too.
     pub(crate) async fn signed_in_auth() -> (TempDir, AuthState, ActiveSession) {
@@ -1153,7 +1333,7 @@ password = "password"
             panic!("admin must be able to sign in");
         };
         let session = auth
-            .issue_session(grant, SessionLength::Hour)
+            .issue_session(grant, SessionLength::Hour, test_client("test"))
             .await
             .expect("session");
         let mut headers = axum::http::HeaderMap::new();
@@ -1175,11 +1355,12 @@ password = "password"
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::test_client;
     use super::{
         AuthState, FailureWindow, LOGIN_MAX_FAILURES_GLOBAL, LOGIN_MAX_FAILURES_PER_IP,
         LOGIN_MAX_TRACKED_IPS, LOGIN_RATE_WINDOW, LoginRateLimiter, LoginVerification,
         PasswordChangeError, SESSION_COOKIE_NAME, SessionCheck, SessionFile, SessionGrant,
-        SessionLength, SessionMethod, SessionUser, oidc_fingerprint,
+        SessionLength, SessionMethod, SessionUser, oidc_fingerprint, public_session_id,
     };
     use axum::http::{HeaderMap, HeaderValue, header};
     use redoor_core::config::{ConfiguredPassword, ConfiguredUser, OidcConfig};
@@ -1272,7 +1453,7 @@ password = '{password}'
     async fn session_headers(auth: &AuthState, grant: SessionGrant) -> HeaderMap {
         cookie_headers(
             &auth
-                .issue_session(grant, SessionLength::Week)
+                .issue_session(grant, SessionLength::Week, test_client("test"))
                 .await
                 .expect("session")
                 .cookie,
@@ -1371,7 +1552,7 @@ password = '{password}'
             panic!("admin must be able to sign in");
         };
         let session = auth
-            .issue_session(grant, length)
+            .issue_session(grant, length, test_client("test"))
             .await
             .expect("session must be created");
         let cookie = session.cookie.to_str().expect("ASCII").to_string();
@@ -1424,7 +1605,11 @@ password = '{password}'
         let auth = auth_state(&directory, Some(&oidc)).await;
         let now = jiff::Timestamp::now().as_second();
         let capped = auth
-            .create_oidc_session("alice".to_string(), SessionLength::Year)
+            .create_oidc_session(
+                "alice".to_string(),
+                SessionLength::Year,
+                test_client("test"),
+            )
             .await
             .expect("session");
         let remaining = stored_expiry(&directory, &cookie_headers(&capped.cookie)).await - now;
@@ -1434,7 +1619,7 @@ password = '{password}'
             "{remaining}"
         );
         let short = auth
-            .create_oidc_session("alice".to_string(), SessionLength::Day)
+            .create_oidc_session("alice".to_string(), SessionLength::Day, test_client("test"))
             .await
             .expect("session");
         let remaining = stored_expiry(&directory, &cookie_headers(&short.cookie)).await - now;
@@ -1606,7 +1791,11 @@ password = '{password}'
         let auth = auth_state(&directory, Some(&oidc)).await;
         let oidc_headers = cookie_headers(
             &auth
-                .create_oidc_session("alice".to_string(), SessionLength::Year)
+                .create_oidc_session(
+                    "alice".to_string(),
+                    SessionLength::Year,
+                    test_client("test"),
+                )
                 .await
                 .expect("session")
                 .cookie,
@@ -1628,7 +1817,11 @@ password = '{password}'
 
         let oidc_headers = cookie_headers(
             &restarted
-                .create_oidc_session("alice".to_string(), SessionLength::Year)
+                .create_oidc_session(
+                    "alice".to_string(),
+                    SessionLength::Year,
+                    test_client("test"),
+                )
                 .await
                 .expect("session")
                 .cookie,
@@ -1642,7 +1835,11 @@ password = '{password}'
         // Without OIDC configured, no OIDC session can be created at all.
         assert!(
             without_oidc
-                .create_oidc_session("alice".to_string(), SessionLength::Year)
+                .create_oidc_session(
+                    "alice".to_string(),
+                    SessionLength::Year,
+                    test_client("test")
+                )
                 .await
                 .is_err()
         );
@@ -1752,6 +1949,7 @@ password = '{stored}'
                 &config_path,
                 &admin(),
                 SessionLength::Week,
+                test_client("test"),
                 "old-password",
                 "new-password",
             )
@@ -1824,6 +2022,7 @@ password = '{stored}'
                 &config_path,
                 &admin(),
                 SessionLength::Week,
+                test_client("test"),
                 "guess",
                 "new-password",
             )
@@ -1839,6 +2038,7 @@ password = '{stored}'
                 &config_path,
                 &admin(),
                 SessionLength::Week,
+                test_client("test"),
                 "old-password",
                 "short",
             )
@@ -1889,6 +2089,7 @@ password = '{stored}'
                 &config_path,
                 &user,
                 SessionLength::Week,
+                test_client("test"),
                 "old-password",
                 "new-password",
             )
@@ -2086,6 +2287,7 @@ password = 'hand-edited-password'
                 &config_path,
                 &admin(),
                 SessionLength::Week,
+                test_client("test"),
                 "old-password",
                 "new-password",
             )
@@ -2100,6 +2302,7 @@ password = 'hand-edited-password'
             &config_path,
             &admin(),
             SessionLength::Week,
+            test_client("test"),
             "hand-edited-password",
             "new-password",
         )
@@ -2136,6 +2339,7 @@ port = "not-a-port"
                 &config_path,
                 &admin(),
                 SessionLength::Week,
+                test_client("test"),
                 "old-password",
                 "new-password",
             )
@@ -2180,6 +2384,7 @@ port = "not-a-port"
             &config_path,
             &alice,
             SessionLength::Week,
+            test_client("test"),
             "alice-password",
             "alice-new-password",
         )
@@ -2343,5 +2548,93 @@ port = "not-a-port"
             limiter.by_ip.lock().expect("test lock must succeed").len(),
             1
         );
+    }
+
+    /// Issues a password session of `admin` from a browser with the given `User-Agent`.
+    async fn browser_session(auth: &AuthState, user_agent: &str) -> HeaderMap {
+        let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
+        else {
+            panic!("admin must be able to sign in");
+        };
+        cookie_headers(
+            &auth
+                .issue_session(grant, SessionLength::Day, test_client(user_agent))
+                .await
+                .expect("session")
+                .cookie,
+        )
+    }
+
+    /// The session list shows every signed-in browser with what it signed in from, names
+    /// each by a digest instead of its cookie, and leaves out sessions that ended.
+    #[tokio::test]
+    async fn session_list_shows_signed_in_browsers() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let laptop = browser_session(&auth, "Laptop").await;
+        let phone = browser_session(&auth, "Phone").await;
+
+        let sessions = auth.list_sessions().await.expect("list");
+        let mut agents: Vec<_> = sessions
+            .iter()
+            .map(|session| session.client.user_agent.clone().unwrap_or_default())
+            .collect();
+        agents.sort();
+        // Both browsers are listed with the user agent they signed in with.
+        assert_eq!(agents, ["Laptop", "Phone"]);
+        for session in &sessions {
+            // The public id is a digest, never the cookie value itself.
+            assert_ne!(session.public_id, session.id);
+            assert_eq!(session.public_id, public_session_id(&session.id));
+            // The sign-in address is recorded for the user to recognise the browser.
+            assert_eq!(session.client.ip, IpAddr::from(Ipv4Addr::LOCALHOST));
+            // The list names who signed in and how.
+            assert_eq!(session.user.name, "admin");
+        }
+
+        set_expiry(&directory, &phone, jiff::Timestamp::now().as_second() - 1).await;
+        let sessions = auth.list_sessions().await.expect("list");
+        // An expired session would not be let in, so it is not listed either.
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, session_id(&laptop));
+    }
+
+    /// Signing out other sessions keeps the caller's own, and a single session can be
+    /// signed out by its public id.
+    #[tokio::test]
+    async fn sessions_are_signed_out_one_by_one_or_all_others() {
+        let directory = TempDir::create();
+        let auth = auth_state(&directory, None).await;
+        let own = browser_session(&auth, "Own").await;
+        let first = browser_session(&auth, "First").await;
+        let second = browser_session(&auth, "Second").await;
+
+        let target = public_session_id(&session_id(&first));
+        let signed_out = auth
+            .sign_out_session(&target)
+            .await
+            .expect("sign out")
+            .expect("the session is listed");
+        // The returned session is the one named by the public id.
+        assert_eq!(signed_out.id, session_id(&first));
+        // The signed-out browser is no longer let in.
+        assert!(session_user(&auth, &first).await.is_none());
+        // Signing out an id that is no longer listed reports that nothing matched.
+        assert!(
+            auth.sign_out_session(&target)
+                .await
+                .expect("sign out")
+                .is_none()
+        );
+
+        let others = auth
+            .sign_out_other_sessions(&session_id(&own))
+            .await
+            .expect("sign out others");
+        // Only the remaining other browser was signed out.
+        assert_eq!(others.len(), 1);
+        assert!(session_user(&auth, &second).await.is_none());
+        // The caller keeps working.
+        assert!(session_user(&auth, &own).await.is_some());
     }
 }

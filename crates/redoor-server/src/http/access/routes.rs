@@ -94,6 +94,11 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         ("PUT", "/api/v1/auth/password") => Access::SessionOnly,
         // Keeping a browser session alive; tokens do not idle out.
         ("POST", "/api/v1/session/activity") => Access::SessionOnly,
+        // Listing and signing out browser sessions: a token must never end the user's browsers
+        // or see where they signed in from.
+        ("GET" | "DELETE", "/api/v1/sessions") | ("DELETE", "/api/v1/sessions/{id}") => {
+            Access::SessionOnly
+        }
 
         // SSH keys and host keys carry login passwords and file keys and change what the
         // server can log in to.
@@ -297,6 +302,9 @@ mod tests {
                 "/api/v1/session/activity",
                 Access::SessionOnly,
             ),
+            (Method::GET, "/api/v1/sessions", Access::SessionOnly),
+            (Method::DELETE, "/api/v1/sessions", Access::SessionOnly),
+            (Method::DELETE, "/api/v1/sessions/{id}", Access::SessionOnly),
             (Method::GET, "/api/v1/auth/me", Access::AnyPrincipal),
             (Method::GET, "/api/v1/agents", Access::AnyPrincipal),
             (Method::POST, "/api/v1/agents", Access::SessionOnly),

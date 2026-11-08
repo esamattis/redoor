@@ -208,6 +208,8 @@ export const queryKeys = {
     editorBuffer: (key: string) =>
         [...queryKeys.all, "editor-buffer", key] as const,
     accessTokens: () => [...queryKeys.all, "access-tokens"] as const,
+    /** Every signed-in browser session, for the sessions page. */
+    browserSessions: () => [...queryKeys.all, "browser-sessions"] as const,
     /** The vault status, which every vault change invalidates. */
     vault: () => [...queryKeys.all, "vault"] as const,
     /** The account's vault-encrypted SSH keys; under the vault, so its changes refresh them. */
@@ -523,6 +525,14 @@ export function accessTokensQueryOptions(api: ApiClient) {
     return queryOptions({
         queryKey: queryKeys.accessTokens(),
         queryFn: () => api.listAccessTokens(),
+    });
+}
+
+/** The signed-in browser sessions, listed on the sessions page. */
+export function browserSessionsQueryOptions(api: ApiClient) {
+    return queryOptions({
+        queryKey: queryKeys.browserSessions(),
+        queryFn: () => api.listBrowserSessions(),
     });
 }
 

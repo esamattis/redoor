@@ -12,6 +12,7 @@ import {
     LockOpen,
     LoaderCircle,
     LogOut,
+    MonitorSmartphone,
     FileText,
     RefreshCw,
     ScrollText,
@@ -72,6 +73,7 @@ type NavigationItem = {
         | "/logs"
         | "/transfers"
         | "/settings/tokens"
+        | "/settings/sessions"
         | "/settings/vault";
     /** Short visible name, shown as the tooltip because the icon has no text beside it. */
     label: string;
@@ -119,6 +121,13 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         icon: KeyRound,
         // Stays highlighted on a token's edit page.
         exact: false,
+    },
+    {
+        to: "/settings/sessions",
+        label: "Sessions",
+        ariaLabel: "Manage browser sessions",
+        icon: MonitorSmartphone,
+        exact: true,
     },
     {
         to: "/settings/vault",
@@ -276,8 +285,9 @@ function NavigationBar(props: {
     const logout = useLogout();
     const user = useCurrentUser();
 
+    // One column per destination plus More, so every button stays on the one bottom row.
     return (
-        <div className="grid grid-cols-7 gap-0.5 border-t border-slate-800 p-2">
+        <div className="grid grid-cols-8 gap-0.5 border-t border-slate-800 p-2">
             {navigationItems.map((item) => (
                 <NavigationLink
                     key={item.to}

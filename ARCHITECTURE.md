@@ -3360,6 +3360,23 @@ own endpoints:
   length. The field is
   required: session files from before it existed fail to parse and are removed, so that
   upgrade signed everyone out once.
+- **Session list and remote sign-out** (`http/sessions.rs`, session only). Each session
+  file also records its sign-in time and the browser that signed in (`SessionClient`: the
+  `User-Agent`, cut to 512 bytes, the TCP peer's IP and the forwarded-for claim of
+  `ClientAddress`), taken at login, OIDC callback and password change. Both fields are
+  required, so files from before the list existed fail to parse and are removed, which
+  signed everyone out once. `GET /api/v1/sessions` lists every session the request check
+  would still let in (the same `effective_expiry`), for every user, since all share the one
+  account, and marks the caller's own. The cookie value is a bearer secret and the list is
+  readable by every browser, so sessions are named by `public_session_id`, a
+  domain-separated SHA-256 of the cookie value, never by the value itself.
+  `DELETE /api/v1/sessions/{id}` signs out one session and `DELETE /api/v1/sessions` every
+  session except the caller's, so a user who suspects a stolen cookie can end the others
+  without locking themselves out. Both delete through `delete_session_id` (under the session
+  file lock, so a racing renewal cannot write the file back), drop the session's vault device
+  secrets like logout does, and log the sign-out; the signed-out browser's websockets close
+  at their next `SessionWatch` check. The forwarded-for value is shown as a claim only, like
+  everywhere else.
 - **Sessions slide only on activity.** Checking a session (every request, `auth/me`,
   websocket watches) never renews it, so background polling of an unattended page cannot
   keep it signed in. Two things do (`http/session_activity.rs`):

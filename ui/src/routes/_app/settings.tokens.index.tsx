@@ -30,7 +30,9 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
+import { FactItem } from "#ui/components/fact-item";
 import { LinkButton } from "#ui/components/link-button";
+import { RelativeTime } from "#ui/components/relative-time";
 import { Select } from "#ui/components/select";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
@@ -56,32 +58,6 @@ export const Route = createFileRoute("/_app/settings/tokens/")({
 
 /** Tokens this close to expiry are flagged so users can replace them before clients break. */
 const EXPIRING_SOON_MS = 7 * 86_400_000;
-
-const relativeTimeFormat = new Intl.RelativeTimeFormat(undefined, {
-    numeric: "auto",
-});
-
-/** Largest unit first, so a timestamp reads as "in 3 months" rather than "in 90 days". */
-const relativeTimeUnits: Array<[Intl.RelativeTimeFormatUnit, number]> = [
-    ["year", 365 * 86_400],
-    ["month", 30 * 86_400],
-    ["day", 86_400],
-    ["hour", 3_600],
-    ["minute", 60],
-];
-
-/** Relative times are quicker to scan than absolute dates when comparing many tokens. */
-function formatRelativeTime(value: string): string {
-    const seconds = (Date.parse(value) - Date.now()) / 1000;
-
-    for (const [unit, size] of relativeTimeUnits) {
-        if (Math.abs(seconds) >= size) {
-            return relativeTimeFormat.format(Math.round(seconds / size), unit);
-        }
-    }
-
-    return relativeTimeFormat.format(0, "minute");
-}
 
 /** Owns transient secrets only while their modal is open and keeps them outside Query caches. */
 function AccessTokenSettingsPage() {
@@ -487,77 +463,32 @@ function TokenCard(props: {
                 </div>
             </div>
             <dl className="grid grid-cols-1 gap-px border-t border-slate-800 bg-slate-800 @xl:grid-cols-2 @4xl:grid-cols-4">
-                <TokenFact
+                <FactItem
                     label="Devices"
                     icon={<MonitorSmartphone className="h-3.5 w-3.5" />}
                 >
                     {devices}
-                </TokenFact>
-                <TokenFact
+                </FactItem>
+                <FactItem
                     label="Created"
                     icon={<CalendarPlus className="h-3.5 w-3.5" />}
                 >
                     <RelativeTime value={props.token.created_at} />
-                </TokenFact>
-                <TokenFact
+                </FactItem>
+                <FactItem
                     label="Expires"
                     icon={<CalendarClock className="h-3.5 w-3.5" />}
                 >
                     <RelativeTime value={props.token.expires_at} />
-                </TokenFact>
-                <TokenFact
+                </FactItem>
+                <FactItem
                     label="Last used"
                     icon={<History className="h-3.5 w-3.5" />}
                 >
                     <RelativeTime value={props.token.last_used_at} />
-                </TokenFact>
+                </FactItem>
             </dl>
         </article>
-    );
-}
-
-/**
- * Labels each value by its term, so assistive technology and tests can read a fact by name
- * even though the term and value are laid out as separate visual rows.
- */
-function TokenFact(props: {
-    label: string;
-    icon: React.ReactNode;
-    children: React.ReactNode;
-}) {
-    const labelId = React.useId();
-
-    return (
-        <div className="min-w-0 bg-surface px-5 py-3">
-            <dt
-                id={labelId}
-                className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-slate-500"
-            >
-                <span aria-hidden="true">{props.icon}</span>
-                {props.label}
-            </dt>
-            <dd
-                aria-labelledby={labelId}
-                className="mt-1 truncate text-sm text-slate-200"
-            >
-                {props.children}
-            </dd>
-        </div>
-    );
-}
-
-/** Shows the scannable relative time while keeping the exact timestamp one hover away. */
-function RelativeTime(props: { value: string | null }) {
-    if (props.value === null) {
-        return <span className="text-slate-400">Never</span>;
-    }
-
-    return (
-        <Tooltip content={new Date(props.value).toLocaleString()}>
-            <time dateTime={props.value}>
-                {formatRelativeTime(props.value)}
-            </time>
-        </Tooltip>
     );
 }
 

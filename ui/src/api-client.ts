@@ -49,6 +49,8 @@ import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
 import type { SessionExpiry } from "#bindings/SessionExpiry";
 import type { SessionLength } from "#bindings/SessionLength";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
+import type { BrowserSessionListResponse } from "#bindings/BrowserSessionListResponse";
+import type { SignOutSessionsResponse } from "#bindings/SignOutSessionsResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { CreateOneTimeTokenResponse } from "#bindings/CreateOneTimeTokenResponse";
 import type { OpenPathResponse } from "#bindings/OpenPathResponse";
@@ -1685,6 +1687,33 @@ export class ApiClient {
         return apiRequest<SessionExpiry>(
             `${this.baseUrl}/api/v1/session/activity`,
             { method: "POST" },
+            this.requestContext(),
+        );
+    }
+
+    /** Lists every signed-in browser session, for the sessions page. */
+    async listBrowserSessions(): Promise<BrowserSessionListResponse> {
+        return apiRequest<BrowserSessionListResponse>(
+            `${this.baseUrl}/api/v1/sessions`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /** Signs out one browser session by the public id the session list gave it. */
+    async signOutBrowserSession(id: string): Promise<SignOutSessionsResponse> {
+        return apiRequest<SignOutSessionsResponse>(
+            `${this.baseUrl}/api/v1/sessions/${encodeURIComponent(id)}`,
+            { method: "DELETE" },
+            this.requestContext(),
+        );
+    }
+
+    /** Signs out every browser session except this one, which keeps working. */
+    async signOutOtherBrowserSessions(): Promise<SignOutSessionsResponse> {
+        return apiRequest<SignOutSessionsResponse>(
+            `${this.baseUrl}/api/v1/sessions`,
+            { method: "DELETE" },
             this.requestContext(),
         );
     }
