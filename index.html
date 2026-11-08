@@ -417,6 +417,19 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 .node.blocked { border-style: dashed; }
 .arrow { color: var(--faint); white-space: nowrap; }
 .arrow b { color: var(--blue-soft); font-weight: 500; }
+
+.net-diagram { margin-top: 28px; padding: 20px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.net-diagram svg { display: block; width: 100%; height: auto; font-family: var(--mono); font-size: 13px; }
+.net-diagram .box { fill: var(--code); stroke: var(--border-strong); stroke-width: 1.2; }
+.net-diagram .box.server { stroke: rgb(59 130 246 / 0.6); }
+.net-diagram .box.blocked { stroke-dasharray: 5 4; }
+.net-diagram text { fill: var(--text); text-anchor: middle; }
+.net-diagram .cmd { fill: var(--blue-pale); }
+.net-diagram .line { stroke: var(--faint); stroke-width: 1.4; fill: none; }
+.net-diagram .line.no { stroke: var(--red-bright); stroke-dasharray: 5 4; }
+.net-diagram .lbl { fill: var(--blue-soft); font-size: 12px; }
+.net-diagram .lbl-bg { fill: var(--surface); }
+.net-diagram .lbl.no { fill: var(--red-bright); }
 .badge-num {
     position: absolute;
     top: 18px;
@@ -908,6 +921,18 @@ footer p { margin: 6px 0; }
                 <div class="flow"><span class="node blocked">firewalled</span><span class="arrow">─<b>relay</b>→</span><span class="node">laptop</span><span class="arrow">→</span><span class="node server">server</span></div>
             </div>
         </div>
+<div class="net-diagram reveal">
+<svg viewBox="0 0 760 420" role="img" aria-label="Network diagram: Linux desktop, Termux and a macOS laptop connect to the redoor server over http/ws. The server reaches Linux Server 1 over ssh. The macOS laptop reaches a firewalled Linux server through an ssh relay, while the server cannot reach it directly.">
+<defs><marker id="nd-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0L10 5L0 10z" fill="#94a3b8"/></marker></defs>
+<path class="line" d="M110 100V150H300V195" marker-end="url(#nd-arrow)"/>
+<path class="line" d="M360 100V195" marker-end="url(#nd-arrow)"/>
+<path class="line" d="M570 100V150H420V195" marker-end="url(#nd-arrow)"/>
+<path class="line" d="M330 260V300H190V335" marker-end="url(#nd-arrow)"/>
+<path class="line no" d="M400 260V300H520V335"/>
+<path class="line" d="M650 100V335" marker-end="url(#nd-arrow)"/>
+<rect class="box " x="20" y="30" width="180" height="70" rx="8"/><text x="110.0" y="60.5">Linux desktop</text><text class="cmd" x="110.0" y="78.5">$ redoor agent</text><rect class="box " x="270" y="30" width="180" height="70" rx="8"/><text x="360.0" y="60.5">Termux on Android</text><text class="cmd" x="360.0" y="78.5">$ redoor agent</text><rect class="box " x="560" y="30" width="180" height="70" rx="8"/><text x="650.0" y="51.5">macOS laptop</text><text class="cmd" x="650.0" y="69.5">$ redoor agent</text><text class="cmd" x="650.0" y="87.5">$ redoor relay</text><rect class="box server" x="270" y="195" width="180" height="65" rx="8"/><text x="360.0" y="223.0">Web UI</text><text class="cmd" x="360.0" y="241.0">$ redoor server</text><rect class="box " x="100" y="335" width="180" height="65" rx="8"/><text x="190.0" y="363.0">Linux Server 1</text><text class="cmd" x="190.0" y="381.0">$ redoor agent</text><rect class="box blocked" x="520" y="335" width="200" height="65" rx="8"/><text x="620.0" y="363.0">Firewalled Linux Server</text><text class="cmd" x="620.0" y="381.0">$ redoor agent</text><rect class="lbl-bg" x="80.0" y="120" width="60" height="20"/><text class="lbl " x="110" y="134">http/ws</text><rect class="lbl-bg" x="330.0" y="120" width="60" height="20"/><text class="lbl " x="360" y="134">http/ws</text><rect class="lbl-bg" x="470.0" y="140" width="60" height="20"/><text class="lbl " x="500" y="154">http/ws</text><rect class="lbl-bg" x="172.0" y="290" width="36" height="20"/><text class="lbl " x="190" y="304">ssh</text><rect class="lbl-bg" x="429.0" y="290" width="62" height="20"/><text class="lbl no" x="460" y="304">blocked</text><rect class="lbl-bg" x="580.0" y="220" width="140" height="20"/><text class="lbl " x="650" y="234">redoor ssh relay</text>
+</svg>
+</div>
     </div>
 </section>
 
