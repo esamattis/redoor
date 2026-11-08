@@ -1,0 +1,17 @@
+diff --git a/dist/input.js b/dist/input.js
+index 78a86ffd96eec03222777f40e9db6a0561684c3f..21c8dbb0bb5f9230069000fe478a538c539aff89 100644
+--- a/dist/input.js
++++ b/dist/input.js
+@@ -224,8 +224,10 @@ export class InputHandler {
+         this.textarea.focus({ preventScroll: true });
+     }
+     syncInputPosition() {
+-        if (this.composing || this.touchPrimary)
+-            this.positionTextarea();
++        // Follow the cursor on every render, not only while composing: the absolutely
++        // positioned textarea otherwise stays where the last focus put it and holds the
++        // scroll height past a buffer that shrank (vercel-labs/wterm#245).
++        this.positionTextarea();
+     }
+     destroy() {
+         this.accessibility.destroy();

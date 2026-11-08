@@ -167,6 +167,7 @@ overrides:
 
 patchedDependencies:
   '@replit/codemirror-vim-core@0.1.0': f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583
+  '@wterm/dom@0.5.9': 8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563
 
 importers:
 
@@ -285,7 +286,7 @@ importers:
         version: 4.25.12(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)
       '@wterm/dom':
         specifier: 0.5.9
-        version: 0.5.9
+        version: 0.5.9(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)
       '@wterm/ghostty':
         specifier: 0.5.9
         version: 0.5.9
@@ -4229,7 +4230,7 @@ snapshots:
 
   '@wterm/core@0.5.9': {}
 
-  '@wterm/dom@0.5.9':
+  '@wterm/dom@0.5.9(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)':
     dependencies:
       '@wterm/core': 0.5.9
 
