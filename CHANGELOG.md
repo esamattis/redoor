@@ -1,5 +1,27 @@
 # Changelog
 
+## v2.6.0
+
+_2026-11-08_
+
+### Features
+
+- Choose how long an idle session lasts on the login page: 1 hour (default), 24 hours, 1 week, 1 month or 1 year, for both password and OIDC sign-in. Only real use of the page and running transfers keep a session alive, so a forgotten tab now signs out, and open terminals close when the session ends. For OIDC, `session_lifetime_days` is now the upper bound of the choice. Everyone signs in again once after the upgrade.
+- A new sessions page lists every signed-in browser with its user agent and address, and signs out one of them or all others.
+- The session cookie's secret now rotates while you work. When a copied cookie is used next to the original, the server signs out both browsers and logs a warning about a possible stolen cookie in the server log.
+- Creating or rotating an access token now asks you to sign in again first, so a copied browser profile cannot mint long-lived tokens.
+- `redoor remote login` and `create-token` now sign in through the browser: the CLI prints a URL and a code that you approve in a signed-in browser. This also works on OIDC-only servers. `--password-stdin` is gone; scripts should use a token created in the browser and passed in `REDOOR_REMOTE_TOKEN`. Existing tokens keep working.
+- Choose how long the vault stays unlocked: 15 minutes (default), 1 hour, 24 hours, 1 week or no idle lock. The lock is enforced by the server, so it holds even with no redoor tab open and a copied browser profile cannot open the vault. Each browser unlocks the vault once more after the upgrade.
+- Editor selection actions (clipboard, search, AI reference) moved into a right-click menu, and find is also in the editor's "..." menu for phones. Mod+Shift+S opens the selection search. The terminal's context menu is more compact, shows your platform's shortcuts and can search the selected text in the file browser.
+- Managed SSH keys in `authorized_keys` now also record when they were added.
+- Log lines about refused agents and sign-ins show the client address from `X-Forwarded-For` or `X-Real-IP` next to the peer address when redoor runs behind a reverse proxy.
+
+### Fixes
+
+- Command replies and other control messages stay responsive during heavy transfers on slow links.
+- The delete confirmation dialog is wider on desktop, so long paths no longer wrap mid-name.
+- `Alt+C` toggles comments on macOS, and Mod+S no longer swallows Mod+Shift+S.
+
 ## v2.5.0
 
 _2026-11-06_
