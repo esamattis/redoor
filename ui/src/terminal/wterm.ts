@@ -105,9 +105,11 @@ function preserveOptionText(event: KeyboardEvent, terminal: WTerm): void {
         event.stopImmediatePropagation();
 
         if (event.type === "keydown") {
-            // wterm only moves its textarea to the cursor on focus, so after output scrolls it
-            // sits far up in scrollback and the native insertion scrolls the viewport there.
-            // Focusing again repositions it at the prompt before the browser inserts the text.
+            // Unpatched wterm only moves its textarea to the cursor on focus, so after output
+            // scrolls it sits far up in scrollback and the native insertion scrolls the viewport
+            // there. Focusing again repositions it at the prompt before the browser inserts the
+            // text. patches/@wterm__dom@*.patch now follows the cursor on every render; keep
+            // this until that fix is upstream (vercel-labs/wterm#245).
             terminal.focus();
         }
     }
@@ -146,7 +148,11 @@ export async function createWTerm(
 
     const core = await modules.GhosttyCore.load({
         imageStorageLimit: 0,
-        scrollbackLimit: 5000,
+        // Lines, not `scrollbackLimit` (a byte budget): a byte budget keeps only a few pages
+        // and drops whole pages at once, so history shrinks in big jumps under long output.
+        // wterm's input textarea then holds the scroll height past the shrunken buffer and
+        // leaves empty space below the prompt (vercel-labs/wterm#245).
+        scrollbackLines: 5000,
     });
 
     // No explicit cols and rows: wterm only measures the host on init when they are left
