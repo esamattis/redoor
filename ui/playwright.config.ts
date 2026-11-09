@@ -21,6 +21,13 @@ const serialSpecPattern = /\/e2e\/serial\//;
 // suite evicts the startup fixtures.
 const earlyLogSpecPattern = /\/server-logs\.spec\.ts$/;
 
+// Keeps the developer's own git config out of the spec repos: settings such as
+// `tag.gpgsign` turn a plain `git tag` into a signed tag that needs a message. Set on
+// `process.env` because every worker loads this file and the web server inherits it.
+process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+
+process.env.GIT_CONFIG_NOSYSTEM = "1";
+
 /**
  * See https://playwright.dev/docs/test-configuration.
  */

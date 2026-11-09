@@ -14,6 +14,10 @@ export default defineConfig({
             REDOOR_WEBSOCKET_STALE_CHECK_INTERVAL: "100ms",
             // Replaces the 2-5 s reconnect jitter so every server restart or dropped link reconnects quickly.
             REDOOR_RECONNECT_DELAY: "200ms",
+            // Keeps the developer's own git config out of the test repos: settings such as
+            // `tag.gpgsign` turn a plain `git tag` into a signed tag that needs a message.
+            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_NOSYSTEM: "1",
         },
         hookTimeout: 10000,
         testTimeout: 10000,
