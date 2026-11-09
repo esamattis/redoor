@@ -2,7 +2,11 @@ allowBuilds:
   esbuild: true
 patchedDependencies:
   '@replit/codemirror-vim-core@0.1.0': patches/@replit__codemirror-vim-core@0.1.0.patch
-  '@wterm/dom@0.5.9': patches/@wterm__dom@0.5.9.patch
+  '@wterm/dom@0.5.10': patches/@wterm__dom@0.5.10.patch
 overrides:
   # @tailwindcss/typography pins 6.0.10 exactly, which is vulnerable to GHSA-rj75-hqrm-r3gf
   postcss-selector-parser@<6.1.5: ^6.1.5
+minimumReleaseAgeExclude:
+  - '@wterm/core@0.5.10'
+  - '@wterm/dom@0.5.10'
+  - '@wterm/ghostty@0.5.10'
