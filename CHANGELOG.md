@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.3
+
+_2026-11-09_
+
+### Fixes
+
+- Upgrade the browser terminal emulator to wterm 0.5.10 for the latest upstream terminal fixes.
+
 ## v2.7.2
 
 _2026-11-08_
