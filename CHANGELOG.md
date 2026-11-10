@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.8.0
+
+_2026-11-10_
+
+### Breaking changes
+
+- The agent protocol is now `redoor.v7`. Upgrade every agent together with the server; agents using `redoor.v6` cannot connect until upgraded. Clients reading raw exec NDJSON, including `redoor remote exec --json`, must decode output event `data` as base64 instead of an array of byte values.
+
+### Features
+
+- MCP foreground commands return readable stdout, stderr and the exit status directly, and other tools include their actual results in text responses. Retained command output keeps both the beginning and the latest output, so errors at the end remain available.
+
+### Fixes
+
+- Directory downloads, Git exports, uploads and device-to-device copies transfer data more efficiently, especially on high-latency links and memory-constrained devices.
+- MCP command output recovers safely after server crashes, discarding unreadable records and reclaiming unused spool storage.
+- `redoor update` restarts servers and agents on macOS after an upgrade.
+- Copying an editor file reference includes whole selected lines, and copies the cursor's line when nothing is selected.
+
 ## v2.7.3
 
 _2026-11-09_
