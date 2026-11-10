@@ -321,7 +321,8 @@ impl UploadDriver {
 /// Destination recorded for one routed upload, used in delivery diagnostics.
 struct UploadRoute {
     serial: u64,
-    path: String,
+    /// Shared so routing a frame clones a pointer, not the path; only warnings read it.
+    path: Arc<str>,
     /// Never awaited by the socket reader; the server's credit bounds what it may hold.
     chunks: mpsc::Sender<StreamChunk>,
 }
@@ -368,7 +369,7 @@ impl UploadRoutes {
             request_id,
             UploadRoute {
                 serial,
-                path: path.to_string(),
+                path: Arc::from(path),
                 chunks,
             },
         );
