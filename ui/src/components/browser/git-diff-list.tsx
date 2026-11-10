@@ -2,19 +2,16 @@ import React from "react";
 import { Link } from "@tanstack/react-router";
 import { useSetAtom } from "jotai";
 import {
-    Check,
     ChevronDown,
     ChevronRight,
     ChevronsDownUp,
     ChevronsUpDown,
-    Copy,
 } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
-import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
 import { ClearableInput } from "#ui/components/clearable-input";
-import { useCopyFeedback } from "#ui/components/copyable-code-row";
+import { CopyPathMenu } from "#ui/components/copy-path-menu";
 import { IconButton } from "#ui/components/icon-button";
 import {
     DiffLayoutSwitch,
@@ -364,61 +361,6 @@ function splitRelativePath(relativePath: string) {
 }
 
 /**
- * Copies a diff file's name in the form the next step needs: the bare name for a search, the
- * repository path for Git commands and reviews, or the absolute path for a shell on the agent.
- * The menu closes on a pick, so the trigger itself shows that the copy landed.
- */
-function GitDiffCopyPathMenu(props: { file: GitDiffListFile; name: string }) {
-    const { isCopied, copy } = useCopyFeedback(props.file.path);
-
-    const options = [
-        { label: "Copy file name", value: props.name },
-        { label: "Copy repository path", value: props.file.relativePath },
-        { label: "Copy absolute path", value: props.file.path },
-    ];
-
-    return (
-        <ActionMenu
-            variant="icon"
-            label="Copy path"
-            triggerAriaLabel={
-                isCopied ? "Copied!" : `Copy path of ${props.file.relativePath}`
-            }
-            closeAriaLabel="Close copy path menu"
-            tooltip={isCopied ? "Copied!" : "Copy file name or path"}
-            icon={
-                isCopied ? (
-                    <Check className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                    <Copy className="h-4 w-4" aria-hidden="true" />
-                )
-            }
-            className={cn("h-7 w-7", isCopied && "text-emerald-300")}
-        >
-            {(close) =>
-                options.map((option) => (
-                    <ActionMenuButton
-                        key={option.label}
-                        onClick={() => {
-                            close();
-                            void copy(option.value);
-                        }}
-                    >
-                        {/* The value is shown so the reader knows which form each option copies. */}
-                        <span className="flex min-w-0 flex-col">
-                            <span>{option.label}</span>
-                            <span className="break-all font-mono text-xs font-normal text-slate-500">
-                                {option.value}
-                            </span>
-                        </span>
-                    </ActionMenuButton>
-                ))
-            }
-        </ActionMenu>
-    );
-}
-
-/**
  * One file's diff card, the only way the app shows a diff, so the switches mean the same
  * everywhere. Its header sticks to the top of the viewport while the patch scrolls under it,
  * so a long patch never leaves the reader guessing which file it belongs to. The section
@@ -592,7 +534,13 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
                         />
                     )}
                     {link === null ? null : (
-                        <GitDiffCopyPathMenu file={file} name={parts.name} />
+                        <CopyPathMenu
+                            path={file.path}
+                            repositoryPath={file.relativePath}
+                            triggerAriaLabel={`Copy path of ${file.relativePath}`}
+                            tooltip="Copy file name or path"
+                            className="h-7 w-7"
+                        />
                     )}
                     {/* A collapsed file shows no patch, so it has no layout or wrapping to switch. */}
                     {collapsed ? null : (

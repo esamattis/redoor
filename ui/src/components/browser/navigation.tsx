@@ -1,4 +1,5 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
     ArrowLeft,
@@ -23,6 +24,7 @@ import { shortCommitId } from "#ui/components/browser/git-parts";
 import { useViewToolbarSlotRef } from "#ui/components/browser/view-toolbar-slot";
 import type { PathLoadError } from "#ui/components/browser/utils";
 import { browserRoute } from "#ui/browser-route";
+import { gitContextQueryOptions } from "#ui/queries";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";
 import { cn } from "#ui/utils/cn";
@@ -66,6 +68,15 @@ function BrowserPageHeader(props: {
     const navigate = useNavigate();
     const setToolbarSlot = useViewToolbarSlotRef();
 
+    // The route loader already fetched the path's Git context, so this only reads the cache.
+    const repositoryRoot = useQuery({
+        ...gitContextQueryOptions(props.agent, props.path),
+        select: (context) =>
+            context.status === "inside_worktree"
+                ? context.repository_root
+                : null,
+    }).data;
+
     return (
         <header>
             <div className="mb-2 flex min-w-0 items-center gap-1">
@@ -95,6 +106,7 @@ function BrowserPageHeader(props: {
                         key={`${props.path}:${props.startEditingPath === true}`}
                         path={props.path}
                         home={props.agent.cwd}
+                        repositoryRoot={repositoryRoot ?? null}
                         startEditing={props.startEditingPath}
                         renderLink={(link) => (
                             <Link

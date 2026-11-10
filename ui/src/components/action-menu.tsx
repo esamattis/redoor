@@ -21,6 +21,8 @@ export function ActionMenu(props: {
     tooltip?: React.ReactNode;
     disabled?: boolean;
     className?: string;
+    /** Resizes the menu panel, for menus whose items need more room than the default. */
+    panelClassName?: string;
     isOpen?: boolean;
     onOpenChange?: (isOpen: boolean) => void;
     children: (close: () => void) => React.ReactNode;
@@ -87,6 +89,7 @@ export function ActionMenu(props: {
                     `Close ${props.label.toLowerCase()} menu`
                 }
                 anchorRef={triggerRef}
+                anchoredPanelClassName={props.panelClassName}
                 onClose={close}
             >
                 <div className="mt-2 grid grid-cols-1 gap-1">

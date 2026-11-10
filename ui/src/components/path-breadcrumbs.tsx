@@ -1,7 +1,10 @@
 import React from "react";
-import { Check, Copy, Pencil } from "lucide-react";
+import { Check, Pencil } from "lucide-react";
 
-import { useCopyFeedback } from "#ui/components/copyable-code-row";
+import {
+    CopyPathMenu,
+    repositoryRelativePath,
+} from "#ui/components/copy-path-menu";
 import { IconButton } from "#ui/components/icon-button";
 import { InputControl } from "#ui/components/input-control";
 import { expandHomePath } from "#ui/utils/path";
@@ -64,6 +67,8 @@ export function PathBreadcrumbs(props: {
     /** Opens the path editor immediately so a missing path can be corrected in place. */
     startEditing?: boolean;
     labels?: PathBreadcrumbLabels;
+    /** The repository the path is in, so the copy menu offers its repository path too. */
+    repositoryRoot?: string | null;
 }) {
     const labels = props.labels ?? defaultLabels;
     const pathInputRef = React.useRef<HTMLInputElement>(null);
@@ -74,7 +79,6 @@ export function PathBreadcrumbs(props: {
     );
 
     const [editedPath, setEditedPath] = React.useState(props.path);
-    const { isCopied, copy } = useCopyFeedback(props.path);
 
     const parts = props.path.split("/").filter((part) => part !== "");
     const isAtRoot = parts.length === 0;
@@ -246,27 +250,19 @@ export function PathBreadcrumbs(props: {
                     );
                 })}
             </nav>
-            <IconButton
-                type="button"
-                onClick={() => {
-                    void copy();
-                }}
-                label={isCopied ? "Copied!" : labels.copy}
-                tooltip={labels.copy}
-                variant="ghost"
-                size="sm"
-                className={
-                    isCopied
-                        ? "shrink-0 text-emerald-300 hover:bg-transparent hover:text-emerald-300"
-                        : "shrink-0 text-slate-500"
-                }
-            >
-                {isCopied ? (
-                    <Check className="h-3.5 w-3.5" />
-                ) : (
-                    <Copy className="h-3.5 w-3.5" />
+            <CopyPathMenu
+                path={props.path}
+                repositoryPath={repositoryRelativePath(
+                    props.path,
+                    props.repositoryRoot ?? null,
                 )}
-            </IconButton>
+                // The breadcrumbs may name a directory, so "file name" would not always fit.
+                nameLabel="Copy name"
+                triggerAriaLabel={labels.copy}
+                tooltip={labels.copy}
+                className="h-7 w-7 text-slate-500"
+                iconClassName="h-3.5 w-3.5"
+            />
             <IconButton
                 type="button"
                 onClick={startEditing}

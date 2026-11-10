@@ -682,6 +682,7 @@ function SearchScope(props: {
                 key={props.directory}
                 path={props.directory}
                 home={props.agent.cwd}
+                repositoryRoot={props.gitRoot}
                 labels={{
                     navigation: "Search folder",
                     input: "Search folder path",

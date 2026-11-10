@@ -895,19 +895,33 @@ test.describe.serial("File Browser Navigation", () => {
         await copyButton.hover();
         // Tooltip names the adjacent path action without replacing the edit control.
         await expect(page.getByRole("tooltip")).toHaveText("Copy file path");
-        await copyButton.click();
 
-        // Clipboard must receive the same filesystem path shown in breadcrumbs.
-        await expect
-            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
-            .toBe(ctx.testDirPath);
-        // Inline button feedback confirms the async clipboard write completed.
-        await expect(
-            page.getByRole("button", { name: "Copied!" }),
-        ).toBeVisible();
-        await page.getByRole("button", { name: "Copied!" }).hover();
-        // After success, the tooltip still names the next click rather than Copied.
-        await expect(page.getByRole("tooltip")).toHaveText("Copy file path");
+        const options = [
+            {
+                name: "Copy name",
+                value: path.basename(ctx.testDirPath),
+            },
+            { name: "Copy absolute path", value: ctx.testDirPath },
+        ];
+
+        for (const option of options) {
+            await page
+                .getByRole("button", { name: /^(Copy file path|Copied!)$/ })
+                .click();
+            const menu = page.getByRole("dialog", { name: "Copy path" });
+            // Each option shows the value it copies, so the reader can tell the forms apart.
+            await expect(menu).toContainText(option.value);
+            await menu.getByRole("button", { name: option.name }).click();
+
+            // Each option puts its own form of the breadcrumb path on the clipboard.
+            await expect
+                .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+                .toBe(option.value);
+            // The menu closes on a pick, so the trigger confirms the async copy finished.
+            await expect(
+                page.getByRole("button", { name: "Copied!" }),
+            ).toBeVisible();
+        }
     });
 
     test("should navigate by editing the breadcrumb path", async ({ page }) => {
