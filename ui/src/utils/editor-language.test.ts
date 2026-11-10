@@ -42,6 +42,14 @@ print('hello')`,
         expect(extension).toBeUndefined();
     });
 
+    test.each(["nginx.conf.j2", "page.jinja", "page.JINJA2"])(
+        "highlights %s as a Jinja template",
+        (fileName) => {
+            // Templates are named by their Jinja extension, whatever they render to.
+            expect(syntaxLanguageFromFileName(fileName)).toBe("jinja");
+        },
+    );
+
     test.each(["notes.md", "notes.markdown"])(
         "highlights %s as markdown with fenced code languages",
         (fileName) => {

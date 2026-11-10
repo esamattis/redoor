@@ -5,6 +5,7 @@ import { go } from "@codemirror/lang-go";
 import { html } from "@codemirror/lang-html";
 import { java } from "@codemirror/lang-java";
 import { javascript } from "@codemirror/lang-javascript";
+import { jinja } from "@codemirror/lang-jinja";
 import { json } from "@codemirror/lang-json";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { python } from "@codemirror/lang-python";
@@ -33,6 +34,7 @@ export type SupportedSyntaxLanguage =
     | "html"
     | "java"
     | "javascript"
+    | "jinja"
     | "json"
     | "jsx"
     | "lua"
@@ -106,6 +108,8 @@ export function syntaxLanguageSupport(
             return javascript({ typescript: true, jsx: true });
         case "go":
             return go();
+        case "jinja":
+            return jinja();
         case "html":
             return html();
         case "yaml":
@@ -150,6 +154,7 @@ const SYNTAX_LANGUAGE_NAMES = new Map<string, SupportedSyntaxLanguage>([
     ["csharp", "csharp"],
     ["golang", "go"],
     ["javascript", "javascript"],
+    ["jinja2", "jinja"],
     ["perl", "perl"],
     ["properties", "properties"],
     ["python", "python"],
@@ -235,6 +240,10 @@ export function syntaxLanguageFromFileName(
             return "yaml";
         case "toml":
             return "toml";
+        case "j2":
+        case "jinja":
+        case "jinja2":
+            return "jinja";
         case "json":
             return "json";
         case "jsonc":
