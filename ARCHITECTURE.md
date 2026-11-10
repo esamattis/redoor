@@ -245,7 +245,10 @@ downloader, which renames the new binary over the old path so running processes 
 old image. Roles restart themselves on `SIGUSR2` by re-executing in place, which keeps their
 PID, arguments and supervisor. The upgrade finds the processes running the replaced path,
 signals all of them before waiting, and uses a detached helper when it runs inside a process
-it is about to restart. Managed daemons are upgraded by the next ensure step after a server
+it is about to restart. Because the signal kills a process that does not catch it, only
+processes known to catch it are signalled: on Linux the kernel's caught-signal mask says so,
+while macOS exposes no such mask, so there the command line must name a server, standalone
+agent or relay rather than a CLI command. Managed daemons are upgraded by the next ensure step after a server
 with a different binary starts or adopts them. Standalone agents can be upgraded from the
 server as a background job that streams the binary to them.
 

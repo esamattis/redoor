@@ -4,7 +4,8 @@
 //! arguments, environment, working directory, terminal and supervisor, so nothing has to
 //! reconstruct how it was started and systemd or launchd simply keep tracking it. Builds from
 //! before that signal existed would be killed by it, so they are only reported for a manual
-//! restart.
+//! restart. On Linux the kernel tells which processes catch the signal; macOS does not, so
+//! there the command line decides which processes are the long-lived roles that catch it.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
@@ -66,7 +67,7 @@ impl Restarter {
                 pid: snapshot.pid,
                 hosts_caller: ancestors.contains(&snapshot.pid),
                 launchd_label: snapshot.launchd_label(),
-                reexecs: snapshot.pid.catches_reexec().await,
+                reexecs: snapshot.catches_reexec().await,
                 command: snapshot.command,
             });
         }
@@ -180,6 +181,8 @@ struct ProcessSnapshot {
     exe: Option<PathBuf>,
     /// Command line shown to the operator.
     command: String,
+    /// Arguments after `argv[0]`, used on macOS to tell the long-lived roles from CLI commands.
+    args: Vec<String>,
     /// Environment, used to recognize managed agents and launchd jobs.
     environ: Vec<OsString>,
 }
@@ -226,6 +229,12 @@ impl ProcessSnapshot {
                     .map(|argument| argument.to_string_lossy())
                     .collect::<Vec<_>>()
                     .join(" "),
+                args: process
+                    .cmd()
+                    .iter()
+                    .skip(1)
+                    .map(|argument| argument.to_string_lossy().into_owned())
+                    .collect(),
                 environ: process.environ().to_vec(),
             })
             .collect()
@@ -253,6 +262,38 @@ impl ProcessSnapshot {
         self.exe
             .clone()
             .is_some_and(|exe| crate::executable::without_replaced_suffix(exe) == binary)
+    }
+
+    /// Whether the process catches the re-exec signal, i.e. is a role of a current build.
+    ///
+    /// Sending it to any other process would terminate that process. macOS reports an empty
+    /// caught-signal mask for every process, so there the command line stands in for it: every
+    /// build since the signal was introduced (v1.4.0) catches it in its long-lived roles.
+    async fn catches_reexec(&self) -> bool {
+        if cfg!(target_os = "macos") {
+            self.is_long_lived_role()
+        } else {
+            self.pid.catches_reexec().await
+        }
+    }
+
+    /// Whether the command line starts a server, standalone agent or relay rather than a CLI
+    /// command such as `redoor remote`, `redoor upgrade` or `redoor agent logs`.
+    ///
+    /// Any token naming a utility subcommand rules the process out. A flag value that happens
+    /// to equal one only leaves that role for a manual restart, which is the safe direction:
+    /// signalling a CLI command would kill it.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    fn is_long_lived_role(&self) -> bool {
+        const UTILITIES: [&str; 9] = [
+            "remote", "upgrade", "update", "stop", "status", "logs", "systemd", "launchd", "ls",
+        ];
+        let tokens = || self.args.iter().map(String::as_str);
+        tokens().any(|token| token == "server" || token == "agent")
+            && !tokens().any(|token| UTILITIES.contains(&token) || token == "managed")
+            && !tokens().any(|token| {
+                token == "--help" || token == "-h" || token == "--version" || token == "-V"
+            })
     }
 
     /// Whether a server or relay launched this agent and therefore restarts it.
@@ -305,20 +346,12 @@ impl ProcessId {
         Self::parse_caught_signals(&status)
     }
 
-    /// The mask of signals the process handles, from `ps` on macOS.
+    /// macOS has no source for another process's caught signals: `ps -o caught` reads a
+    /// kernel field that is always empty. [`ProcessSnapshot::catches_reexec`] uses the
+    /// command line there instead.
     #[cfg(target_os = "macos")]
     async fn caught_signals(self) -> Option<u64> {
-        let output = tokio::process::Command::new("ps")
-            .args(["-o", "caught=", "-p", &self.0.to_string()])
-            .output()
-            .await
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let mask = String::from_utf8_lossy(&output.stdout);
-        let mask = mask.trim();
-        u64::from_str_radix(mask.strip_prefix("0x").unwrap_or(mask), 16).ok()
+        None
     }
 
     /// Extracts the `SigCgt` hex mask from a `/proc/<pid>/status` document.
@@ -395,7 +428,44 @@ mod tests {
             parent: parent.map(ProcessId),
             exe: None,
             command: String::new(),
+            args: Vec::new(),
             environ: Vec::new(),
+        }
+    }
+
+    /// Builds a snapshot whose command line is `redoor` followed by `args`.
+    fn with_args(args: &[&str]) -> ProcessSnapshot {
+        let mut process = snapshot(1, None);
+        process.args = args.iter().map(|arg| arg.to_string()).collect();
+        process
+    }
+
+    /// macOS picks the processes to signal by command line, so CLI commands must never match.
+    #[test]
+    fn tells_long_lived_roles_from_cli_commands() {
+        let roles: [&[&str]; 4] = [
+            &["server", "--config", "/etc/redoor.toml"],
+            &["agent", "--config", "/etc/redoor.toml"],
+            &["--app-name", "dev", "agent"],
+            &["agent", "relay", "start", "production"],
+        ];
+        for args in roles {
+            // These catch the re-exec signal and are restarted by it.
+            assert!(with_args(args).is_long_lived_role(), "{args:?}");
+        }
+        let commands: [&[&str]; 8] = [
+            &["remote", "--server", "https://redoor", "exec", "agent"],
+            &["upgrade"],
+            &["update", "--restart-pids", "1,2"],
+            &["agent", "logs", "-f"],
+            &["server", "launchd", "install"],
+            &["agent", "relay", "ls"],
+            &["agent", "managed"],
+            &["server", "--help"],
+        ];
+        for args in commands {
+            // These do not catch the signal, so sending it would kill them.
+            assert!(!with_args(args).is_long_lived_role(), "{args:?}");
         }
     }
 
