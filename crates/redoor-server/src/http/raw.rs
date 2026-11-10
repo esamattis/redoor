@@ -271,7 +271,12 @@ pub(crate) async fn stream_directory_archive(
     // Gzip only the HTTP body: agent still emits plain tar for reuse by copy uploads.
     let tar_reader = tokio_util::io::StreamReader::new(output);
     let gzip_reader = async_compression::tokio::bufread::GzipEncoder::new(tar_reader);
-    let gzipped_stream = tokio_util::io::ReaderStream::new(gzip_reader);
+    // The default 4 KiB read buffer would cut the archive into many tiny body chunks; one
+    // stream chunk per read matches the frames the agent sends.
+    let gzipped_stream = tokio_util::io::ReaderStream::with_capacity(
+        gzip_reader,
+        redoor_protocol::wire::stream::CHUNK_SIZE,
+    );
 
     let leaf_name = path.split('/').next_back().filter(|name| !name.is_empty());
     let archive_name = match leaf_name {
