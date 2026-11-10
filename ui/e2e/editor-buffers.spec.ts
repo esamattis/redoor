@@ -217,4 +217,60 @@ test.describe.serial("Unsaved editor buffers", () => {
             .poll(() => storedDocument(filePath))
             .toBe("device rewrote this");
     });
+
+    test("discards unsaved edits from the toolbar after confirming, also on reload", async ({
+        page,
+    }) => {
+        const filePath = path.join(ctx.testDirPath, "buffer-discarded.txt");
+        await fs.writeFile(filePath, "device text");
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`;
+        const editor = page.getByLabel("File editor", { exact: true });
+
+        const discardButton = page.getByRole("button", {
+            name: "Discard changes",
+            exact: true,
+        });
+
+        const confirmation = page.getByRole("dialog", {
+            name: "Discard unsaved changes?",
+        });
+
+        await page.goto(fileUrl);
+        await expect(editor).toHaveText("device text");
+        // A clean buffer has nothing to discard.
+        await expect(discardButton).toBeDisabled();
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+End");
+        await page.keyboard.type(" draft");
+        await expect
+            .poll(() => storedDocument(filePath))
+            .toBe("device text draft");
+
+        await discardButton.click();
+        await confirmation.getByRole("button", { name: "Cancel" }).click();
+        // Cancelling keeps the edits, since discarding cannot be undone.
+        await expect(confirmation).toBeHidden();
+        await expect(editor).toHaveText("device text draft");
+
+        await discardButton.click();
+        await confirmation
+            .getByRole("button", { name: "Discard changes" })
+            .click();
+        // The editor reverts to the device text and has nothing left to save.
+        await expect(editor).toHaveText("device text");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeDisabled();
+        await expect(discardButton).toBeDisabled();
+        // The stored copy is replaced too, so the draft cannot come back on another computer.
+        await expect.poll(() => storedDocument(filePath)).toBe("device text");
+
+        await page.reload();
+        // A reload does not bring the discarded edits back.
+        await expect(editor).toHaveText("device text");
+        await expect(discardButton).toBeDisabled();
+        // The device file was never written.
+        expect(await fs.readFile(filePath, "utf8")).toBe("device text");
+    });
 });

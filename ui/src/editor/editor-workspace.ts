@@ -573,6 +573,23 @@ export class EditorWorkspace extends ExternalStore<
     }
 
     /**
+     * The editor's "Discard changes" action: throws away unsaved edits for the newest device
+     * text this tab has seen, which is also the conflicting text when the device changed
+     * under the edits. The file stays open, so its clean copy is written right away instead
+     * of after the debounce, or a reload right after would bring the discarded edits back.
+     */
+    discardToDevice(key: string) {
+        const buffer = this.buffers.get(key);
+
+        if (buffer === undefined) {
+            return;
+        }
+
+        this.discard(key, buffer.device.toString());
+        this.schedule(key, 0);
+    }
+
+    /**
      * Closes a file: its stored copy is deleted (after any write still in flight), its edits
      * are discarded, and a buffer on screen stays as a clean preview while others are
      * dropped. The server also deletes copies of files missing from the open files list.

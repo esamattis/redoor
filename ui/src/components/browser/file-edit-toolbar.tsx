@@ -15,6 +15,7 @@ import {
     Save,
     ScanText,
     Trash2,
+    Undo2,
 } from "lucide-react";
 import { useAtom } from "jotai";
 import type { Agent } from "#ui/api-client";
@@ -70,6 +71,8 @@ function FileEditActions(props: {
     preview?: boolean;
     previewKind: FilePreviewKind | null;
     onSave: () => void;
+    /** Asks before throwing away the unsaved edits, so the toolbar only opens the dialog. */
+    onDiscard: () => void;
     onPreviewChange?: (preview: boolean) => void;
 }) {
     const showsPreviewToggle =
@@ -112,6 +115,23 @@ function FileEditActions(props: {
                 >
                     <Save className="h-4 w-4" aria-hidden="true" />
                 </Button>
+            )}
+            {/* Beside Save, as its counterpart. A closed file's edits are discarded too, but
+                discarding keeps the file open. */}
+            {props.readOnly ? null : (
+                <IconButton
+                    type="button"
+                    label="Discard changes"
+                    tooltip="Discard unsaved changes and revert to the device version"
+                    variant="ghost"
+                    onClick={props.onDiscard}
+                    disabled={
+                        !props.canEdit || !props.isDirty || props.isSaving
+                    }
+                    className={toolbarButtonClassName}
+                >
+                    <Undo2 className="h-4 w-4" aria-hidden="true" />
+                </IconButton>
             )}
             {props.executable ? (
                 <RunInTerminalButton
@@ -417,6 +437,7 @@ export function FileEditHeader(props: {
     downloadUrl: string | null;
     isFullWindow: boolean;
     onSave: () => void;
+    onDiscard: () => void;
     /** Opens the editor's find panel; null while there is no editor to search. */
     onFindInFile: (() => void) | null;
     /** Searches the selection from the file's directory; null without a searchable one. */
@@ -466,6 +487,7 @@ export function FileEditHeader(props: {
                             preview={props.preview}
                             previewKind={props.previewKind}
                             onSave={props.onSave}
+                            onDiscard={props.onDiscard}
                             onPreviewChange={props.onPreviewChange}
                         />
                         {props.isFullWindow ? (

@@ -9,6 +9,7 @@ import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { Button } from "#ui/components/button";
+import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { useKeepFileOpen } from "#ui/components/browser/open-file-actions";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
@@ -745,6 +746,94 @@ function FileEditBanners(props: {
 }
 
 /**
+ * Saving and reloading share their in-flight guards, since a reload that overlaps a save
+ * would bring back the old device text as if the device had changed it.
+ */
+function useSaveAndReload(props: {
+    buffer: ReturnType<typeof useFileBuffer>;
+    /** Whether the text loaded and is the working file, which both actions need. */
+    canEdit: boolean;
+}) {
+    const buffer = props.buffer;
+    const canEdit = props.canEdit;
+    const contentQuery = buffer.contentQuery;
+    const saveMutation = buffer.saveMutation;
+    const isDirty = buffer.isDirty;
+    const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
+    const isSavingRef = React.useRef(false);
+
+    // Fetches the device text and the server copy. Neither replaces unsaved edits: a dirty
+    // buffer only reports a conflict, and a newer server copy is adopted only when clean.
+    const reloadFile = React.useCallback(() => {
+        // `:w` refocuses the editor in the same tick it starts saving, before isPending renders.
+        if (
+            !canEdit ||
+            saveMutation.isPending ||
+            isSavingRef.current ||
+            reloadPromiseRef.current
+        ) {
+            return;
+        }
+
+        const reloadPromise = Promise.all([
+            contentQuery.refetch({ cancelRefetch: false }),
+            buffer.storedQuery.refetch({ cancelRefetch: false }),
+        ]).finally(() => {
+            reloadPromiseRef.current = null;
+        });
+
+        reloadPromiseRef.current = reloadPromise;
+    }, [buffer.storedQuery, canEdit, contentQuery, saveMutation.isPending]);
+
+    const handleSave = React.useCallback(() => {
+        if (!canEdit || saveMutation.isPending || !isDirty) {
+            return;
+        }
+
+        isSavingRef.current = true;
+        saveMutation.mutate(buffer.editor.text(buffer.bufferKey), {
+            onSettled: () => {
+                isSavingRef.current = false;
+            },
+        });
+    }, [buffer.bufferKey, buffer.editor, canEdit, isDirty, saveMutation]);
+
+    return { reloadFile, handleSave };
+}
+
+/**
+ * The editor toolbar's "Discard changes": asks first, since the edits are gone for good, and
+ * then reverts the buffer to the device text, which also replaces the stored copy so the
+ * edits do not come back on a reload.
+ */
+function useDiscardChanges(props: {
+    buffer: ReturnType<typeof useFileBuffer>;
+    fileName: string;
+    deviceName: string;
+}) {
+    const [isOpen, setIsOpen] = React.useState(false);
+    const buffer = props.buffer;
+
+    const dialog = (
+        <ConfirmationDialog
+            isOpen={isOpen}
+            title="Discard unsaved changes?"
+            description={`Your unsaved changes to ${props.fileName} are lost and the editor reverts to the version on ${props.deviceName}. This cannot be undone.`}
+            confirmLabel="Discard changes"
+            onClose={() => setIsOpen(false)}
+            onConfirm={() => {
+                setIsOpen(false);
+                buffer.editor.discardToDevice(buffer.bufferKey);
+                // The status line would otherwise report an earlier save as the last action.
+                buffer.saveMutation.reset();
+            }}
+        />
+    );
+
+    return { open: () => setIsOpen(true), dialog };
+}
+
+/**
  * Edits file contents in a viewport-bounded CodeMirror with explicit save and reload.
  * scrollToLine is inbound-only so a ?line= URL can move the caret without writing back.
  * There is no unsaved-changes prompt on leaving: an edited file is open, and its buffer is
@@ -770,9 +859,6 @@ export function FileEditView(props: FileEditViewProps) {
     const contentQuery = buffer.contentQuery;
     const saveMutation = buffer.saveMutation;
     const isDirty = buffer.isDirty;
-
-    const reloadPromiseRef = React.useRef<Promise<unknown> | null>(null);
-    const isSavingRef = React.useRef(false);
 
     // Viewing a file does not open it; the first change away from the device text or a double
     // click in the editor does.
@@ -813,43 +899,14 @@ export function FileEditView(props: FileEditViewProps) {
         path: props.filePath,
     });
 
-    // Fetches the device text and the server copy. Neither replaces unsaved edits: a dirty
-    // buffer only reports a conflict, and a newer server copy is adopted only when clean.
-    const reloadFile = React.useCallback(() => {
-        // `:w` refocuses the editor in the same tick it starts saving, before isPending renders.
-        if (
-            !canEdit ||
-            saveMutation.isPending ||
-            isSavingRef.current ||
-            reloadPromiseRef.current
-        ) {
-            return;
-        }
-
-        const reloadPromise = Promise.all([
-            contentQuery.refetch({ cancelRefetch: false }),
-            buffer.storedQuery.refetch({ cancelRefetch: false }),
-        ]).finally(() => {
-            reloadPromiseRef.current = null;
-        });
-
-        reloadPromiseRef.current = reloadPromise;
-    }, [buffer.storedQuery, canEdit, contentQuery, saveMutation.isPending]);
-
-    const handleSave = React.useCallback(() => {
-        if (!canEdit || saveMutation.isPending || !isDirty) {
-            return;
-        }
-
-        isSavingRef.current = true;
-        saveMutation.mutate(buffer.editor.text(buffer.bufferKey), {
-            onSettled: () => {
-                isSavingRef.current = false;
-            },
-        });
-    }, [buffer.bufferKey, buffer.editor, canEdit, isDirty, saveMutation]);
-
+    const { reloadFile, handleSave } = useSaveAndReload({ buffer, canEdit });
     useFileSaveShortcut(handleSave);
+
+    const discardChanges = useDiscardChanges({
+        buffer,
+        fileName: props.fileName,
+        deviceName: props.agent.name,
+    });
 
     const search = useEditorSearchActions({
         filePath: props.filePath,
@@ -900,6 +957,7 @@ export function FileEditView(props: FileEditViewProps) {
                     downloadUrl={props.downloadUrl}
                     isFullWindow={fullWindow.isFullWindow}
                     onSave={handleSave}
+                    onDiscard={discardChanges.open}
                     onFindInFile={search.findInFile}
                     onSearchDirectory={search.searchSelection}
                     onPreviewChange={previewControls.setPreview}
@@ -972,6 +1030,7 @@ export function FileEditView(props: FileEditViewProps) {
                     )}
                 </div>
             </article>
+            {discardChanges.dialog}
             {deleteConfirmationOpen ? (
                 <EditorDeleteDialog
                     agent={props.agent}

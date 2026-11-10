@@ -412,6 +412,30 @@ test("closing a file discards its edits and deletes its stored copy", async () =
     expect(api.writes).toHaveLength(1);
 });
 
+test("discarding changes reverts to the device text and writes the clean copy at once", async () => {
+    const api = new FakeBufferApi();
+    const { workspace, view } = await syncedFile(api);
+    view.dispatch({ changes: { from: 0, insert: "draft " } });
+    await vi.advanceTimersByTimeAsync(5000);
+    // The draft reached the server, which is what a reload would restore.
+    expect(api.read("a")?.data.dirty).toBe(true);
+
+    workspace.discardToDevice("a");
+    // The buffer shows the device text again and has nothing to save.
+    expect(view.state.doc.toString()).toBe("base text");
+    expect(workspace.isDirty("a")).toBe(false);
+    // The discarded edits cannot come back through undo.
+    expect(undoDepth(view.state)).toBe(0);
+
+    await vi.advanceTimersByTimeAsync(0);
+    // The clean copy replaces the draft without waiting for the debounce, so a reload right
+    // after does not restore the discarded edits.
+    expect(api.read("a")?.data.dirty).toBe(false);
+    expect(api.read("a")?.data.state.doc).toBe("base text");
+    // The file stays open, so its stored copy is rewritten rather than deleted.
+    expect(api.deletes).toEqual([]);
+});
+
 test("discarding tells the chrome about the replaced state, since setState emits no update", () => {
     const { workspace } = createWorkspace();
     const replaced: EditorState[] = [];
