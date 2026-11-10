@@ -46,7 +46,10 @@ import { useBrowserLocation } from "#ui/use-browser-location";
 import { useBeginServerRestart } from "#ui/use-server-restart";
 import { cn } from "#ui/utils/cn";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
-import { useCloseOpenFiles } from "#ui/components/browser/open-file-actions";
+import {
+    isOpenFileShown,
+    useCloseOpenFiles,
+} from "#ui/components/browser/open-file-actions";
 import { formatKeyChord } from "#ui/utils/keyboard";
 import {
     changedFilesOutlineAtom,
@@ -696,6 +699,12 @@ function OpenFiles(props: { isCompact: boolean }) {
     const openFiles = userState.openFiles;
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const closer = useCloseOpenFiles();
+    const browser = useBrowserLocation();
+
+    // Clear keeps the file on screen, since the user is still working on it.
+    const clearable = openFiles.filter(
+        (file) => !isOpenFileShown(browser, file),
+    );
 
     const move = (itemMove: { activeId: string; overId: string }) => {
         setUserState((current) => {
@@ -723,13 +732,13 @@ function OpenFiles(props: { isCompact: boolean }) {
                         </span>
                     ) : null}
                 </span>
-                {openFiles.length > 0 ? (
+                {clearable.length > 0 ? (
                     <Button
                         type="button"
                         variant="subtle"
-                        aria-label="Close all open files"
-                        tooltip="Close all open files"
-                        onClick={() => closer.requestClose(openFiles)}
+                        aria-label="Close other open files"
+                        tooltip="Close all open files except the one on screen"
+                        onClick={() => closer.requestClose(clearable)}
                         className="px-1 py-0.5 text-xs font-normal text-slate-500 hover:text-slate-200"
                     >
                         Clear
@@ -833,11 +842,7 @@ function OpenFileRow(props: {
     // Dimming tells the user before clicking that the file cannot be read right now.
     const isOffline = props.agent?.status !== "connected";
 
-    // An open file is the working file, so the same path viewed at a Git revision is not it.
-    const isActive =
-        browser?.agentId === props.file.agentId &&
-        browser.path === props.file.path &&
-        browser.revision === null;
+    const isActive = isOpenFileShown(browser, props.file);
 
     const itemId = getOpenFileKey(props.file);
 

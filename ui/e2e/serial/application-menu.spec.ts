@@ -298,7 +298,7 @@ test.describe.serial("Application menu layout", () => {
         ).toBeVisible();
         // There is nothing to clear, so the action is not offered.
         await expect(
-            navigation.getByRole("button", { name: "Close all open files" }),
+            navigation.getByRole("button", { name: "Close other open files" }),
         ).toHaveCount(0);
     });
 });

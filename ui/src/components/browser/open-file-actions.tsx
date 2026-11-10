@@ -11,7 +11,10 @@ import { editorBufferQueryOptions } from "#ui/editor/stored-buffer";
 import { queryKeys } from "#ui/queries";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { useAgents } from "#ui/use-agents";
-import { useBrowserLocation } from "#ui/use-browser-location";
+import {
+    useBrowserLocation,
+    type BrowserLocation,
+} from "#ui/use-browser-location";
 import {
     getOpenFileKey,
     isFileOpen,
@@ -29,6 +32,21 @@ import {
 } from "#ui/utils/keyboard";
 
 const rootRouteApi = getRouteApi("__root__");
+
+/**
+ * Tells whether the open file is the one on screen. An open file is the working file, so the
+ * same path viewed at a Git revision is not it.
+ */
+export function isOpenFileShown(
+    browser: BrowserLocation | null,
+    file: OpenFile,
+) {
+    return (
+        browser?.agentId === file.agentId &&
+        browser.path === file.path &&
+        browser.revision === null
+    );
+}
 
 /**
  * Opens the file without leaving it. The editor calls it on the first edit, so unsaved text
@@ -70,12 +88,7 @@ export function useCloseOpenFiles() {
 
     /** Shows the directory of the closed file on screen, if one of the files is shown. */
     const leaveClosedFile = (files: OpenFile[]) => {
-        const shown = files.find(
-            (file) =>
-                browser?.agentId === file.agentId &&
-                browser.path === file.path &&
-                browser.revision === null,
-        );
+        const shown = files.find((file) => isOpenFileShown(browser, file));
 
         const agent =
             shown === undefined

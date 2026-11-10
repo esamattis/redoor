@@ -207,10 +207,14 @@ test.describe.serial("Open files", () => {
             `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(secondPath)}`,
         );
 
+        // Clear keeps the file on screen, so leave it for the whole list to go.
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(ctx.testDirPath)}`,
+        );
         await applicationNavigation
-            .getByRole("button", { name: "Close all open files" })
+            .getByRole("button", { name: "Close other open files" })
             .click();
-        // Clear must remove the whole list, not only the open file.
+        // With no file on screen, Clear must remove the whole list.
         await expect(openFiles).toHaveCount(0);
         // The emptied section stays and says how to open files again, since they are the column's content.
         await expect(
@@ -950,6 +954,41 @@ test.describe.serial("Open files", () => {
             openFiles.getByRole("link", { name: "file2.txt", exact: true }),
         ).toBeHidden();
         await expect(page).toHaveURL(directoryUrl);
+    });
+
+    test("clears the other open files and keeps the file on screen open", async ({
+        page,
+    }) => {
+        const fileUrl = (name: string) =>
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, name))}`;
+
+        const navigation = page.getByRole("navigation", {
+            name: "Application",
+        });
+
+        const openFiles = navigation.getByRole("list", { name: "Open files" });
+
+        const clear = navigation.getByRole("button", {
+            name: "Close other open files",
+        });
+
+        await page.goto(fileUrl("file1.txt"));
+        await keepOpen(page);
+        await page.goto(fileUrl("file2.txt"));
+        await keepOpen(page);
+
+        await clear.click();
+        // Files not on screen close.
+        await expect(
+            openFiles.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeHidden();
+        // The file on screen stays open and on screen, since the user is working on it.
+        await expect(
+            openFiles.getByRole("link", { name: "file2.txt", exact: true }),
+        ).toBeVisible();
+        await expect(page).toHaveURL(fileUrl("file2.txt"));
+        // With only the shown file left there is nothing to clear.
+        await expect(clear).toBeHidden();
     });
 
     test("restores caret, selection, scroll and undo of each open file when switching", async ({
