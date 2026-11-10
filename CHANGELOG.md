@@ -1,5 +1,21 @@
 # Changelog
 
+## v2.9.0
+
+_2026-11-10_
+
+### Features
+
+- Switch between open files with Alt (Option) + j/k or the arrow keys, and close the file on screen with Alt+w. Closing the file on screen goes to its directory.
+- Discard unsaved editor changes from the toolbar while keeping the file open. Undo in the editor brings the discarded changes back, even after a reload.
+- Copy an editor reference relative to the repository root with "Copy repo reference" in the editor context menu.
+- The breadcrumbs copy menu offers the file name, the repository path and the absolute path.
+- Jinja templates (`.j2`, `.jinja`, `.jinja2`) are highlighted in the editor.
+
+### Fixes
+
+- Clear in the open files list keeps the file on screen open instead of closing it and leaving the page.
+
 ## v2.8.0
 
 _2026-11-10_
