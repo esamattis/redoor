@@ -844,7 +844,7 @@ const b = 2;`,
         await expectEditorText(editor, "const b = 2;// const a = 1;");
     });
 
-    test("should copy selected text with its file and starting line reference", async ({
+    test("should copy whole selected lines, or the cursor line, with a file and line reference", async ({
         page,
         context,
     }) => {
@@ -870,17 +870,15 @@ gamma`,
         await page.keyboard.press("ControlOrMeta+Home");
         await page.keyboard.press("ArrowDown");
         await page.keyboard.press("Home");
+        await page.keyboard.press("ArrowRight");
         await page.keyboard.press("Shift+ArrowDown");
-        await page.keyboard.press("Shift+End");
 
-        const menu = await openEditorContextMenu(page, editor);
+        let menu = await openEditorContextMenu(page, editor);
 
-        const copyReferenceButton = menu.getByRole("button", {
+        let copyReferenceButton = menu.getByRole("button", {
             name: "Copy with file reference",
         });
 
-        // A non-empty CodeMirror selection enables the reference action.
-        await expect(copyReferenceButton).toBeEnabled();
         await copyReferenceButton.hover();
         // The tooltip explains both the copied syntax and why it is useful with AI agents.
         await expect(page.getByRole("tooltip")).toHaveText(
@@ -888,7 +886,8 @@ gamma`,
         );
         await copyReferenceButton.click();
 
-        // The clipboard payload matches the path-and-line fenced format shown by the tooltip.
+        // A selection starting and ending mid-line still copies both lines in full, since the
+        // reference names whole lines.
         await expect.poll(() =>
             page.evaluate(() => navigator.clipboard.readText()),
         ).toBe(`\`\`\`${filePath}#L2
@@ -897,8 +896,27 @@ gamma
 \`\`\``);
         // Non-modal feedback confirms the asynchronous browser clipboard write completed.
         await expect(page.getByRole("status")).toHaveText(
-            "Copied selection with file reference",
+            "Copied lines with file reference",
         );
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+Home");
+        await page.keyboard.press("ArrowRight");
+        menu = await openEditorContextMenu(page, editor);
+        copyReferenceButton = menu.getByRole("button", {
+            name: "Copy with file reference",
+        });
+
+        // Without a selection the action still works, on the cursor's line.
+        await expect(copyReferenceButton).toBeEnabled();
+        await copyReferenceButton.click();
+
+        // Only the line holding the cursor is copied when nothing is selected.
+        await expect.poll(() =>
+            page.evaluate(() => navigator.clipboard.readText()),
+        ).toBe(`\`\`\`${filePath}#L1
+alpha
+\`\`\``);
     });
 
     test("should search selected editor text from the file's directory", async ({

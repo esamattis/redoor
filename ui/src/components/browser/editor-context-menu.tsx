@@ -107,21 +107,29 @@ class EditorMenuActions {
     }
 
     /**
-     * Formats the main selection as a fenced block headed by `path#Lline`, which AI agents
-     * resolve back to the file and line the snippet came from.
+     * Formats the lines of the main selection as a fenced block headed by `path#Lline`, which
+     * AI agents resolve back to the file and line the snippet came from. Whole lines are copied
+     * because a reference names lines, so a partial first or last line would misquote them, and
+     * an empty selection copies the cursor's line so a single line needs no selecting at all.
      */
     private fileReference(): string {
         const state = this.view.state;
         const selection = state.selection.main;
+        const startLine = state.doc.lineAt(selection.from);
+        let endLine = state.doc.lineAt(selection.to);
 
-        if (selection.empty) {
-            throw new Error("Select text in the editor before copying");
+        // A selection dragged to the start of the next line does not mean to include that line.
+        if (
+            !selection.empty &&
+            selection.to === endLine.from &&
+            endLine.number > startLine.number
+        ) {
+            endLine = state.doc.line(endLine.number - 1);
         }
 
-        const startLine = state.doc.lineAt(selection.from).number;
-        const text = state.sliceDoc(selection.from, selection.to);
+        const text = state.sliceDoc(startLine.from, endLine.to);
 
-        return `\`\`\`${this.filePath}#L${startLine}
+        return `\`\`\`${this.filePath}#L${startLine.number}
 ${text}
 \`\`\``;
     }
@@ -253,7 +261,6 @@ export function EditorContextMenu(props: {
                         <Tooltip content="Copy as a path#Lline code block for AI prompts">
                             <ContextMenuItem
                                 icon={<ClipboardCopy className="h-4 w-4" />}
-                                disabled={!hasSelection}
                                 onClick={() =>
                                     runClipboardAction("copy-reference")
                                 }
@@ -284,7 +291,7 @@ export function EditorContextMenu(props: {
                     dismissAriaLabel="Dismiss copy reference message"
                     onDismiss={() => clipboardMutation.reset()}
                 >
-                    Copied selection with file reference
+                    Copied lines with file reference
                 </Toast>
             ) : null}
         </>
