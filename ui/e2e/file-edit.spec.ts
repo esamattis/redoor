@@ -9,6 +9,7 @@ import {
     encodeFilesystemPath,
     expectTerminalFocused,
     minimizeBottomDrawer,
+    openEditorContextMenu,
     simulateTabRefocus,
     WEB_BASE_URL,
     type TestContext,
@@ -23,18 +24,6 @@ async function expectEditorText(editor: Locator, text: string) {
 async function fillEditor(editor: Locator, text: string) {
     await editor.click();
     await editor.fill(text);
-}
-
-/**
- * Opens the editor's right-click menu. The event is dispatched rather than clicked, because a
- * real right-click also lets the browser move the caret and would disturb the selection.
- */
-async function openEditorContextMenu(page: Page, editor: Locator) {
-    await editor.dispatchEvent("contextmenu", { clientX: 40, clientY: 40 });
-    const menu = page.getByRole("dialog", { name: "Editor context menu" });
-    await expect(menu).toBeVisible();
-
-    return menu;
 }
 
 /** Opens the editor overflow so secondary actions can be exercised by accessible name. */
@@ -842,81 +831,6 @@ const b = 2;`,
         await page.keyboard.press("Alt+c");
         // Alt+C toggles the comment like the menu item does, instead of typing a character.
         await expectEditorText(editor, "const b = 2;// const a = 1;");
-    });
-
-    test("should copy whole selected lines, or the cursor line, with a file and line reference", async ({
-        page,
-        context,
-    }) => {
-        const filePath = path.join(ctx.testDirPath, "copy-reference.txt");
-        await fs.writeFile(
-            filePath,
-            `alpha
-beta
-gamma`,
-        );
-        await context.grantPermissions(["clipboard-read", "clipboard-write"], {
-            origin: WEB_BASE_URL,
-        });
-        await page.goto(
-            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
-        );
-
-        const editor = page.getByLabel("File editor", { exact: true });
-
-        // CodeMirror renders line breaks between sibling elements, so DOM text is concatenated.
-        await expect(editor).toHaveText("alphabetagamma");
-        await editor.focus();
-        await page.keyboard.press("ControlOrMeta+Home");
-        await page.keyboard.press("ArrowDown");
-        await page.keyboard.press("Home");
-        await page.keyboard.press("ArrowRight");
-        await page.keyboard.press("Shift+ArrowDown");
-
-        let menu = await openEditorContextMenu(page, editor);
-
-        let copyReferenceButton = menu.getByRole("button", {
-            name: "Copy with file reference",
-        });
-
-        await copyReferenceButton.hover();
-        // The tooltip explains both the copied syntax and why it is useful with AI agents.
-        await expect(page.getByRole("tooltip")).toHaveText(
-            "Copy as a path#Lline code block for AI prompts",
-        );
-        await copyReferenceButton.click();
-
-        // A selection starting and ending mid-line still copies both lines in full, since the
-        // reference names whole lines.
-        await expect.poll(() =>
-            page.evaluate(() => navigator.clipboard.readText()),
-        ).toBe(`\`\`\`${filePath}#L2
-beta
-gamma
-\`\`\``);
-        // Non-modal feedback confirms the asynchronous browser clipboard write completed.
-        await expect(page.getByRole("status")).toHaveText(
-            "Copied lines with file reference",
-        );
-
-        await editor.focus();
-        await page.keyboard.press("ControlOrMeta+Home");
-        await page.keyboard.press("ArrowRight");
-        menu = await openEditorContextMenu(page, editor);
-        copyReferenceButton = menu.getByRole("button", {
-            name: "Copy with file reference",
-        });
-
-        // Without a selection the action still works, on the cursor's line.
-        await expect(copyReferenceButton).toBeEnabled();
-        await copyReferenceButton.click();
-
-        // Only the line holding the cursor is copied when nothing is selected.
-        await expect.poll(() =>
-            page.evaluate(() => navigator.clipboard.readText()),
-        ).toBe(`\`\`\`${filePath}#L1
-alpha
-\`\`\``);
     });
 
     test("should search selected editor text from the file's directory", async ({

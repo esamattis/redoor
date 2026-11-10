@@ -16,6 +16,7 @@ import {
     ContextMenuItem,
     ContextMenuSeparator,
 } from "#ui/components/context-menu";
+import { repositoryRelativePath } from "#ui/components/copy-path-menu";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { toggleCommentChord } from "#ui/editor/editor-extensions";
@@ -33,15 +34,24 @@ export const directorySearchChord: KeyChord = {
 };
 
 /** The clipboard work behind each menu action, so one mutation reports all their failures. */
-type EditorClipboardAction = "copy" | "cut" | "paste" | "copy-reference";
+type EditorClipboardAction =
+    "copy" | "cut" | "paste" | "copy-reference" | "copy-repo-reference";
 
 /** Names each failed action in its error toast, since the clipboard API gives no reason. */
 const failureMessages = {
     copy: "Could not copy the selection",
     cut: "Could not cut the selection",
     paste: "Could not paste into the editor",
-    "copy-reference": "Could not copy the file reference",
+    "copy-reference": "Could not copy the reference",
+    "copy-repo-reference": "Could not copy the repo reference",
 } satisfies Record<EditorClipboardAction, string>;
+
+/** Confirms each reference copy by the path form it used, since the clipboard shows nothing. */
+const referenceSuccessMessages: Partial<Record<EditorClipboardAction, string>> =
+    {
+        "copy-reference": "Copied reference",
+        "copy-repo-reference": "Copied repo reference",
+    };
 
 /**
  * Wraps the editor's CodeMirror view with the operations the context menu offers. Reading
@@ -52,7 +62,13 @@ class EditorMenuActions {
     constructor(
         private readonly view: EditorView,
         private readonly filePath: string,
+        private readonly repositoryPath: string | null,
     ) {}
+
+    /** Whether the file is inside a repository, which the repo reference needs. */
+    hasRepositoryPath(): boolean {
+        return this.repositoryPath !== null;
+    }
 
     /** Whether any selection range has text, which copy and cut need. */
     hasSelection(): boolean {
@@ -100,7 +116,19 @@ class EditorMenuActions {
             }
 
             case "copy-reference":
-                await navigator.clipboard.writeText(this.fileReference());
+                await navigator.clipboard.writeText(
+                    this.fileReference(this.filePath),
+                );
+
+                return;
+            case "copy-repo-reference":
+                if (this.repositoryPath === null) {
+                    throw new Error("The file is not in a repository");
+                }
+
+                await navigator.clipboard.writeText(
+                    this.fileReference(this.repositoryPath),
+                );
 
                 return;
         }
@@ -111,8 +139,10 @@ class EditorMenuActions {
      * AI agents resolve back to the file and line the snippet came from. Whole lines are copied
      * because a reference names lines, so a partial first or last line would misquote them, and
      * an empty selection copies the cursor's line so a single line needs no selecting at all.
+     * The path is a parameter because an agent working in the repository resolves the
+     * repository-relative form, while the absolute one works from anywhere on the device.
      */
-    private fileReference(): string {
+    private fileReference(path: string): string {
         const state = this.view.state;
         const selection = state.selection.main;
         const startLine = state.doc.lineAt(selection.from);
@@ -129,7 +159,7 @@ class EditorMenuActions {
 
         const text = state.sliceDoc(startLine.from, endLine.to);
 
-        return `\`\`\`${this.filePath}#L${startLine.number}
+        return `\`\`\`${path}#L${startLine.number}
 ${text}
 \`\`\``;
     }
@@ -153,6 +183,8 @@ ${text}
 export function EditorContextMenu(props: {
     view: EditorView;
     filePath: string;
+    /** The file's repository root, or null outside one, where the repo reference is hidden. */
+    repositoryRoot: string | null;
     editable: boolean;
     position: { x: number; y: number } | null;
     onClose: () => void;
@@ -161,7 +193,12 @@ export function EditorContextMenu(props: {
     /** Null when the file must not be searched on the agent, such as an encrypted one. */
     onSearchDirectory: (() => boolean) | null;
 }) {
-    const actions = new EditorMenuActions(props.view, props.filePath);
+    const actions = new EditorMenuActions(
+        props.view,
+        props.filePath,
+        repositoryRelativePath(props.filePath, props.repositoryRoot),
+    );
+
     const hasSelection = props.position !== null && actions.hasSelection();
 
     const clipboardMutation = useMutation({
@@ -258,16 +295,30 @@ export function EditorContextMenu(props: {
                             Toggle comment
                         </ContextMenuItem>
                         <ContextMenuSeparator />
-                        <Tooltip content="Copy as a path#Lline code block for AI prompts">
+                        <Tooltip content="Copy as an /absolute/path#Lline code block for AI prompts">
                             <ContextMenuItem
                                 icon={<ClipboardCopy className="h-4 w-4" />}
                                 onClick={() =>
                                     runClipboardAction("copy-reference")
                                 }
                             >
-                                Copy with file reference
+                                Copy reference
                             </ContextMenuItem>
                         </Tooltip>
+                        {actions.hasRepositoryPath() ? (
+                            <Tooltip content="Copy as a repo/relative/path#Lline code block for AI prompts">
+                                <ContextMenuItem
+                                    icon={<ClipboardCopy className="h-4 w-4" />}
+                                    onClick={() =>
+                                        runClipboardAction(
+                                            "copy-repo-reference",
+                                        )
+                                    }
+                                >
+                                    Copy repo reference
+                                </ContextMenuItem>
+                            </Tooltip>
+                        ) : null}
                     </>
                 )}
             </ContextMenu>
@@ -284,14 +335,15 @@ export function EditorContextMenu(props: {
                 </Toast>
             ) : null}
             {clipboardMutation.isSuccess &&
-            clipboardMutation.variables === "copy-reference" ? (
+            referenceSuccessMessages[clipboardMutation.variables] !==
+                undefined ? (
                 <Toast
                     tone="success"
                     icon={<ClipboardCopy className="h-4 w-4" />}
                     dismissAriaLabel="Dismiss copy reference message"
                     onDismiss={() => clipboardMutation.reset()}
                 >
-                    Copied lines with file reference
+                    {referenceSuccessMessages[clipboardMutation.variables]}
                 </Toast>
             ) : null}
         </>

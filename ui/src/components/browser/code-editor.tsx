@@ -97,6 +97,8 @@ type CodeEditorProps = {
      * systemd drop-ins, depends on the directory they are in.
      */
     filePath: string;
+    /** The file's repository root, or null outside one; the context menu copies repository references from it. */
+    repositoryRoot: string | null;
     /** The device text; a clean buffer follows it, a dirty one only reports a conflict. */
     deviceContent: string;
     /** The buffer stored on the server, which restores unsaved edits after a reload. */
@@ -341,6 +343,7 @@ export function CodeEditor(props: CodeEditorProps) {
                 <EditorContextMenu
                     view={view}
                     filePath={props.filePath}
+                    repositoryRoot={props.repositoryRoot}
                     editable={props.editable}
                     position={contextMenuPosition}
                     onFindInFile={() => props.searchHandleRef.current?.open()}

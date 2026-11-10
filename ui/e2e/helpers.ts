@@ -464,3 +464,15 @@ export async function signInAgain(page: Page): Promise<void> {
     await page.getByLabel("Password").fill("test-password");
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
 }
+
+/**
+ * Opens the editor's right-click menu. The event is dispatched rather than clicked, because a
+ * real right-click also lets the browser move the caret and would disturb the selection.
+ */
+export async function openEditorContextMenu(page: Page, editor: Locator) {
+    await editor.dispatchEvent("contextmenu", { clientX: 40, clientY: 40 });
+    const menu = page.getByRole("dialog", { name: "Editor context menu" });
+    await expect(menu).toBeVisible();
+
+    return menu;
+}

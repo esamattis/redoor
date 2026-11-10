@@ -387,6 +387,7 @@ function FileEditorSurface(props: {
                     deviceContent={props.deviceContent}
                     stored={props.stored}
                     filePath={props.filePath}
+                    repositoryRoot={props.repositoryRoot}
                     editable={props.editable}
                     vimMode={props.vimMode}
                     wrapLines={props.wrapLines}
