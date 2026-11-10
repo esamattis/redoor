@@ -12,7 +12,7 @@ use axum::{
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
-use futures_util::TryStreamExt;
+use futures_util::{FutureExt, TryStreamExt};
 use redoor_protocol::api::{
     ApiErrorCode,
     transfers::CopyExistingMode,
@@ -217,7 +217,16 @@ impl Publication<'_> {
         // Holds ciphertext only, so it needs no zeroing.
         let mut buffer = vec![0u8; CHUNK_SIZE];
         loop {
-            let read = source.read(&mut buffer).await.map_err(source_error)?;
+            // Like `forward_body`: full frames while ciphertext is ready, but a stalled source
+            // (a slow client body) gets its partial frame flushed instead of held back.
+            let read = match source.read(&mut buffer).now_or_never() {
+                Some(read) => read,
+                None => {
+                    upload.flush().await.map_err(write_error)?;
+                    source.read(&mut buffer).await
+                }
+            }
+            .map_err(source_error)?;
             if read == 0 {
                 break;
             }

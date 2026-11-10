@@ -6,15 +6,19 @@ use crate::actors::router::{
 };
 use crate::http::{agent_client::STANDARD_TIMEOUT, error::ApiError};
 use axum::body::Body;
-use bytes::Bytes;
-use futures_util::StreamExt;
+use bytes::{Bytes, BytesMut};
+use futures_util::{FutureExt, StreamExt};
 use redoor_core::log_failure;
 use redoor_protocol::wire::request::{
     self, AgentRequest, CommandError, CommandOutcome, DecodeError,
 };
 use redoor_protocol::{
     ids::{AgentId, RequestId},
-    wire::{command::Command, policy::UploadKind, stream::StreamChunk},
+    wire::{
+        command::Command,
+        policy::UploadKind,
+        stream::{MAX_TRANSFER_FRAME_PAYLOAD_BYTES, StreamChunk},
+    },
 };
 use tokio::sync::oneshot;
 
@@ -35,6 +39,8 @@ pub(crate) struct AgentUpload {
     bytes_written: u64,
     /// Writes frames straight onto the connection's bulk lane, spending per-stream credit.
     stream: OutboundStream,
+    /// Producer bytes not yet sent because they do not fill a frame yet.
+    frames: FrameBuffer,
     completion: oneshot::Receiver<Result<CommandOutcome, RouterError>>,
     cancel_guard: UploadCancelGuard,
 }
@@ -99,6 +105,7 @@ impl AgentUpload {
             total_bytes,
             bytes_written: 0,
             stream,
+            frames: FrameBuffer::default(),
             completion,
             cancel_guard,
         })))
@@ -110,9 +117,23 @@ impl AgentUpload {
     }
 
     /// Streams an HTTP request body into the upload without buffering it.
+    ///
+    /// Only body bytes that are already available are coalesced: once the client has nothing
+    /// more ready, the partial frame is flushed before waiting, so a slow or pausing client's
+    /// bytes still reach the agent (and the progress display) right away.
     pub(crate) async fn forward_body(&mut self, body: Body) -> Result<(), ApiError> {
         let mut body_stream = body.into_data_stream();
-        while let Some(next_chunk) = body_stream.next().await {
+        loop {
+            let next = match body_stream.next().now_or_never() {
+                Some(next) => next,
+                None => {
+                    self.flush().await?;
+                    body_stream.next().await
+                }
+            };
+            let Some(next_chunk) = next else {
+                break;
+            };
             let data = next_chunk.map_err(|error| {
                 ApiError::bad_request(format!("Failed to read request body: {error}"))
             })?;
@@ -122,6 +143,11 @@ impl AgentUpload {
     }
 
     /// Forwards one producer chunk while enforcing the declared total byte count.
+    ///
+    /// Bytes are coalesced into full frames: body chunks and vault reads come in arbitrary
+    /// sizes, and each tiny frame would cost a whole unit of the small per-stream credit window
+    /// plus an allocation. Only full frames are sent here, one at a time and each after its
+    /// credit, so the caller still does not read more input while the agent is behind.
     pub(crate) async fn send(&mut self, data: &[u8]) -> Result<(), ApiError> {
         self.bytes_written += data.len() as u64;
         if !self.is_tar() && self.bytes_written > self.total_bytes {
@@ -143,7 +169,23 @@ impl AgentUpload {
                 .await;
             return Err(ApiError::bad_request(message));
         }
-        let result = self.stream.send_data(Bytes::copy_from_slice(data), false).await;
+        let mut rest = data;
+        while let Some(frame) = self.frames.fill(&mut rest) {
+            let result = self.stream.send_data(frame, false).await;
+            self.forward_result(result).await?;
+        }
+        Ok(())
+    }
+
+    /// Sends the buffered partial frame, if any.
+    ///
+    /// Producers call this when their input stalls, so coalescing never holds bytes back
+    /// waiting for data that may take long to arrive.
+    pub(crate) async fn flush(&mut self) -> Result<(), ApiError> {
+        let Some(frame) = self.frames.take_remainder() else {
+            return Ok(());
+        };
+        let result = self.stream.send_data(frame, false).await;
         self.forward_result(result).await
     }
 
@@ -159,6 +201,9 @@ impl AgentUpload {
                 self.bytes_written
             )));
         }
+        // The last partial frame must reach the agent before the terminal frame (or the edit
+        // commit, which the router sends) ends the stream.
+        self.flush().await?;
         if self.kind == UploadKind::EditFile {
             self.commit_edit().await?;
         } else {
@@ -251,6 +296,42 @@ impl AgentUpload {
     }
 }
 
+/// Coalesces producer bytes into full stream frames.
+///
+/// Kept apart from [`AgentUpload`] so the sending loop stays a plain "fill, send full frame"
+/// cycle and the buffering rules can be reasoned about on their own. Dropping it discards the
+/// partial frame, which is what every failure path wants: the agent's worker is canceled and
+/// must not receive a tail of a body that was rejected.
+#[derive(Default)]
+struct FrameBuffer {
+    /// At most one frame of bytes; allocated only when bytes arrive, so a finished or empty
+    /// upload holds no frame-sized buffer.
+    pending: BytesMut,
+}
+
+impl FrameBuffer {
+    /// Moves as much of `data` as fits into the pending frame and returns the frame once full.
+    ///
+    /// `data` is advanced past the consumed bytes. Callers loop until this returns `None`,
+    /// which means everything was buffered and the pending frame still has room.
+    fn fill(&mut self, data: &mut &[u8]) -> Option<Bytes> {
+        if self.pending.capacity() == 0 && !data.is_empty() {
+            self.pending.reserve(MAX_TRANSFER_FRAME_PAYLOAD_BYTES);
+        }
+        let room = MAX_TRANSFER_FRAME_PAYLOAD_BYTES - self.pending.len();
+        let (head, rest) = data.split_at(data.len().min(room));
+        self.pending.extend_from_slice(head);
+        *data = rest;
+        (self.pending.len() == MAX_TRANSFER_FRAME_PAYLOAD_BYTES)
+            .then(|| std::mem::take(&mut self.pending).freeze())
+    }
+
+    /// Takes the final partial frame, if any bytes are pending.
+    fn take_remainder(&mut self) -> Option<Bytes> {
+        (!self.pending.is_empty()).then(|| std::mem::take(&mut self.pending).freeze())
+    }
+}
+
 /// Cancels an upload whose producer exits before it reaches a terminal state.
 struct UploadCancelGuard {
     router: RouterHandle,
@@ -286,5 +367,128 @@ impl Drop for UploadCancelGuard {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::sync::mpsc;
+
+    /// Builds an upload over a detached stream, plus the frames it sends and the sender of its
+    /// completion; the router is closed, so failure paths can report to it without one.
+    fn upload(
+        kind: UploadKind,
+        total_bytes: u64,
+    ) -> (
+        AgentUpload,
+        mpsc::Receiver<StreamChunk>,
+        oneshot::Sender<Result<CommandOutcome, RouterError>>,
+    ) {
+        let request_id = RequestId::new(11);
+        let agent_id = redoor_core::test_support::test_agent_id("agent");
+        let router = RouterHandle::closed_for_test();
+        let (stream, frames) = OutboundStream::detached(request_id, 64);
+        let (completion_sender, completion) = oneshot::channel();
+        let upload = AgentUpload {
+            router: router.clone(),
+            agent_id: agent_id.clone(),
+            kind,
+            total_bytes,
+            bytes_written: 0,
+            stream,
+            frames: FrameBuffer::default(),
+            completion,
+            cancel_guard: UploadCancelGuard {
+                router,
+                agent_id,
+                request_id,
+                armed: false,
+            },
+        };
+        (upload, frames, completion_sender)
+    }
+
+    /// Collects the frames sent so far as (payload length, FIN) pairs.
+    fn sent(frames: &mut mpsc::Receiver<StreamChunk>) -> Vec<(usize, bool)> {
+        let mut sent = Vec::new();
+        while let Ok(frame) = frames.try_recv() {
+            sent.push((frame.data.len(), frame.is_last));
+        }
+        sent
+    }
+
+    /// Odd-sized producer chunks become full frames, and finishing sends the remainder
+    /// before the terminal frame.
+    #[tokio::test]
+    async fn sends_only_full_frames_until_finish_flushes_the_remainder() {
+        let frame = MAX_TRANSFER_FRAME_PAYLOAD_BYTES;
+        let total = 2 * frame + 100;
+        let (mut upload, mut frames, completion) = upload(UploadKind::RawUpload, total as u64);
+        // Mimics the vault writer, whose reads alternate a full chunk and a short tail.
+        for piece in [frame - 16, 16, frame, 100] {
+            upload.send(&vec![1u8; piece]).await.unwrap();
+        }
+        // Nothing smaller than a frame leaves before the end, so each frame spends its credit
+        // on a full payload.
+        assert_eq!(sent(&mut frames), vec![(frame, false), (frame, false)]);
+
+        completion
+            .send(Ok(CommandOutcome::Ok(serde_json::Value::Null)))
+            .unwrap();
+        let written = upload.finish().await.unwrap();
+        // The declared length was forwarded in full.
+        assert_eq!(written, total as u64);
+        // The buffered tail goes out as an ordinary frame, then the empty FIN ends the stream.
+        assert_eq!(sent(&mut frames), vec![(100, false), (0, true)]);
+    }
+
+    /// A client that pauses mid-body still gets its partial frame forwarded, so a slow
+    /// upload shows progress and reaches the agent without waiting for a full frame.
+    #[tokio::test]
+    async fn stalled_body_flushes_its_partial_frame() {
+        let (mut upload, mut frames, _completion) = upload(UploadKind::RawUpload, 10);
+        let (sender, mut receiver) = mpsc::channel::<Result<Bytes, std::io::Error>>(1);
+        let body = Body::from_stream(async_stream::stream! {
+            while let Some(item) = receiver.recv().await {
+                yield item;
+            }
+        });
+        let forwarding = tokio::spawn(async move {
+            let result = upload.forward_body(body).await;
+            (upload, result)
+        });
+        sender.send(Ok(Bytes::from_static(b"12345"))).await.unwrap();
+        let frame = frames.recv().await.unwrap();
+        // The bytes left while the body was still open, as soon as no more input was ready.
+        assert_eq!((frame.data.len(), frame.is_last), (5, false));
+        drop(sender);
+        let (_upload, result) = forwarding.await.unwrap();
+        // Ending the body is not an error; finishing is a separate step.
+        assert!(result.is_ok());
+    }
+
+    /// A body that overruns its declared length is rejected without forwarding its buffered
+    /// bytes.
+    #[tokio::test]
+    async fn overrun_sends_nothing_buffered() {
+        let (mut upload, mut frames, _completion) = upload(UploadKind::RawUpload, 10);
+        upload.send(b"12345").await.unwrap();
+        // The overrun is a client error.
+        assert!(upload.send(b"678901").await.is_err());
+        // Neither the buffered prefix nor the overrunning chunk reached the agent.
+        assert!(sent(&mut frames).is_empty());
+    }
+
+    /// A body that ends short is rejected at finish and its buffered tail is dropped, not
+    /// flushed as if the upload were complete.
+    #[tokio::test]
+    async fn short_body_sends_nothing_buffered_at_finish() {
+        let (mut upload, mut frames, _completion) = upload(UploadKind::RawUpload, 10);
+        upload.send(b"12345").await.unwrap();
+        // A truncated body must fail instead of publishing.
+        assert!(upload.finish().await.is_err());
+        // No data frame and no FIN was sent for the rejected body.
+        assert!(sent(&mut frames).is_empty());
     }
 }

@@ -286,6 +286,15 @@ router limits concurrent uploads per connection.
   upload never replaces the destination and an accepted one is never reported cancelled.
   Uploads never overwrite unless asked (`on_existing`), and can carry preconditions
   (`must_not_exist`, or the identity of the version read).
+- **Full frames.** Credit counts frames, not bytes, so senders coalesce small writes into
+  full 64 KiB frames instead of spending a frame on every tar header or HTTP body chunk: the
+  agent's tar and Git export writer buffers one frame before sending, and `AgentUpload`
+  buffers upload bodies the same way, but flushes a partial frame as soon as the client has
+  no more bytes ready, so a slow client's bytes are never held back, and before `FIN`. Frame payloads
+  are shared `Bytes`, so they move from the socket to queues, HTTP bodies and copy
+  destinations without copying; payloads under half a frame (32 KiB) are copied out of the
+  received message, because a slice pins tungstenite's whole shared read buffer (64–128 KiB)
+  and a queued keystroke or small redraw would otherwise hold many times its size.
 - **Copies between agents** join a source download and a destination upload with a forwarder
   that returns credit to the source only after the destination accepted the frame. A **move**
   is a copy followed by deleting the source if its identity still matches. Copies on one

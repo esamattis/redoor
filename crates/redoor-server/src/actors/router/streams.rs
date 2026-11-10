@@ -534,6 +534,25 @@ impl OutboundStream {
 }
 
 #[cfg(test)]
+impl OutboundStream {
+    /// Builds a stream on a private lane of `capacity` frames with as many frames of credit, so
+    /// producer tests can inspect what was sent without a router or an agent.
+    pub(crate) fn detached(
+        request_id: RequestId,
+        capacity: usize,
+    ) -> (Self, mpsc::Receiver<StreamChunk>) {
+        let link = AgentLink::new(ControlLanes::bounded(1, 1).0);
+        let (lane, receiver) = mpsc::channel(capacity);
+        let stream = Self {
+            lease: StreamLease::new(request_id, link, 0),
+            lane,
+            credit: CreditGate::with_window(u32::try_from(capacity).unwrap_or(u32::MAX)),
+        };
+        (stream, receiver)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use redoor_protocol::wire::stream::STREAM_CREDIT_WINDOW_FRAMES;
