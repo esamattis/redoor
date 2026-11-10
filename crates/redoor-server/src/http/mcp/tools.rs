@@ -98,7 +98,7 @@ const TOOLS: &[ToolDefinition] = &[
     },
     ToolDefinition {
         name: "read_command_output",
-        description: "Read bounded retained command output. `content` is a base64 page of NDJSON events; `stdout`/`stderr` events carry their bytes as a base64 `data` string.",
+        description: "Read bounded retained command output. `content` is a text page of NDJSON events; `stdout`/`stderr` events carry their bytes as a base64 `data` string. Pages are cut at byte offsets, so a page can end mid-line.",
         read_only: true,
         destructive: false,
         required: &["operation_id"],
@@ -644,7 +644,12 @@ fn operation_json(record: &super::operations::OperationRecord) -> Result<Value, 
         json!({"operation_id":record.id,"kind":record.kind,"state":record.state,"termination":record.terminal,"output_size":record.output_size,"output_truncated":record.output_truncated,"cancel_requested":record.cancel_requested}),
     )
 }
-/// Reads one bounded binary-safe page from an owned command spool.
+/// Reads one bounded page from an owned command spool.
+///
+/// The spool holds the agent's NDJSON lines, which are pure ASCII because output bytes are
+/// already base64 inside them, so the page goes out as text: wrapping it in another base64
+/// layer would only grow it by a third and make the model decode twice. A cut at any byte
+/// offset is still valid ASCII; the lossy conversion only guards against a corrupt spool.
 async fn read_command_output(
     state: &ServerState,
     principal: &Principal,
@@ -671,7 +676,7 @@ async fn read_command_output(
         .await
         .map_err(|error| op(format!("Failed reading retained output: {error}"), id))?;
     Ok(
-        json!({"operation_id":record.id,"offset":offset,"next_offset":end,"more":end<record.output_size,"encoding":"base64","content":STANDARD.encode(data),"truncated":record.output_truncated}),
+        json!({"operation_id":record.id,"offset":offset,"next_offset":end,"more":end<record.output_size,"content":String::from_utf8_lossy(&data),"truncated":record.output_truncated}),
     )
 }
 /// Routes cancellation to the underlying execution or transfer without claiming termination.

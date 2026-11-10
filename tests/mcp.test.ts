@@ -429,10 +429,9 @@ describe("stateless authenticated MCP", () => {
         });
 
         // Output pages retain binary-safe event records independently of terminal status.
-        const retainedEvents = Buffer.from(
-            retainedOutput.result.structuredContent?.content ?? "",
-            "base64",
-        ).toString();
+        // The NDJSON page is plain text, without another base64 layer around it.
+        const retainedEvents =
+            retainedOutput.result.structuredContent?.content ?? "";
 
         expect(retainedEvents).toContain('"type":"stdout"');
         // Retained events carry the output bytes as base64 strings.
