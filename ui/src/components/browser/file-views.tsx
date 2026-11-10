@@ -802,9 +802,9 @@ function useSaveAndReload(props: {
 }
 
 /**
- * The editor toolbar's "Discard changes": asks first, since the edits are gone for good, and
- * then reverts the buffer to the device text, which also replaces the stored copy so the
- * edits do not come back on a reload.
+ * The editor toolbar's "Discard changes": asks first, and then reverts the buffer to the
+ * device text as an undoable edit, which also replaces the stored copy so the edits do not
+ * come back on a reload.
  */
 function useDiscardChanges(props: {
     buffer: ReturnType<typeof useFileBuffer>;
@@ -818,7 +818,7 @@ function useDiscardChanges(props: {
         <ConfirmationDialog
             isOpen={isOpen}
             title="Discard unsaved changes?"
-            description={`Your unsaved changes to ${props.fileName} are lost and the editor reverts to the version on ${props.deviceName}. This cannot be undone.`}
+            description={`Your unsaved changes to ${props.fileName} are dropped and the editor reverts to the version on ${props.deviceName}. Undo in the editor brings them back.`}
             confirmLabel="Discard changes"
             onClose={() => setIsOpen(false)}
             onConfirm={() => {

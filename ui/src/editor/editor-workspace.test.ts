@@ -424,8 +424,8 @@ test("discarding changes reverts to the device text and writes the clean copy at
     // The buffer shows the device text again and has nothing to save.
     expect(view.state.doc.toString()).toBe("base text");
     expect(workspace.isDirty("a")).toBe(false);
-    // The discarded edits cannot come back through undo.
-    expect(undoDepth(view.state)).toBe(0);
+    // The revert is in the undo history, so a mistaken discard can be taken back.
+    expect(undoDepth(view.state)).toBeGreaterThan(0);
 
     await vi.advanceTimersByTimeAsync(0);
     // The clean copy replaces the draft without waiting for the debounce, so a reload right
@@ -434,6 +434,11 @@ test("discarding changes reverts to the device text and writes the clean copy at
     expect(api.read("a")?.data.state.doc).toBe("base text");
     // The file stays open, so its stored copy is rewritten rather than deleted.
     expect(api.deletes).toEqual([]);
+
+    undo(view);
+    // Undo brings the discarded edits back as unsaved changes.
+    expect(view.state.doc.toString()).toBe("draft base text");
+    expect(workspace.isDirty("a")).toBe(true);
 });
 
 test("discarding tells the chrome about the replaced state, since setState emits no update", () => {

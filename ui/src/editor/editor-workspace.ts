@@ -17,6 +17,7 @@ import { ExternalStore } from "#ui/utils/external-store";
 import {
     baseFromText,
     isDirtyAgainst,
+    minimalChange,
     reconcileDeviceContent,
     textFromString,
     type BufferBase,
@@ -573,10 +574,12 @@ export class EditorWorkspace extends ExternalStore<
     }
 
     /**
-     * The editor's "Discard changes" action: throws away unsaved edits for the newest device
-     * text this tab has seen, which is also the conflicting text when the device changed
-     * under the edits. The file stays open, so its clean copy is written right away instead
-     * of after the debounce, or a reload right after would bring the discarded edits back.
+     * The editor's "Discard changes" action: reverts unsaved edits to the newest device text
+     * this tab has seen, which is also the conflicting text when the device changed under the
+     * edits. Unlike a close, the revert is an ordinary edit in the undo history, so a
+     * mistaken click can be taken back with undo. The file stays open, so its clean copy is
+     * written right away instead of after the debounce, or a reload right after would bring
+     * the discarded edits back.
      */
     discardToDevice(key: string) {
         const buffer = this.buffers.get(key);
@@ -585,7 +588,25 @@ export class EditorWorkspace extends ExternalStore<
             return;
         }
 
-        this.discard(key, buffer.device.toString());
+        const doc = this.currentState(buffer).doc;
+        buffer.base = baseFromText(buffer.device);
+        this.setConflict(buffer, null);
+
+        if (!doc.eq(buffer.device)) {
+            const spec = { changes: minimalChange(doc, buffer.device) };
+
+            // The shown view reports the change through its update listener.
+            if (this.isShown(key) && this.view !== null) {
+                this.view.dispatch(spec);
+            } else {
+                buffer.state = buffer.state.update(spec).state;
+                this.markChanged(buffer);
+                this.notifyDocument();
+            }
+        }
+
+        this.refreshDirty(buffer);
+        buffer.unsynced = true;
         this.schedule(key, 0);
     }
 

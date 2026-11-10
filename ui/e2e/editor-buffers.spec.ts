@@ -249,7 +249,7 @@ test.describe.serial("Unsaved editor buffers", () => {
 
         await discardButton.click();
         await confirmation.getByRole("button", { name: "Cancel" }).click();
-        // Cancelling keeps the edits, since discarding cannot be undone.
+        // Cancelling keeps the edits.
         await expect(confirmation).toBeHidden();
         await expect(editor).toHaveText("device text draft");
 
@@ -272,5 +272,11 @@ test.describe.serial("Unsaved editor buffers", () => {
         await expect(discardButton).toBeDisabled();
         // The device file was never written.
         expect(await fs.readFile(filePath, "utf8")).toBe("device text");
+
+        await editor.focus();
+        await page.keyboard.press("ControlOrMeta+z");
+        // The discard is in the stored undo history, so a mistaken click can be taken back.
+        await expect(editor).toHaveText("device text draft");
+        await expect(discardButton).toBeEnabled();
     });
 });
