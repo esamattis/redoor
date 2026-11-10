@@ -121,6 +121,12 @@ An unconfigured or malformed `Origin` receives 403. MCP has its own narrow
 CORS and bearer middleware and does not inherit the wildcard browser API CORS
 or the rule that treats non-`/api/` paths as public.
 
+`read_command_output` returns a byte page of the retained output as base64
+`content`. Decoded, the output is newline-delimited JSON: `{"type":"stdout","data":"..."}`
+and `{"type":"stderr","data":"..."}` events whose `data` is the output bytes in standard
+base64. Pages are cut at byte offsets, so a page can end mid-line. The exit status is the
+operation's `termination`.
+
 Responses are bounded JSON. This initial server does not emit SSE, advertise
 subscriptions/resources/prompts, or initiate calls into a client.
 

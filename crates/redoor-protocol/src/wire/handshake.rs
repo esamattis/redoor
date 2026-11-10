@@ -11,7 +11,7 @@ use ts_rs::TS;
 
 /// Websocket subprotocol both sides must agree on; bumped whenever the frame contract changes
 /// incompatibly, so mismatched builds fail the upgrade instead of misreading each other.
-pub const PROTOCOL: &str = "redoor.v6";
+pub const PROTOCOL: &str = "redoor.v7";
 /// The single endpoint agents connect to.
 pub const AGENT_WS_PATH: &str = "/api/v1/agent/ws";
 /// Agent binary version sent with the upgrade, only for diagnosing rejected connections.

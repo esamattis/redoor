@@ -435,8 +435,9 @@ describe("stateless authenticated MCP", () => {
         ).toString();
 
         expect(retainedEvents).toContain('"type":"stdout"');
+        // Retained events carry the output bytes as base64 strings.
         expect(retainedEvents).toContain(
-            Buffer.from("command-output").toJSON().data.join(","),
+            JSON.stringify(Buffer.from("command-output").toString("base64")),
         );
 
         const other = createMcpTestClient({

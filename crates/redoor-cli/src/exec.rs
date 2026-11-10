@@ -17,7 +17,8 @@ pub struct ExecArgs {
     /// Agent-side deadline, e.g. 250ms, 30s, 5m, 2h, or 1d.
     #[arg(long, value_parser = parse_duration)]
     timeout: Option<u64>,
-    /// Emit lossless newline-delimited JSON output and terminal events.
+    /// Emit lossless newline-delimited JSON output and terminal events; `stdout` and `stderr`
+    /// events carry their bytes as a standard base64 `data` string.
     #[arg(long)]
     json: bool,
     /// Device ID from `redoor remote devices`.

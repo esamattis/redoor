@@ -59,14 +59,16 @@ test.describe.serial("Transfer Path Links", () => {
             .split("\n")
             .map((line) => JSON.parse(line));
 
-        const stdout = records.flatMap((event) =>
-            event.type === "stdout" ? event.data : [],
+        const stdout = Buffer.concat(
+            records.flatMap((event) =>
+                event.type === "stdout"
+                    ? [Buffer.from(event.data, "base64")]
+                    : [],
+            ),
         );
 
         // Output bytes must be decoded from the NDJSON protocol rather than treated as plain text.
-        expect(Buffer.from(stdout).toString()).toBe(
-            "transfer-view-exec-regression",
-        );
+        expect(stdout.toString()).toBe("transfer-view-exec-regression");
         expect(records.at(-1)).toEqual({ type: "exit", code: 0, signal: null });
         await page.reload();
         // Refetching history must remain renderable after execution completes and its live stream is released.

@@ -170,16 +170,20 @@ describe("Remote exec and non-shell streaming API", () => {
         const records = events(output.stdout);
         // A reserved remote exit code remains distinguishable from API/transport error events.
         expect(output.exitCode).toBe(125);
+        // Output bytes travel as base64 strings, so binary bytes survive the JSON record intact.
         expect(
-            records
-                .filter((event) => event.type === "stdout")
-                .flatMap((event) => event.data),
-        ).toEqual([0, 255]);
+            Buffer.concat(
+                records
+                    .filter((event) => event.type === "stdout")
+                    .map((event) => Buffer.from(event.data, "base64")),
+            ),
+        ).toEqual(Buffer.from([0, 255]));
+        // Stderr keeps its own records and decodes the same way.
         expect(
-            Buffer.from(
+            Buffer.concat(
                 records
                     .filter((event) => event.type === "stderr")
-                    .flatMap((event) => event.data),
+                    .map((event) => Buffer.from(event.data, "base64")),
             ).toString(),
         ).toBe("err");
         expect(records.at(-1)).toEqual({

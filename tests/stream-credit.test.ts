@@ -80,7 +80,12 @@ describe("per-stream credit on the multiplexed connection", () => {
 
         const honestResponse = await startExec(agentName, ["honest"]);
         const honest = await fake.nextCommand("Exec");
-        const stdout = JSON.stringify({ type: "stdout", data: [104, 105] });
+
+        const stdout = JSON.stringify({
+            type: "stdout",
+            data: Buffer.from("hi").toString("base64"),
+        });
+
         const exit = { type: "exit", code: 0, signal: null };
 
         // Output streams start with the credit the command frame grants.

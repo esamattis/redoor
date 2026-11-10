@@ -98,7 +98,7 @@ const TOOLS: &[ToolDefinition] = &[
     },
     ToolDefinition {
         name: "read_command_output",
-        description: "Read bounded retained command output.",
+        description: "Read bounded retained command output. `content` is a base64 page of NDJSON events; `stdout`/`stderr` events carry their bytes as a base64 `data` string.",
         read_only: true,
         destructive: false,
         required: &["operation_id"],

@@ -255,6 +255,8 @@ async fn remote_cli_persistent_session_namespace_and_output() {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect();
     assert_eq!(records.first().unwrap()["type"], "stdout");
+    // JSON mode carries output bytes as standard base64, here the fixture's "out".
+    assert_eq!(records.first().unwrap()["data"], "b3V0");
     assert_eq!(records.last().unwrap()["type"], "error");
     assert!(
         records.last().unwrap()["message"]

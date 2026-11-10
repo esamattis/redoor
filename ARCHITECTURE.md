@@ -280,7 +280,10 @@ router limits concurrent uploads per connection.
 
 - **Downloads and exec output** are output streams with initial credit in the command, so
   output starts without a round trip. Exec's exit status is its result, ordered after the
-  output.
+  output. The agent writes exec output as NDJSON `ExecEvent` lines, one per pipe read, with
+  the bytes as a base64 string (binary-safe at ~1.33× the size), encoded straight from the
+  read buffer; the server passes these lines through unchanged to the HTTP body and the MCP
+  output spool.
 - **Uploads** write into a self-deleting hidden staging path next to the destination.
   Publication (the atomic rename) is a separate step the router decides, so a cancelled
   upload never replaces the destination and an accepted one is never reported cancelled.

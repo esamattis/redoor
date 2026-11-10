@@ -6,7 +6,7 @@ use crate::transfers::stream::StreamWriter;
 use redoor_protocol::{
     ids::RequestId,
     wire::{
-        exec::{ExecEvent, ExecRequest},
+        exec::{ExecEvent, ExecOutput, ExecRequest},
         request,
     },
 };
@@ -33,12 +33,13 @@ struct ExecWorker {
 }
 
 impl ExecWorker {
-    /// Serializes one bounded event rather than collecting process output.
-    async fn send(&mut self, event: ExecEvent, last: bool) -> anyhow::Result<()> {
-        let mut data = serde_json::to_vec(&event)?;
-        data.push(b'\n');
+    /// Sends one read as its own NDJSON line rather than collecting process output.
+    ///
+    /// The line is encoded straight from the borrowed read buffer into one exactly sized
+    /// allocation, which then moves into the stream frame without another copy.
+    async fn send(&mut self, event: ExecOutput<'_>) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.stream.send(data, last).await,
+            self.stream.send(event.ndjson_line(), false).await,
             "Execution output connection closed"
         );
         Ok(())
@@ -66,21 +67,15 @@ impl ExecWorker {
                 (true, 0) => out_open = false,
                 (false, 0) => err_open = false,
                 (true, count) => {
-                    self.send(
-                        ExecEvent::Stdout {
-                            data: out[..count].to_vec(),
-                        },
-                        false,
-                    )
+                    self.send(ExecOutput::Stdout {
+                        data: &out[..count],
+                    })
                     .await?
                 }
                 (false, count) => {
-                    self.send(
-                        ExecEvent::Stderr {
-                            data: err[..count].to_vec(),
-                        },
-                        false,
-                    )
+                    self.send(ExecOutput::Stderr {
+                        data: &err[..count],
+                    })
                     .await?
                 }
             }
@@ -225,8 +220,16 @@ mod tests {
             .filter_map(OutboundFrame::as_stream)
             .flat_map(|chunk| chunk.data.clone())
             .collect();
-        // The output events precede FIN on the same lane.
-        assert!(String::from_utf8_lossy(&output).contains("stdout"));
+        let stdout: Vec<u8> = std::str::from_utf8(&output)
+            .unwrap()
+            .lines()
+            .flat_map(|line| match serde_json::from_str(line).unwrap() {
+                ExecEvent::Stdout { data } => data,
+                _ => Vec::new(),
+            })
+            .collect();
+        // The output events precede FIN on the same lane and decode back to the raw bytes.
+        assert_eq!(stdout, b"hi");
         // The nonzero status reaches the server as the result, not as stream data.
         assert!(matches!(
             exit_event(reply),

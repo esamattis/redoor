@@ -278,10 +278,10 @@ describe("Per-stream transfer isolation", () => {
 
         // Exec output also shares the connection and must not queue behind the stall.
         expect(
-            Buffer.from(
+            Buffer.concat(
                 events
                     .filter((event) => event.type === "stdout")
-                    .flatMap((event) => event.data),
+                    .map((event) => Buffer.from(event.data, "base64")),
             ).toString(),
         ).toBe("isolated\n");
         // The process exit is reported normally, proving the stream reached its terminal frame.

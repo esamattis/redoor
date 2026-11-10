@@ -3537,6 +3537,7 @@ name = "redoor-protocol"
 version = "2.7.3"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "bytes",
  "getrandom 0.4.3",
  "hmac 0.13.0",
