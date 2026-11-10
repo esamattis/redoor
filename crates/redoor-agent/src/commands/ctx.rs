@@ -114,8 +114,9 @@ impl AgentServices {
     /// Hands one inbound binary frame to the worker that owns its stream.
     ///
     /// Called by the connection reader, so payload never passes through the runtime mailbox;
-    /// frames of streams nobody owns anymore are dropped.
-    pub(crate) async fn route_stream_frame(&self, bytes: &[u8], control: &ControlSender) {
+    /// frames of streams nobody owns anymore are dropped. Takes the message by value so large
+    /// payloads reach their worker without a copy.
+    pub(crate) async fn route_stream_frame(&self, bytes: bytes::Bytes, control: &ControlSender) {
         let chunk = match StreamChunk::from_bytes(bytes) {
             Ok(chunk) => chunk,
             Err(error) => {

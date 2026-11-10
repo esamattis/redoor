@@ -83,7 +83,7 @@ pub(super) async fn spawn_read_task(
                     }
                 }
                 Ok(WsMessage::Binary(bytes)) => {
-                    services.route_stream_frame(&bytes, &control_tx).await;
+                    services.route_stream_frame(bytes, &control_tx).await;
                 }
                 Ok(WsMessage::Close(_)) => {
                     connection_loss_reported = true;

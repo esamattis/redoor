@@ -6,6 +6,7 @@ use crate::actors::router::{
 };
 use crate::http::{agent_client::STANDARD_TIMEOUT, error::ApiError};
 use axum::body::Body;
+use bytes::Bytes;
 use futures_util::StreamExt;
 use redoor_core::log_failure;
 use redoor_protocol::wire::request::{
@@ -142,7 +143,7 @@ impl AgentUpload {
                 .await;
             return Err(ApiError::bad_request(message));
         }
-        let result = self.stream.send_data(data, false).await;
+        let result = self.stream.send_data(Bytes::copy_from_slice(data), false).await;
         self.forward_result(result).await
     }
 
@@ -161,7 +162,7 @@ impl AgentUpload {
         if self.kind == UploadKind::EditFile {
             self.commit_edit().await?;
         } else {
-            let result = self.stream.send_data(&[], true).await;
+            let result = self.stream.send_data(Bytes::new(), true).await;
             self.forward_result(result).await?;
         }
         let result = (&mut self.completion).await.map_err(|error| {

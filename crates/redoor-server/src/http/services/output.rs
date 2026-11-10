@@ -292,7 +292,7 @@ impl Stream for OutputStream {
             };
             this.finished = chunk.is_last;
             if !chunk.data.is_empty() {
-                return Poll::Ready(Some(Ok(Bytes::from(chunk.data))));
+                return Poll::Ready(Some(Ok(chunk.data)));
             }
         }
     }
@@ -389,7 +389,7 @@ mod tests {
         StreamChunk {
             request_id,
             is_last,
-            data: data.to_vec(),
+            data: bytes::Bytes::copy_from_slice(data),
         }
     }
 

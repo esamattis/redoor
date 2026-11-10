@@ -69,7 +69,7 @@ fn execution_body(
     let stream = async_stream::stream! {
         while let Some(item) = output.recv().await {
             match item {
-                Ok(chunk) => yield Ok(bytes::Bytes::from(chunk.data)),
+                Ok(chunk) => yield Ok(chunk.data),
                 Err(error) => {
                     yield Err(std::io::Error::other(error.0.message));
                     return;

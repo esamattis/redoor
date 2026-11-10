@@ -28,7 +28,7 @@ pub(crate) async fn run(
     let subscription = match subscription {
         Ok(subscription) => subscription,
         Err(error) => {
-            writer.send(&[], true).await;
+            writer.send(bytes::Bytes::new(), true).await;
             return Err(error).context("logger is unavailable");
         }
     };
@@ -38,7 +38,7 @@ pub(crate) async fn run(
         result = forward(&mut writer, subscription) => result,
     };
     if !matches!(finished, Ok(false)) {
-        writer.send(&[], true).await;
+        writer.send(bytes::Bytes::new(), true).await;
     }
     log!(Level::Info, "Agent log stream stopped: stream={}", stream);
     finished.map(|_| ())
@@ -78,5 +78,5 @@ async fn forward_live_entries(
 async fn send_event(writer: &mut StreamWriter, event: &LogEvent) -> Result<bool> {
     let mut line = serde_json::to_vec(event).context("failed to encode log event")?;
     line.push(b'\n');
-    Ok(writer.send(&line, false).await)
+    Ok(writer.send(line, false).await)
 }

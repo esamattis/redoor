@@ -70,7 +70,7 @@ impl CopyForwarder {
             let is_last = chunk.is_last;
             // After FIN nothing follows. A stopped destination was settled by the router, and
             // a lost destination connection fails the copy when the router sees it go.
-            if self.dest.send_data(&chunk.data, is_last).await.is_err() || is_last {
+            if self.dest.send_data(chunk.data, is_last).await.is_err() || is_last {
                 break;
             }
         }

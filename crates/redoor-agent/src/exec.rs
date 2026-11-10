@@ -38,7 +38,7 @@ impl ExecWorker {
         let mut data = serde_json::to_vec(&event)?;
         data.push(b'\n');
         anyhow::ensure!(
-            self.stream.send(&data, last).await,
+            self.stream.send(data, last).await,
             "Execution output connection closed"
         );
         Ok(())
@@ -161,7 +161,7 @@ pub(crate) async fn run(
             message: error.to_string(),
         });
     drop(registration);
-    worker.stream.send(&[], true).await;
+    worker.stream.send(bytes::Bytes::new(), true).await;
     Reply::stream::<request::Exec>(worker.stream, Ok(event))
 }
 

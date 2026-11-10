@@ -381,7 +381,7 @@ mod tests {
             if let Some(violation) = self.streams.deliver(StreamChunk {
                 request_id: id,
                 is_last,
-                data,
+                data: data.into(),
             }) {
                 self.state.handle(RouterMsg::CreditViolated(violation));
             }
@@ -501,7 +501,7 @@ mod tests {
         fixture.deliver(id, false, b"queued".to_vec());
         assert_eq!(fixture.cancel(id), Ok(true));
         // Accepted output is not discarded by cancellation.
-        assert_eq!(output.recv().await.unwrap().unwrap().data, b"queued");
+        assert_eq!(output.recv().await.unwrap().unwrap().data, &b"queued"[..]);
         // Releasing a waiting consumer must not require another agent frame.
         assert!(output.recv().await.is_none());
     }
@@ -608,7 +608,7 @@ mod tests {
             id,
             CommandOutcome::error(CommandErrorKind::Internal, "disk gone"),
         );
-        assert_eq!(output.recv().await.unwrap().unwrap().data, b"partial");
+        assert_eq!(output.recv().await.unwrap().unwrap().data, &b"partial"[..]);
         // The failure arrives after the data, as on the wire.
         assert_eq!(
             output.recv().await,
@@ -657,7 +657,7 @@ mod tests {
         // The matches queued before the failure still reach the consumer.
         assert_eq!(
             output.recv().await.unwrap().unwrap().data,
-            b"{\"type\":\"match\"}\n"
+            &b"{\"type\":\"match\"}\n"[..]
         );
         // The failure follows them instead of an end that looks complete.
         assert_eq!(

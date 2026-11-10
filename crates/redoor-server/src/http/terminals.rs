@@ -211,7 +211,10 @@ async fn forward_browser_to_agent(
     while let Some(Ok(frame)) = browser.next().await {
         match frame {
             WsMessage::Binary(bytes) => {
-                if input.send_data(&bytes, false).await.is_err() {
+                // Keystrokes are tiny; copying them keeps a queued frame from pinning the
+                // browser socket's whole read buffer.
+                let bytes = bytes::Bytes::copy_from_slice(&bytes);
+                if input.send_data(bytes, false).await.is_err() {
                     // The attachment is gone; its end reaches the browser the other way.
                     return std::future::pending().await;
                 }
@@ -293,10 +296,7 @@ async fn forward_agent_to_browser(
             ViewerEvent::Event(Some(_)) => continue,
             ViewerEvent::Output(Some(Ok(chunk))) if chunk.is_last => {
                 if !chunk.data.is_empty()
-                    && browser
-                        .send(WsMessage::Binary(chunk.data.into()))
-                        .await
-                        .is_err()
+                    && browser.send(WsMessage::Binary(chunk.data)).await.is_err()
                 {
                     return;
                 }
@@ -308,7 +308,7 @@ async fn forward_agent_to_browser(
                 }
                 return finish(browser, ending.as_ref()).await;
             }
-            ViewerEvent::Output(Some(Ok(chunk))) => WsMessage::Binary(chunk.data.into()),
+            ViewerEvent::Output(Some(Ok(chunk))) => WsMessage::Binary(chunk.data),
             ViewerEvent::Output(Some(Err(_)) | None) => {
                 return finish(browser, ending.as_ref()).await;
             }

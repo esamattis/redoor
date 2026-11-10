@@ -9,6 +9,7 @@
 //! streams of its agent.
 
 use crate::actors::lanes::ControlLanes;
+use bytes::Bytes;
 use redoor_core::stream_credit::{CreditGate, CreditLedger};
 use redoor_protocol::{
     ids::{AgentId, RequestId},
@@ -494,7 +495,10 @@ impl OutboundStream {
     }
 
     /// Splits one logical payload into frames and sends them in order.
-    pub(crate) async fn send_data(&self, data: &[u8], is_last: bool) -> Result<(), OutboundError> {
+    ///
+    /// Takes a shared buffer so forwarded frames (copies) and coalesced upload frames reach the
+    /// lane without another copy.
+    pub(crate) async fn send_data(&self, data: Bytes, is_last: bool) -> Result<(), OutboundError> {
         for chunk in StreamChunk::split(self.lease.id, data, is_last) {
             self.send(chunk).await?;
         }

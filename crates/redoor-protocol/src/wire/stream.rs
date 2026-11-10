@@ -9,6 +9,7 @@
 
 use crate::ids::RequestId;
 use anyhow::{Result, bail};
+use bytes::Bytes;
 
 /// Fixed header length: stream id (8) + flags (1), so the payload offset is known without
 /// parsing.
@@ -20,6 +21,17 @@ pub const CHUNK_SIZE: usize = 64 * 1024;
 pub const MAX_TRANSFER_FRAME_PAYLOAD_BYTES: usize = 64 * 1024;
 /// Largest binary message either side accepts.
 pub const MAX_STREAM_MESSAGE_BYTES: usize = HEADER_SIZE + MAX_TRANSFER_FRAME_PAYLOAD_BYTES;
+
+/// Payloads smaller than this are copied out of the received websocket message instead of
+/// sliced from it.
+///
+/// A slice keeps the whole allocation it came from alive, and tungstenite cuts every message
+/// out of one shared read buffer (128 KiB initially, at least 64 KiB when it grows), so any
+/// sliced payload pins that whole buffer while it is queued. Copying everything below half a
+/// frame keeps the pinned memory within a few times the payload, so the per-stream memory
+/// bound stays meaningful, while full transfer frames, the ones worth not copying, still skip
+/// the copy.
+pub const SMALL_PAYLOAD_COPY_BYTES: usize = 32 * 1024;
 
 /// Flag bit marking the final frame of a completed stream.
 const FLAG_FIN: u8 = 0x01;
@@ -53,16 +65,21 @@ pub struct StreamChunk {
     pub request_id: RequestId,
     /// FIN: the stream completed and no frame of it follows.
     pub is_last: bool,
-    pub data: Vec<u8>,
+    /// Payload bytes; shared rather than owned so frames move between the socket, queues and
+    /// HTTP bodies without copying.
+    pub data: Bytes,
 }
 
 impl StreamChunk {
     /// A data frame; `is_last` marks the successful end of the stream.
-    pub fn data(request_id: RequestId, data: Vec<u8>, is_last: bool) -> Self {
+    ///
+    /// Accepts anything convertible into [`Bytes`] so callers holding a `Vec<u8>` hand over
+    /// its allocation instead of copying it.
+    pub fn data(request_id: RequestId, data: impl Into<Bytes>, is_last: bool) -> Self {
         Self {
             request_id,
             is_last,
-            data,
+            data: data.into(),
         }
     }
 
@@ -85,7 +102,11 @@ impl StreamChunk {
 
     /// Parses and validates a binary websocket message, rejecting short or oversized frames
     /// and unknown flags so corrupt data is never treated as stream content.
-    pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
+    ///
+    /// Takes the message by value so large payloads are sliced out of it without a copy; small
+    /// ones are copied (see [`SMALL_PAYLOAD_COPY_BYTES`]) so they do not pin the websocket
+    /// reader's shared read buffer.
+    pub fn from_bytes(bytes: Bytes) -> Result<Self> {
         if bytes.len() < HEADER_SIZE {
             bail!(
                 "Frame too short: {} bytes (minimum {})",
@@ -103,22 +124,29 @@ impl StreamChunk {
         if flags & !FLAG_FIN != 0 {
             bail!("Unknown frame flags: 0x{flags:02x}");
         }
+        let payload = &bytes[HEADER_SIZE..];
+        let data = if payload.len() < SMALL_PAYLOAD_COPY_BYTES {
+            Bytes::copy_from_slice(payload)
+        } else {
+            bytes.slice(HEADER_SIZE..)
+        };
         Ok(Self {
             request_id,
             is_last: flags & FLAG_FIN != 0,
-            data: bytes[HEADER_SIZE..].to_vec(),
+            data,
         })
     }
 
     /// Splits one logical payload into frame-sized chunks; `is_last` marks the final one.
     ///
     /// An empty final payload still yields one (empty) FIN frame, so a stream can always be
-    /// ended; an empty non-final payload yields nothing.
+    /// ended; an empty non-final payload yields nothing. Frames share `data`'s buffer instead
+    /// of copying it.
     pub fn split(
         request_id: RequestId,
-        data: &[u8],
+        data: Bytes,
         is_last: bool,
-    ) -> impl Iterator<Item = StreamChunk> + '_ {
+    ) -> impl Iterator<Item = StreamChunk> {
         let pieces = data.len().div_ceil(MAX_TRANSFER_FRAME_PAYLOAD_BYTES);
         let count = if pieces == 0 && is_last { 1 } else { pieces };
         (0..count).map(move |index| {
@@ -126,7 +154,7 @@ impl StreamChunk {
             let end = (start + MAX_TRANSFER_FRAME_PAYLOAD_BYTES).min(data.len());
             StreamChunk::data(
                 request_id,
-                data[start.min(end)..end].to_vec(),
+                data.slice(start.min(end)..end),
                 is_last && index + 1 == count,
             )
         })
@@ -143,9 +171,17 @@ mod tests {
         for frame in [
             StreamChunk::data(RequestId::new(123), vec![1, 2, 3], false),
             StreamChunk::data(RequestId::new(u64::MAX), Vec::new(), true),
+            StreamChunk::data(
+                RequestId::new(7),
+                vec![5; MAX_TRANSFER_FRAME_PAYLOAD_BYTES],
+                false,
+            ),
         ] {
             // Both sides must decode exactly what the other side encoded.
-            assert_eq!(StreamChunk::from_bytes(&frame.to_bytes()).unwrap(), frame);
+            assert_eq!(
+                StreamChunk::from_bytes(Bytes::from(frame.to_bytes())).unwrap(),
+                frame
+            );
         }
     }
 
@@ -161,36 +197,70 @@ mod tests {
     #[test]
     fn malformed_frames_are_rejected() {
         // Shorter than the header.
-        assert!(StreamChunk::from_bytes(&[0; 8]).is_err());
+        assert!(StreamChunk::from_bytes(Bytes::from_static(&[0; 8])).is_err());
         // An unknown flag bit means a corrupt sender; failures travel in results instead.
         let mut bytes = vec![0; HEADER_SIZE];
         bytes[8] = 0x02;
-        assert!(StreamChunk::from_bytes(&bytes).is_err());
+        assert!(StreamChunk::from_bytes(Bytes::from(bytes)).is_err());
         // Oversized payloads would defeat the per-frame memory bound.
-        assert!(StreamChunk::from_bytes(&vec![0; MAX_STREAM_MESSAGE_BYTES + 1]).is_err());
+        assert!(
+            StreamChunk::from_bytes(Bytes::from(vec![0; MAX_STREAM_MESSAGE_BYTES + 1])).is_err()
+        );
+    }
+
+    /// Verifies small payloads are copied out of the message while large ones share it.
+    #[test]
+    fn small_payloads_do_not_pin_the_message_buffer() {
+        let message = |payload: usize| {
+            Bytes::from(StreamChunk::data(RequestId::new(1), vec![3; payload], false).to_bytes())
+        };
+        let inside = |chunk: &StreamChunk, message: &Bytes| {
+            let range = message.as_ptr_range();
+            range.contains(&chunk.data.as_ptr())
+        };
+
+        let small = message(SMALL_PAYLOAD_COPY_BYTES - 1);
+        let chunk = StreamChunk::from_bytes(small.clone()).unwrap();
+        // A frame below half a frame (a keystroke or redraw burst) gets its own allocation, so
+        // queuing it does not keep the websocket reader's whole read buffer alive.
+        assert!(!inside(&chunk, &small));
+        // The copy still carries the exact payload.
+        assert_eq!(chunk.data.len(), SMALL_PAYLOAD_COPY_BYTES - 1);
+
+        let large = message(SMALL_PAYLOAD_COPY_BYTES);
+        let chunk = StreamChunk::from_bytes(large.clone()).unwrap();
+        // A frame at the threshold is large enough that pinning the read buffer costs only a
+        // few times its size, so it is sliced, not copied, to keep large transfers copy-free.
+        assert!(inside(&chunk, &large));
+        assert_eq!(chunk.data.len(), SMALL_PAYLOAD_COPY_BYTES);
     }
 
     /// Verifies payload splitting at frame boundaries.
     #[test]
     fn split_respects_frame_size_and_fin() {
         let exact = vec![7u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES];
-        let frames: Vec<_> = StreamChunk::split(RequestId::new(1), &exact, true).collect();
+        let frames: Vec<_> =
+            StreamChunk::split(RequestId::new(1), Bytes::from(exact), true).collect();
         // Exactly one full frame carries FIN.
         assert_eq!(frames.len(), 1);
         assert!(frames[0].is_last);
 
         let over = vec![7u8; MAX_TRANSFER_FRAME_PAYLOAD_BYTES + 1];
-        let frames: Vec<_> = StreamChunk::split(RequestId::new(1), &over, true).collect();
+        let frames: Vec<_> =
+            StreamChunk::split(RequestId::new(1), Bytes::from(over), true).collect();
         // One byte over the limit needs a second frame, and only it is final.
         assert_eq!(frames.len(), 2);
         assert!(!frames[0].is_last && frames[1].is_last);
-        assert_eq!(frames[1].data, vec![7]);
+        assert_eq!(frames[1].data, vec![7u8]);
 
         // An empty final payload still ends the stream.
-        let empty: Vec<_> = StreamChunk::split(RequestId::new(1), &[], true).collect();
+        let empty: Vec<_> = StreamChunk::split(RequestId::new(1), Bytes::new(), true).collect();
         assert_eq!(empty.len(), 1);
         assert!(empty[0].is_last && empty[0].data.is_empty());
         // An empty non-final payload sends nothing.
-        assert_eq!(StreamChunk::split(RequestId::new(1), &[], false).count(), 0);
+        assert_eq!(
+            StreamChunk::split(RequestId::new(1), Bytes::new(), false).count(),
+            0
+        );
     }
 }

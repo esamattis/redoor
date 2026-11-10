@@ -128,7 +128,7 @@ impl<'a> SearchStream<'a> {
         let sent = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(self.canceled()),
-            sent = self.stream.send(&last, true) => sent,
+            sent = self.stream.send(last, true) => sent,
         };
         if sent {
             Ok(())
@@ -185,7 +185,9 @@ impl BatchWriter {
     /// Sends the batch as non-final data; `false` if the connection closed.
     async fn flush(&mut self, stream: &mut StreamWriter) -> bool {
         self.flush_at = None;
-        let sent = stream.send(&self.batch, false).await;
+        let sent = stream
+            .send(bytes::Bytes::copy_from_slice(&self.batch), false)
+            .await;
         self.batch.clear();
         sent
     }
@@ -352,7 +354,7 @@ mod tests {
                 let chunk = frame.as_stream().expect("a stream frame");
                 // The match went out as data before the stream ended.
                 assert!(!chunk.is_last);
-                assert_eq!(chunk.data, b"{\"text\":\"early\"}\n");
+                assert_eq!(chunk.data, &b"{\"text\":\"early\"}\n"[..]);
                 Ok(Line {
                     text: "done".to_string(),
                 })

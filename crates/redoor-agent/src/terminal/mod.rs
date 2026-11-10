@@ -218,7 +218,7 @@ pub(crate) async fn attach(
     }) = session.attach(size).await
     else {
         send_event(&mut writer, stream, session_gone()).await;
-        writer.send(&[], true).await;
+        writer.send(Bytes::new(), true).await;
         return;
     };
     let _detach = DetachGuard {
@@ -230,7 +230,7 @@ pub(crate) async fn attach(
         () = forward_frames(frames, reason, &mut writer, stream) => {}
         () = apply_input(input, queue, &session, serial, &control, stream) => {}
     }
-    writer.send(&[], true).await;
+    writer.send(Bytes::new(), true).await;
 }
 
 /// The event of an attach whose session is gone, such as after the agent restarted.
@@ -261,7 +261,7 @@ async fn forward_frames(
                 let sent = tokio::select! {
                     biased;
                     _ = &mut reason => return,
-                    sent = writer.send(&bytes, false) => sent,
+                    sent = writer.send(bytes, false) => sent,
                 };
                 if !sent {
                     return;
@@ -314,7 +314,7 @@ async fn apply_input(
                 if let Some(sender) = &queue
                     && !chunk.data.is_empty()
                 {
-                    let bytes = Bytes::from(chunk.data);
+                    let bytes = chunk.data;
                     if sender.send(InputChunk { serial, bytes }).await.is_err() {
                         // The shell is gone; its exit reaches the server on the output side.
                         queue = None;

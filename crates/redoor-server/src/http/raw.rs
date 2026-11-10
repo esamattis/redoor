@@ -421,7 +421,7 @@ mod tests {
                 streams.deliver(StreamChunk {
                     request_id,
                     is_last: false,
-                    data: vec![b'a'],
+                    data: vec![b'a'].into(),
                 })
             }
         });

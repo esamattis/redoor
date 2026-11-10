@@ -3,6 +3,7 @@
 use super::bounded_tar::{BoundedTarReader, InvalidMetadata, InvalidTermination};
 use super::upload::{PublicationGate, SinkError, UploadSink};
 use crate::errors::AgentCommandError;
+use bytes::Bytes;
 use redoor_core::destination::{
     DestinationPlaceError, check_existing_destination, place_temp_at_destination,
 };
@@ -116,12 +117,12 @@ fn sanitize_tar_entry_path(entry_path: &Path) -> Result<PathBuf, TarUploadError>
 
 /// Extracts tar bytes from the async-safe chunk channel into the temp destination directory.
 fn unpack_tar_stream_into_directory(
-    chunk_receiver: mpsc::Receiver<Vec<u8>>,
+    chunk_receiver: mpsc::Receiver<Bytes>,
     destination_root: &Path,
 ) -> Result<(), TarUploadError> {
     struct ChannelTarReader {
-        chunk_receiver: mpsc::Receiver<Vec<u8>>,
-        current_chunk: Vec<u8>,
+        chunk_receiver: mpsc::Receiver<Bytes>,
+        current_chunk: Bytes,
         offset: usize,
         finished: bool,
     }
@@ -163,7 +164,7 @@ fn unpack_tar_stream_into_directory(
 
     let reader = ChannelTarReader {
         chunk_receiver,
-        current_chunk: Vec::new(),
+        current_chunk: Bytes::new(),
         offset: 0,
         finished: false,
     };
@@ -228,7 +229,7 @@ pub(crate) struct TarDirectorySink {
     request_id: RequestId,
     on_existing: CopyExistingMode,
     staging: StagingPath,
-    chunk_sender: Option<mpsc::Sender<Vec<u8>>>,
+    chunk_sender: Option<mpsc::Sender<Bytes>>,
     unpacker: Option<JoinHandle<Result<(), TarUploadError>>>,
 }
 
@@ -266,7 +267,7 @@ impl TarDirectorySink {
         )
         .await
         .map_err(TarUploadError::CreateTempDirectory)?;
-        let (chunk_sender, chunk_receiver) = mpsc::channel::<Vec<u8>>(EXTRACTOR_QUEUE_CAPACITY);
+        let (chunk_sender, chunk_receiver) = mpsc::channel::<Bytes>(EXTRACTOR_QUEUE_CAPACITY);
         let root = staging.path().to_path_buf();
         let unpacker = tokio::task::spawn_blocking(move || {
             unpack_tar_stream_into_directory(chunk_receiver, &root)
@@ -306,7 +307,7 @@ impl TarDirectorySink {
 
 impl UploadSink for TarDirectorySink {
     /// Forwards bytes to the extractor while a full queue stays interruptible by cancellation.
-    async fn write(&mut self, data: Vec<u8>, cancel: &CancellationToken) -> Result<(), SinkError> {
+    async fn write(&mut self, data: Bytes, cancel: &CancellationToken) -> Result<(), SinkError> {
         if data.is_empty() {
             return Ok(());
         }
@@ -428,7 +429,7 @@ mod tests {
                 .unwrap();
             let bytes = builder.into_inner().unwrap();
             let (sender, receiver) = mpsc::channel(1);
-            sender.send(bytes).await.unwrap();
+            sender.send(Bytes::from(bytes)).await.unwrap();
             drop(sender);
             let root = temp.path().to_path_buf();
             tokio::task::spawn_blocking(move || unpack_tar_stream_into_directory(receiver, &root))
@@ -448,7 +449,7 @@ mod tests {
         destination: &Path,
         staging: &Path,
         on_existing: CopyExistingMode,
-        chunk_sender: Option<mpsc::Sender<Vec<u8>>>,
+        chunk_sender: Option<mpsc::Sender<Bytes>>,
         unpacker: JoinHandle<Result<(), TarUploadError>>,
     ) -> TarDirectorySink {
         TarDirectorySink {
@@ -577,9 +578,9 @@ mod tests {
         let temp_path = temp_dir.path().join("tar-upload-cancel");
         tokio::fs::create_dir(&temp_path).await.unwrap();
 
-        let (chunk_sender, mut chunk_receiver) = mpsc::channel::<Vec<u8>>(1);
+        let (chunk_sender, mut chunk_receiver) = mpsc::channel::<Bytes>(1);
         chunk_sender
-            .try_send(vec![1])
+            .try_send(Bytes::from_static(&[1]))
             .expect("the first chunk should fill the bounded queue");
         let (release_sender, release_receiver) = tokio::sync::oneshot::channel::<()>();
         let tree_present_at_join = Arc::new(AtomicBool::new(false));
@@ -602,7 +603,7 @@ mod tests {
         );
         let cancel = CancellationToken::new();
 
-        let mut write = Box::pin(sink.write(vec![2], &cancel));
+        let mut write = Box::pin(sink.write(Bytes::from_static(&[2]), &cancel));
         // A full extractor queue must yield instead of blocking the Tokio worker.
         assert!(futures_util::poll!(&mut write).is_pending());
         cancel.cancel();

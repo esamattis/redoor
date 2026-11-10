@@ -250,7 +250,11 @@ impl RawFileSink {
 
 impl UploadSink for RawFileSink {
     /// Appends chunk bytes to the staging file.
-    async fn write(&mut self, data: Vec<u8>, _cancel: &CancellationToken) -> Result<(), SinkError> {
+    async fn write(
+        &mut self,
+        data: bytes::Bytes,
+        _cancel: &CancellationToken,
+    ) -> Result<(), SinkError> {
         self.file.write_all(&data).await.map_err(|error| {
             let message = format!("Failed to write upload chunk: {error}");
             redoor_core::log_failure!(

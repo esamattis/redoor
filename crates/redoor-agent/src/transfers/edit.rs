@@ -227,7 +227,11 @@ impl UploadSink for EditSession {
     const TERMINAL_WINS_OVER_CANCEL: bool = true;
 
     /// Appends the chunk to the anonymous staging file.
-    async fn write(&mut self, data: Vec<u8>, _cancel: &CancellationToken) -> Result<(), SinkError> {
+    async fn write(
+        &mut self,
+        data: bytes::Bytes,
+        _cancel: &CancellationToken,
+    ) -> Result<(), SinkError> {
         self.stage(&data).await.map_err(SinkError::Failed)
     }
 

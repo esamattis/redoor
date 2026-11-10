@@ -7,6 +7,7 @@
 use crate::commands::ctx::CommandCtx;
 use crate::errors::AgentCommandError;
 use crate::runtime::responder::{ControlSender, Responder, ResultLedger};
+use bytes::Bytes;
 use redoor_core::log;
 use redoor_core::stream_credit::CreditLedger;
 use redoor_protocol::wire::request::{CommandError, CommandOutcome};
@@ -43,10 +44,10 @@ pub(crate) trait UploadSink: Send + Sized {
     /// uploads instead stay promptly cancelable because publication is separately gated.
     const TERMINAL_WINS_OVER_CANCEL: bool = false;
 
-    /// Stages one chunk of payload bytes.
+    /// Stages one chunk of payload bytes; the frame's shared buffer is handed over as is.
     fn write(
         &mut self,
-        data: Vec<u8>,
+        data: Bytes,
         cancel: &CancellationToken,
     ) -> impl Future<Output = Result<(), SinkError>> + Send;
 
@@ -530,7 +531,7 @@ mod tests {
         /// Records a staged chunk.
         async fn write(
             &mut self,
-            _data: Vec<u8>,
+            _data: Bytes,
             _cancel: &CancellationToken,
         ) -> Result<(), SinkError> {
             self.record("write");

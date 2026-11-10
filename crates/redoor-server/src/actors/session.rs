@@ -491,7 +491,7 @@ impl SessionRuntime {
                 }
                 Err(error) => self.handle_malformed_frame(&text, error).await,
             },
-            WsMessage::Binary(bytes) => self.handle_stream_frame(&bytes).await,
+            WsMessage::Binary(bytes) => self.handle_stream_frame(bytes).await,
             _ => SessionStep::Continue,
         }
     }
@@ -579,7 +579,7 @@ impl SessionRuntime {
     /// Payload never passes through the router: only a stream's terminal frame is reported to
     /// it. Every stream is credited, so delivery never waits on a consumer and a stalled HTTP
     /// client or copy destination cannot freeze the other streams of this connection.
-    async fn handle_stream_frame(&mut self, bytes: &[u8]) -> SessionStep {
+    async fn handle_stream_frame(&mut self, bytes: bytes::Bytes) -> SessionStep {
         let Some(streams) = &self.streams else {
             log!(
                 Level::Warning,

@@ -1,6 +1,7 @@
 //! Per-stream writer for framed agent-to-server byte streams.
 
 use crate::runtime::responder::{ControlSender, OutboundFrame};
+use bytes::Bytes;
 use redoor_core::stream_credit::CreditGate;
 use redoor_protocol::{
     ids::RequestId,
@@ -138,8 +139,10 @@ impl StreamWriter {
     }
 
     /// Sends payload bytes; `is_last` marks the successful end of the stream.
-    pub(crate) async fn send(&mut self, data: &[u8], is_last: bool) -> bool {
-        for chunk in StreamChunk::split(self.request_id, data, is_last) {
+    ///
+    /// Takes the payload by value so an owned buffer becomes the frames' data without a copy.
+    pub(crate) async fn send(&mut self, data: impl Into<Bytes>, is_last: bool) -> bool {
+        for chunk in StreamChunk::split(self.request_id, data.into(), is_last) {
             if !self.send_chunk(chunk).await {
                 return false;
             }
@@ -217,10 +220,10 @@ mod tests {
         let (lane, mut receiver) = mpsc::channel(64);
         let mut writer = StreamWriter::new(lane, request_id, credits.register(request_id));
         for _ in 0..STREAM_CREDIT_WINDOW_FRAMES {
-            assert!(writer.send(b"x", false).await);
+            assert!(writer.send(&b"x"[..], false).await);
         }
         let blocked = tokio::spawn(async move {
-            let sent = writer.send(b"y", false).await;
+            let sent = writer.send(&b"y"[..], false).await;
             (writer, sent)
         });
         tokio::task::yield_now().await;
@@ -236,7 +239,7 @@ mod tests {
         assert!(sent);
         assert_eq!(drain(&mut receiver).len(), 1);
         // FIN is terminal and must go out without any credit left.
-        assert!(writer.send(b"", true).await);
+        assert!(writer.send(Bytes::new(), true).await);
         let terminal = drain(&mut receiver);
         assert!(terminal.len() == 1 && terminal[0].is_last);
         drop(writer);

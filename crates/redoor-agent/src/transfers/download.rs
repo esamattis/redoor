@@ -9,6 +9,7 @@ use crate::commands::ctx::{CommandCtx, Reply};
 use crate::runtime::cancel::Registration;
 use crate::runtime::responder::Responder;
 use anyhow::{Context, Result, bail};
+use bytes::{BufMut, Bytes, BytesMut};
 use redoor_core::directory_measurement::{
     archive_member_path, directory_archive_root, measure_directory,
 };
@@ -38,7 +39,9 @@ pub(crate) trait ByteSource: Send {
     /// Returns the next block of payload, `None` at end of stream, or a typed terminal failure.
     ///
     /// Must be cancellation safe: the driver drops it when cancellation wins.
-    fn next_block(&mut self) -> impl Future<Output = Result<Option<Vec<u8>>, CommandError>> + Send;
+    ///
+    /// Blocks are shared buffers so they become frame payloads without another copy.
+    fn next_block(&mut self) -> impl Future<Output = Result<Option<Bytes>, CommandError>> + Send;
 
     /// Stops background producers and waits for them so nothing outlives the stream.
     fn finish(self) -> impl Future<Output = ()> + Send;
@@ -98,7 +101,7 @@ impl DownloadDriver {
             Err(message) => return self.fail(message),
         };
         let cancel = self.registration.token().clone();
-        let mut pending: Option<Vec<u8>> = None;
+        let mut pending: Option<Bytes> = None;
         let end = loop {
             let block = tokio::select! {
                 _ = cancel.cancelled() => break DownloadEnd::Canceled,
@@ -107,7 +110,7 @@ impl DownloadDriver {
             match block {
                 Ok(Some(data)) => {
                     if let Some(previous) = pending.replace(data)
-                        && let Some(end) = self.send_cancelable(&previous, &cancel).await
+                        && let Some(end) = self.send_cancelable(previous, &cancel).await
                     {
                         break end;
                     }
@@ -139,7 +142,7 @@ impl DownloadDriver {
     /// Sends one non-final block while cancellation stays able to interrupt backpressure.
     async fn send_cancelable(
         &mut self,
-        data: &[u8],
+        data: Bytes,
         cancel: &CancellationToken,
     ) -> Option<DownloadEnd> {
         tokio::select! {
@@ -149,13 +152,9 @@ impl DownloadDriver {
     }
 
     /// Writes the final frame, still honoring a cancel that arrives while it is blocked.
-    async fn complete(
-        mut self,
-        final_block: Vec<u8>,
-        cancel: &CancellationToken,
-    ) -> DownloadOutcome {
+    async fn complete(mut self, final_block: Bytes, cancel: &CancellationToken) -> DownloadOutcome {
         let canceled = tokio::select! {
-            _ = self.stream.send(&final_block, true) => false,
+            _ = self.stream.send(final_block, true) => false,
             _ = cancel.cancelled() => true,
         };
         if canceled {
@@ -311,7 +310,6 @@ pub(crate) struct FileRangeSource {
     file: File,
     /// Bytes left in the requested range, or `None` to read to end of file.
     remaining: Option<u64>,
-    buffer: Vec<u8>,
 }
 
 impl FileRangeSource {
@@ -337,17 +335,16 @@ impl FileRangeSource {
                 })?;
             remaining = range_end.map(|end| end.saturating_sub(start));
         }
-        Ok(Self {
-            file,
-            remaining,
-            buffer: vec![0; stream::CHUNK_SIZE],
-        })
+        Ok(Self { file, remaining })
     }
 }
 
 impl ByteSource for FileRangeSource {
     /// Reads at most one chunk, never past the requested range end.
-    async fn next_block(&mut self) -> Result<Option<Vec<u8>>, CommandError> {
+    ///
+    /// Each block is read into its own buffer that is frozen and handed to the stream as is,
+    /// so the payload is never copied between the file and the websocket frame encoder.
+    async fn next_block(&mut self) -> Result<Option<Bytes>, CommandError> {
         let read_size = match self.remaining {
             Some(0) => return Ok(None),
             Some(remaining) => {
@@ -355,9 +352,12 @@ impl ByteSource for FileRangeSource {
             }
             None => stream::CHUNK_SIZE,
         };
+        let mut buffer = BytesMut::with_capacity(read_size);
+        // The limit keeps a ranged read from overshooting even if the allocator hands out
+        // more capacity than asked for.
         let read = self
             .file
-            .read(&mut self.buffer[..read_size])
+            .read_buf(&mut (&mut buffer).limit(read_size))
             .await
             .map_err(|error| {
                 let message = format!("Failed to read file: {error:#}");
@@ -370,7 +370,7 @@ impl ByteSource for FileRangeSource {
         if let Some(remaining) = self.remaining.as_mut() {
             *remaining = remaining.saturating_sub(read as u64);
         }
-        Ok(Some(self.buffer[..read].to_vec()))
+        Ok(Some(buffer.freeze()))
     }
 
     /// Closing the file is the only cleanup a file range needs.
@@ -449,41 +449,84 @@ fn write_directory_tar<W: Write>(writer: W, source_path: &Path, include_root: bo
         archive_root.as_deref(),
     )?;
     builder.finish().context("Failed to finalize tar stream")?;
-    builder
+    let mut writer = builder
         .into_inner()
-        .context("Failed to unwrap finished tar writer")
+        .context("Failed to unwrap finished tar writer")?;
+    // The channel writer buffers up to a full frame; flushing here, not on drop, is what makes
+    // a failure to send the archive's tail an error instead of a silently short stream.
+    writer.flush().context("Failed to flush tar stream")?;
+    Ok(writer)
 }
 
 /// Bridges a synchronous writer (`tar::Builder`, a Git export) into the async stream.
 ///
 /// The tar crate and gix expose blocking APIs, so archives and committed content are
 /// produced in a blocking task that pushes chunks through this adapter into an async
-/// channel. Each write sends at most one stream chunk, so the channel's bound is a bound on
-/// memory however large the producer's own writes are.
+/// channel. Writes are coalesced into blocks of one full stream chunk, because tar emits
+/// 512-byte headers and 8 KiB copy chunks: sent one by one, each would spend a frame of the
+/// small per-stream credit window and an allocation on a few bytes. Every block is at most one
+/// chunk, so the channel's bound is still a bound on memory however large the producer's own
+/// writes are. `BlockingWriterSource` flushes the remainder after a successful producer, so a
+/// producer that forgets to flush cannot end the stream with `FIN` while bytes are missing;
+/// a failed producer's remainder is discarded because its stream fails anyway.
 struct ChannelWriter {
-    sender: mpsc::Sender<Vec<u8>>,
+    sender: mpsc::Sender<Bytes>,
     runtime: tokio::runtime::Handle,
+    /// Bytes written since the last full block, never more than one chunk.
+    buffer: BytesMut,
+}
+
+impl ChannelWriter {
+    /// Creates a writer with an empty one-chunk buffer.
+    fn new(sender: mpsc::Sender<Bytes>, runtime: tokio::runtime::Handle) -> Self {
+        Self {
+            sender,
+            runtime,
+            buffer: BytesMut::with_capacity(stream::CHUNK_SIZE),
+        }
+    }
+
+    /// Hands the buffered bytes to the async side and starts a fresh buffer.
+    ///
+    /// The buffer is swapped out rather than split so the next block gets a full chunk of
+    /// capacity of its own instead of sharing (and pinning) the frozen block's allocation.
+    fn send_buffer(&mut self) -> std::io::Result<()> {
+        let block = std::mem::replace(
+            &mut self.buffer,
+            BytesMut::with_capacity(stream::CHUNK_SIZE),
+        );
+        self.runtime
+            .block_on(self.sender.send(block.freeze()))
+            .map_err(|_| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Stream receiver dropped")
+            })
+    }
 }
 
 impl std::io::Write for ChannelWriter {
+    /// Buffers at most the rest of the current chunk and sends the chunk once it is full.
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let chunk = &buf[..buf.len().min(stream::CHUNK_SIZE)];
-        self.runtime
-            .block_on(self.sender.send(chunk.to_vec()))
-            .map_err(|_| {
-                std::io::Error::new(std::io::ErrorKind::BrokenPipe, "Stream receiver dropped")
-            })?;
-        Ok(chunk.len())
+        let room = stream::CHUNK_SIZE - self.buffer.len();
+        let accepted = buf.len().min(room);
+        self.buffer.extend_from_slice(&buf[..accepted]);
+        if self.buffer.len() == stream::CHUNK_SIZE {
+            self.send_buffer()?;
+        }
+        Ok(accepted)
     }
 
+    /// Sends a partially filled chunk; producers call this once at the end of their output.
     fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
+        if self.buffer.is_empty() {
+            return Ok(());
+        }
+        self.send_buffer()
     }
 }
 
 /// Payload produced by a blocking writer task; shared by directory archives and Git exports.
 struct BlockingWriterSource {
-    receiver: mpsc::Receiver<Vec<u8>>,
+    receiver: mpsc::Receiver<Bytes>,
     /// The blocking writer; its result is the only way to tell a finished stream from one
     /// that stopped half-way (both just drop the block sender). `None` once joined.
     producer: Option<JoinHandle<Result<(), CommandError>>>,
@@ -491,14 +534,22 @@ struct BlockingWriterSource {
 
 impl BlockingWriterSource {
     /// Runs `produce` on a blocking thread with a writer that feeds this source.
+    ///
+    /// The writer is lent rather than handed over so the final flush happens here, once, for
+    /// every producer: a successful stream always carries the writer's buffered tail.
     fn spawn(
-        produce: impl FnOnce(ChannelWriter) -> Result<(), CommandError> + Send + 'static,
+        produce: impl FnOnce(&mut ChannelWriter) -> Result<(), CommandError> + Send + 'static,
     ) -> Self {
-        let (sender, receiver) = mpsc::channel::<Vec<u8>>(8);
+        let (sender, receiver) = mpsc::channel::<Bytes>(8);
+        let runtime = tokio::runtime::Handle::current();
         let producer = tokio::task::spawn_blocking(move || {
-            produce(ChannelWriter {
-                sender,
-                runtime: tokio::runtime::Handle::current(),
+            let mut writer = ChannelWriter::new(sender, runtime);
+            produce(&mut writer)?;
+            writer.flush().map_err(|error| {
+                CommandError::new(
+                    CommandErrorKind::Internal,
+                    format!("Failed to send the end of the stream: {error}"),
+                )
             })
         });
         Self {
@@ -511,7 +562,7 @@ impl BlockingWriterSource {
 impl ByteSource for BlockingWriterSource {
     /// Yields the next block the writer produced, and at the end of the blocks the writer's
     /// outcome, so a truncated stream ends with an error instead of `FIN`.
-    async fn next_block(&mut self) -> Result<Option<Vec<u8>>, CommandError> {
+    async fn next_block(&mut self) -> Result<Option<Bytes>, CommandError> {
         if let Some(block) = self.receiver.recv().await {
             return Ok(Some(block));
         }
@@ -613,7 +664,7 @@ impl TarDirectorySource {
 
 impl ByteSource for TarDirectorySource {
     /// Yields the archive writer's blocks and finally its outcome.
-    async fn next_block(&mut self) -> Result<Option<Vec<u8>>, CommandError> {
+    async fn next_block(&mut self) -> Result<Option<Bytes>, CommandError> {
         self.archive.next_block().await
     }
 
@@ -637,14 +688,13 @@ pub(crate) struct GitRevisionSource {
 impl GitRevisionSource {
     /// Starts exporting `path` at `rev` on a blocking thread.
     ///
-    /// Each write is buffered up to one stream chunk, so tar headers and small files do not
-    /// each become a frame of their own.
+    /// The channel writer already coalesces writes into full chunks, so tar headers and small
+    /// files do not each become a frame of their own; the export flushes it when done.
     pub(crate) fn open(path: String, rev: String, include_root: bool) -> Self {
         let interrupt = Arc::new(AtomicBool::new(false));
         let export = BlockingWriterSource::spawn({
             let interrupt = interrupt.clone();
             move |writer| {
-                let writer = std::io::BufWriter::with_capacity(stream::CHUNK_SIZE, writer);
                 crate::commands::git::export::export(&path, &rev, include_root, writer, &interrupt)
             }
         });
@@ -654,7 +704,7 @@ impl GitRevisionSource {
 
 impl ByteSource for GitRevisionSource {
     /// Yields the export's blocks and finally its outcome.
-    async fn next_block(&mut self) -> Result<Option<Vec<u8>>, CommandError> {
+    async fn next_block(&mut self) -> Result<Option<Bytes>, CommandError> {
         self.export.next_block().await
     }
 
@@ -800,7 +850,7 @@ mod tests {
 
     /// Source that yields scripted blocks and records when it was finished.
     struct ScriptedSource {
-        blocks: Vec<Result<Option<Vec<u8>>, CommandError>>,
+        blocks: Vec<Result<Option<Bytes>, CommandError>>,
         finished: std::sync::Arc<std::sync::atomic::AtomicBool>,
         registry: CancelRegistry<RequestId>,
         registered_at_finish: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -808,7 +858,7 @@ mod tests {
 
     impl ByteSource for ScriptedSource {
         /// Yields the next scripted block, then waits forever like an idle producer.
-        async fn next_block(&mut self) -> Result<Option<Vec<u8>>, CommandError> {
+        async fn next_block(&mut self) -> Result<Option<Bytes>, CommandError> {
             if self.blocks.is_empty() {
                 return std::future::pending().await;
             }
@@ -836,10 +886,7 @@ mod tests {
     }
 
     /// Runs a driver over scripted blocks and returns the decoded frames plus lifecycle flags.
-    async fn drive(
-        blocks: Vec<Result<Option<Vec<u8>>, CommandError>>,
-        cancel_first: bool,
-    ) -> Driven {
+    async fn drive(blocks: Vec<Result<Option<Bytes>, CommandError>>, cancel_first: bool) -> Driven {
         let registry = CancelRegistry::new(None);
         let registration = registry.register(RequestId::new(9)).unwrap();
         if cancel_first {
@@ -882,7 +929,11 @@ mod tests {
     #[tokio::test]
     async fn completed_stream_marks_only_the_final_frame_last() {
         let driven = drive(
-            vec![Ok(Some(b"a".to_vec())), Ok(Some(b"b".to_vec())), Ok(None)],
+            vec![
+                Ok(Some(Bytes::from_static(b"a"))),
+                Ok(Some(Bytes::from_static(b"b"))),
+                Ok(None),
+            ],
             false,
         )
         .await;
@@ -894,7 +945,10 @@ mod tests {
                 .iter()
                 .map(|frame| (frame.data.clone(), frame.is_last))
                 .collect::<Vec<_>>(),
-            vec![(b"a".to_vec(), false), (b"b".to_vec(), true)]
+            vec![
+                (Bytes::from_static(b"a"), false),
+                (Bytes::from_static(b"b"), true)
+            ]
         );
         // The success result follows the data.
         assert!(driven.result.is_ok());
@@ -907,7 +961,7 @@ mod tests {
     /// Verifies the cancel ordering: stop producer, unregister, then report.
     #[tokio::test]
     async fn cancellation_finishes_the_source_then_unregisters_then_reports() {
-        let driven = drive(vec![Ok(Some(b"a".to_vec()))], true).await;
+        let driven = drive(vec![Ok(Some(Bytes::from_static(b"a")))], true).await;
 
         // The producer is stopped while the request is still registered.
         assert!(driven.finished && driven.registered_at_finish);
@@ -930,7 +984,7 @@ mod tests {
     async fn source_failure_reports_its_message_after_cleanup() {
         let driven = drive(
             vec![
-                Ok(Some(b"a".to_vec())),
+                Ok(Some(Bytes::from_static(b"a"))),
                 Err(CommandError::new(
                     CommandErrorKind::InvalidInput,
                     "Failed to read file: boom",
@@ -987,6 +1041,101 @@ mod tests {
         };
         assert!(message.message.contains("z.sock"), "{message:?}");
         source.finish().await;
+    }
+
+    /// Runs `write` against a channel writer on a blocking thread, as the real producers do,
+    /// and returns the blocks it sent plus its outcome.
+    async fn channel_writer_blocks(
+        write: impl FnOnce(&mut ChannelWriter) -> std::io::Result<()> + Send + 'static,
+    ) -> (Vec<Bytes>, std::io::Result<()>) {
+        let (sender, mut receiver) = mpsc::channel(64);
+        let runtime = tokio::runtime::Handle::current();
+        let outcome = tokio::task::spawn_blocking(move || {
+            let mut writer = ChannelWriter::new(sender, runtime);
+            write(&mut writer)
+        })
+        .await
+        .unwrap();
+        let mut blocks = Vec::new();
+        while let Ok(block) = receiver.try_recv() {
+            blocks.push(block);
+        }
+        (blocks, outcome)
+    }
+
+    /// Small writes are coalesced into full chunks and only the flush sends the remainder.
+    #[tokio::test]
+    async fn channel_writer_coalesces_small_writes_into_full_chunks() {
+        let header = [1u8; 512];
+        let writes = 2 * stream::CHUNK_SIZE / header.len() + 1;
+        let (blocks, outcome) = channel_writer_blocks(move |writer| {
+            for _ in 0..writes {
+                writer.write_all(&header)?;
+            }
+            writer.flush()
+        })
+        .await;
+        // Every write and the flush succeeded.
+        assert!(outcome.is_ok());
+        // Hundreds of 512-byte writes become two full frames plus one flushed remainder,
+        // instead of one frame (and one unit of stream credit) per write.
+        assert_eq!(
+            blocks.iter().map(Bytes::len).collect::<Vec<_>>(),
+            vec![stream::CHUNK_SIZE, stream::CHUNK_SIZE, header.len()]
+        );
+        // Coalescing must not reorder or lose bytes.
+        assert_eq!(
+            blocks.iter().map(Bytes::len).sum::<usize>(),
+            writes * header.len()
+        );
+    }
+
+    /// A single large write is cut at the chunk size so every block still fits one frame.
+    #[tokio::test]
+    async fn channel_writer_caps_blocks_at_one_chunk() {
+        let (blocks, outcome) = channel_writer_blocks(|writer| {
+            writer.write_all(&vec![2u8; stream::CHUNK_SIZE + 10])?;
+            writer.flush()?;
+            // A second flush with nothing buffered must not send an empty block.
+            writer.flush()
+        })
+        .await;
+        // Writing and flushing succeeded.
+        assert!(outcome.is_ok());
+        // One full chunk, then the 10-byte tail from the flush, and no empty block.
+        assert_eq!(
+            blocks.iter().map(Bytes::len).collect::<Vec<_>>(),
+            vec![stream::CHUNK_SIZE, 10]
+        );
+    }
+
+    /// A producer that fails before flushing sends nothing for its unfinished chunk, and a
+    /// closed stream surfaces as a write error.
+    #[tokio::test]
+    async fn channel_writer_sends_nothing_unflushed_and_reports_a_closed_stream() {
+        let (blocks, outcome) = channel_writer_blocks(|writer| {
+            writer.write_all(b"partial")?;
+            Err(std::io::Error::other("producer failed"))
+        })
+        .await;
+        // The producer's own error is what ends it.
+        assert!(outcome.is_err());
+        // A partial chunk is never sent without a flush, so a failed archive's tail does not
+        // trickle out after the failure.
+        assert!(blocks.is_empty());
+
+        let (sender, receiver) = mpsc::channel(1);
+        drop(receiver);
+        let runtime = tokio::runtime::Handle::current();
+        let error = tokio::task::spawn_blocking(move || {
+            let mut writer = ChannelWriter::new(sender, runtime);
+            writer.write_all(&vec![3u8; stream::CHUNK_SIZE])
+        })
+        .await
+        .unwrap()
+        .expect_err("a full chunk cannot be sent once the stream is gone");
+        // A dropped consumer stops the producer instead of letting it run to completion.
+        assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
     }
 
     /// Failed range seeks must not retain cancellation handles after the worker exits.
