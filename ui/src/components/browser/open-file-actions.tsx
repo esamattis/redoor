@@ -1,12 +1,17 @@
 import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
+import { getRouteApi, useNavigate, useRouter } from "@tanstack/react-router";
 import { FileCheck2, FilePlus2 } from "lucide-react";
 
+import { browserRoute } from "#ui/browser-route";
+import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { IconButton } from "#ui/components/icon-button";
 import { editorBufferQueryOptions } from "#ui/editor/stored-buffer";
 import { queryKeys } from "#ui/queries";
+import { shortcutPriority, useShortcut } from "#ui/shortcuts";
+import { useAgents } from "#ui/use-agents";
+import { useBrowserLocation } from "#ui/use-browser-location";
 import {
     getOpenFileKey,
     isFileOpen,
@@ -17,6 +22,11 @@ import {
 } from "#ui/user-state";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
+import {
+    isTerminalInputTarget,
+    isTextEntryElement,
+    isUnmodifiedAltKey,
+} from "#ui/utils/keyboard";
 
 const rootRouteApi = getRouteApi("__root__");
 
@@ -45,13 +55,41 @@ export function useKeepFileOpen(props: { file: OpenFile }) {
 /**
  * Closes open files, asking first when one of them has unsaved edits, since closing
  * discards its buffer. A file not visited since the page loaded has no buffer in memory, so
- * its stored copy is read to know. Returns the confirmation dialog for the caller to render.
+ * its stored copy is read to know. Closing the file on screen goes to its directory, so
+ * the page no longer shows a file that is not open. Returns the confirmation dialog for the
+ * caller to render.
  */
 export function useCloseOpenFiles() {
     const { api, editor } = rootRouteApi.useRouteContext();
     const queryClient = useQueryClient();
     const [, setUserState] = useUserState();
     const [pending, setPending] = React.useState<OpenFile[] | null>(null);
+    const browser = useBrowserLocation();
+    const agents = useAgents();
+    const navigate = useNavigate();
+
+    /** Shows the directory of the closed file on screen, if one of the files is shown. */
+    const leaveClosedFile = (files: OpenFile[]) => {
+        const shown = files.find(
+            (file) =>
+                browser?.agentId === file.agentId &&
+                browser.path === file.path &&
+                browser.revision === null,
+        );
+
+        const agent =
+            shown === undefined
+                ? undefined
+                : agents.find((candidate) => candidate.id === shown.agentId);
+
+        if (shown === undefined || agent === undefined) {
+            return;
+        }
+
+        void navigate(
+            browserRoute(agent, getImmediateParentPath(shown.path) ?? "/"),
+        );
+    };
 
     const close = (files: OpenFile[]) => {
         for (const file of files) {
@@ -71,6 +109,8 @@ export function useCloseOpenFiles() {
                 (file) => !closedKeys.has(getOpenFileKey(file)),
             ),
         }));
+
+        leaveClosedFile(files);
     };
 
     const checkMutation = useMutation({
@@ -150,6 +190,156 @@ export function useCloseOpenFiles() {
         requestClose: (files: OpenFile[]) => checkMutation.mutate(files),
         dialog,
     };
+}
+
+/**
+ * Reads which way an open-files shortcut moves through the list: Alt (Option) with j or the
+ * down arrow goes to the next file, with k or the up arrow to the previous one, matching the
+ * list's top-to-bottom order. Returns null for any other key.
+ */
+function openFileStep(event: KeyboardEvent): 1 | -1 | null {
+    if (isUnmodifiedAltKey(event, "j")) {
+        return 1;
+    }
+
+    if (isUnmodifiedAltKey(event, "k")) {
+        return -1;
+    }
+
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return null;
+    }
+
+    if (event.key === "ArrowDown") {
+        return 1;
+    }
+
+    return event.key === "ArrowUp" ? -1 : null;
+}
+
+/**
+ * Moves between the open files with Alt (Option on macOS) and j/k or the arrow keys, and
+ * closes the file on screen with Alt+w, which goes to its directory, so the working set can
+ * be handled without reaching for the sidebar. The editor of the file moved to gets focus, so typing can go on at once,
+ * except when the file opens in its preview. The keys run in the editor's capture tier and
+ * are swallowed, because the editor itself would otherwise move lines with Alt+arrows. Text
+ * fields keep them for their own caret movement and the terminal keeps them for the shell's
+ * meta bindings. Files on unavailable devices cannot be shown, so they are skipped, and the
+ * list wraps around at either end. Returns the unsaved-changes dialog for the caller to
+ * render.
+ */
+export function useOpenFileShortcuts() {
+    const { editor } = rootRouteApi.useRouteContext();
+    const [userState] = useUserState();
+    const agents = useAgents();
+    const browser = useBrowserLocation();
+    const router = useRouter();
+    const closer = useCloseOpenFiles();
+    // The file this shortcut last went to and the location it navigated to. The browser
+    // location only follows once the route's loader finishes, so a quick second press would
+    // otherwise still count from the file before and land on the same file again.
+    const lastTarget = React.useRef<{ key: string; href: string } | null>(null);
+    const openFiles = userState.openFiles;
+    const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
+
+    /** Finds the open file on screen, or -1 when the page shows none of them. */
+    const activeIndex = () => {
+        const pendingKey =
+            lastTarget.current?.href === router.state.location.href
+                ? lastTarget.current.key
+                : null;
+
+        return openFiles.findIndex((file) =>
+            pendingKey === null
+                ? browser?.agentId === file.agentId &&
+                  browser.path === file.path &&
+                  browser.revision === null
+                : getOpenFileKey(file) === pendingKey,
+        );
+    };
+
+    /** Shows a file whose device is available, and reports whether it could. */
+    const goTo = (file: OpenFile | undefined) => {
+        const agent =
+            file === undefined ? undefined : agentsById.get(file.agentId);
+
+        // An offline device cannot show the file, so switching to it would only show an error.
+        if (file === undefined || agent?.status !== "connected") {
+            return false;
+        }
+
+        const target = {
+            ...browserRoute(agent, file.path),
+            // Like the sidebar link: the working file, not the revision being browsed.
+            search: { rev: undefined },
+        };
+
+        const key = getOpenFileKey(file);
+        lastTarget.current = { key, href: router.buildLocation(target).href };
+        // Keeps the keyboard in the editor, unless the file opens in its preview.
+        editor.requestFocus(key);
+        void router.navigate(target);
+
+        return true;
+    };
+
+    const isShortcutTarget = (event: KeyboardEvent) =>
+        !isTextEntryElement(event.target) &&
+        !isTerminalInputTarget(event.target);
+
+    useShortcut({
+        name: "cycle-open-files",
+        phase: "capture",
+        priority: shortcutPriority.editor,
+        effect: "swallow",
+        match: (event) =>
+            openFileStep(event) !== null && isShortcutTarget(event),
+        run: (event) => {
+            const step = openFileStep(event);
+            const count = openFiles.length;
+
+            if (step === null || count === 0) {
+                return false;
+            }
+
+            const active = activeIndex();
+            // Outside the list, the next file is the first and the previous one the last.
+            const fallbackIndex = step === 1 ? count - 1 : 0;
+            const startIndex = active === -1 ? fallbackIndex : active;
+
+            for (let offset = 1; offset <= count; offset += 1) {
+                const index = (startIndex + step * offset + count * 2) % count;
+
+                if (index !== active && goTo(openFiles[index])) {
+                    return;
+                }
+            }
+
+            // Nothing else to switch to. The key is still taken, so Alt+arrows never fall
+            // through to the editor's line moving just because the list is short.
+        },
+    });
+
+    useShortcut({
+        name: "close-open-file",
+        phase: "capture",
+        priority: shortcutPriority.editor,
+        effect: "swallow",
+        match: (event) =>
+            isUnmodifiedAltKey(event, "w") && isShortcutTarget(event),
+        run: () => {
+            const active = activeIndex();
+            const file = openFiles[active];
+
+            if (file === undefined) {
+                return false;
+            }
+
+            closer.requestClose([file]);
+        },
+    });
+
+    return closer.dialog;
 }
 
 /**

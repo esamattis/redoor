@@ -12,6 +12,7 @@ import { Button } from "#ui/components/button";
 import { useKeepFileOpen } from "#ui/components/browser/open-file-actions";
 import { CodeEditor } from "#ui/components/browser/code-editor";
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
+import type { EditorWorkspace } from "#ui/editor/editor-workspace";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
 import { cn } from "#ui/utils/cn";
@@ -25,7 +26,11 @@ import {
 } from "#ui/queries";
 import { useEditorRefreshRegistration } from "#ui/components/browser/refresh";
 import { openSideMenuAtom } from "#ui/side-menu-state";
-import { isEditorInputTarget, isTerminalInputTarget } from "#ui/utils/keyboard";
+import {
+    isEditorInputTarget,
+    isPlainKey,
+    isTerminalInputTarget,
+} from "#ui/utils/keyboard";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
 import { directorySearchChord } from "#ui/components/browser/editor-context-menu";
 import {
@@ -67,7 +72,7 @@ function ClosePreviewButton(props: { onClose: () => void }) {
         <IconButton
             type="button"
             label="Close preview"
-            tooltip="Edit the source"
+            tooltip="Edit the source (Esc)"
             onClick={props.onClose}
             variant="ghost"
             size="lg"
@@ -121,6 +126,51 @@ function FilePreview(props: {
             actions={<ClosePreviewButton onClose={props.onClose} />}
         />
     );
+}
+
+/**
+ * Switches between the preview and the source of a file that has one. Leaving the preview,
+ * by its close button, the toolbar toggle or Escape, puts the keyboard in the editor so
+ * typing can go on at once.
+ */
+function usePreviewControls(args: {
+    editor: EditorWorkspace;
+    bufferKey: string;
+    fileName: string;
+    preview: boolean;
+    onPreviewChange: (preview: boolean) => void;
+}) {
+    const kind = filePreviewKind(args.fileName);
+    const isShown = kind !== null && args.preview;
+
+    const close = () => {
+        args.editor.requestFocus(args.bufferKey);
+        args.onPreviewChange(false);
+    };
+
+    // Bubble and view tier, so open dialogs, menus and text fields handle Escape first.
+    useShortcut(
+        {
+            name: "close-file-preview",
+            phase: "bubble",
+            priority: shortcutPriority.view,
+            skipTypingTargets: true,
+            match: (event) => isPlainKey(event, "Escape"),
+            run: close,
+        },
+        isShown,
+    );
+
+    const setPreview = (preview: boolean) =>
+        preview ? args.onPreviewChange(true) : close();
+
+    return {
+        kind,
+        isShown,
+        close,
+        /** Undefined for a file without a preview, so the toolbar hides its toggle. */
+        setPreview: kind === null ? undefined : setPreview,
+    };
 }
 
 /**
@@ -349,7 +399,7 @@ function FileEditorSurface(props: {
                     searchHandleRef={props.searchHandleRef}
                     isSearchOpen={props.isSearchOpen}
                     onSearchOpenChange={props.onSearchOpenChange}
-                    captureFindKeys={!props.preview}
+                    isBehindPreview={props.preview}
                     gitGutter={props.gitGutter}
                     onSelectionChange={props.onSelectionChange}
                     onSearchDirectory={props.onSearchDirectory}
@@ -742,8 +792,15 @@ export function FileEditView(props: FileEditViewProps) {
         !buffer.readOnly &&
         (contentQuery.isSuccess || buffer.vaultFile.isLocked);
 
-    const previewKind = filePreviewKind(props.fileName);
-    const isPreviewShown = previewKind !== null && props.preview;
+    const previewControls = usePreviewControls({
+        editor: buffer.editor,
+        bufferKey: buffer.bufferKey,
+        fileName: props.fileName,
+        preview: props.preview,
+        onPreviewChange: props.onPreviewChange,
+    });
+
+    const { kind: previewKind, isShown: isPreviewShown } = previewControls;
 
     const previewContent = React.useSyncExternalStore(
         buffer.editor.subscribeDocument,
@@ -844,9 +901,7 @@ export function FileEditView(props: FileEditViewProps) {
                     onSave={handleSave}
                     onFindInFile={search.findInFile}
                     onSearchDirectory={search.searchSelection}
-                    onPreviewChange={
-                        previewKind === null ? undefined : props.onPreviewChange
-                    }
+                    onPreviewChange={previewControls.setPreview}
                     onToggleFullWindow={fullWindow.toggle}
                     onReload={reloadFile}
                     onDelete={() => setDeleteConfirmationOpen(true)}
@@ -908,7 +963,7 @@ export function FileEditView(props: FileEditViewProps) {
                             searchHandleRef={search.handleRef}
                             isSearchOpen={search.isOpen}
                             onSearchOpenChange={search.setIsOpen}
-                            onClosePreview={() => props.onPreviewChange(false)}
+                            onClosePreview={previewControls.close}
                             gitGutter={gitGutter}
                             onSelectionChange={search.setSelectedText}
                             onSearchDirectory={search.searchDirectory}

@@ -4,6 +4,7 @@ import { Outlet, getRouteApi } from "@tanstack/react-router";
 import { useRememberAgentTabLocation } from "#ui/agent-tab-locations";
 import { AgentNavigation } from "#ui/components/agent-navigation";
 import { ApplicationNavigation } from "#ui/components/application-navigation";
+import { useOpenFileShortcuts } from "#ui/components/browser/open-file-actions";
 import { ContextualTopBar } from "#ui/components/contextual-top-bar";
 import { GlobalFileImportHandler } from "#ui/components/global-file-import-handler";
 import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
@@ -39,6 +40,8 @@ export function AppShell() {
     useTerminalSessionSync();
     useRememberAgentTabLocation();
     useEscapeBlursTextControls();
+    // Here rather than in the sidebar, which mounts twice while the phone drawer is open.
+    const openFileShortcutDialog = useOpenFileShortcuts();
 
     return (
         <ShellFileImportHandler>
@@ -52,6 +55,7 @@ export function AppShell() {
                 <UserStatePersistToast />
                 <SessionActivity />
                 <VaultDialog />
+                {openFileShortcutDialog}
                 <ApplicationNavigation />
                 <OverlayChromeLayout
                     isBottomChromeFullWindow={isTerminalFullWindow}

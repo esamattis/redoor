@@ -119,8 +119,11 @@ type CodeEditorProps = {
     searchHandleRef: React.RefObject<EditorSearchHandle | null>;
     isSearchOpen: boolean;
     onSearchOpenChange: (open: boolean) => void;
-    /** Leaves find keys to the browser while the editor is hidden behind a preview. */
-    captureFindKeys: boolean;
+    /**
+     * Whether a preview hides the editor. Find keys go to the browser then, and a pending
+     * focus request is dropped instead of focusing an editor nobody sees.
+     */
+    isBehindPreview: boolean;
     /** What the Git gutter shows; a stable value, since a new one recomputes the marks. */
     gitGutter: GitGutterSource;
     /** Reports the selected text, which the toolbar's selection search acts on. */
@@ -283,6 +286,11 @@ export function CodeEditor(props: CodeEditorProps) {
         workspace,
     ]);
 
+    // After activation, which puts this file's buffer in the view the request focuses.
+    React.useLayoutEffect(() => {
+        workspace.takeFocusRequest(props.bufferKey, !props.isBehindPreview);
+    }, [props.bufferKey, props.isBehindPreview, workspace]);
+
     useFocusEditorShortcut(view);
 
     return (
@@ -294,7 +302,7 @@ export function CodeEditor(props: CodeEditorProps) {
                 handleRef={props.searchHandleRef}
                 open={props.isSearchOpen}
                 onOpenChange={props.onSearchOpenChange}
-                captureFindKeys={props.captureFindKeys}
+                captureFindKeys={!props.isBehindPreview}
             />
             <div
                 data-file-editor=""

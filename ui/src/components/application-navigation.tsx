@@ -47,6 +47,7 @@ import { useBeginServerRestart } from "#ui/use-server-restart";
 import { cn } from "#ui/utils/cn";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 import { useCloseOpenFiles } from "#ui/components/browser/open-file-actions";
+import { formatKeyChord } from "#ui/utils/keyboard";
 import {
     changedFilesOutlineAtom,
     type ChangedFilesOutlineFile,
@@ -778,8 +779,41 @@ function OpenFiles(props: { isCompact: boolean }) {
                     </ul>
                 </SortableList>
             )}
+            {/* Switching needs a keyboard, so phones, which seldom have one, skip the tip. */}
+            {openFiles.length > 1 && !props.isCompact ? (
+                <OpenFileShortcutTip />
+            ) : null}
             {closer.dialog}
         </div>
+    );
+}
+
+/** One key chord drawn as a small keycap, so the tip reads at a glance. */
+function KeyCap(props: { children: React.ReactNode }) {
+    return (
+        <kbd className="rounded border border-slate-700 bg-tint px-1 font-sans text-[10px] leading-4 text-slate-400">
+            {props.children}
+        </kbd>
+    );
+}
+
+/**
+ * Shows the open-files keys under the list, where they are learned. Only the letter chords
+ * are shown; the arrow alternatives stay a bonus, since listing both made a cluttered line.
+ */
+function OpenFileShortcutTip() {
+    return (
+        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-slate-500">
+            <span className="flex items-center gap-1">
+                <KeyCap>{formatKeyChord({ key: "j", alt: true })}</KeyCap>
+                <KeyCap>{formatKeyChord({ key: "k", alt: true })}</KeyCap>
+                <span>switch</span>
+            </span>
+            <span className="flex items-center gap-1">
+                <KeyCap>{formatKeyChord({ key: "w", alt: true })}</KeyCap>
+                <span>close</span>
+            </span>
+        </p>
     );
 }
 

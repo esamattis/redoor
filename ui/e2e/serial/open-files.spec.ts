@@ -20,6 +20,11 @@ import {
     type TestContext,
 } from "../helpers";
 
+/** Matches a URL literally inside a pattern, since paths contain regex characters. */
+function escapeRegExp(text: string) {
+    return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 test.describe.serial("Open files", () => {
     let ctx: TestContext;
 
@@ -365,18 +370,18 @@ test.describe.serial("Open files", () => {
         await confirmation
             .getByRole("button", { name: "Discard changes" })
             .click();
-        // Confirming closes the file and its editor falls back to the device text.
+        // Confirming closes the file.
         await expect(
             drawer.getByText(
                 "No open files — edit or double-click a file in the editor to list it here",
             ),
         ).toBeVisible();
-        await page.keyboard.press("Escape");
-        await expect(drawer).toBeHidden();
-        await expect(editor).toHaveText("content2");
-        // The editor stays on the file and keeps the expanded presentation.
-        await expect(page).toHaveURL(`${secondUrl}?fullWindow=true`);
-        await expect(panel).toHaveCSS("position", "fixed");
+        // The closed file was on screen, so the page goes to its directory.
+        await expect(page).toHaveURL(
+            new RegExp(
+                `^${escapeRegExp(`${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(ctx.testDirPath)}`)}(\\?|$)`,
+            ),
+        );
         const api = new ApiClient(API_BASE_URL);
         await api.login("test-user", "test-password");
         // Both close buttons must persist removal in the shared user state.
@@ -438,8 +443,16 @@ test.describe.serial("Open files", () => {
         await confirmation
             .getByRole("button", { name: "Discard changes" })
             .click();
-        // Discarding closes the file and restores the device text.
+        // Discarding closes the file and leaves it for its directory.
         await expect(openFiles).toHaveCount(0);
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(ctx.testDirPath)}`,
+        );
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
+        );
+        // The discarded draft is gone, so the file shows the device text again.
         await expect(editor).toHaveText("content1");
 
         const api = new ApiClient(API_BASE_URL);
@@ -468,6 +481,9 @@ test.describe.serial("Open files", () => {
             .click();
         await expect(openFiles).toHaveCount(0);
 
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`,
+        );
         await page.getByRole("region", { name: "Editor viewport" }).dblclick();
         // A double click opens the file without editing it.
         await expect(row).toBeVisible();
@@ -796,6 +812,145 @@ test.describe.serial("Open files", () => {
 
         return filePath;
     }
+
+    test("moves between open files with Alt+j/k and Alt+arrows and focuses the editor", async ({
+        page,
+    }) => {
+        const fileUrl = (name: string) =>
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, name))}`;
+
+        await fs.writeFile(
+            path.join(ctx.testDirPath, "notes.md"),
+            "# Cycle notes\n",
+        );
+
+        const editor = page.getByLabel("File editor", { exact: true });
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+
+        await page.goto(fileUrl("file1.txt"));
+        await keepOpen(page);
+        await page.goto(fileUrl("file2.txt"));
+        await keepOpen(page);
+
+        await editor.focus();
+        await page.keyboard.press("Alt+j");
+        // Next from the last file wraps to the first, and the editor does not swallow the chord.
+        await expect(page).toHaveURL(fileUrl("file1.txt"));
+        // The switched-to file's editor takes focus, so the next key press needs no click.
+        await expect(editor).toBeFocused();
+
+        await page.keyboard.press("Alt+k");
+        // Previous from the first file wraps to the last.
+        await expect(page).toHaveURL(fileUrl("file2.txt"));
+        await expect(editor).toBeFocused();
+
+        await page.keyboard.press("Alt+ArrowUp");
+        // Alt+Up moves to the previous file instead of moving the editor line.
+        await expect(page).toHaveURL(fileUrl("file1.txt"));
+        await expect(editor).toContainText("content1");
+        await expect(editor).toBeFocused();
+
+        await page.keyboard.press("Alt+ArrowDown");
+        // Alt+Down is the arrow form of Alt+j.
+        await expect(page).toHaveURL(fileUrl("file2.txt"));
+        await expect(editor).toContainText("content2");
+        await expect(editor).toBeFocused();
+
+        await page.keyboard.press("ControlOrMeta+f");
+        const findInput = page.getByLabel("Find in file");
+        await expect(findInput).toBeFocused();
+        await page.keyboard.press("Alt+j");
+        // Text fields keep Alt chords for their own editing, so the file stays on screen.
+        await expect(findInput).toBeFocused();
+        await expect(page).toHaveURL(fileUrl("file2.txt"));
+        await page.keyboard.press("Escape");
+
+        // Opened from the source, so the editor can keep it open with a double click.
+        await page.goto(`${fileUrl("notes.md")}?preview=false`);
+        await keepOpen(page);
+        await page.goto(fileUrl("file2.txt"));
+
+        await editor.focus();
+        await page.keyboard.press("Alt+j");
+        // Markdown opens in its preview, which must stay readable rather than hide behind focus.
+        await expect(
+            preview.getByRole("heading", { name: "Cycle notes" }),
+        ).toBeVisible();
+        await expect(editor).not.toBeFocused();
+
+        await page.keyboard.press("Escape");
+        // Escape leaves the preview for the source with the keyboard ready in the editor.
+        await expect(page).toHaveURL(`${fileUrl("notes.md")}?preview=false`);
+        await expect(preview).toBeHidden();
+        await expect(editor).toBeFocused();
+
+        // The tip under the open files list makes the shortcuts discoverable.
+        await expect(
+            page
+                .getByRole("navigation", { name: "Application" })
+                .getByText("switch", { exact: true }),
+        ).toBeVisible();
+    });
+
+    test("closes the file on screen with Alt+w or its close button and goes to its directory", async ({
+        page,
+    }) => {
+        const fileUrl = (name: string) =>
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(ctx.testDirPath, name))}`;
+
+        const directoryUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(ctx.testDirPath)}`;
+        const editor = page.getByLabel("File editor", { exact: true });
+
+        const openFiles = page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("list", { name: "Open files" });
+
+        await page.goto(fileUrl("file1.txt"));
+        await keepOpen(page);
+        await page.goto(fileUrl("file2.txt"));
+        await keepOpen(page);
+        await page.goto(fileUrl("file1.txt"));
+
+        await editor.focus();
+        await page.keyboard.press("Alt+w");
+        // A clean file closes at once and leaves the list.
+        await expect(
+            openFiles.getByRole("link", { name: "file1.txt", exact: true }),
+        ).toBeHidden();
+        // The page leaves the closed file for its directory.
+        await expect(page).toHaveURL(directoryUrl);
+
+        await page.goto(fileUrl("file2.txt"));
+        await editor.focus();
+        await page.keyboard.type("draft ");
+        await page.keyboard.press("Alt+w");
+
+        const confirmation = page.getByRole("dialog", {
+            name: "Discard unsaved changes?",
+        });
+
+        // Unsaved edits are never discarded without asking.
+        await expect(confirmation).toBeVisible();
+        await page.keyboard.press("Escape");
+        // Keeping the edits keeps the file open and on screen.
+        await expect(confirmation).toBeHidden();
+        await expect(page).toHaveURL(fileUrl("file2.txt"));
+        await expect(
+            openFiles.getByRole("link", { name: "file2.txt", exact: true }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("button", { name: "Close open file file2.txt" })
+            .click();
+        await confirmation
+            .getByRole("button", { name: "Discard changes" })
+            .click();
+        // The sidebar close button leaves the closed file for its directory too.
+        await expect(
+            openFiles.getByRole("link", { name: "file2.txt", exact: true }),
+        ).toBeHidden();
+        await expect(page).toHaveURL(directoryUrl);
+    });
 
     test("restores caret, selection, scroll and undo of each open file when switching", async ({
         page,

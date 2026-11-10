@@ -177,6 +177,11 @@ export class EditorWorkspace extends ExternalStore<
     private activeKey: string | null = null;
     private handlers: { readonly current: EditorHandlers } | null = null;
     private settings: EditorSettings | null = null;
+    /**
+     * The buffer a keyboard action asked to focus once it is shown. The request outlives a
+     * navigation, because the file's editor only mounts after the route has loaded it.
+     */
+    private focusRequest: string | null = null;
     /** A scroll requested on activation that the view has not applied yet. */
     private pendingScroll: StateEffect<unknown> | null = null;
     /** Sends buffer writes as query mutations, so they show up like every other write. */
@@ -348,6 +353,32 @@ export class EditorWorkspace extends ExternalStore<
         view.dom.remove();
         this.activeKey = null;
         this.handlers = null;
+    }
+
+    /**
+     * Asks for a buffer's editor to take focus the next time it is shown, so keyboard users
+     * can keep typing after switching files or leaving a preview without reaching for the
+     * mouse.
+     */
+    requestFocus(key: string) {
+        this.focusRequest = key;
+    }
+
+    /**
+     * Settles the pending focus request once a buffer's editor is mounted. The request is used
+     * up either way: a file that opened behind a preview keeps the preview readable instead
+     * of focusing a hidden editor later.
+     */
+    takeFocusRequest(key: string, isVisible: boolean) {
+        if (this.focusRequest !== key) {
+            return;
+        }
+
+        this.focusRequest = null;
+
+        if (isVisible && this.isShown(key)) {
+            this.view?.focus();
+        }
     }
 
     /**
