@@ -55,8 +55,8 @@ impl ExecWorker {
             .stderr
             .take()
             .ok_or_else(|| anyhow::anyhow!("Missing stderr pipe"))?;
-        let mut out = [0u8; 8192];
-        let mut err = [0u8; 8192];
+        let mut out = [0u8; ExecOutput::MAX_READ];
+        let mut err = [0u8; ExecOutput::MAX_READ];
         let (mut out_open, mut err_open) = (true, true);
         while out_open || err_open {
             let event = tokio::select! {

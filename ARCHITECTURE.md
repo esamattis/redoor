@@ -282,8 +282,16 @@ router limits concurrent uploads per connection.
   output starts without a round trip. Exec's exit status is its result, ordered after the
   output. The agent writes exec output as NDJSON `ExecEvent` lines, one per pipe read, with
   the bytes as a base64 string (binary-safe at ~1.33× the size), encoded straight from the
-  read buffer; the server passes these lines through unchanged to the HTTP body and the MCP
-  output spool.
+  read buffer; the server passes these lines through unchanged to the HTTP body. MCP decodes
+  them instead (reassembling lines split across frames, with the buffer capped at the
+  longest line an agent sends) and spools each pipe's raw bytes separately, so models
+  read plain text.
+- **MCP command output** is kept per pipe as a head plus a rolling tail: the spool file
+  holds the first bytes, then a ring of the newest bytes, so truncation drops the middle
+  and keeps the end, where errors are, in constant memory and bounded disk. Per-operation
+  and global quotas bound the spool files; the global usage is counted from the files on
+  disk at startup, when the server also reconciles spools with the operation records and
+  deletes files no record owns.
 - **Uploads** write into a self-deleting hidden staging path next to the destination.
   Publication (the atomic rename) is a separate step the router decides, so a cancelled
   upload never replaces the destination and an accepted one is never reported cancelled.

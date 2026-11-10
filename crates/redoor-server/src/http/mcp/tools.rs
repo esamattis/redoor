@@ -19,9 +19,16 @@ use redoor_protocol::{
     },
 };
 use serde_json::{Map, Value, json};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 
-use super::{error::McpError, schema::server_metadata};
+use super::{
+    command_output::{self, LineAssembler},
+    error::McpError,
+    operations::{OperationRecord, OperationRegistry, Pipe, SpoolState},
+    schema::server_metadata,
+};
 use crate::http::{
     access::Principal,
     agent_client::{CreateDirectory, Ls, Metadata, RawDelete, Trash},
@@ -39,6 +46,13 @@ use crate::http::{
 const MAX_NAME_LENGTH: usize = 64;
 /// Keeps inline MCP reads and writes small; large local transfers belong to the remote CLI.
 const INLINE_FILE_LIMIT: usize = 64 * 1024;
+/// Bounds the command output one response carries, so a model's context is not flooded.
+const INLINE_OUTPUT_LIMIT: u64 = 64 * 1024;
+/// Smallest output page per pipe, so a page always has room for a whole UTF-8 character.
+const MIN_PAGE_LIMIT: u64 = 4;
+/// Default retention per command; it fits one inline response, so foreground output is
+/// complete in the first result unless the caller asks to retain more.
+const DEFAULT_OUTPUT_LIMIT: u64 = 64 * 1024;
 /// Truncates directory listings so one large directory cannot blow up an MCP response.
 const MAX_DIRECTORY_ENTRIES: usize = 2_000;
 
@@ -82,7 +96,7 @@ const TOOLS: &[ToolDefinition] = &[
     },
     ToolDefinition {
         name: "run_command",
-        description: "Run an argv-based non-PTY command.",
+        description: "Run an argv-based non-PTY command. In the default foreground mode the result carries the exit status and the output as text (`stdout`, `stderr`); long output keeps its head and tail with an omitted-bytes marker between them. With `mode: \"background\"` it returns an operation id to poll with get_operation and page with read_command_output.",
         read_only: false,
         destructive: true,
         required: &["device_id", "argv", "cwd"],
@@ -98,7 +112,7 @@ const TOOLS: &[ToolDefinition] = &[
     },
     ToolDefinition {
         name: "read_command_output",
-        description: "Read bounded retained command output. `content` is a text page of NDJSON events; `stdout`/`stderr` events carry their bytes as a base64 `data` string. Pages are cut at byte offsets, so a page can end mid-line.",
+        description: "Page a command's retained output as text. Each pipe pages separately: pass `stdout_offset`/`stderr_offset` from the previous result's `next_offsets`, and `stream` to read only `stdout` or `stderr`. Pages never split a UTF-8 character; `binary` is true when invalid UTF-8 was replaced.",
         read_only: true,
         destructive: false,
         required: &["operation_id"],
@@ -307,20 +321,58 @@ fn input_properties(name: &str) -> Value {
             json!({"type":"string", "enum":["auto", "restart"], "default":"auto"}),
         );
     }
+    // Optional arguments a model needs to know about to page and size command output.
+    if name == "run_command" {
+        result.insert(
+            "mode".into(),
+            json!({"type":"string","enum":["foreground","background"],"default":"foreground"}),
+        );
+        result.insert(
+            "output_limit".into(),
+            json!({"type":"integer","minimum":0,"default":DEFAULT_OUTPUT_LIMIT,"description":"Bytes of output to retain, split evenly between stdout and stderr and each into head and tail"}),
+        );
+        result.insert(
+            "deadline_ms".into(),
+            json!({"type":"integer","minimum":1,"default":30000}),
+        );
+    }
+    if name == "read_command_output" {
+        result.insert(
+            "stream".into(),
+            json!({"type":"string","enum":["stdout","stderr","both"],"default":"both"}),
+        );
+        for offset in ["stdout_offset", "stderr_offset"] {
+            result.insert(
+                offset.into(),
+                json!({"type":"integer","minimum":0,"default":0}),
+            );
+        }
+        result.insert(
+            "limit".into(),
+            json!({"type":"integer","minimum":MIN_PAGE_LIMIT,"maximum":INLINE_OUTPUT_LIMIT,"default":INLINE_OUTPUT_LIMIT,"description":"Bytes per call, shared by the requested pipes"}),
+        );
+    }
     Value::Object(result)
 }
-/// Wraps structured tool output with a concise human-readable MCP summary.
+/// Wraps structured tool output with a text block carrying the same result.
+///
+/// Many MCP clients show the model only the text block, so it must hold the real result: the
+/// serialized structured content, or for command output a plain-text rendering the model can
+/// read without unescaping.
 fn complete(name: &str, value: Value) -> Value {
-    let summary = if name == "hello" {
-        value
+    let text = match name {
+        "hello" => value
             .get("greeting")
             .and_then(Value::as_str)
             .unwrap_or("Hello from Redoor!")
-            .to_string()
-    } else {
-        format!("{name} completed")
+            .to_string(),
+        // Background admissions carry no output, so their JSON is the clearer result.
+        "run_command" | "read_command_output" if value.get("next_offsets").is_some() => {
+            command_output::render_text(&value)
+        }
+        _ => value.to_string(),
     };
-    json!({"resultType":"complete","content":[{"type":"text","text":summary}],"structuredContent":value,"isError":false,"_meta":server_metadata()})
+    json!({"resultType":"complete","content":[{"type":"text","text":text}],"structuredContent":value,"isError":false,"_meta":server_metadata()})
 }
 /// Keeps the protocol smoke test harmless and independently bounded.
 fn hello(args: &Map<String, Value>, id: &Value) -> Result<Value, McpError> {
@@ -420,7 +472,7 @@ async fn run_command(
     let output_limit = args
         .get("output_limit")
         .and_then(Value::as_u64)
-        .unwrap_or(64 * 1024)
+        .unwrap_or(DEFAULT_OUTPUT_LIMIT)
         .min(state.mcp.operations.per_job_quota() as u64) as usize;
     let background = args
         .get("mode")
@@ -483,33 +535,68 @@ async fn run_command(
         Ok(json!({"operation_id":operation_id,"state":"running"}))
     } else {
         task.await;
-        let record = record.lock().await;
-        operation_json(&record)
+        let mut result = operation_json(&*record.lock().await);
+        let output = output_fields(
+            &state.mcp.operations,
+            &record,
+            &[(Pipe::Stdout, 0), (Pipe::Stderr, 0)],
+            INLINE_OUTPUT_LIMIT,
+            true,
+        )
+        .await
+        .map_err(|error| op(format!("Failed reading retained output: {error:#}"), id))?;
+        merge(&mut result, output);
+        Ok(result)
     }
 }
 
 /// Drains output under backpressure even after the retention quota is exhausted.
 ///
-/// The agent sends the exit status as its result after the output, so the output is read to
-/// its end first and the status is then taken from the terminal lane.
+/// The agent's NDJSON lines are decoded here, so the spools hold each pipe's raw bytes and
+/// readers never parse or base64-decode. The agent sends the exit status as its result after
+/// the output, so the output is read to its end first and the status is then taken from the
+/// terminal lane.
 async fn drain_execution(
-    operations: super::operations::OperationRegistry,
-    record: std::sync::Arc<tokio::sync::Mutex<super::operations::OperationRecord>>,
+    operations: OperationRegistry,
+    record: Arc<Mutex<OperationRecord>>,
     mut output: OutputStream,
     mut terminal: tokio::sync::watch::Receiver<Option<ExecEvent>>,
     limit: usize,
 ) {
+    let mut lines = LineAssembler::default();
+    let mut ended = false;
+    // Once the operation is failed its spools are final: startup only distrusts the rings of
+    // active work, so a failed record must never see another in-place ring write. Output is
+    // still drained afterwards, only no longer retained.
+    let mut retaining = true;
     while let Some(item) = output.recv().await {
-        let failed = match item {
-            Ok(chunk) => operations
-                .append_output(&record, &chunk.data, limit)
-                .await
-                .is_err(),
-            Err(_) => true,
+        let chunk = match item {
+            Ok(chunk) => chunk,
+            Err(_) => {
+                retaining = false;
+                record.lock().await.state = "failed".to_string();
+                continue;
+            }
         };
-        if failed {
+        if !retaining {
+            continue;
+        }
+        ended |= chunk.is_last;
+        let decoded = match lines.push(&chunk.data) {
+            Ok(decoded) => decoded,
+            Err(error) => return fail_output(&operations, &record, output, error).await,
+        };
+        if operations
+            .append_output(&record, decoded.stdout, decoded.stderr, limit)
+            .await
+            .is_err()
+        {
+            retaining = false;
             record.lock().await.state = "failed".to_string();
         }
+    }
+    if ended && let Err(error) = lines.finish() {
+        return fail_output(&operations, &record, output, error).await;
     }
     let event = loop {
         let current = terminal.borrow_and_update().clone();
@@ -534,10 +621,33 @@ async fn drain_execution(
     let _ = operations.update(&record).await;
 }
 
+/// Ends an execution whose output stream broke the line protocol.
+///
+/// Dropping the still armed stream cancels the agent's process, since output that can no
+/// longer be decoded must not keep running unobserved.
+async fn fail_output(
+    operations: &OperationRegistry,
+    record: &Arc<Mutex<OperationRecord>>,
+    output: OutputStream,
+    error: String,
+) {
+    drop(output);
+    redoor_core::log!(
+        redoor_protocol::wire::log::Level::Error,
+        "Failing MCP command with invalid output: {error}"
+    );
+    let mut current = record.lock().await;
+    current.state = "failed".to_string();
+    current.remote_id = None;
+    current.terminal = Some(json!({"reason":"invalid_output","error":error}));
+    drop(current);
+    let _ = operations.update(record).await;
+}
+
 /// Records only an agent terminal acknowledgement as proof of process termination.
 async fn finish_execution(
-    operations: &super::operations::OperationRegistry,
-    record: &std::sync::Arc<tokio::sync::Mutex<super::operations::OperationRecord>>,
+    operations: &OperationRegistry,
+    record: &Arc<Mutex<OperationRecord>>,
     event: ExecEvent,
 ) {
     let mut current = record.lock().await;
@@ -559,7 +669,7 @@ async fn owned_operation(
     principal: &Principal,
     args: &Map<String, Value>,
     id: &Value,
-) -> Result<std::sync::Arc<tokio::sync::Mutex<super::operations::OperationRecord>>, McpError> {
+) -> Result<Arc<Mutex<OperationRecord>>, McpError> {
     let operation_id = Uuid::parse_str(string(args, "operation_id", id)?)
         .map_err(|_| invalid("operation_id must be a UUID", id))?;
     let record = state
@@ -590,13 +700,13 @@ async fn get_operation(
         recheck_operation_access(principal, &current, id)?;
     }
     let record = record.lock().await;
-    operation_json(&record)
+    Ok(operation_json(&record))
 }
 
 /// Drains a retained terminal notification independently of client polling and router history.
 async fn collect_transfer(
-    operations: super::operations::OperationRegistry,
-    record: std::sync::Arc<tokio::sync::Mutex<super::operations::OperationRecord>>,
+    operations: OperationRegistry,
+    record: Arc<Mutex<OperationRecord>>,
     mut terminal: tokio::sync::watch::Receiver<
         Option<redoor_protocol::api::transfers::TransferProgressEntry>,
     >,
@@ -638,18 +748,126 @@ async fn collect_transfer(
         }
     }
 }
-/// Serializes lifecycle metadata without embedding retained output.
-fn operation_json(record: &super::operations::OperationRecord) -> Result<Value, McpError> {
-    Ok(
-        json!({"operation_id":record.id,"kind":record.kind,"state":record.state,"termination":record.terminal,"output_size":record.output_size,"output_truncated":record.output_truncated,"cancel_requested":record.cancel_requested}),
-    )
+/// Serializes lifecycle metadata, plus for commands how much output is retained, without
+/// embedding the output itself.
+fn operation_json(record: &OperationRecord) -> Value {
+    let mut result = json!({"operation_id":record.id,"kind":record.kind,"state":record.state,"termination":record.terminal,"cancel_requested":record.cancel_requested});
+    if record.kind == "command" {
+        let per_pipe = |measure: fn(&SpoolState) -> u64| {
+            Value::Object(
+                Pipe::ALL
+                    .iter()
+                    .map(|pipe| (pipe.name().to_string(), json!(measure(record.spool(*pipe)))))
+                    .collect(),
+            )
+        };
+        merge(
+            &mut result,
+            json!({
+                "retained_bytes": per_pipe(SpoolState::retained),
+                "omitted_bytes": per_pipe(SpoolState::omitted),
+                "truncated": Pipe::ALL.iter().any(|pipe| record.spool(*pipe).omitted() > 0),
+            }),
+        );
+    }
+    result
 }
-/// Reads one bounded page from an owned command spool.
+
+/// Copies the fields of `extra` into the object `target`, replacing equally named ones.
+fn merge(target: &mut Value, extra: Value) {
+    if let (Value::Object(target), Value::Object(extra)) = (target, extra) {
+        target.extend(extra);
+    }
+}
+
+/// Reads pages of the requested pipes as text and returns the shared output fields:
+/// `stdout`/`stderr`, `binary`, `next_offsets`, `retained_bytes`, `omitted_bytes`,
+/// `truncated` and `more`.
 ///
-/// The spool holds the agent's NDJSON lines, which are pure ASCII because output bytes are
-/// already base64 inside them, so the page goes out as text: wrapping it in another base64
-/// layer would only grow it by a third and make the model decode twice. A cut at any byte
-/// offset is still valid ASCII; the lossy conversion only guards against a corrupt spool.
+/// `budget` bounds the bytes of all pages together and is shared between the pipes by
+/// need. With `elide`, a pipe whose retained output exceeds its share shows its first and
+/// last parts with a marker between them instead of only its start, because a command's
+/// errors are usually at its end; the skipped middle stays available from `next_offsets`.
+async fn output_fields(
+    operations: &OperationRegistry,
+    record: &Arc<Mutex<OperationRecord>>,
+    pipes: &[(Pipe, u64)],
+    budget: u64,
+    elide: bool,
+) -> anyhow::Result<Value> {
+    let (settled, remaining) = {
+        let current = record.lock().await;
+        let remaining = pipes
+            .iter()
+            .map(|(pipe, offset)| current.spool(*pipe).retained().saturating_sub(*offset))
+            .collect::<Vec<_>>();
+        (!current.is_active(), remaining)
+    };
+    let shares = match remaining.as_slice() {
+        [first, second] => {
+            let (first, second) = command_output::split_budget(budget, *first, *second);
+            vec![first, second]
+        }
+        _ => vec![budget],
+    };
+    let mut result = Map::new();
+    let (mut next_offsets, mut retained, mut omitted) = (Map::new(), Map::new(), Map::new());
+    let (mut binary, mut more) = (false, false);
+    for (((pipe, offset), share), remaining) in pipes.iter().zip(shares).zip(remaining) {
+        // At least one whole UTF-8 character per pipe, so a page never has to split one.
+        let share = share.max(remaining.min(MIN_PAGE_LIMIT));
+        let elided = elide && remaining > share;
+        let first_len = if elided { share / 2 } else { share };
+        let (state, bytes) = operations
+            .read_output(record, *pipe, *offset, first_len)
+            .await?;
+        let page = if elided {
+            let first = command_output::render_page(&state, *offset, &bytes, settled, false);
+            let last_start = state.retained() - (share - first_len);
+            let (state, bytes) = operations
+                .read_output(record, *pipe, last_start, share - first_len)
+                .await?;
+            let last = command_output::render_page(&state, last_start, &bytes, settled, true);
+            let mut text = first.text;
+            if !text.is_empty() && !text.ends_with('\n') {
+                text.push('\n');
+            }
+            text.push_str(&format!(
+                "[... {} retained bytes not shown; read them with read_command_output {}_offset={} ...]\n",
+                last_start - first.next_offset,
+                pipe.name(),
+                first.next_offset
+            ));
+            text.push_str(&last.text);
+            command_output::Page {
+                text,
+                next_offset: first.next_offset,
+                binary: first.binary || last.binary,
+            }
+        } else {
+            command_output::render_page(&state, *offset, &bytes, settled, false)
+        };
+        binary |= page.binary;
+        more |= page.next_offset < state.retained();
+        result.insert(pipe.name().into(), page.text.into());
+        next_offsets.insert(pipe.name().into(), page.next_offset.into());
+        retained.insert(pipe.name().into(), state.retained().into());
+        omitted.insert(pipe.name().into(), state.omitted().into());
+    }
+    let truncated = omitted.values().any(|value| value.as_u64() > Some(0));
+    result.insert("binary".into(), binary.into());
+    result.insert("next_offsets".into(), next_offsets.into());
+    result.insert("retained_bytes".into(), retained.into());
+    result.insert("omitted_bytes".into(), omitted.into());
+    result.insert("truncated".into(), truncated.into());
+    result.insert("more".into(), more.into());
+    Ok(Value::Object(result))
+}
+/// Reads one bounded text page of an owned command's retained output, per pipe.
+///
+/// Each pipe has its own offset because the pipes are spooled separately; `stream` limits the
+/// page to one of them. The offsets are positions in the retained bytes, so the omitted gap
+/// between head and tail takes no offsets and shows as a marker where the two meet.
 async fn read_command_output(
     state: &ServerState,
     principal: &Principal,
@@ -657,27 +875,38 @@ async fn read_command_output(
     id: &Value,
 ) -> Result<Value, McpError> {
     let record = owned_operation(state, principal, args, id).await?;
-    let record = {
+    {
         let current = record.lock().await;
         recheck_operation_access(principal, &current, id)?;
-        current.clone()
+    }
+    let offset = |pipe: Pipe| {
+        args.get(&format!("{}_offset", pipe.name()))
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
     };
-    let offset = args.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
+    let pipes = match args.get("stream").and_then(Value::as_str).unwrap_or("both") {
+        "both" => vec![
+            (Pipe::Stdout, offset(Pipe::Stdout)),
+            (Pipe::Stderr, offset(Pipe::Stderr)),
+        ],
+        "stdout" => vec![(Pipe::Stdout, offset(Pipe::Stdout))],
+        "stderr" => vec![(Pipe::Stderr, offset(Pipe::Stderr))],
+        _ => return Err(invalid("stream must be stdout, stderr, or both", id)),
+    };
     let limit = args
         .get("limit")
         .and_then(Value::as_u64)
-        .unwrap_or(64 * 1024)
-        .min(64 * 1024) as usize;
-    let end = offset.saturating_add(limit).min(record.output_size);
-    let data = state
-        .mcp
-        .operations
-        .read_output(&record, offset, limit)
+        .unwrap_or(INLINE_OUTPUT_LIMIT)
+        .clamp(MIN_PAGE_LIMIT, INLINE_OUTPUT_LIMIT);
+    let output = output_fields(&state.mcp.operations, &record, &pipes, limit, false)
         .await
-        .map_err(|error| op(format!("Failed reading retained output: {error}"), id))?;
-    Ok(
-        json!({"operation_id":record.id,"offset":offset,"next_offset":end,"more":end<record.output_size,"content":String::from_utf8_lossy(&data),"truncated":record.output_truncated}),
-    )
+        .map_err(|error| op(format!("Failed reading retained output: {error:#}"), id))?;
+    let mut result = {
+        let current = record.lock().await;
+        json!({"operation_id":current.id,"state":current.state,"termination":current.terminal})
+    };
+    merge(&mut result, output);
+    Ok(result)
 }
 /// Routes cancellation to the underlying execution or transfer without claiming termination.
 async fn cancel_operation(
@@ -1267,7 +1496,7 @@ async fn managed_agent(
 /// authority, so editing a token also limits access to the work it already started.
 fn recheck_operation_access(
     principal: &Principal,
-    record: &super::operations::OperationRecord,
+    record: &OperationRecord,
     id: &Value,
 ) -> Result<(), McpError> {
     match (record.kind.as_str(), record.device_ids.as_slice()) {

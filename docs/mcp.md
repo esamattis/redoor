@@ -121,11 +121,73 @@ An unconfigured or malformed `Origin` receives 403. MCP has its own narrow
 CORS and bearer middleware and does not inherit the wildcard browser API CORS
 or the rule that treats non-`/api/` paths as public.
 
-`read_command_output` returns a byte page of the retained output as text
-`content`. The output is newline-delimited JSON: `{"type":"stdout","data":"..."}`
-and `{"type":"stderr","data":"..."}` events whose `data` is the output bytes in standard
-base64. Pages are cut at byte offsets, so a page can end mid-line. The exit status is the
-operation's `termination`.
+### Command output
+
+A foreground `run_command` waits for the command and returns everything in one
+result: the outcome and the output as decoded text.
+
+```json
+{
+    "operation_id": "6f1c…",
+    "kind": "command",
+    "state": "completed",
+    "termination": { "type": "exit", "code": 1, "signal": null },
+    "cancel_requested": false,
+    "stdout": "building…\n[... 120345 bytes omitted ...]\nerror: missing file\n",
+    "stderr": "",
+    "binary": false,
+    "truncated": true,
+    "omitted_bytes": { "stdout": 120345, "stderr": 0 },
+    "retained_bytes": { "stdout": 32768, "stderr": 0 },
+    "next_offsets": { "stdout": 32768, "stderr": 0 },
+    "more": false
+}
+```
+
+The result's text block carries the same result as plain text, because many
+clients show the model only that block:
+
+```text
+exit code 1 (operation 6f1c…)
+--- stdout ---
+building…
+[... 120345 bytes omitted ...]
+error: missing file
+```
+
+Output is retained per pipe. `output_limit` (default 64 KiB, at most the
+per-job quota) is split evenly between stdout and stderr, and each pipe's share
+evenly between its **head** (the first bytes) and its **tail** (the newest
+bytes). When a pipe writes more, the bytes between head and tail are dropped
+and counted in `omitted_bytes`; the text shows
+`[... N bytes omitted ...]` where the head meets the tail, because errors are
+usually at the end. Output is decoded as UTF-8; invalid bytes become U+FFFD and
+set `binary: true`.
+
+One response carries at most 64 KiB of output. If the retained output is
+larger (only possible with a larger `output_limit`), the foreground result
+shows each pipe's start and end with a
+`[... N retained bytes not shown …]` marker, `more` is `true`, and
+`next_offsets` points at the first byte not shown.
+
+`read_command_output` pages retained output. Each pipe pages separately:
+`stdout_offset` and `stderr_offset` (default 0) are positions in the retained
+bytes, taken from the previous result's `next_offsets`; `stream` is `stdout`,
+`stderr` or `both` (default); `limit` (4 bytes to 64 KiB, default 64 KiB) is
+shared by the requested pipes, each getting at least 4 bytes. The result has the same `stdout`/`stderr`,
+`binary`, `next_offsets`, `retained_bytes`, `omitted_bytes`, `truncated` and
+`more` fields, plus `operation_id`, `state` and `termination`; a pipe that was
+not requested is left out. A page never ends inside a UTF-8 character: the cut
+backs off by up to three bytes and the next page starts there. While the
+command runs, an unfinished character at the end of its output is left for a
+later read. Offsets are
+stable once the command finished; while it runs, the tail keeps rolling.
+
+Background commands (`mode: "background"`) return only the operation id;
+`get_operation` reports `state`, `termination`, `retained_bytes`,
+`omitted_bytes` and `truncated`, and `read_command_output` pages the output.
+
+Every other tool's text block is the JSON of its `structuredContent`.
 
 Responses are bounded JSON. This initial server does not emit SSE, advertise
 subscriptions/resources/prompts, or initiate calls into a client.
@@ -177,9 +239,11 @@ server.
 transfer big files between the client and a device; use the remote CLI
 (`redoor remote cp`) for that. Copies and moves between devices have no size
 limit, because the bytes stay in Redoor's backpressured device transfer
-pipeline and never pass through the MCP client. Command retention defaults to
-1 MiB per operation and 64 MiB globally, reports truncation while continuing to
-drain the agent stream, and expires after 24 hours. Configure these with
+pipeline and never pass through the MCP client. Command retention is capped at
+1 MiB per operation and 64 MiB globally; once the global quota is used up, a
+command keeps rolling its newest bytes through the tail space it already has,
+reports truncation, and keeps draining the agent stream. Retained output
+expires 24 hours after the operation last changed. Configure these with
 `REDOOR_MCP_OPERATION_JOB_QUOTA`, `REDOOR_MCP_OPERATION_GLOBAL_QUOTA`, and
 `REDOOR_MCP_OPERATION_EXPIRY_SECONDS`. Directory and search results are
 bounded.
@@ -187,7 +251,12 @@ bounded.
 The deployment remains single-server: live agent routes and transfer progress
 are process-local. Operation admissions and retained command output are durable;
 a server restart marks work lacking a terminal acknowledgement `interrupted`
-and never repeats it. Multiple replicas require shared
+and never repeats it. On startup the server also reconciles output spools with
+their records (cutting bytes written after the last save, dropping output a
+crash lost, and keeping only the head of interrupted commands, whose tail may
+have been mid-update), deletes spools and temporary files no record owns, and recounts
+the global quota from the files on disk. Records in an older format are
+discarded. Multiple replicas require shared
 operation storage plus routing to the server that owns each device connection.
 Filesystem-root confinement is not implemented; stronger confinement must be
 canonical, symlink-aware, and enforced by the agent or its OS container.

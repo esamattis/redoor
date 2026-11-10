@@ -31,6 +31,7 @@ import {
     createMcpTestClient,
 } from "./mcp-client";
 
+import { registerMcpCommandOutputTests } from "./mcp-command-output";
 import { registerMcpTransferRegressionTests } from "./mcp-transfer-regressions";
 
 const processManager = new ProcessManager();
@@ -419,24 +420,19 @@ describe("stateless authenticated MCP", () => {
             throw new Error("Command operation missing");
 
         const retainedOutput = await client.callTool<
-            JsonObject & { content: string }
+            JsonObject & { stdout: string }
         >("read_command_output", { operation_id: operationId });
 
         // Only the agent's terminal acknowledgement supplies the real exit status.
         expect(command.result.structuredContent).toMatchObject({
             state: "completed",
             termination: { type: "exit", code: 7 },
+            stdout: "command-output",
         });
 
-        // Output pages retain binary-safe event records independently of terminal status.
-        // The NDJSON page is plain text, without another base64 layer around it.
-        const retainedEvents =
-            retainedOutput.result.structuredContent?.content ?? "";
-
-        expect(retainedEvents).toContain('"type":"stdout"');
-        // Retained events carry the output bytes as base64 strings.
-        expect(retainedEvents).toContain(
-            JSON.stringify(Buffer.from("command-output").toString("base64")),
+        // Retained output stays readable as decoded text after the foreground result.
+        expect(retainedOutput.result.structuredContent?.stdout).toBe(
+            "command-output",
         );
 
         const other = createMcpTestClient({
@@ -555,6 +551,14 @@ describe("stateless authenticated MCP", () => {
         ),
     });
 
+    // Runs before the quota test below, which exhausts the suite's global retention quota.
+    registerMcpCommandOutputTests({
+        endpoint,
+        createToken: () => createOperatorToken("output operator"),
+        device: testDeviceName,
+        cwd: agentRoot,
+    });
+
     it("bounds retained output, cancels background execution, and keeps searches independent", async () => {
         // The per-credential rolling request budget is shared by every test using the same
         // token, so this request-heavy test owns credentials instead of inheriting the budget
@@ -575,11 +579,13 @@ describe("stateless authenticated MCP", () => {
             output_limit: 4096,
         });
 
-        // The configured per-job quota truncates retention while the process still reaches exit.
+        // The configured per-job quota truncates retention while the process still reaches exit;
+        // stdout gets half of the 512-byte quota.
         expect(large.result.structuredContent).toMatchObject({
             state: "completed",
-            output_size: 512,
-            output_truncated: true,
+            retained_bytes: { stdout: 256, stderr: 0 },
+            omitted_bytes: { stdout: 4096 - 256, stderr: 0 },
+            truncated: true,
         });
 
         // Ten parallel admissions exceed one credential's concurrency cap of eight, so they are
@@ -587,10 +593,18 @@ describe("stateless authenticated MCP", () => {
         const quotaOperations = await Promise.all(
             Array.from({ length: 10 }, (_, index) =>
                 (index % 2 === 0 ? client : peerClient).callTool<
-                    JsonObject & { operation_id: string }
+                    JsonObject & {
+                        operation_id: string;
+                        retained_bytes: { stdout: number; stderr: number };
+                    }
                 >("run_command", {
                     device_id: testDeviceName,
-                    argv: ["sh", "-lc", "head -c 4096 /dev/zero"],
+                    // Both pipes, so each operation can use its whole quota.
+                    argv: [
+                        "sh",
+                        "-lc",
+                        "head -c 4096 /dev/zero; head -c 4096 /dev/zero >&2",
+                    ],
                     cwd: agentRoot,
                     mode: "foreground",
                     output_limit: 4096,
@@ -598,15 +612,19 @@ describe("stateless authenticated MCP", () => {
             ),
         );
 
+        const retainedPerOperation = quotaOperations.map((operation) => {
+            const retained =
+                operation.result.structuredContent?.retained_bytes;
+
+            return (retained?.stdout ?? 0) + (retained?.stderr ?? 0);
+        });
+
         // Parallel admissions cannot collectively retain more than the configured global ceiling.
         expect(
-            quotaOperations.some(
-                (operation) =>
-                    operation.result.structuredContent?.output_size === 0 &&
-                    operation.result.structuredContent?.output_truncated ===
-                        true,
-            ),
-        ).toBe(true);
+            retainedPerOperation.reduce((sum, bytes) => sum + bytes, 0),
+        ).toBeLessThanOrEqual(4096);
+        // Ten full 512-byte jobs exceed that ceiling, so some job is cut below its own quota.
+        expect(retainedPerOperation.some((bytes) => bytes < 512)).toBe(true);
 
         const largeDirectory = join(agentRoot, "large-directory");
         await client.callTool("run_command", {

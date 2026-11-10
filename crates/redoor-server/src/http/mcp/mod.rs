@@ -1,5 +1,6 @@
 //! Authenticated, stateless MCP 2026-07-28 HTTP endpoint.
 
+mod command_output;
 mod discovery;
 mod dispatch;
 mod error;

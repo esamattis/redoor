@@ -105,6 +105,14 @@ impl ExecOutput<'_> {
     /// both variant names have the same length.
     const LINE_OVERHEAD: usize = r#"{"type":"stdout","data":""}"#.len() + 1;
 
+    /// Largest pipe read the agent turns into one line. Shared so consumers that reassemble
+    /// lines can bound their buffer by what an agent can actually send.
+    pub const MAX_READ: usize = 8192;
+
+    /// Longest possible output line including its newline: the base64 of a full read plus the
+    /// fixed JSON around it.
+    pub const MAX_LINE: usize = Self::LINE_OVERHEAD + 4 * Self::MAX_READ.div_ceil(3);
+
     /// Serializes the event as one NDJSON line into a buffer allocated once at its final
     /// size, because this runs for every read of a chatty process.
     pub fn ndjson_line(&self) -> Vec<u8> {
