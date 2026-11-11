@@ -18,12 +18,7 @@ import {
     isLsFileResponse,
     type LsResponse,
 } from "#ui/ls-response";
-import {
-    browserLineSchema,
-    browserSearchSchema,
-    type FileSortColumn,
-} from "#ui/browser-search";
-import { optionalBooleanSchema } from "#ui/agent-search";
+import { browserSearchSchema, type FileSortColumn } from "#ui/browser-search";
 import { useUserState } from "#ui/user-state";
 import { AgentLifecycle } from "#ui/components/agent-lifecycle";
 import { RouteError } from "#ui/components/route-error";
@@ -103,17 +98,6 @@ import {
 } from "#ui/browser-view-redirects";
 import { getBaseName } from "#ui/utils/path";
 
-/** Reads line from the raw query so the loader can preserve it without adding line to loaderDeps. */
-function lineFromLocationSearch(searchStr: string): number | undefined {
-    const params = new URLSearchParams(
-        searchStr.startsWith("?") ? searchStr.slice(1) : searchStr,
-    );
-
-    const value = params.get("line");
-
-    return value === null ? undefined : browserLineSchema.parse(value);
-}
-
 /** What the route knows while its agent cannot serve paths yet, so only the URL is retained. */
 function lifecycleData(agent: Agent, path: string) {
     return {
@@ -155,6 +139,24 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
     // of history can be navigated like the worktree. Leaving history removes it explicitly.
     // The full-window editor is kept the same way, so switching open files stays in it.
     search: { middlewares: [retainSearchParams(["rev", "fullWindow"])] },
+    // URL-only canonicalization runs before the loader, so it applies while the agent is
+    // offline too and the reload on connection resolves the final URL without redirecting.
+    beforeLoad: ({ params, search, location }) => {
+        if (
+            new URLSearchParams(location.searchStr.replace(/^\?/, "")).has(
+                "diff",
+            )
+        ) {
+            throw redirect({
+                to: "/agents/$deviceName/browser/$",
+                params,
+                search: { view: search.view, line: search.line },
+                replace: true,
+            });
+        }
+
+        replaceDefaultMarkdownPreview({ params, search });
+    },
     loaderDeps: ({ search }) => ({
         view: search.view,
         diffMode: search.diffMode,
@@ -170,24 +172,6 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
         if (agent.status !== "connected" || agent.cwd === null) {
             // Retain the full URL until the agent connects and the path can be resolved.
             return lifecycleData(agent, path);
-        }
-
-        const rawSearch = new URLSearchParams(
-            location.searchStr.startsWith("?")
-                ? location.searchStr.slice(1)
-                : location.searchStr,
-        );
-
-        if (rawSearch.has("diff")) {
-            throw redirect({
-                to: "/agents/$deviceName/browser/$",
-                params,
-                search: {
-                    view: deps.view,
-                    line: lineFromLocationSearch(location.searchStr),
-                },
-                replace: true,
-            });
         }
 
         if (deps.rev !== undefined) {
@@ -244,17 +228,6 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
 
             if (isLsFileResponse(lsResult)) {
                 replaceUnsupportedFileView(params, deps.view, metadata);
-                replaceDefaultMarkdownPreview({
-                    params,
-                    view: deps.view,
-                    filePath: lsResult.path,
-                    metadata,
-                    line: lineFromLocationSearch(location.searchStr),
-                    preview: optionalBooleanSchema.parse(
-                        rawSearch.get("preview"),
-                    ),
-                    currentSearch: location.search,
-                });
 
                 if (
                     wantsFileContentView(deps.view) &&

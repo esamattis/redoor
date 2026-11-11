@@ -62,22 +62,26 @@ export function replaceUnsupportedFileView(
     }
 }
 
-/** Makes rendered markdown the canonical first view while line bookmarks stay in the editor. */
+/**
+ * Makes rendered markdown the canonical first view while line bookmarks stay in the editor.
+ * It decides from the URL alone, so it runs before the loader and never needs the agent: an
+ * offline tab already shows its final URL, and the reload on connection never redirects. A
+ * redirect thrown from that reload would keep the same match, so the stale offline loader
+ * data stayed on screen. A markdown file without editable content never reaches the editor,
+ * so the flag is inert for it.
+ */
 export function replaceDefaultMarkdownPreview(options: {
     params: BrowserParams;
-    view: BrowserSearch["view"];
-    filePath: string;
-    metadata: MetadataResponse | null;
-    line: BrowserSearch["line"];
-    preview: BrowserSearch["preview"];
-    currentSearch: BrowserSearch;
+    search: BrowserSearch;
 }) {
+    const search = options.search;
+
     if (
-        !wantsFileContentView(options.view) ||
-        options.metadata?.editable !== true ||
-        syntaxLanguageFromFileName(options.filePath) !== "markdown" ||
-        options.line !== undefined ||
-        options.preview !== undefined
+        !wantsFileContentView(search.view) ||
+        search.rev !== undefined ||
+        search.line !== undefined ||
+        search.preview !== undefined ||
+        syntaxLanguageFromFileName(options.params._splat ?? "") !== "markdown"
     ) {
         return;
     }
@@ -85,7 +89,7 @@ export function replaceDefaultMarkdownPreview(options: {
     throw redirect({
         to: "/agents/$deviceName/browser/$",
         params: options.params,
-        search: { ...options.currentSearch, preview: true },
+        search: { ...search, preview: true },
         replace: true,
     });
 }

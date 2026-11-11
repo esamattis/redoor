@@ -872,6 +872,39 @@ test.describe.serial("Agent management", () => {
         await secondTab.close();
     });
 
+    test("opens an offline markdown tab in preview on connection", async ({
+        page,
+    }) => {
+        const home = path.resolve(".test-playwright-home/lazy-agent");
+        const markdownPath = path.join(home, "queued notes.md");
+        await fs.writeFile(markdownPath, "# Queued heading\n");
+        const markdownUrl = `${WEB_BASE_URL}/agents/${VALID_AGENT}/browser/${encodeFilesystemPath(markdownPath)}`;
+
+        await page.goto(markdownUrl);
+        // The preview default comes from the URL alone, so the offline tab already shows it.
+        await expect(page).toHaveURL(`${markdownUrl}?preview=true`);
+        await page
+            .getByRole("button", { name: "Connect", exact: true })
+            .click();
+
+        // Connecting must resolve the queued markdown file instead of sticking on "Opening path...".
+        await expect(
+            page
+                .getByRole("region", { name: "Markdown preview" })
+                .getByRole("heading", { name: "Queued heading" }),
+        ).toBeVisible({ timeout: 30_000 });
+
+        const shutdown = await page.request.post(
+            `${WEB_BASE_URL}/api/v1/agents/${VALID_AGENT}/shutdown`,
+        );
+
+        // Later tests expect the managed device to be stopped again.
+        expect(shutdown.ok()).toBe(true);
+        await expect(
+            page.getByRole("button", { name: "Connect", exact: true }),
+        ).toBeVisible({ timeout: 15_000 });
+    });
+
     test("shows optimistic starting state before the start request completes", async ({
         page,
     }) => {
