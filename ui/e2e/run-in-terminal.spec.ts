@@ -71,6 +71,10 @@ test.describe.serial("Run in terminal", () => {
             });
         });
 
+        // Every invocation must prove a new run, including repeated executions of this spec.
+        await fs.rm(path.join(ctx.testDirPath, "ran-from.txt"), {
+            force: true,
+        });
         await page.goto(fileUrl("my script.sh"));
         const editor = page.getByLabel("File editor", { exact: true });
         await expect(editor).toContainText("pwd > ran-from.txt");
@@ -99,7 +103,9 @@ test.describe.serial("Run in terminal", () => {
             ctx.testDirPath,
         );
         // The name is quoted, so the space does not split it into two words.
-        expect(sentInput.join("")).toContain("./'my script.sh'\r");
+        await expect
+            .poll(() => sentInput.join(""))
+            .toContain("./'my script.sh'\r");
     });
 
     test("does not run a script with unsaved edits", async ({ page }) => {
