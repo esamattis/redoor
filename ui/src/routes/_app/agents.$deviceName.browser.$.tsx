@@ -2,7 +2,6 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { opensInEditor } from "#ui/vault/vault-path";
 import {
     createFileRoute,
-    redirect,
     retainSearchParams,
     useRouter,
 } from "@tanstack/react-router";
@@ -141,20 +140,7 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
     search: { middlewares: [retainSearchParams(["rev", "fullWindow"])] },
     // URL-only canonicalization runs before the loader, so it applies while the agent is
     // offline too and the reload on connection resolves the final URL without redirecting.
-    beforeLoad: ({ params, search, location }) => {
-        if (
-            new URLSearchParams(location.searchStr.replace(/^\?/, "")).has(
-                "diff",
-            )
-        ) {
-            throw redirect({
-                to: "/agents/$deviceName/browser/$",
-                params,
-                search: { view: search.view, line: search.line },
-                replace: true,
-            });
-        }
-
+    beforeLoad: ({ params, search }) => {
         replaceDefaultMarkdownPreview({ params, search });
     },
     loaderDeps: ({ search }) => ({
