@@ -887,7 +887,7 @@ test.describe.serial("Agent management", () => {
             .getByRole("button", { name: "Connect", exact: true })
             .click();
 
-        // Connecting must resolve the queued markdown file instead of sticking on "Opening path...".
+        // Connecting must resolve the queued markdown file instead of staying on the offline view.
         await expect(
             page
                 .getByRole("region", { name: "Markdown preview" })

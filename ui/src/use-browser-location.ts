@@ -1,5 +1,6 @@
 import { useMatch } from "@tanstack/react-router";
 
+import { AgentUnavailableError } from "#ui/agent-unavailable";
 import { isLsDirectoryResponse } from "#ui/ls-response";
 
 /**
@@ -15,7 +16,7 @@ export type BrowserLocation = {
     entry: "directory" | "file" | null;
     /** The canonical path reported by the listing, or null when the path did not resolve. */
     resolvedPath: string | null;
-    /** Whether the agent was connected when the route loaded, so repository discovery ran. */
+    /** False while the route waits for its agent to connect, so no repository discovery ran. */
     isConnected: boolean;
     /**
      * The browsed Git revision and what the path is at it, or null for the worktree. It is
@@ -36,6 +37,17 @@ export function useBrowserLocation(): BrowserLocation | null {
         from: "/_app/agents/$deviceName/browser/$",
         shouldThrow: false,
         select: (match): BrowserLocation | null => {
+            if (match.error instanceof AgentUnavailableError) {
+                return {
+                    agentId: match.error.agentId,
+                    path: match.error.path,
+                    entry: null,
+                    resolvedPath: null,
+                    isConnected: false,
+                    revision: null,
+                };
+            }
+
             const data = match.loaderData;
 
             if (!data) {
@@ -66,7 +78,7 @@ export function useBrowserLocation(): BrowserLocation | null {
                         : "file"
                     : null,
                 resolvedPath: lsResult?.path ?? null,
-                isConnected: data.kind === "connected",
+                isConnected: true,
                 revision: null,
             };
         },

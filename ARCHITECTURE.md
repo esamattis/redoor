@@ -380,6 +380,14 @@ The UI is a TanStack Router application embedded in the server binary.
   session-scoped work; `/login` is outside it.
 - **Device URLs carry names, everything else uses ids.** A device route resolves its name
   once, so an open page keeps acting on the device it was opened for.
+- **An offline device is a route error, not loader data.** The file browser loader throws
+  `AgentUnavailableError` while its agent is not connected, and the error view offers to
+  connect. The device layout reloads those failed matches once the live inventory reports
+  the agent connected; the router reloads them like a fresh navigation, whereas loader data
+  saying "offline" could outlive the connection. The trigger sits outside the route's error
+  boundary, because reloading resets the boundary and remounts the error view.
+- **URL-only defaults are filled in before loaders** (such as the markdown preview), so a URL
+  shows its final, linkable form even while the device is offline.
 - **Back and forward restore the view.** View state that changes page height is kept per
   history entry (`useHistoryEntryState`), so restored scroll positions land correctly.
 - **Long-lived resources are classes created once in `main.tsx`** (`TerminalSessions`,

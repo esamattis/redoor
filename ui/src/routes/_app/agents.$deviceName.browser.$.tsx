@@ -3,7 +3,7 @@ import { opensInEditor } from "#ui/vault/vault-path";
 import {
     createFileRoute,
     retainSearchParams,
-    useRouter,
+    type ErrorComponentProps,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 import { useSetAtom } from "jotai";
@@ -74,7 +74,6 @@ import {
     queryKeys,
 } from "#ui/queries";
 import { useAgents, useRequiredAgent } from "#ui/use-agents";
-import { invalidateDeviceViews } from "#ui/use-active-agent";
 import { useBrowserRefreshTriggers } from "#ui/components/browser/refresh";
 import type { MountPoint } from "#bindings/MountPoint";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
@@ -96,16 +95,7 @@ import {
     wantsFileContentView,
 } from "#ui/browser-view-redirects";
 import { getBaseName } from "#ui/utils/path";
-
-/** What the route knows while its agent cannot serve paths yet, so only the URL is retained. */
-function lifecycleData(agent: Agent, path: string) {
-    return {
-        kind: "lifecycle" as const,
-        agentId: agent.id,
-        path,
-        lsResult: null,
-    };
-}
+import { AgentUnavailableError } from "#ui/agent-unavailable";
 
 /** What the route renders for a path that resolved to a file or a directory. */
 function resolvedData(agent: Agent, path: string, lsResult: LsResponse) {
@@ -156,8 +146,8 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
         const path = `/${params._splat ?? ""}`;
 
         if (agent.status !== "connected" || agent.cwd === null) {
-            // Retain the full URL until the agent connects and the path can be resolved.
-            return lifecycleData(agent, path);
+            // The URL stays as it is; the device layout reloads it once the agent connects.
+            throw new AgentUnavailableError(agent.id, path);
         }
 
         if (deps.rev !== undefined) {
@@ -295,8 +285,28 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
         }
     },
     component: FileBrowser,
-    errorComponent: RouteError,
+    errorComponent: BrowserRouteError,
 });
+
+/**
+ * Offers to connect an agent that is not connected yet at the bookmarked URL, and reports
+ * real failures to load the path. The device layout reloads the route once the agent
+ * connects (see `useReloadUnavailableRoutes`).
+ */
+function BrowserRouteError(props: ErrorComponentProps) {
+    if (props.error instanceof AgentUnavailableError) {
+        return <AwaitAgentConnection agentId={props.error.agentId} />;
+    }
+
+    return <RouteError {...props} />;
+}
+
+/** Looks the agent up live, so the connection controls follow its lifecycle. */
+function AwaitAgentConnection(props: { agentId: string }) {
+    const agent = useRequiredAgent(props.agentId);
+
+    return <AgentLifecycle agent={agent} preserveDestination />;
+}
 
 /** Fixes browser navigation chrome in one route-level frame for every path type and view. */
 function BrowserRouteShell(props: {
@@ -358,35 +368,16 @@ function BrowserRouteShell(props: {
 }
 
 /**
- * Shows connection controls at the bookmarked URL until filesystem commands are available.
- * Availability follows the live inventory, so a disconnect swaps the view immediately and a
- * reconnect resolves the path again instead of waiting for a reload event.
+ * Renders a path the loader resolved. A disconnect afterwards swaps in the connection
+ * controls at once from the live inventory, while the resolved data waits underneath for
+ * the reconnect.
  */
 function FileBrowser() {
     const data = Route.useLoaderData();
-    const router = useRouter();
     const agent = useRequiredAgent(data.agentId);
-    const isAvailable = agent.status === "connected" && agent.cwd !== null;
-    const needsResolution = isAvailable && data.kind === "lifecycle";
 
-    useEffect(() => {
-        // The loader found the agent offline, so it resolved no path. Run it again now that
-        // the agent can serve one, which also applies the path-dependent redirects.
-        if (needsResolution) {
-            void invalidateDeviceViews(router);
-        }
-    }, [needsResolution, router]);
-
-    if (!isAvailable) {
+    if (agent.status !== "connected" || agent.cwd === null) {
         return <AgentLifecycle agent={agent} preserveDestination />;
-    }
-
-    if (data.kind === "lifecycle") {
-        return (
-            <p role="status" className="p-8 text-sm text-slate-400">
-                Opening path...
-            </p>
-        );
     }
 
     if (data.kind === "revision") {

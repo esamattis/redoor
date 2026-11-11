@@ -1,6 +1,7 @@
 import { createFileRoute, Outlet } from "@tanstack/react-router";
 
 import { agentSearchSchema } from "#ui/agent-search";
+import { useReloadUnavailableRoutes } from "#ui/agent-unavailable";
 import { useRememberProvisioningStatus } from "#ui/provisioning-status";
 import { DeviceNotFound } from "#ui/components/device-not-found";
 import { SearchDialog } from "#ui/components/search-dialog";
@@ -57,6 +58,7 @@ function AgentRouteLayout() {
     const agent = useAgent(deviceId);
 
     useRememberProvisioningStatus(agent);
+    useReloadUnavailableRoutes(agent);
 
     if (!agent) {
         return <DeviceNotFound deviceName={deviceName} />;
