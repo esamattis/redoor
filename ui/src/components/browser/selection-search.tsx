@@ -16,7 +16,8 @@ const BUTTON_HEIGHT = 40;
  * without measuring itself first.
  */
 interface SelectionSearchTarget {
-    text: string;
+    /** The text to search for, or null for a selection over several lines. */
+    text: string | null;
     /** The selection, so a search can tell which occurrence of the text was selected. */
     range: Range;
     top?: number;
@@ -26,10 +27,11 @@ interface SelectionSearchTarget {
 }
 
 /**
- * Reads the document selection as a search query when it lies inside `container`. Only a
- * single line qualifies, because content search matches one line at a time and a query
- * spanning lines could never match. The button goes under the end of the selection, where
- * the pointer let go, and flips above or leftwards near the viewport's edges.
+ * Reads the document selection when it lies inside `container`. Only a single line becomes a
+ * search query, because content search matches one line at a time and a query spanning lines
+ * could never match; a longer selection may still have other actions. The buttons go under
+ * the end of the selection, where the pointer let go, and flip above or leftwards near the
+ * viewport's edges.
  */
 function selectionSearchTarget(
     container: HTMLElement,
@@ -51,10 +53,6 @@ function selectionSearchTarget(
     }
 
     const text = selection.toString().trim();
-
-    if (text === "" || text.includes("\n")) {
-        return null;
-    }
 
     const rects = range.getClientRects();
     const first = rects.item(0);
@@ -81,7 +79,12 @@ function selectionSearchTarget(
             ? { left: Math.max(0, last.right) }
             : { right: Math.max(0, window.innerWidth - last.right) };
 
-    return { text, range, ...vertical, ...horizontal };
+    return {
+        text: text === "" || text.includes("\n") ? null : text,
+        range,
+        ...vertical,
+        ...horizontal,
+    };
 }
 
 /**
@@ -92,11 +95,15 @@ function selectionSearchTarget(
  * outside the directory being viewed.
  *
  * A diff list also passes `onSearchInDiffs`, which offers a second button that looks the
- * text up in the list's own diffs, for following a name through the rest of the change.
+ * text up in the list's own diffs, for following a name through the rest of the change, and
+ * `selectionActions`, which adds buttons of its own for any selection, even one over several
+ * lines.
  */
 export function SelectionSearch(props: {
     children: React.ReactNode;
     onSearchInDiffs?: (text: string, range: Range) => void;
+    /** Extra buttons for the selection, or null when there are none for it. */
+    selectionActions?: (range: Range) => React.ReactNode;
 }) {
     const containerRef = React.useRef<HTMLDivElement>(null);
     const buttonRef = React.useRef<HTMLDivElement>(null);
@@ -106,6 +113,13 @@ export function SelectionSearch(props: {
     );
 
     const { updateSearch } = useAgentSearchNavigation();
+
+    const extraActions =
+        target === null
+            ? null
+            : (props.selectionActions?.(target.range) ?? null);
+
+    const searchText = target?.text ?? null;
 
     // Follows the browser's selection, which React has no events for.
     React.useEffect(() => {
@@ -166,7 +180,7 @@ export function SelectionSearch(props: {
     return (
         <div ref={containerRef} className="contents">
             {props.children}
-            {target === null
+            {target === null || (searchText === null && extraActions === null)
                 ? null
                 : createPortal(
                       <div
@@ -180,31 +194,40 @@ export function SelectionSearch(props: {
                               right: target.right,
                           }}
                       >
-                          <IconButton
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              label="Search selected text"
-                              tooltip="Search the selected text in file contents from the Git repository root."
-                              // Pressing a button would otherwise clear the selection it acts on.
-                              onMouseDown={(event) => event.preventDefault()}
-                              onClick={() =>
-                                  void updateSearch({
-                                      q: target.text,
-                                      mode: "content",
-                                      gitroot: true,
-                                  })
-                              }
-                          >
-                              <Search className="h-4 w-4" aria-hidden="true" />
-                          </IconButton>
-                          {props.onSearchInDiffs === undefined ? null : (
+                          {searchText === null ? null : (
+                              <IconButton
+                                  type="button"
+                                  variant="outline"
+                                  size="sm"
+                                  label="Search selected text"
+                                  tooltip="Search the selected text in file contents from the Git repository root."
+                                  // Pressing a button would otherwise clear the selection it acts on.
+                                  onMouseDown={(event) =>
+                                      event.preventDefault()
+                                  }
+                                  onClick={() =>
+                                      void updateSearch({
+                                          q: searchText,
+                                          mode: "content",
+                                          gitroot: true,
+                                      })
+                                  }
+                              >
+                                  <Search
+                                      className="h-4 w-4"
+                                      aria-hidden="true"
+                                  />
+                              </IconButton>
+                          )}
+                          {searchText === null ||
+                          props.onSearchInDiffs === undefined ? null : (
                               <SearchInDiffsButton
-                                  text={target.text}
+                                  text={searchText}
                                   range={target.range}
                                   onSearchInDiffs={props.onSearchInDiffs}
                               />
                           )}
+                          {extraActions}
                       </div>,
                       document.body,
                   )}

@@ -32,6 +32,7 @@ import {
 } from "#ui/components/browser/changed-files-outline";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
+import { useDiffCopyReference } from "#ui/components/browser/diff-copy-reference";
 import {
     DIFF_SEARCH_PATH_ATTRIBUTE,
     selectionAnchor,
@@ -613,6 +614,7 @@ export function GitDiffList(props: {
     const choices = fileChoices.choices;
     const [searchStore] = React.useState(() => new DiffSearchStore());
     const listRef = React.useRef<HTMLDivElement>(null);
+    const copyReference = useDiffCopyReference(props.files);
 
     // Built only when the files, filter or a layout change, so the search reruns only then.
     const searchFiles = React.useMemo(
@@ -690,7 +692,8 @@ export function GitDiffList(props: {
             setOutline((current) => (current === outline ? null : current));
     }, [isFoldable, props.files, filter, setOutline]);
 
-    // Names in a patch are often worth looking up elsewhere in the repository or the change.
+    // Names in a patch are often worth looking up elsewhere in the repository or the change,
+    // and selected lines are worth quoting to an AI agent with the file and lines they came from.
     return (
         <DiffSearchStoreContext.Provider value={searchStore}>
             <SelectionSearch
@@ -700,6 +703,7 @@ export function GitDiffList(props: {
                         anchor: selectionAnchor(range),
                     })
                 }
+                selectionActions={copyReference.actionsFor}
             >
                 <div ref={listRef}>
                     <div className="grid grid-cols-[minmax(0,1fr)] gap-4">
@@ -729,6 +733,7 @@ export function GitDiffList(props: {
                     />
                 </div>
             </SelectionSearch>
+            {copyReference.toast}
         </DiffSearchStoreContext.Provider>
     );
 }

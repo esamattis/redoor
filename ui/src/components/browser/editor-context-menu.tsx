@@ -21,6 +21,7 @@ import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { toggleCommentChord } from "#ui/editor/editor-extensions";
 import { getErrorMessage } from "#ui/utils/error";
+import { formatFileReference } from "#ui/utils/file-reference";
 import { formatKeyChord, type KeyChord } from "#ui/utils/keyboard";
 
 /**
@@ -157,11 +158,11 @@ class EditorMenuActions {
             endLine = state.doc.line(endLine.number - 1);
         }
 
-        const text = state.sliceDoc(startLine.from, endLine.to);
-
-        return `\`\`\`${path}#L${startLine.number}
-${text}
-\`\`\``;
+        return formatFileReference(
+            path,
+            startLine.number,
+            state.sliceDoc(startLine.from, endLine.to),
+        );
     }
 
     /** Comments or uncomments the selected lines with the file language's comment syntax. */
