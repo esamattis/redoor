@@ -147,6 +147,8 @@ describe("Git browser REST API", () => {
         });
         // Clean index membership must still classify a file as tracked.
         expect(trackedContext).toMatchObject({ tracking_state: "tracked" });
+        // Without a remote HEAD or a fetched upstream there is no main line to compare with.
+        expect(trackedContext).toMatchObject({ default_remote_branch: null });
         // Status/exclude traversal distinguishes ordinary untracked content.
         expect(await gitContext(untracked)).toMatchObject({
             tracking_state: "untracked",
@@ -186,6 +188,49 @@ describe("Git browser REST API", () => {
         const outsideContext = await gitContext(outside);
         // Outside paths are a normal availability result rather than an API error.
         expect(outsideContext).toEqual({ status: "outside_worktree" });
+    });
+
+    it("names the remote-tracking default branch rather than local main", async () => {
+        const upstream = tempFiles.tempDirectory({ suffix: "-git-upstream" });
+        await initRepository(upstream);
+        await $({ cwd: upstream })`git symbolic-ref HEAD refs/heads/main`;
+        await writeFile(join(upstream, "file.txt"), "upstream\n");
+        await $({ cwd: upstream })`git add file.txt`;
+        await $({ cwd: upstream })`git commit -m upstream`;
+
+        const upstreamTip = (
+            await $({ cwd: upstream })`git rev-parse HEAD`
+        ).stdout.trim();
+
+        const clone = tempFiles.tempDirectory({ suffix: "-git-clone" });
+        await rm(clone, { recursive: true });
+        await $`git clone ${upstream} ${clone}`;
+        await $({
+            cwd: clone,
+        })`git config user.email redoor-tests@example.invalid`;
+        await $({ cwd: clone })`git config user.name Redoor Tests`;
+        // Local main moves ahead with an unpushed commit.
+        await $({ cwd: clone })`git commit --allow-empty -m unpushed`;
+        const before = Math.floor(Date.now() / 1000) - 60;
+
+        const context = await gitContext(clone);
+
+        // The comparison target is origin/main as fetched, not local main, which is ahead.
+        expect(context).toMatchObject({
+            status: "inside_worktree",
+            default_remote_branch: {
+                full_name: "refs/remotes/origin/main",
+                commit_id: upstreamTip,
+            },
+        });
+
+        // The clone dates the remote branch, so the view can say how fresh it is.
+        const fetchedAt =
+            context.status === "inside_worktree"
+                ? context.default_remote_branch?.fetched_at
+                : null;
+
+        expect(fetchedAt).toBeGreaterThanOrEqual(before);
     });
 
     it("supports linked worktrees and does not execute configured external diff commands", async () => {

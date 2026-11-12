@@ -325,7 +325,11 @@ describe("Git revision REST API", () => {
         // The parent of a root commit starts the range at the empty tree, so a run of
         // commits reaching the first one still has a base.
         expect(fromRoot.parent_id).toBeNull();
-        expect(fromRoot.range).toEqual({ base: null, merge_base: false });
+        expect(fromRoot.range).toEqual({
+            base: null,
+            merge_base: false,
+            merge_preview: false,
+        });
         // The commits combine: a file added and removed inside the range is not listed, and
         // everything else counts as added.
         expect(
@@ -407,7 +411,7 @@ describe("Git revision REST API", () => {
         return (await $({ cwd: directory })`git rev-parse HEAD`).stdout.trim();
     }
 
-    it("diffs a symmetric range against the merge base of its sides", async () => {
+    it("diffs a symmetric range as a merge preview of its sides", async () => {
         const diverged = await createRepository("-git-revision-symmetric");
         await writeFile(join(diverged, "shared.txt"), "shared\n");
         const base = await commitAll(diverged, "Shared start");
@@ -416,7 +420,7 @@ describe("Git revision REST API", () => {
         const feature = await commitAll(diverged, "Feature work");
         await $({ cwd: diverged })`git checkout main`;
         await writeFile(join(diverged, "main.txt"), "main moved on\n");
-        await commitAll(diverged, "Main moved on");
+        const mainTip = await commitAll(diverged, "Main moved on");
         await $({ cwd: diverged })`git checkout feature`;
 
         const symmetric: GitCommitDiffResponse = await testAgent.gitCommitDiff(
@@ -426,11 +430,14 @@ describe("Git revision REST API", () => {
 
         // The range names its right side, the checked-out feature branch.
         expect(symmetric.commit.id).toBe(feature);
-        // The comparison starts where the branches split, not at main's tip.
-        expect(symmetric.parent_id).toBe(base);
+        // A merge preview compares with main's tip, the side the branch would merge into.
+        expect(symmetric.parent_id).toBe(mainTip);
+        // The header still names where the branches split.
         expect(symmetric.range?.base?.id).toBe(base);
         // The view is told the base is a merge base so it can title the diff accordingly.
         expect(symmetric.range?.merge_base).toBe(true);
+        // The merge succeeded, so the view does not report a fallback.
+        expect(symmetric.range?.merge_preview).toBe(true);
         // Only the branch's own work is listed; main's newer file is not shown as deleted.
         expect(
             symmetric.files.map((file) => [
@@ -463,7 +470,7 @@ describe("Git revision REST API", () => {
 
         // An empty side means HEAD, as in Git.
         expect(emptyRight.commit.id).toBe(feature);
-        expect(emptyRight.parent_id).toBe(base);
+        expect(emptyRight.parent_id).toBe(mainTip);
 
         const tree = await testAgent.gitRevisionTree(
             diverged,
@@ -486,6 +493,77 @@ describe("Git revision REST API", () => {
         // Histories without a common ancestor have no merge base to compare with.
         expect(unrelated.status).toBe(400);
         expect(await unrelated.text()).toContain("no common history");
+    });
+
+    it("cancels squashed work and flags conflicts in a merge preview", async () => {
+        const squashed = await createRepository("-git-revision-squash");
+        await writeFile(join(squashed, "shared.txt"), "one\ntwo\nthree\n");
+        await writeFile(join(squashed, "dropped.txt"), "kept on main\n");
+        await commitAll(squashed, "Shared start");
+        await $({ cwd: squashed })`git checkout -b feature`;
+        await writeFile(join(squashed, "landed.txt"), "landed\n");
+        await commitAll(squashed, "Work that gets squashed");
+        await $({ cwd: squashed })`git checkout main`;
+        await $({ cwd: squashed })`git merge --squash feature`;
+        await commitAll(squashed, "Squash of the feature");
+        await writeFile(join(squashed, "shared.txt"), "one\nmain side\nthree\n");
+        await writeFile(join(squashed, "dropped.txt"), "edited on main\n");
+        await commitAll(squashed, "Main edits the shared file");
+        await $({ cwd: squashed })`git checkout feature`;
+        await writeFile(join(squashed, "extension.txt"), "extension\n");
+        await writeFile(
+            join(squashed, "shared.txt"),
+            "one\nfeature side\nthree\n",
+        );
+        await rm(join(squashed, "dropped.txt"));
+        await commitAll(squashed, "Extension and a conflicting edit");
+
+        const preview: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            squashed,
+            "refs/heads/main...HEAD",
+        );
+
+        // The squashed file is already on main, so only the newer work is listed.
+        expect(
+            preview.files.map((file) => [
+                file.repository_relative_path,
+                file.conflicted,
+            ]),
+        ).toEqual([
+            // The merge keeps main's edit of the file the branch deleted, so it has no diff,
+            // yet it is listed so the user learns that merging conflicts there.
+            ["dropped.txt", true],
+            ["extension.txt", false],
+            // Both sides edited the same line, so the view must label the file.
+            ["shared.txt", true],
+        ]);
+
+        const dropped = preview.files.find(
+            (file) => file.repository_relative_path === "dropped.txt",
+        );
+
+        // With no diff to show, the reason is what tells the user who did what, naming main
+        // the way people do rather than by its full ref.
+        expect(dropped?.result.type).toBe("no_changes");
+        expect(dropped?.conflict_reason).toBe(
+            "Your branch deletes this file, but main changed it since the branch split off.",
+        );
+
+        // The conflicting file's diff shows the markers the merge left in it.
+        const shared = preview.files.find(
+            (file) => file.repository_relative_path === "shared.txt",
+        );
+
+        expect(shared?.result).toMatchObject({ type: "text" });
+        expect(
+            shared?.result.type === "text" ? shared.result.unified_diff : "",
+        ).toContain("+<<<<<<< refs/heads/main");
+        // The preview did not fall back to the merge-base diff.
+        expect(preview.range?.merge_preview).toBe(true);
+
+        const status = await $({ cwd: squashed })`git status --porcelain`;
+        // Previewing a merge never touches the worktree or index.
+        expect(status.stdout).toBe("");
     });
 
     it("rejects revisions that name a blob or tree instead of a commit", async () => {

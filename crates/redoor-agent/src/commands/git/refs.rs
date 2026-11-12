@@ -12,6 +12,7 @@ use redoor_protocol::{
             GitBranchScope, GitRef, GitRefKind, GitRefListKind, GitRefListResponse, GitRefSort,
         },
     },
+    ids::UnixTimestampSeconds,
     wire::{command::CommandErrorKind, request::CommandError},
 };
 
@@ -208,6 +209,140 @@ fn list_blocking(
     })
 }
 
+/// The remote-tracking branch that holds the project's main line as it was last fetched, such
+/// as `refs/remotes/origin/main`: the one the default fetch remote's `HEAD` names, or else the
+/// upstream of the local default branch.
+///
+/// It is kept apart from [`default_branch`], which prefers the local branch of the same name
+/// for the branch list, because comparing a checkout with local `main` would hide or add
+/// changes whenever that branch is behind or ahead of the remote.
+pub(super) struct RemoteDefaultBranch {
+    /// The remote's name, kept to find the remote `HEAD`'s reflog when dating the last fetch.
+    remote: String,
+    /// The local branch that follows this one, which the branch list leads with instead.
+    local: Option<String>,
+    pub(super) full_name: String,
+    pub(super) commit_id: gix::ObjectId,
+}
+
+impl RemoteDefaultBranch {
+    /// Finds the remote main line, trying the remote `HEAD` first because it is what the
+    /// remote itself calls its default, then the upstream of the local default branch.
+    ///
+    /// The fallback matters because only `git clone`, and `git fetch` from Git 2.48 on, write
+    /// a remote `HEAD`: a repository set up with `git init` and `git remote add` has none, yet
+    /// its local `main` usually tracks `origin/main`. `None` when neither leads to a commit.
+    pub(super) fn find(repo: &gix::Repository) -> Result<Option<Self>, GitFailure> {
+        if let Some(found) = Self::from_remote_head(repo)? {
+            return Ok(Some(found));
+        }
+        Self::from_local_upstream(repo)
+    }
+
+    /// Follows `refs/remotes/<remote>/HEAD` of the default fetch remote, `origin` when none is
+    /// configured, to the branch it names. `None` when there is no remote `HEAD`, or when the
+    /// branch it names is gone or names no commit.
+    fn from_remote_head(repo: &gix::Repository) -> Result<Option<Self>, GitFailure> {
+        let remote = repo
+            .remote_default_name(gix::remote::Direction::Fetch)
+            .and_then(|name| name.to_str().ok().map(str::to_string))
+            .unwrap_or_else(|| "origin".to_string());
+        let remote_head = find_reference(repo, &format!("refs/remotes/{remote}/HEAD"))?;
+        let Some(full_name) = remote_head.as_ref().and_then(|head| {
+            head.target()
+                .try_name()
+                .and_then(|name| name.as_bstr().to_str().ok())
+                .map(str::to_string)
+        }) else {
+            return Ok(None);
+        };
+        // The local branch of the same name is the one that follows it by convention.
+        let local = full_name
+            .strip_prefix(&format!("refs/remotes/{remote}/"))
+            .map(|branch| format!("refs/heads/{branch}"));
+        Self::resolve(repo, remote, local, full_name)
+    }
+
+    /// Takes the remote-tracking branch the local default branch is configured to follow
+    /// through `branch.<name>.remote` and `branch.<name>.merge`, mapped by gix through the
+    /// remote's fetch refspecs. The first local default candidate with such an upstream wins;
+    /// an upstream that was never fetched does not count, as there is nothing to compare with.
+    fn from_local_upstream(repo: &gix::Repository) -> Result<Option<Self>, GitFailure> {
+        for local in local_default_candidates(repo) {
+            let Ok(local_name) = gix::refs::FullName::try_from(local.as_str()) else {
+                continue;
+            };
+            // Unreadable tracking config, which only hand edits produce, counts as none.
+            let Some(Ok(tracking)) = repo.branch_remote_tracking_ref_name(
+                local_name.as_ref(),
+                gix::remote::Direction::Fetch,
+            ) else {
+                continue;
+            };
+            let Ok(full_name) = tracking.as_bstr().to_str().map(str::to_string) else {
+                continue;
+            };
+            let remote = repo
+                .branch_remote_name(local_name.shorten(), gix::remote::Direction::Fetch)
+                .and_then(|name| name.as_symbol().map(str::to_string))
+                .unwrap_or_else(|| "origin".to_string());
+            if let Some(found) = Self::resolve(repo, remote, Some(local), full_name)? {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Peels the remote-tracking branch to its commit, or `None` when it is missing or names
+    /// no commit.
+    fn resolve(
+        repo: &gix::Repository,
+        remote: String,
+        local: Option<String>,
+        full_name: String,
+    ) -> Result<Option<Self>, GitFailure> {
+        let Some(target) = find_reference(repo, &full_name)?
+            .and_then(|reference| reference.try_id().map(gix::Id::detach))
+        else {
+            return Ok(None);
+        };
+        let Some(commit_id) = peel_to_commit(repo, target)? else {
+            return Ok(None);
+        };
+        Ok(Some(Self {
+            remote,
+            local,
+            full_name,
+            commit_id,
+        }))
+    }
+
+    /// Tells when the branch was last fetched, from the newest of the files a fetch writes:
+    /// `FETCH_HEAD`, which records every fetch even when nothing changed, the branch's
+    /// reflog, which a fetch that moved it writes, and the remote `HEAD`'s reflog, which a
+    /// clone writes while leaving the branch itself only in `packed-refs`. `FETCH_HEAD`
+    /// belongs to each worktree, so both the worktree's and the main repository's are read.
+    /// A file's modification time is enough here, which spares parsing the reflogs.
+    pub(super) fn fetched_at(&self, repo: &gix::Repository) -> Option<UnixTimestampSeconds> {
+        let logs = repo.common_dir().join("logs");
+        [
+            repo.git_dir().join("FETCH_HEAD"),
+            repo.common_dir().join("FETCH_HEAD"),
+            logs.join(&self.full_name),
+            logs.join(format!("refs/remotes/{}/HEAD", self.remote)),
+        ]
+        .iter()
+        .filter_map(|path| {
+            std::fs::metadata(path)
+                .and_then(|meta| meta.modified())
+                .ok()
+        })
+        .max()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|age| UnixTimestampSeconds::new(age.as_secs() as i64))
+    }
+}
+
 /// Finds the full name of the repository's default branch, or `None` when it cannot be told.
 ///
 /// The default remote's `HEAD` says which branch the project treats as its main line, so it
@@ -216,44 +351,36 @@ fn list_blocking(
 /// `init.defaultBranch` setting and the common `main` and `master` names are tried as local
 /// branches.
 fn default_branch(repo: &gix::Repository) -> Result<Option<String>, GitFailure> {
-    let remote = repo
-        .remote_default_name(gix::remote::Direction::Fetch)
-        .and_then(|name| name.to_str().ok().map(str::to_string))
-        .unwrap_or_else(|| "origin".to_string());
-    let remote_head = find_reference(repo, &format!("refs/remotes/{remote}/HEAD"))?;
-    let remote_target = remote_head.as_ref().and_then(|head| {
-        head.target()
-            .try_name()
-            .and_then(|name| name.as_bstr().to_str().ok())
-            .map(str::to_string)
-    });
-    if let Some(remote_target) = remote_target {
-        let prefix = format!("refs/remotes/{remote}/");
-        if let Some(branch) = remote_target.strip_prefix(&prefix) {
-            let local = format!("refs/heads/{branch}");
-            if find_reference(repo, &local)?.is_some() {
-                return Ok(Some(local));
-            }
+    if let Some(remote) = RemoteDefaultBranch::find(repo)? {
+        if let Some(local) = remote.local
+            && find_reference(repo, &local)?.is_some()
+        {
+            return Ok(Some(local));
         }
-        if find_reference(repo, &remote_target)?.is_some() {
-            return Ok(Some(remote_target));
-        }
+        return Ok(Some(remote.full_name));
     }
 
-    let configured = repo
-        .config_snapshot()
-        .string("init.defaultBranch")
-        .and_then(|name| name.to_str().ok().map(str::to_string));
-    for branch in configured
-        .into_iter()
-        .chain(["main".to_string(), "master".to_string()])
-    {
-        let local = format!("refs/heads/{branch}");
+    for local in local_default_candidates(repo) {
         if find_reference(repo, &local)?.is_some() {
             return Ok(Some(local));
         }
     }
     Ok(None)
+}
+
+/// The full names a local default branch usually has, most likely first: the
+/// `init.defaultBranch` setting, then the common `main` and `master`. Shared by the branch
+/// list and the remote main line lookup, so both agree on which local branch is the default.
+fn local_default_candidates(repo: &gix::Repository) -> Vec<String> {
+    let configured = repo
+        .config_snapshot()
+        .string("init.defaultBranch")
+        .and_then(|name| name.to_str().ok().map(str::to_string));
+    configured
+        .into_iter()
+        .chain(["main".to_string(), "master".to_string()])
+        .map(|branch| format!("refs/heads/{branch}"))
+        .collect()
 }
 
 /// Looks up a reference without following it. A name that is not a valid ref name, which
@@ -332,6 +459,132 @@ fn compare_number(left: &[u8], right: &[u8]) -> Ordering {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use redoor_core::test_support::TempDir;
+    use std::{path::Path, process::Command};
+
+    /// Runs git in `dir` with a fixed identity and returns its trimmed output, so fixtures do
+    /// not depend on the host config.
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "git {args:?} failed: {output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_string()
+    }
+
+    /// The comparison target is the remote-tracking branch even when local `main` exists and
+    /// has moved on, while the branch list keeps leading with the local branch.
+    #[test]
+    fn remote_default_branch_ignores_local_main() {
+        let temp = TempDir::create();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "fetched"]);
+        let fetched = git(root, &["rev-parse", "HEAD"]);
+        git(root, &["update-ref", "refs/remotes/origin/main", &fetched]);
+        git(
+            root,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+        );
+        git(root, &["commit", "-q", "--allow-empty", "-m", "unpushed"]);
+        let repo = gix::open(root).unwrap();
+
+        let remote = RemoteDefaultBranch::find(&repo).unwrap().unwrap();
+        // Local main is ahead, so comparing with it would hide the unpushed commit.
+        assert_eq!(remote.full_name, "refs/remotes/origin/main");
+        assert_eq!(remote.commit_id.to_string(), fetched);
+        // Without a FETCH_HEAD, the branch's reflog written by the update still dates it.
+        assert!(remote.fetched_at(&repo).is_some());
+        // The Branches list still marks the local branch people check out as the default.
+        assert_eq!(
+            default_branch(&repo).unwrap().as_deref(),
+            Some("refs/heads/main")
+        );
+    }
+
+    /// Without a remote `HEAD`, as after `git init` and `git remote add`, the upstream of
+    /// local main is the remote main line.
+    #[test]
+    fn remote_default_branch_falls_back_to_local_upstream() {
+        let temp = TempDir::create();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "fetched"]);
+        let fetched = git(root, &["rev-parse", "HEAD"]);
+        git(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/repo.git",
+            ],
+        );
+        git(root, &["update-ref", "refs/remotes/origin/main", &fetched]);
+        git(root, &["config", "branch.main.remote", "origin"]);
+        git(root, &["config", "branch.main.merge", "refs/heads/main"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "unpushed"]);
+        let repo = gix::open(root).unwrap();
+
+        let remote = RemoteDefaultBranch::find(&repo).unwrap().unwrap();
+        // The upstream mapped through the fetch refspec, not local main, which is ahead.
+        assert_eq!(remote.full_name, "refs/remotes/origin/main");
+        assert_eq!(remote.commit_id.to_string(), fetched);
+        // The tracking branch's reflog dates it, so the tab can still say how fresh it is.
+        assert!(remote.fetched_at(&repo).is_some());
+        // The branch list keeps leading with the local branch.
+        assert_eq!(
+            default_branch(&repo).unwrap().as_deref(),
+            Some("refs/heads/main")
+        );
+    }
+
+    /// An upstream that was never fetched has nothing to compare the checkout with.
+    #[test]
+    fn remote_default_branch_needs_a_fetched_upstream() {
+        let temp = TempDir::create();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "only"]);
+        git(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.invalid/repo.git",
+            ],
+        );
+        git(root, &["config", "branch.main.remote", "origin"]);
+        git(root, &["config", "branch.main.merge", "refs/heads/main"]);
+        let repo = gix::open(root).unwrap();
+        // refs/remotes/origin/main does not exist yet.
+        assert!(RemoteDefaultBranch::find(&repo).unwrap().is_none());
+    }
+
+    /// Without a remote `HEAD` or an upstream there is nothing to compare the checkout with.
+    #[test]
+    fn remote_default_branch_needs_a_remote_head() {
+        let temp = TempDir::create();
+        let root = temp.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        git(root, &["commit", "-q", "--allow-empty", "-m", "only"]);
+        let repo = gix::open(root).unwrap();
+        // Local main alone is not a fetched main line.
+        assert!(RemoteDefaultBranch::find(&repo).unwrap().is_none());
+        // The branch list falls back to the local branch.
+        assert_eq!(
+            default_branch(&repo).unwrap().as_deref(),
+            Some("refs/heads/main")
+        );
+    }
 
     /// Builds a candidate whose identity is irrelevant to ordering.
     fn candidate(sort: GitRefSort, time: i64, name: &str) -> Candidate {

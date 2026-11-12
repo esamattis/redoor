@@ -27,8 +27,9 @@ const MAX_TAG_DEPTH: usize = 16;
 /// A range `A..B` names B, so browsing a range shows the files at its newer end, and keeps A
 /// as the base a commit diff compares with. That lets several consecutive commits be read as
 /// one change, the way `git diff A..B` shows them. A symmetric range `A...B` also names B but
-/// compares with the merge base of A and B, so a branch shows only its own work, not the
-/// reverse of what A gained since they split.
+/// compares A with what merging B into it would produce, so a branch shows only its own work,
+/// neither the reverse of what A gained since they split nor work A already has under other
+/// commit ids.
 pub(super) struct RevisionPath {
     pub(super) repository: RepositoryPath,
     /// The repository-relative path in `/` form, empty for the repository root.
@@ -44,20 +45,19 @@ pub(super) enum RevisionBase {
     FirstParent,
     /// A range: the commit its left side names.
     Commit(gix::ObjectId),
-    /// A symmetric range `A...B`: the best common ancestor of both sides, the point where
-    /// the branch being reviewed split from the one it is compared with.
-    MergeBase(gix::ObjectId),
+    /// A symmetric range `A...B`: A itself, compared with an in-memory merge of B into A. The
+    /// best common ancestor of both sides is kept because the merge needs it as its ancestor,
+    /// the view names it, and the diff falls back to it when the merge cannot be made.
+    MergeBase {
+        /// The point where the branch being reviewed split from the one it is compared with.
+        base: gix::ObjectId,
+        /// The commit A names, the side the merge preview is compared with.
+        left: gix::ObjectId,
+    },
     /// A range starting at the parent of a root commit, which has none, so the diff starts
     /// from the empty tree and the root commit's files count as added. This is how a range
     /// that includes the very first commit is spelled as `<root>^..B`.
     Empty,
-}
-
-impl RevisionBase {
-    /// True when the revision was a range rather than a single commit.
-    pub(super) fn is_range(self) -> bool {
-        self != Self::FirstParent
-    }
 }
 
 impl RevisionPath {
@@ -117,24 +117,49 @@ impl RevisionPath {
     }
 }
 
+/// The two sides of a revision range, with empty sides already read as `HEAD`.
+pub(super) struct RangeSides<'a> {
+    pub(super) left: &'a str,
+    pub(super) right: &'a str,
+    /// True for `A...B`, which compares with a merge rather than with A's tree directly.
+    pub(super) symmetric: bool,
+}
+
+impl<'a> RangeSides<'a> {
+    /// Splits a range `A..B` or `A...B`, or returns `None` for a single revision.
+    ///
+    /// Ref names cannot contain `..`, so the first `..` always separates a range, and a third
+    /// dot right after it makes the range symmetric. An empty side means `HEAD`, as in Git.
+    /// Shared by resolution and by the merge preview, which labels conflict markers with the
+    /// sides as typed.
+    pub(super) fn parse(rev: &'a str) -> Option<Self> {
+        let (left, right) = rev.split_once("..")?;
+        let (right, symmetric) = match right.strip_prefix('.') {
+            Some(right) => (right, true),
+            None => (right, false),
+        };
+        Some(Self {
+            left: if left.is_empty() { "HEAD" } else { left },
+            right: if right.is_empty() { "HEAD" } else { right },
+            symmetric,
+        })
+    }
+}
+
 /// Resolves a single revision or a range `A..B` to the commit it names and the base a commit
 /// diff compares it with, or `None` when the repository does not know either side.
-///
-/// Ref names cannot contain `..`, so the first `..` always separates a range, and a third
-/// dot right after it makes the range symmetric. An empty side means `HEAD`, as in Git.
 fn resolve_revision(
     repo: &gix::Repository,
     rev: &str,
 ) -> Result<Option<(gix::ObjectId, RevisionBase)>, GitFailure> {
-    let Some((left, right)) = rev.split_once("..") else {
+    let Some(RangeSides {
+        left,
+        right,
+        symmetric,
+    }) = RangeSides::parse(rev)
+    else {
         return Ok(resolve_commit(repo, rev)?.map(|id| (id, RevisionBase::FirstParent)));
     };
-    let (right, symmetric) = match right.strip_prefix('.') {
-        Some(right) => (right, true),
-        None => (right, false),
-    };
-    let left = if left.is_empty() { "HEAD" } else { left };
-    let right = if right.is_empty() { "HEAD" } else { right };
     let Some(commit_id) = resolve_commit(repo, right)? else {
         return Ok(None);
     };
@@ -167,7 +192,10 @@ fn resolve_merge_base(
                 format!("Git revisions {left:?} and {right_id} have no common history"),
             )
         })?;
-    Ok(Some(RevisionBase::MergeBase(base.detach())))
+    Ok(Some(RevisionBase::MergeBase {
+        base: base.detach(),
+        left: left_id,
+    }))
 }
 
 /// Resolves the left side of a range. When it names the parent of a root commit, which Git

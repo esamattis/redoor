@@ -47,6 +47,16 @@ export function commitDiffRevision(rev: string, commitId: string): string {
 }
 
 /**
+ * The range the Git view's "vs origin/main" tab opens: what the checkout would bring to the
+ * default remote branch if merged now. HEAD stays symbolic, so the tab follows new commits,
+ * and the branch is its full remote-tracking name, so a local branch of the same short name
+ * can never stand in for it.
+ */
+export function defaultRemoteRevision(fullName: string): string {
+    return `${fullName}...HEAD`;
+}
+
+/**
  * The range that shows a run of consecutive commits as one change: from the parent of the
  * oldest to the newest. The agent reads the parent of a root commit as the empty tree, so a
  * run reaching the first commit still has a start.

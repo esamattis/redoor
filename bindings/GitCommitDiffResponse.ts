@@ -18,8 +18,10 @@ commit: GitCommitSummary,
  */
 body: string, 
 /**
- * The compared commit: the first parent, or a range's start. Absent for a root commit
- * or a range starting before one, whose files all count as added.
+ * The compared commit: the first parent, or a range's start. For a symmetric range it is
+ * A when the diff is a merge preview, whose left side is A's tree, and the merge base
+ * when it fell back to that. Absent for a root commit or a range starting before one,
+ * whose files all count as added.
  */
 parent_id: string | null, 
 /**

@@ -366,6 +366,29 @@ components as the worktree, list history, branches, tags and worktrees with offs
 and download or copy committed files and directories. Downloads stream blobs from the object
 store instead of inflating whole objects in memory.
 
+- **`A..B` is literal history**: B's tree against A's, every commit after A as one change.
+- **`A...B` is a merge preview**: A's tree against an in-memory merge of B into A (gix
+  `merge` with the merge base as ancestor), like `git merge-tree` then `git diff A`. Work A
+  already has under other commit ids (squash, rebase, cherry-pick) cancels out, and A's own
+  newer work never shows. Merged blobs and trees live only in the request's repository handle
+  (`with_object_memory`), so viewing never writes to the object database, and conflicting
+  files are flagged from gix's conflict list, each with a reason built from what each side
+  did (gix may store the sides swapped, so A's change is the one A's tree reflects). A
+  conflict that resolves to A's version, such as A changing a file the branch deletes, leaves
+  no diff, so it is appended as an unmodified, conflicted row whose reason replaces the diff. The merge reads every object through a wrapper
+  that checks a time budget and the request's cancellation, since gix cannot otherwise stop a
+  merge midway; on failure or timeout the diff falls back to the merge-base diff, logs it,
+  and reports `merge_preview: false` so the view can say so.
+- **The default remote branch** is the remote-tracking branch `refs/remotes/<remote>/HEAD`
+  names, for the default fetch remote. Only `git clone` (and `git fetch` from Git 2.48) writes
+  that ref, so without it the upstream of the local default branch (`init.defaultBranch`,
+  `main`, `master`) is used, mapped through the remote's fetch refspec by gix, if it was
+  fetched. The Git context carries it (with its commit and the
+  newest `FETCH_HEAD` or reflog mtime as the fetch time), and the Git view's "vs origin/main"
+  tab opens `<that ref>...HEAD`. It is never local `main`, which may be behind or ahead. The
+  Branches list's default branch still prefers the local branch of the same name, because
+  that is the one people check out.
+
 ## Browser UI
 
 The UI is a TanStack Router application embedded in the server binary.

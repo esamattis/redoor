@@ -14,6 +14,7 @@ import {
     agentDetailsQueryOptions,
     fetchQueryUncancelled,
     gitCommitDiffQueryOptions,
+    gitContextQueryOptions,
     gitRevisionContentQueryOptions,
     gitRevisionTreeQueryOptions,
     prefetchGitList,
@@ -97,6 +98,18 @@ export async function loadRevision(options: {
         agentDetailsQueryOptions(agent),
     );
 
+    // The Git view's tabs compare the checkout with the default remote branch, which the
+    // path's Git context names. It is fetched again because a fetch moves that branch, and
+    // prefetched rather than awaited first so it loads beside the tree. Its failure only
+    // leaves that tab without a comparison.
+    const gitContextPromise =
+        view === "git"
+            ? context.queryClient.prefetchQuery({
+                  ...gitContextQueryOptions(agent, path),
+                  staleTime: 0,
+              })
+            : Promise.resolve();
+
     let tree: GitRevisionTreeResponse;
 
     try {
@@ -128,6 +141,8 @@ export async function loadRevision(options: {
                 });
             }
 
+            await gitContextPromise;
+
             return revisionData(options, { tree: null, error: null, deletion });
         }
 
@@ -141,7 +156,7 @@ export async function loadRevision(options: {
         });
     }
 
-    await detailsPromise;
+    await Promise.all([detailsPromise, gitContextPromise]);
 
     const isDirectory = tree.entry.type === "directory";
 

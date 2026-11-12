@@ -16,8 +16,8 @@ use redoor_protocol::{
     api::git::{
         GitChangeState,
         worktree::{
-            GitConflictState, GitContextResponse, GitEntryType, GitStatusEntry, GitStatusEntryKind,
-            GitStatusResponse, GitTrackingState,
+            GitConflictState, GitContextResponse, GitDefaultRemoteBranch, GitEntryType,
+            GitStatusEntry, GitStatusEntryKind, GitStatusResponse, GitTrackingState,
         },
     },
     wire::{command::CommandErrorKind, log::Level, request::CommandError},
@@ -25,7 +25,7 @@ use redoor_protocol::{
 
 use super::{
     GitFailure, RepositoryPath, discover_repository, head_tree, internal_failure, io_failure,
-    run_blocking, utf8_relative, validate_absolute_path,
+    refs::RemoteDefaultBranch, run_blocking, utf8_relative, validate_absolute_path,
 };
 
 /// Bounds status memory and the size of its WebSocket response.
@@ -118,6 +118,12 @@ fn context_blocking(
         )?)
     };
     let head = HeadState::read(&repository.repo)?;
+    let default_remote_branch =
+        RemoteDefaultBranch::find(&repository.repo)?.map(|branch| GitDefaultRemoteBranch {
+            fetched_at: branch.fetched_at(&repository.repo),
+            full_name: branch.full_name,
+            commit_id: branch.commit_id.to_string(),
+        });
     Ok(GitContextResponse::InsideWorktree {
         entry_type,
         tracking_state,
@@ -125,6 +131,7 @@ fn context_blocking(
         repository_relative_path: relative,
         branch_name: head.branch_name,
         head_commit_id: head.commit_id,
+        default_remote_branch,
     })
 }
 

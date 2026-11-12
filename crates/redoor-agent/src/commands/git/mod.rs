@@ -70,7 +70,10 @@ pub(super) async fn run_blocking<T: Send + 'static>(
 ) -> Result<T, CommandError> {
     let interrupt = Arc::new(AtomicBool::new(false));
     let guard = CancellationGuard(interrupt.clone());
-    let result = tokio::task::spawn_blocking(move || operation(interrupt)).await;
+    // The user scope keeps log lines from inside the operation, such as a merge preview
+    // falling back, attributed to the signed-in user.
+    let result =
+        redoor_core::logging::spawn_blocking_in_user_scope(move || operation(interrupt)).await;
     drop(guard);
     match result {
         Ok(Ok(response)) => Ok(response),

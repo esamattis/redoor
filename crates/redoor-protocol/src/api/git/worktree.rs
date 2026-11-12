@@ -1,6 +1,7 @@
 //! Worktree views: repository context, status and diffs of uncommitted changes.
 
 use super::{GitChangeState, GitDiffResult};
+use crate::ids::UnixTimestampSeconds;
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -49,7 +50,33 @@ pub enum GitContextResponse {
         branch_name: Option<String>,
         /// The commit HEAD points at, absent while the branch has no commits yet.
         head_commit_id: Option<String>,
+        /// The remote-tracking branch the default remote's `HEAD` names, such as
+        /// `refs/remotes/origin/main`, which the Git view compares the checkout with. Absent
+        /// when the repository has no remote `HEAD`. Defaults to absent for agents that
+        /// predate the comparison.
+        #[serde(default)]
+        default_remote_branch: Option<GitDefaultRemoteBranch>,
     },
+}
+
+/// The branch a project treats as its main line, as last fetched from the default remote.
+///
+/// It is the remote-tracking branch rather than the local branch of the same name, because
+/// local `main` is often behind (never pulled while work happens in other branches) or ahead
+/// (unpushed commits), and either would hide or add changes in a "what does my branch bring"
+/// comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitDefaultRemoteBranch {
+    /// The full ref name, such as `refs/remotes/origin/main`, so a revision link to it can
+    /// never resolve to a local branch or tag of the same short name.
+    pub full_name: String,
+    /// The commit the branch points at, so the view can tell when HEAD is that commit and
+    /// there is nothing to compare.
+    pub commit_id: String,
+    /// When the repository last fetched, as far as the files a fetch writes tell, because the
+    /// branch is only as fresh as that. Absent when no such file records it.
+    pub fetched_at: Option<UnixTimestampSeconds>,
 }
 
 /// Identifies entries that cannot be represented by ordinary staged/unstaged states.

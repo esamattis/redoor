@@ -9,4 +9,20 @@ export type GitCommitFileChange = {
 /**
  * The absolute worktree path, so the browser can link to the file at the commit.
  */
-path: string, repository_relative_path: string, change: GitChangeState, result: GitDiffResult, };
+path: string, repository_relative_path: string, change: GitChangeState, result: GitDiffResult, 
+/**
+ * True when merging the sides of a symmetric range `A...B` conflicts at this path, so
+ * the view can label it: its diff then shows the conflict markers the merge left in the
+ * file. A flag rather than a change state, because the file is still added, modified or
+ * deleted compared with A, or unmodified when the merge kept A's version, which is
+ * listed only because it conflicts. Defaults to false for agents that predate merge
+ * previews.
+ */
+conflicted: boolean, 
+/**
+ * Why merging conflicts at this path, phrased by what each side did, such as a file the
+ * branch deletes but A changed. Such a conflict can resolve to A's version and leave
+ * nothing to diff, so the reason is all the view can show for it. Absent for files that
+ * do not conflict and from agents that predate it.
+ */
+conflict_reason: string | null, };

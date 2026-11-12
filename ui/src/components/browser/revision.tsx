@@ -29,7 +29,9 @@ import {
     GitPanelBar,
     changeLabel,
     commitDiffRevision,
+    defaultRemoteRevision,
     displayRevision,
+    type GitChangeKind,
     revisionRange,
     revisionRefKind,
     shortCommitId,
@@ -40,11 +42,12 @@ import { SelectionSearch } from "#ui/components/browser/selection-search";
 import {
     gitCommitDiffQueryOptions,
     gitCommitNeighborsQueryOptions,
+    gitContextQueryOptions,
 } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
-import type { GitChangeState } from "#bindings/GitChangeState";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
+import type { GitCommitFileChange } from "#bindings/GitCommitFileChange";
 import type { GitCommitRange } from "#bindings/GitCommitRange";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";
 import type { GitRevisionEntry } from "#bindings/GitRevisionEntry";
@@ -263,9 +266,18 @@ export function RevisionListingNotice(props: {
     );
 }
 
+/**
+ * The badge a changed file gets: a merge preview's conflict outranks the kind of change,
+ * because it is what needs attention before merging.
+ */
+function fileChangeKind(file: GitCommitFileChange): GitChangeKind {
+    return file.conflicted ? "conflicted" : file.change;
+}
+
 /** Counts a commit's changed files per kind, in a stable order for the summary bar. */
 function countChanges(diff: GitCommitDiffResponse) {
-    const order: GitChangeState[] = [
+    const order: GitChangeKind[] = [
+        "conflicted",
         "added",
         "modified",
         "deleted",
@@ -275,7 +287,9 @@ function countChanges(diff: GitCommitDiffResponse) {
     ];
 
     return order.flatMap((kind) => {
-        const count = diff.files.filter((file) => file.change === kind).length;
+        const count = diff.files.filter(
+            (file) => fileChangeKind(file) === kind,
+        ).length;
 
         return count === 0 ? [] : [{ kind, count }];
     });
@@ -418,35 +432,67 @@ function commitDiffFiles(options: {
 }): GitDiffListFile[] {
     const parentId = options.diff.parent_id;
 
-    return options.diff.files.map((file) => ({
-        path: file.path,
-        relativePath: file.repository_relative_path,
-        originalPath: null,
-        change: file.change,
-        link: {
-            agent: options.agent,
-            search: {
-                rev:
-                    file.change === "deleted" && parentId !== null
-                        ? parentId
-                        : options.rev,
+    return options.diff.files.map((file) => {
+        // A conflicted file the merge preview left unmodified is listed only for its
+        // conflict: its shown version is A's, and the branch may not have it at all.
+        const onlyInParent =
+            file.change === "deleted" || file.change === "unmodified";
+
+        const reason = file.conflict_reason ?? null;
+
+        return {
+            path: file.path,
+            relativePath: file.repository_relative_path,
+            originalPath: null,
+            change: fileChangeKind(file),
+            link: {
+                agent: options.agent,
+                search: {
+                    rev:
+                        onlyInParent && parentId !== null
+                            ? parentId
+                            : options.rev,
+                },
+                hasWorkingCopy: !onlyInParent,
             },
-            hasWorkingCopy: file.change !== "deleted",
-        },
-        regionLabel: `Commit diff for ${file.repository_relative_path}`,
-        searchSource: { type: "result", result: file.result },
-        renderBody: (view) => (
-            <GitDiffResultView
-                result={file.result}
-                view={view}
-                editorFile={
-                    file.change === "deleted"
-                        ? undefined
-                        : { device: options.agent, path: file.path }
-                }
-            />
-        ),
-    }));
+            regionLabel: `Commit diff for ${file.repository_relative_path}`,
+            searchSource: { type: "result", result: file.result },
+            renderBody: (view) =>
+                reason !== null && file.result.type === "no_changes" ? (
+                    <ConflictReason reason={reason} />
+                ) : (
+                    <>
+                        {reason === null ? null : (
+                            <ConflictReason reason={reason} />
+                        )}
+                        <GitDiffResultView
+                            result={file.result}
+                            view={view}
+                            editorFile={
+                                onlyInParent
+                                    ? undefined
+                                    : { device: options.agent, path: file.path }
+                            }
+                        />
+                    </>
+                ),
+        };
+    });
+}
+
+/**
+ * Says why merging conflicts at a file. A conflict that resolves to A's version has no diff
+ * to show, so without this line the user would only see a badge and an empty card.
+ */
+function ConflictReason(props: { reason: string }) {
+    return (
+        <p
+            role="note"
+            className="mb-2 break-words rounded border border-red-400/40 bg-red-400/10 px-2 py-1.5 text-sm leading-snug text-red-100"
+        >
+            {props.reason}
+        </p>
+    );
 }
 
 /**
@@ -623,10 +669,14 @@ export function GitCommitView(props: {
  * Heads the changes of a range `A..B` with both of its ends instead of a commit message. The
  * diff is the sum of every commit after A up to B, so B's message alone would only explain
  * the last of them. Each end links to that commit's own changes, and there is no stepper,
- * since a range has no single neighbouring commit. A symmetric range `A...B` starts at the
- * merge base instead of A, so its title names both refs to say whose work is shown, and it
- * offers pickers for both sides, since it is a comparison of branches rather than a run of
- * commits.
+ * since a range has no single neighbouring commit.
+ *
+ * A symmetric range `A...B` is a merge preview: A compared with what merging B into it now
+ * would produce, so work A already has under other commit ids, such as a squash, cancels out.
+ * Its title names both refs to say whose work is shown, it offers pickers for both sides,
+ * since it is a comparison of branches rather than a run of commits, and it still names the
+ * merge base, linking to the history-style diff from there. When the agent could not merge
+ * and fell back to that diff, a note says so, because squashed work then shows up again.
  */
 function CommitRangeHeader(props: {
     agent: Agent;
@@ -638,10 +688,12 @@ function CommitRangeHeader(props: {
     now: number;
 }) {
     const sides = revisionRange(props.rev);
+    const base = props.range.base;
+    const into = displayRevision(sides?.base || "HEAD");
 
     const title =
         props.range.merge_base && sides !== null
-            ? `What ${displayRevision(sides.head || "HEAD")} adds to ${displayRevision(sides.base || "HEAD")}`
+            ? `What ${displayRevision(sides.head || "HEAD")} adds to ${into}`
             : "Changes of a commit range";
 
     return (
@@ -649,6 +701,19 @@ function CommitRangeHeader(props: {
             <h2 className="text-base font-semibold leading-snug text-slate-50">
                 {title}
             </h2>
+            {props.range.merge_base ? (
+                <p className="text-xs text-slate-400">
+                    {props.range.merge_preview
+                        ? `As if merged into ${into} now.`
+                        : "Changes since the merge base. The merge preview was not available, so work that already reached the other side under other commits may show again."}{" "}
+                    <DefaultRemoteFreshness
+                        agent={props.agent}
+                        path={props.path}
+                        rev={props.rev}
+                        now={props.now}
+                    />
+                </p>
+            ) : null}
             {props.range.merge_base ? (
                 <GitComparePicker
                     agent={props.agent}
@@ -661,8 +726,8 @@ function CommitRangeHeader(props: {
                 <dt className="font-medium text-slate-400">
                     {props.range.merge_base ? "Merge base" : "From"}
                 </dt>
-                <dd className="min-w-0">
-                    {props.range.base === null ? (
+                <dd className="flex min-w-0 items-center gap-2">
+                    {base === null ? (
                         <span className="text-slate-300">
                             Before the first commit
                         </span>
@@ -670,10 +735,24 @@ function CommitRangeHeader(props: {
                         <CommitRangeEnd
                             agent={props.agent}
                             path={props.path}
-                            commit={props.range.base}
+                            commit={base}
                             now={props.now}
                         />
                     )}
+                    {props.range.merge_base && base !== null ? (
+                        <Tooltip content="Show every change since the merge base, including work the other side already has">
+                            <Link
+                                {...browserRoute(props.agent, props.path)}
+                                search={{
+                                    view: "git",
+                                    rev: `${base.id}..${props.diff.commit.id}`,
+                                }}
+                                className="shrink-0 text-blue-300 hover:underline"
+                            >
+                                History diff
+                            </Link>
+                        </Tooltip>
+                    ) : null}
                 </dd>
                 <dt className="font-medium text-slate-400">To</dt>
                 <dd className="min-w-0">
@@ -691,6 +770,42 @@ function CommitRangeHeader(props: {
                 diff={props.diff}
             />
         </header>
+    );
+}
+
+/**
+ * Says when the default remote branch was last fetched while the range compares the checkout
+ * with it, because the comparison is only as fresh as that fetch. Other ranges name local
+ * refs and say nothing.
+ */
+function DefaultRemoteFreshness(props: {
+    agent: Agent;
+    path: string;
+    rev: string;
+    now: number;
+}) {
+    const context = useQuery(
+        gitContextQueryOptions(props.agent, props.path),
+    ).data;
+
+    const branch =
+        context?.status === "inside_worktree"
+            ? context.default_remote_branch
+            : null;
+
+    if (
+        branch === null ||
+        branch.fetched_at === null ||
+        props.rev !== defaultRemoteRevision(branch.full_name)
+    ) {
+        return null;
+    }
+
+    return (
+        <span>
+            {displayRevision(branch.full_name)} fetched{" "}
+            <CommitAge authoredAt={branch.fetched_at} now={props.now} />.
+        </span>
     );
 }
 

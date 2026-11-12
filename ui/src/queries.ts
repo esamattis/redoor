@@ -1025,13 +1025,18 @@ export async function prefetchGitList(options: {
     repositoryRoot: string;
     /** The commit history starts at: the browsed commit, or HEAD in the worktree. */
     commitId: string | null;
-    tab: "commits" | "worktrees" | GitRefListKind;
+    /** `upstream` has no list: its panel reads the Git context the route already loaded. */
+    tab: "commits" | "upstream" | "worktrees" | GitRefListKind;
     /** The order of a branch or tag list; absent is the default recent order. */
     refSort: GitRefSort | undefined;
     /** Which branches the branch list shows; absent is the default local branches. */
     branchScope: "local" | "remote" | undefined;
 }) {
     const { queryClient, agent, path, repositoryRoot, commitId, tab } = options;
+
+    if (tab === "upstream") {
+        return;
+    }
 
     if (tab === "commits") {
         await queryClient.prefetchInfiniteQuery({

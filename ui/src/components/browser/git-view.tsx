@@ -1,4 +1,5 @@
 import React from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
     FileDiff,
@@ -6,6 +7,7 @@ import {
     FolderTree,
     GitBranch,
     GitCommitHorizontal,
+    GitCompareArrows,
     History,
     Tag,
 } from "lucide-react";
@@ -17,10 +19,13 @@ import { CopyableGitRef } from "#ui/components/copyable-git-ref";
 import { GitCommitList, GitRefList } from "#ui/components/browser/git-history";
 import { GitWorktreeList } from "#ui/components/browser/git-worktrees";
 import {
+    defaultRemoteRevision,
     displayRevision,
     revisionRefKind,
     shortCommitId,
 } from "#ui/components/browser/git-parts";
+import { Tooltip } from "#ui/components/tooltip";
+import { gitContextQueryOptions } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getBaseName } from "#ui/utils/path";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";
@@ -141,9 +146,19 @@ export function GitView(props: {
                     agent={props.agent}
                     path={props.path}
                     tab={props.tab}
+                    rev={
+                        props.reference.type === "revision"
+                            ? props.reference.rev
+                            : null
+                    }
                 />
             </section>
-            {props.tab === "commits" ? (
+            {props.tab === "upstream" ? (
+                <DefaultRemoteEmptyState
+                    agent={props.agent}
+                    path={props.path}
+                />
+            ) : props.tab === "commits" ? (
                 <GitCommitList
                     agent={props.agent}
                     path={props.path}
@@ -359,47 +374,197 @@ function ReferenceBadge(props: { reference: GitViewReference }) {
 }
 
 /**
+ * What the "vs origin/main" tab opens: the range comparing the checkout with the default
+ * remote branch, or the reason there is nothing to compare, which the tab's own panel
+ * explains. Absent while the Git context loads.
+ */
+type DefaultRemoteComparison =
+    | { type: "range"; rev: string; branchName: string }
+    | { type: "no_remote" }
+    | { type: "same"; branchName: string }
+    | { type: "unborn"; branchName: string };
+
+/**
+ * Reads what the checkout is compared with from the path's Git context. The route loader
+ * already fetched it, so this only reads the cache.
+ */
+function useDefaultRemoteComparison(
+    agent: Agent,
+    path: string,
+): DefaultRemoteComparison | undefined {
+    const context = useQuery(gitContextQueryOptions(agent, path)).data;
+
+    if (context === undefined) {
+        return undefined;
+    }
+
+    const branch =
+        context.status === "inside_worktree"
+            ? context.default_remote_branch
+            : null;
+
+    if (context.status !== "inside_worktree" || branch === null) {
+        return { type: "no_remote" };
+    }
+
+    const branchName = displayRevision(branch.full_name);
+
+    if (context.head_commit_id === null) {
+        return { type: "unborn", branchName };
+    }
+
+    if (context.head_commit_id === branch.commit_id) {
+        return { type: "same", branchName };
+    }
+
+    return {
+        type: "range",
+        rev: defaultRemoteRevision(branch.full_name),
+        branchName,
+    };
+}
+
+/**
+ * Explains why the "vs origin/main" tab has no comparison to show. The tab always shows so the
+ * other tabs do not shift around, so it needs a panel for the cases where it cannot open a
+ * range. When the comparison became possible since, such as after a fetch, it links to it.
+ */
+function DefaultRemoteEmptyState(props: { agent: Agent; path: string }) {
+    const comparison = useDefaultRemoteComparison(props.agent, props.path);
+
+    if (comparison === undefined) {
+        return null;
+    }
+
+    return (
+        <div
+            role="status"
+            className="px-4 py-10 text-center text-sm text-slate-300"
+        >
+            {comparison.type === "range" ? (
+                <Link
+                    {...browserRoute(props.agent, props.path)}
+                    search={{
+                        view: "git",
+                        gitTab: undefined,
+                        rev: comparison.rev,
+                    }}
+                    className="text-blue-300 hover:underline"
+                >
+                    Compare the checkout with {comparison.branchName}
+                </Link>
+            ) : comparison.type === "same" ? (
+                <p>
+                    Checkout is {comparison.branchName}. There is nothing to
+                    compare.
+                </p>
+            ) : comparison.type === "unborn" ? (
+                <p>The checkout has no commits to compare yet.</p>
+            ) : (
+                <p className="break-words">
+                    No default remote branch. The repository has no remote HEAD,
+                    and the local default branch tracks no fetched branch. Run{" "}
+                    <code className="text-code rounded font-mono bg-slate-800 px-1 py-0.5 text-slate-100">
+                        git remote set-head origin --auto
+                    </code>{" "}
+                    to set the remote HEAD.
+                </p>
+            )}
+        </div>
+    );
+}
+
+/**
  * Switches between the Git view's panels. It is a segmented switch inside the repository
  * header rather than a second row of underlined tabs, so it reads as part of the Git view
  * and not as another level of page navigation. A narrow column keeps every panel reachable
  * by naming only the open one, so the switch never spills past its own border.
+ *
+ * The "vs origin/main" tab opens a revision range rather than a list, so it is active only
+ * while exactly that range is open. It belongs to the checkout like Changes does, so while it
+ * is open the other tabs leave the range and show the working tree again.
  */
 function GitViewNav(props: {
     agent: Agent;
     path: string;
     tab: GitTab | undefined;
+    /** The browsed revision, null in the worktree. */
+    rev: string | null;
 }) {
+    const comparison = useDefaultRemoteComparison(props.agent, props.path);
+
+    const comparisonOpen =
+        props.tab === "upstream" ||
+        (props.tab === undefined &&
+            comparison?.type === "range" &&
+            props.rev === comparison.rev);
+
+    const comparisonName =
+        comparison === undefined || comparison.type === "no_remote"
+            ? "upstream"
+            : comparison.branchName;
+
     const items: Array<{
+        key: string;
         tab: GitTab | undefined;
+        /** The revision the tab opens; absent keeps the browsed one unless the comparison is open. */
+        rev?: string;
         label: string;
         icon: React.ReactNode;
+        active: boolean;
+        tooltip?: string;
     }> = [
         {
+            key: "changes",
             tab: undefined,
             label: "Changes",
             icon: <FileDiff className="h-4 w-4 shrink-0" aria-hidden="true" />,
+            active: props.tab === undefined && !comparisonOpen,
         },
         {
+            key: "upstream",
+            ...(comparison?.type === "range"
+                ? { tab: undefined, rev: comparison.rev }
+                : { tab: "upstream" as const }),
+            label: `vs ${comparisonName}`,
+            icon: (
+                <GitCompareArrows
+                    className="h-4 w-4 shrink-0"
+                    aria-hidden="true"
+                />
+            ),
+            active: comparisonOpen,
+            tooltip: `What this checkout adds compared with ${comparisonName}, as if merged now`,
+        },
+        {
+            key: "commits",
             tab: "commits",
             label: "Commits",
             icon: <History className="h-4 w-4 shrink-0" aria-hidden="true" />,
+            active: props.tab === "commits",
         },
         {
+            key: "branches",
             tab: "branches",
             label: "Branches",
             icon: <GitBranch className="h-4 w-4 shrink-0" aria-hidden="true" />,
+            active: props.tab === "branches",
         },
         {
+            key: "tags",
             tab: "tags",
             label: "Tags",
             icon: <Tag className="h-4 w-4 shrink-0" aria-hidden="true" />,
+            active: props.tab === "tags",
         },
         {
+            key: "worktrees",
             tab: "worktrees",
             label: "Worktrees",
             icon: (
                 <FolderTree className="h-4 w-4 shrink-0" aria-hidden="true" />
             ),
+            active: props.tab === "worktrees",
         },
     ];
 
@@ -410,11 +575,20 @@ function GitViewNav(props: {
         >
             <div className="flex w-full min-w-max gap-1 rounded-lg border border-slate-800 bg-slate-900/60 p-1 @xl:inline-flex @xl:w-auto @xl:min-w-0">
                 {items.map((item) => {
-                    const active = item.tab === props.tab;
+                    const active = item.active;
 
-                    return (
+                    // A tab that names its revision opens it. The others keep a browsed
+                    // revision, except the comparison's range, which they leave.
+                    const revision =
+                        item.rev !== undefined
+                            ? { rev: item.rev }
+                            : comparisonOpen && props.rev !== null
+                              ? { rev: undefined }
+                              : {};
+
+                    const link = (
                         <Link
-                            key={item.label}
+                            key={item.key}
                             {...browserRoute(props.agent, props.path)}
                             // The branch and tag lists share their order, so it survives switching
                             // between them, and the branch scope survives a visit to another tab.
@@ -423,8 +597,13 @@ function GitViewNav(props: {
                                 gitTab: item.tab,
                                 refSort: previous.refSort,
                                 branchScope: previous.branchScope,
+                                ...revision,
                             })}
                             aria-current={active ? "page" : undefined}
+                            // The router would otherwise mark Changes as the current page under
+                            // any Git URL, since its search is a subset of every other tab's,
+                            // including the comparison range. Only an exact match is current.
+                            activeOptions={{ exact: true }}
                             className={
                                 active
                                     ? "inline-flex flex-1 items-center justify-center gap-2 whitespace-nowrap rounded-md bg-surface-active px-2.5 py-1.5 text-sm font-medium @xl:flex-none @xl:px-3 text-slate-50 shadow-sm ring-1 ring-slate-700 [&_svg]:text-blue-400"
@@ -440,6 +619,18 @@ function GitViewNav(props: {
                                 {item.label}
                             </span>
                         </Link>
+                    );
+
+                    return item.tooltip === undefined ? (
+                        link
+                    ) : (
+                        <Tooltip
+                            key={item.key}
+                            content={item.tooltip}
+                            className="flex-1 @xl:flex-none"
+                        >
+                            {link}
+                        </Tooltip>
                     );
                 })}
             </div>

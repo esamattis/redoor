@@ -94,7 +94,7 @@ ignore = "0.4.33"
 grep-matcher = "0.1.8"
 grep-regex = "0.1.14"
 # `revision` resolves user-supplied revisions (branches, tags, ids) for history browsing.
-gix = { version = "0.90.0", default-features = false, features = ["status", "revision", "parallel", "sha1"] }
+gix = { version = "0.90.0", default-features = false, features = ["status", "revision", "merge", "parallel", "sha1"] }
 # Names status-walk enums returned by gix without enabling any additional Git capabilities.
 gix-dir = "0.32.0"
 mountpoints = "0.2.1"

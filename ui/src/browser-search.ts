@@ -67,10 +67,11 @@ const gitRevisionSchema = z
 /**
  * Names the list the Git view shows instead of its changes: the history of the path, or the
  * repository's branches, tags or worktrees. The changes are the default and stay out of the
- * URL.
+ * URL. `upstream` is the comparison with the default remote branch when there is none to
+ * open, which shows why instead; when there is one, that tab opens it as a revision range.
  */
 const gitTabSchema = z
-    .enum(["commits", "branches", "tags", "worktrees"])
+    .enum(["commits", "upstream", "branches", "tags", "worktrees"])
     .optional()
     .catch(undefined);
 
