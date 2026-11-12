@@ -59,6 +59,7 @@ import {
 import { ChangeBadge } from "#ui/components/browser/git-parts";
 import {
     getOpenFileKey,
+    getOpenFileParentLabels,
     reorderOpenFiles,
     useUserState,
     type OpenFile,
@@ -700,6 +701,7 @@ function OpenFiles(props: { isCompact: boolean }) {
     const agentsById = new Map(agents.map((agent) => [agent.id, agent]));
     const closer = useCloseOpenFiles();
     const browser = useBrowserLocation();
+    const parentLabels = getOpenFileParentLabels(openFiles);
 
     // Clear keeps the file on screen, since the user is still working on it.
     const clearable = openFiles.filter(
@@ -778,6 +780,10 @@ function OpenFiles(props: { isCompact: boolean }) {
                             <OpenFileRow
                                 key={getOpenFileKey(file)}
                                 file={file}
+                                parentLabel={
+                                    parentLabels.get(getOpenFileKey(file)) ??
+                                    null
+                                }
                                 agent={agentsById.get(file.agentId)}
                                 isCompact={props.isCompact}
                                 onClose={(closed) =>
@@ -829,6 +835,12 @@ function OpenFileShortcutTip() {
 /** Lets the row sort after a deliberate drag while a normal click still opens the file. */
 function OpenFileRow(props: {
     file: OpenFile;
+    /**
+     * The parent directories that tell this file apart from open files of the same name, or
+     * null when its name is unique. Shown large before a small name, since it is the part
+     * that differs between otherwise identical rows.
+     */
+    parentLabel: string | null;
     /** The open file's device, or undefined while it is absent from the inventory. */
     agent: Agent | undefined;
     /** Phones get taller rows, because a finger needs a bigger target than a pointer. */
@@ -849,14 +861,32 @@ function OpenFileRow(props: {
     const label = (
         <span className={cn("block min-w-0", isOffline && "opacity-60")}>
             <span className="flex min-w-0 items-baseline text-sm">
-                <span
-                    className={cn(
-                        "truncate",
-                        isActive ? "text-slate-100" : "text-slate-200",
-                    )}
-                >
-                    {props.file.name}
-                </span>
+                {props.parentLabel === null ? (
+                    <span
+                        className={cn(
+                            "truncate",
+                            isActive ? "text-slate-100" : "text-slate-200",
+                        )}
+                    >
+                        {props.file.name}
+                    </span>
+                ) : (
+                    <>
+                        {/* The parents are what tells the rows apart, so they stay whole
+                            and the repeated name is the part that gets cut short. */}
+                        <span
+                            className={cn(
+                                "max-w-[75%] shrink-0 truncate",
+                                isActive ? "text-slate-100" : "text-slate-200",
+                            )}
+                        >
+                            {props.parentLabel}
+                        </span>
+                        <span className="min-w-0 truncate text-[11px] text-slate-400">
+                            /{props.file.name}
+                        </span>
+                    </>
+                )}
                 {/* Shows where the caret is, so a line picked in a diff or search result is
                     confirmed in the list before the file is visited. It never truncates,
                     since the name says which file and the line is the new information. */}

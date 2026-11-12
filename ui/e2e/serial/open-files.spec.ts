@@ -10,6 +10,7 @@ import {
 
 import { ApiClient } from "#ui/api-client";
 import { parseStoredBuffer } from "#ui/editor/stored-buffer";
+import { defaultUserState } from "#ui/user-state";
 import { BackgroundTabs } from "../background-tabs";
 import {
     API_BASE_URL,
@@ -894,6 +895,50 @@ test.describe.serial("Open files", () => {
                 .getByRole("navigation", { name: "Application" })
                 .getByText("switch", { exact: true }),
         ).toBeVisible();
+    });
+
+    test("tells same-named open files apart by their parent directories", async ({
+        page,
+    }) => {
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+
+        const skillFile = (skill: string) =>
+            path.join(ctx.testDirPath, "skills", skill, "SKILL.md");
+
+        const openEntry = (filePath: string) => ({
+            agentId: ctx.agentId,
+            agentName: ctx.agentName,
+            path: filePath,
+            name: path.basename(filePath),
+        });
+
+        // The request replaces the whole document, so the defaults keep the other settings.
+        await api.updateUserState({
+            state: {
+                ...defaultUserState,
+                openFiles: [
+                    openEntry(skillFile("open-pr")),
+                    openEntry(skillFile("code-review")),
+                    openEntry(path.join(ctx.testDirPath, "file1.txt")),
+                ],
+            },
+        });
+        await page.goto(ctx.agentBrowserUrl);
+
+        const openFiles = page.getByRole("list", { name: "Open files" });
+
+        // Identical names show the nearest directory that differs, so the rows look different.
+        await expect(
+            openFiles.getByRole("link", { name: "SKILL.md" }).first(),
+        ).toContainText("open-pr/SKILL.md");
+        await expect(
+            openFiles.getByRole("link", { name: "SKILL.md" }).last(),
+        ).toContainText("code-review/SKILL.md");
+        // A unique name stays just the name.
+        await expect(
+            openFiles.getByRole("link", { name: "file1.txt" }),
+        ).not.toContainText("/");
     });
 
     test("closes the file on screen with Alt+w or its close button and goes to its directory", async ({

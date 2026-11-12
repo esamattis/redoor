@@ -459,3 +459,62 @@ export function useUserState(): [
 
     return [userState, setUserState];
 }
+
+/**
+ * Finds, for open files that share a name, the fewest parent directories that tell them
+ * apart, so the open files list does not show several identical `SKILL.md` rows. Files with
+ * a unique name get no entry. The same path on two devices cannot be told apart by its
+ * directories, so those copies are left to the device name the row already shows.
+ */
+export function getOpenFileParentLabels(
+    openFiles: readonly OpenFile[],
+): Map<string, string> {
+    const labels = new Map<string, string>();
+    const pathsByName = new Map<string, Set<string>>();
+
+    for (const file of openFiles) {
+        const paths = pathsByName.get(file.name) ?? new Set<string>();
+        paths.add(file.path);
+        pathsByName.set(file.name, paths);
+    }
+
+    for (const file of openFiles) {
+        const others = [...(pathsByName.get(file.name) ?? [])].flatMap(
+            (path) => (path === file.path ? [] : [getParentSegments(path)]),
+        );
+
+        if (others.length === 0) {
+            continue;
+        }
+
+        const parents = getParentSegments(file.path);
+
+        // Grows the shown suffix of parents until no other path ends with the same one.
+        for (let count = 1; count <= parents.length; count += 1) {
+            const suffix = parents.slice(-count);
+
+            const isShared = others.some(
+                (other) =>
+                    other.length >= count &&
+                    other
+                        .slice(-count)
+                        .every((segment, index) => segment === suffix[index]),
+            );
+
+            if (!isShared || count === parents.length) {
+                labels.set(getOpenFileKey(file), suffix.join("/"));
+                break;
+            }
+        }
+    }
+
+    return labels;
+}
+
+/** Splits a path into its directory names, without the file name or empty segments. */
+function getParentSegments(path: string): string[] {
+    return path
+        .split("/")
+        .filter((segment) => segment !== "")
+        .slice(0, -1);
+}

@@ -3,6 +3,7 @@ import { expect, test } from "vitest";
 import {
     commitDeviceOrder,
     defaultUserState,
+    getOpenFileParentLabels,
     openFileAtLine,
     reorderBookmarks,
     reorderOpenFiles,
@@ -251,4 +252,69 @@ test("a malformed line request keeps the open file", () => {
 
     // Only the line is lost; dropping the whole list would close every open file.
     expect(parsed.openFiles).toEqual([openEntry("a", "one")]);
+});
+
+/** Builds an open file at a path, named after its last segment like the editor does. */
+function openFileAt(path: string, agentId = "agent"): OpenFile {
+    return {
+        agentId,
+        path,
+        name: path.split("/").at(-1) ?? path,
+        agentName: agentId,
+    };
+}
+
+test("labels same-named open files with the fewest parents that tell them apart", () => {
+    const files = [
+        openFileAt("/repo/.agents/skills/open-pr/SKILL.md"),
+        openFileAt("/repo/.agents/skills/code-review/SKILL.md"),
+        openFileAt("/repo/README.md"),
+    ];
+
+    const labels = getOpenFileParentLabels(files);
+
+    // One parent already differs, so deeper directories would only add noise.
+    expect(labels.get("agent:/repo/.agents/skills/open-pr/SKILL.md")).toBe(
+        "open-pr",
+    );
+    expect(labels.get("agent:/repo/.agents/skills/code-review/SKILL.md")).toBe(
+        "code-review",
+    );
+    // A unique name needs no parents.
+    expect(labels.has("agent:/repo/README.md")).toBe(false);
+});
+
+test("adds parents until same-named files whose nearest directories match differ", () => {
+    const labels = getOpenFileParentLabels([
+        openFileAt("/a/src/index.ts"),
+        openFileAt("/b/src/index.ts"),
+        openFileAt("/b/lib/index.ts"),
+    ]);
+
+    // Both share `src`, so each needs the directory above it as well.
+    expect(labels.get("agent:/a/src/index.ts")).toBe("a/src");
+    expect(labels.get("agent:/b/src/index.ts")).toBe("b/src");
+    // `lib` alone is already unique among the three.
+    expect(labels.get("agent:/b/lib/index.ts")).toBe("lib");
+});
+
+test("shows every parent of a file whose path is a suffix of another", () => {
+    const labels = getOpenFileParentLabels([
+        openFileAt("/src/index.ts"),
+        openFileAt("/app/src/index.ts"),
+    ]);
+
+    // The shorter path runs out of parents, so it shows all it has.
+    expect(labels.get("agent:/src/index.ts")).toBe("src");
+    expect(labels.get("agent:/app/src/index.ts")).toBe("app/src");
+});
+
+test("leaves the same path on two devices to the device name", () => {
+    const labels = getOpenFileParentLabels([
+        openFileAt("/etc/hosts", "one"),
+        openFileAt("/etc/hosts", "two"),
+    ]);
+
+    // Directories cannot tell identical paths apart; the row shows the device instead.
+    expect(labels.size).toBe(0);
 });
