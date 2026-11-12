@@ -18,6 +18,22 @@ pub enum TerminalSessionStatus {
     Exited { message: String },
 }
 
+/// What a session's shell is doing right now, so a tab can say more than where it started.
+///
+/// The agent refreshes it while the shell produces output, at most about once a second, so
+/// it trails the shell a little and is a hint for people, not something to act on.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct TerminalActivity {
+    /// Command line of the job in the foreground, `None` while the shell waits at its prompt.
+    pub command: Option<String>,
+    /// Directory the shell (or its foreground job) is in now. A remote one reported by a
+    /// shell over SSH is prefixed with its host, as `host:/path`.
+    pub current_dir: Option<String>,
+    /// Window title the shell or a program set with an escape sequence, if any.
+    pub title: Option<String>,
+}
+
 /// One terminal session as every browser window sees it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -32,6 +48,8 @@ pub struct TerminalSessionInfo {
     pub number: u32,
     pub created_at: UnixTimestampMillis,
     pub status: TerminalSessionStatus,
+    /// Live details about the shell for the tab's tooltip.
+    pub activity: TerminalActivity,
     /// Whether a browser currently views the session.
     pub attached: bool,
 }

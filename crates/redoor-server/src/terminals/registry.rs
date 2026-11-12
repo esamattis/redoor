@@ -118,6 +118,7 @@ impl Entry {
             number: self.record.number,
             created_at: self.record.created_at,
             status: self.record.status.clone(),
+            activity: self.record.activity.clone(),
             attached: self.viewer.is_some(),
         }
     }
@@ -389,6 +390,7 @@ mod tests {
             number: 1,
             created_at: UnixTimestampMillis::now(),
             status: TerminalSessionStatus::Running,
+            activity: Default::default(),
         }
     }
 

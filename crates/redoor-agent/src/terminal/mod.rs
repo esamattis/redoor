@@ -10,6 +10,7 @@
 //! transfer data, so keystroke echoes never queue behind a download. Both directions are
 //! credited with a terminal-sized window.
 
+pub(crate) mod activity;
 pub(crate) mod emulator;
 mod pending_tail;
 pub(crate) mod registry;
@@ -39,6 +40,7 @@ use session::{
     TerminalSessionHandle, ViewerFrame,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::{ffi::OsString, os::unix::process::ExitStatusExt, time::Duration};
 use tokio::{
@@ -505,6 +507,12 @@ pub(crate) fn start_pty(
         .ok_or_else(|| anyhow!("terminal shell has no process id"))?;
     let process_group_id =
         i32::try_from(process_group_id).context("terminal process id is too large")?;
+    // A duplicate of the controller, because the split halves do not expose theirs and the
+    // probe asks it for the foreground process group.
+    let controller = pty
+        .as_fd()
+        .try_clone_to_owned()
+        .context("failed to duplicate the PTY")?;
     let (reader, writer) = pty.into_split();
 
     let (writes, write_queue) = mpsc::channel(PTY_WRITE_QUEUE);
@@ -524,6 +532,7 @@ pub(crate) fn start_pty(
         },
         exit,
         kill: Some(kill.drop_guard()),
+        probe: Some(activity::ProcessProbe::new(controller, process_group_id)),
     })
 }
 

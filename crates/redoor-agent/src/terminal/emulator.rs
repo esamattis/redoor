@@ -6,6 +6,7 @@
 //! emulator lives on its own thread and this module's async handle talks to it over one
 //! ordered channel. FFI and threading stay in this module.
 
+use super::activity::ShellReport;
 use super::pending_tail::PendingTail;
 use bytes::Bytes;
 use libghostty_vt::{
@@ -16,7 +17,9 @@ use libghostty_vt::{
 };
 use redoor_core::log;
 use redoor_protocol::wire::{log::Level, terminal::TerminalSize};
-use tokio::sync::{mpsc, oneshot};
+use std::cell::Cell;
+use std::rc::Rc;
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// Scrollback lines a snapshot can restore. Bounds both the mirror's memory and the size of
 /// the first frame a re-attaching browser receives. Measured: a 200x60 mirror with full
@@ -53,6 +56,8 @@ pub(crate) struct MirrorFailed;
 /// Async handle to one session's emulator thread. Dropping it ends the thread.
 pub(crate) struct ScreenMirror {
     commands: mpsc::Sender<MirrorCommand>,
+    /// The title and directory the shell reported, as the emulator parsed them.
+    reports: watch::Receiver<ShellReport>,
 }
 
 /// A reserved slot on the emulator's queue, taken before a chunk is pulled from the agent so
@@ -70,9 +75,10 @@ impl ScreenMirror {
     /// Starts the emulator thread for a terminal of `size`.
     pub(crate) fn spawn(size: TerminalSize) -> Result<Self, MirrorFailed> {
         let (commands, receiver) = mpsc::channel(MIRROR_QUEUE);
+        let (report_tx, reports) = watch::channel(ShellReport::default());
         std::thread::Builder::new()
             .name("terminal-mirror".to_string())
-            .spawn(move || run_mirror(size, receiver))
+            .spawn(move || run_mirror(size, receiver, report_tx))
             .map_err(|error| {
                 redoor_core::log_error!(
                     anyhow::Error::from(error),
@@ -80,7 +86,13 @@ impl ScreenMirror {
                 );
                 MirrorFailed
             })?;
-        Ok(Self { commands })
+        Ok(Self { commands, reports })
+    }
+
+    /// Follows what the shell reports about itself. The emulator already parses every byte
+    /// of output, so reading the title and OSC 7 directory here costs nothing extra.
+    pub(crate) fn reports(&self) -> watch::Receiver<ShellReport> {
+        self.reports.clone()
     }
 
     /// A sender for the session's output arm, which reserves a slot without borrowing the
@@ -142,19 +154,38 @@ impl MirrorSender {
 struct MirrorState {
     terminal: Terminal<'static, 'static>,
     tail: PendingTail,
+    /// Set by the emulator's callbacks when a title or directory sequence was parsed, so
+    /// they are only read after output that changed them.
+    reported: Rc<Cell<bool>>,
+    reports: watch::Sender<ShellReport>,
 }
 
 /// Thread body: applies commands until the session drops its handle.
-fn run_mirror(size: TerminalSize, mut commands: mpsc::Receiver<MirrorCommand>) {
+fn run_mirror(
+    size: TerminalSize,
+    mut commands: mpsc::Receiver<MirrorCommand>,
+    reports: watch::Sender<ShellReport>,
+) {
+    let reported = Rc::new(Cell::new(false));
     let terminal = Terminal::new(TerminalOptions {
         cols: size.cols,
         rows: size.rows,
         max_scrollback: TERMINAL_SNAPSHOT_SCROLLBACK_LINES,
+    })
+    .and_then(|mut terminal| {
+        let title = reported.clone();
+        let pwd = reported.clone();
+        terminal
+            .on_title_changed(move |_| title.set(true))?
+            .on_pwd_changed(move |_| pwd.set(true))?;
+        Ok(terminal)
     });
     let mut state = match terminal {
         Ok(terminal) => MirrorState {
             terminal,
             tail: PendingTail::default(),
+            reported,
+            reports,
         },
         Err(error) => {
             redoor_core::log_error!(
@@ -181,6 +212,25 @@ impl MirrorState {
     fn feed(&mut self, bytes: &[u8]) {
         self.terminal.vt_write(bytes);
         self.tail.feed(bytes);
+        if self.reported.replace(false) {
+            self.publish_report();
+        }
+    }
+
+    /// Hands the shell's current title and directory to the session's activity watcher,
+    /// waking it only when they differ from what it has.
+    fn publish_report(&self) {
+        let report = ShellReport {
+            title: self.terminal.title().unwrap_or_default().to_string(),
+            pwd: self.terminal.pwd().unwrap_or_default().to_string(),
+        };
+        self.reports.send_if_modified(|current| {
+            let changed = *current != report;
+            if changed {
+                *current = report;
+            }
+            changed
+        });
     }
 
     /// Resizes the screen; the primary screen reflows like the browser's does.

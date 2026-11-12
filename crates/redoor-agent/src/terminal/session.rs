@@ -7,6 +7,7 @@
 //! with respect to output: an attachment gets the snapshot of exactly the output fed before
 //! it, then live output, with nothing lost or repeated.
 
+use super::activity::{ActivityWatcher, ProcessProbe};
 use super::emulator::{MirrorFailed, MirrorPermit, MirrorSender, ScreenMirror};
 use bytes::Bytes;
 use libghostty_vt::terminal::CompressionMode;
@@ -21,7 +22,7 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{Notify, mpsc, oneshot, watch};
 use tokio::time::Instant;
 use tokio_util::sync::DropGuard;
 
@@ -65,6 +66,8 @@ pub(crate) struct PtyIo<O, I> {
     pub(crate) exit: oneshot::Receiver<TerminalServerMessage>,
     /// Kills the shell and its jobs when the session lets go of the PTY; `None` in tests.
     pub(crate) kill: Option<DropGuard>,
+    /// Reads what the shell runs and where, for the tab; `None` in tests.
+    pub(crate) probe: Option<ProcessProbe>,
 }
 
 /// One item for an attachment, in the order it must be sent.
@@ -210,6 +213,8 @@ struct LivePty<O, I> {
     /// The size the PTY has, so a resize is sent only when it differs.
     pty_size: TerminalSize,
     _forwarder: AbortOnDrop,
+    /// Stops following the shell's activity once the shell is gone.
+    _activity: AbortOnDrop,
     _kill: Option<DropGuard>,
 }
 
@@ -247,6 +252,7 @@ pub(crate) fn spawn_session<O: PtyOutput, I: PtyInput>(
 ) -> TerminalSessionHandle {
     let (commands_tx, commands) = mpsc::channel(COMMAND_QUEUE);
     let (record_tx, record_rx) = watch::channel(record);
+    let record_tx = Arc::new(record_tx);
     let serial = Arc::new(AtomicU64::new(0));
     let (input_queue, input_chunks) = mpsc::channel(MAX_PENDING_INPUT_FRAMES);
     let forwarder = tokio::spawn(forward_input(
@@ -255,10 +261,22 @@ pub(crate) fn spawn_session<O: PtyOutput, I: PtyInput>(
         serial.clone(),
     ));
     let mirror = ScreenMirror::spawn(size);
+    let output_seen = Arc::new(Notify::new());
+    let activity = tokio::spawn(
+        ActivityWatcher::new(
+            record_tx.clone(),
+            changed.clone(),
+            output_seen.clone(),
+            mirror.as_ref().ok().map(ScreenMirror::reports),
+            io.probe,
+        )
+        .run(),
+    );
     let mut task = SessionTask {
         commands,
         record: record_tx,
         changed,
+        output_seen,
         status: Status::Running,
         size,
         serial,
@@ -273,6 +291,7 @@ pub(crate) fn spawn_session<O: PtyOutput, I: PtyInput>(
             input_queue,
             pty_size: size,
             _forwarder: AbortOnDrop(forwarder.abort_handle()),
+            _activity: AbortOnDrop(activity.abort_handle()),
             _kill: io.kill,
         }),
         output_ended: false,
@@ -292,8 +311,11 @@ pub(crate) fn spawn_session<O: PtyOutput, I: PtyInput>(
 /// The loop's state. Only the task touches it.
 struct SessionTask<O, I> {
     commands: mpsc::Receiver<SessionCommand>,
-    record: watch::Sender<TerminalSessionRecord>,
+    /// Shared with the activity watcher, which updates the record's activity.
+    record: Arc<watch::Sender<TerminalSessionRecord>>,
     changed: SessionsChanged,
+    /// Tells the activity watcher that the shell printed something, so it looks again.
+    output_seen: Arc<Notify>,
     status: Status,
     /// The size of the current (or last) attachment, which the PTY and mirror follow.
     size: TerminalSize,
@@ -534,6 +556,7 @@ impl<O: PtyOutput, I: PtyInput> SessionTask<O, I> {
                 if let Some(viewer) = viewer {
                     viewer.send(ViewerFrame::Output(data));
                 }
+                self.output_seen.notify_one();
                 self.compress_at = Some(Instant::now() + MIRROR_IDLE_COMPRESS);
             }
             None => self.output_closed(),
@@ -574,6 +597,8 @@ impl<O: PtyOutput, I: PtyInput> SessionTask<O, I> {
         }
         self.record.send_modify(|record| {
             record.status = TerminalSessionStatus::Exited { message };
+            // Nothing runs in an exited shell; its last directory and title stay as a hint.
+            record.activity.command = None;
         });
         self.changed.send_replace(());
     }
@@ -791,6 +816,7 @@ mod tests {
             number: 1,
             created_at: UnixTimestampMillis::now(),
             status: TerminalSessionStatus::Running,
+            activity: Default::default(),
         };
         let session = spawn_session(
             record,
@@ -800,6 +826,7 @@ mod tests {
                 input: FakeInput(shell_tx),
                 exit: exit_rx,
                 kill: None,
+                probe: None,
             },
             Arc::new(changed_tx),
         );
@@ -1058,6 +1085,37 @@ mod tests {
                 message: "Shell exited with code 7".to_string(),
             }
         );
+    }
+
+    #[tokio::test]
+    async fn shell_reported_title_and_directory_reach_the_record() {
+        let mut harness = harness();
+        harness.changed.mark_unchanged();
+        harness
+            .print("\x1b]2;build logs\x07\x1b]7;file://localhost/srv/my%20app\x1b\\$ ")
+            .await;
+        let mut record = harness.session.watch_record();
+        let record = record
+            .wait_for(|record| record.activity.title.is_some())
+            .await
+            .unwrap()
+            .clone();
+        // The title a shell sets with OSC 2 is what the tab can show.
+        assert_eq!(record.activity.title.as_deref(), Some("build logs"));
+        // Without process facts the shell's own OSC 7 report names the directory, decoded.
+        assert_eq!(record.activity.current_dir.as_deref(), Some("/srv/my app"));
+        // The server hears about the change instead of having to poll.
+        harness.changed.changed().await.unwrap();
+        harness.exit(0);
+        let mut record = harness.session.watch_record();
+        let record = record
+            .wait_for(|record| record.status != TerminalSessionStatus::Running)
+            .await
+            .unwrap()
+            .clone();
+        // An exited shell runs nothing, but its last directory is still a useful hint.
+        assert_eq!(record.activity.command, None);
+        assert_eq!(record.activity.current_dir.as_deref(), Some("/srv/my app"));
     }
 
     #[tokio::test]

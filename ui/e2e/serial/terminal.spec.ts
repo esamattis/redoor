@@ -676,6 +676,35 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCount(0);
     });
 
+    test("shows the running command and directory in the tab tooltip", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        const terminalInput = page
+            .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
+            .locator("textarea");
+
+        await terminalInput.pressSequentially(
+            `cd '${ctx.testDirPath}' && sleep 300`,
+        );
+        await terminalInput.press("Enter");
+        await page.getByRole("tab", { name: "agent1_src 1" }).hover();
+
+        const tooltip = page.getByRole("tooltip");
+
+        // The tooltip follows the shell live: the job it runs and where it runs it.
+        await expect(tooltip).toContainText("Running: sleep 300");
+        await expect(tooltip).toContainText(ctx.testDirName);
+    });
+
     test("opens or focuses the current agent terminal with t", async ({
         page,
     }) => {

@@ -1,4 +1,6 @@
 import * as React from "react";
+import { useQuery } from "@tanstack/react-query";
+import { getRouteApi } from "@tanstack/react-router";
 import {
     CircleCheck,
     CircleDashed,
@@ -11,6 +13,7 @@ import {
     RotateCcw,
     X,
 } from "lucide-react";
+import type { TerminalActivity } from "#bindings/TerminalActivity";
 import type { Agent } from "#ui/api-client";
 import type {
     TerminalState,
@@ -24,7 +27,10 @@ import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { IconButton } from "#ui/components/icon-button";
 import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tab, TabList } from "#ui/components/tabs";
+import { terminalSessionsQueryOptions } from "#ui/queries";
 import type { ItemMove } from "#ui/utils/reorder";
+
+const rootRouteApi = getRouteApi("__root__");
 
 /** Gives each terminal tab its own concise lifecycle label and color. */
 function getTerminalStatus(state: TerminalState) {
@@ -67,6 +73,9 @@ export function TerminalTabActions(props: {
     onSelect: (tabId: number) => void;
 }) {
     const listRef = React.useRef<HTMLDivElement>(null);
+    const { api } = rootRouteApi.useRouteContext();
+    // The same list the tabs are restored from; the server refreshes it when activity changes.
+    const sessions = useQuery(terminalSessionsQueryOptions(api)).data?.sessions;
 
     const availableAgents = props.agents.filter(
         (agent) => agent.status === "connected" && agent.cwd !== null,
@@ -94,6 +103,11 @@ export function TerminalTabActions(props: {
                         <TerminalTabControl
                             key={tab.id}
                             tab={tab}
+                            activity={
+                                sessions?.find(
+                                    (session) => session.id === tab.sessionId,
+                                )?.activity ?? null
+                            }
                             isActive={tab.id === props.activeTabId}
                             onClose={props.onClose}
                             onRestart={props.onRestart}
@@ -167,6 +181,8 @@ export function TerminalTabActions(props: {
 /** Keeps sorting, activation, and lifecycle controls together for one terminal tab. */
 function TerminalTabControl(props: {
     tab: TerminalTabSnapshot;
+    /** What the shell does now, `null` until the server listed the session. */
+    activity: TerminalActivity | null;
     isActive: boolean;
     onClose: (tabId: number) => void;
     onRestart: (tabId: number) => void;
@@ -193,11 +209,17 @@ function TerminalTabControl(props: {
                             ? "border-blue-500/50 bg-slate-700 shadow-[0_0_0_1px_rgba(59,130,246,0.12)]"
                             : "border-slate-700 bg-slate-900"
                     }`}
-                    title={`${props.tab.title}: ${props.tab.cwd}`}
                 >
                     <Tab
                         id={`terminal-tab-${props.tab.id}`}
                         aria-label={props.tab.title}
+                        tooltip={
+                            <TerminalTabDetails
+                                title={props.tab.title}
+                                startDir={props.tab.cwd}
+                                activity={props.activity}
+                            />
+                        }
                         selected={props.isActive}
                         aria-controls={`terminal-panel-${props.tab.id}`}
                         onClick={() => props.onSelect(props.tab.id)}
@@ -249,5 +271,48 @@ function TerminalTabControl(props: {
                 </div>
             )}
         </SortableItem>
+    );
+}
+
+/**
+ * The tab's tooltip: what runs in the shell and where, so a user can find the right tab
+ * among several shells of one device without switching to each. The directory falls back to
+ * the start directory until the agent reported a live one.
+ */
+function TerminalTabDetails(props: {
+    title: string;
+    startDir: string;
+    activity: TerminalActivity | null;
+}) {
+    const shellTitle = props.activity?.title ?? null;
+
+    return (
+        <span className="flex max-w-[min(20rem,calc(100vw-2.5rem))] flex-col gap-1 text-left">
+            <span className="font-semibold">{props.title}</span>
+            <TerminalTabDetail label="Running">
+                {props.activity?.command ?? "Shell prompt"}
+            </TerminalTabDetail>
+            <TerminalTabDetail label="Directory">
+                {props.activity?.current_dir ?? props.startDir}
+            </TerminalTabDetail>
+            {shellTitle !== null && shellTitle !== props.title ? (
+                <TerminalTabDetail label="Title">
+                    {shellTitle}
+                </TerminalTabDetail>
+            ) : null}
+        </span>
+    );
+}
+
+/** One labelled line of the tab tooltip; long paths and commands wrap anywhere. */
+function TerminalTabDetail(props: {
+    label: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <span className="block break-all">
+            <span className="opacity-70">{props.label}: </span>
+            <span className="font-mono">{props.children}</span>
+        </span>
     );
 }

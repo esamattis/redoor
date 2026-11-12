@@ -78,6 +78,7 @@ function sessionInfo(session: {
         number: session.number,
         created_at: session.createdAt,
         status: { type: "running" },
+        activity: { command: null, current_dir: null, title: null },
         attached: false,
     };
 }

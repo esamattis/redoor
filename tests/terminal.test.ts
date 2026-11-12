@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import {
     ProcessManager,
@@ -140,6 +140,53 @@ describe("terminal sessions", () => {
             title: `${testAgent.name} test`,
             number: 1,
         });
+    });
+
+    it("lists the shell's foreground command and current directory", async () => {
+        const { session, viewer } = await openTerminal(
+            api,
+            testAgent,
+            agentCwd,
+        );
+
+        // The kernel reports the resolved directory, so compare against the real path.
+        const jobDir = realpathSync(alternateCwd);
+
+        viewer.type(`cd '${alternateCwd}' && sleep 300\n`);
+
+        const running = await waitForValue({
+            description: "the running sleep to be listed",
+            timeoutMs: 15_000,
+            predicate: async () =>
+                (await api.listTerminalSessions()).sessions.find(
+                    (entry) =>
+                        entry.id === session.id &&
+                        entry.activity.command !== null,
+                ),
+        });
+
+        // The foreground job is named with its arguments, not just the shell.
+        expect(running.activity.command).toBe("sleep 300");
+        // The directory follows the shell's `cd`, while `cwd` stays where it started.
+        expect(running.activity.current_dir).toBe(jobDir);
+        expect(running.cwd).toBe(agentCwd);
+
+        // Ctrl+C ends the job and returns to the prompt.
+        viewer.type("\u0003");
+
+        const idle = await waitForValue({
+            description: "the shell prompt to be listed",
+            timeoutMs: 15_000,
+            predicate: async () =>
+                (await api.listTerminalSessions()).sessions.find(
+                    (entry) =>
+                        entry.id === session.id &&
+                        entry.activity.command === null,
+                ),
+        });
+
+        // An idle shell runs nothing but stays in the directory it changed to.
+        expect(idle.activity.current_dir).toBe(jobDir);
     });
 
     it("re-attaches to the same shell with its screen after the socket closes", async () => {

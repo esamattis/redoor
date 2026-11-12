@@ -103,6 +103,7 @@ impl TerminalSessions {
             number: request.number,
             created_at: UnixTimestampMillis::now(),
             status: TerminalSessionStatus::Running,
+            activity: Default::default(),
         };
         log!(
             Level::Info,

@@ -334,6 +334,10 @@ any browser can pick it up again with a snapshot of the screen.
 - The agent reports its sessions after `hello` and on every change. The server keeps only an
   in-memory index (`TerminalRegistry`), so a restarted server learns the sessions again from
   each agent.
+- Each session record carries the shell's live activity (foreground command, current
+  directory, title) for the tab tooltip. The agent reads the PTY's foreground process from
+  the OS and the shell's own OSC 7/title reports from the mirror, only after output and at
+  most about once a second, so idle shells cost nothing; it reports only real changes.
 - One browser views a session at a time; attaching takes it over from the previous viewer.
 - Terminal frames use the interactive lane, and stream credit holds back a shell whose viewer
   is slow, so memory stays bounded.

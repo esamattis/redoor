@@ -1,6 +1,6 @@
 //! Terminal sizes and lifecycle messages for interactive PTY sessions on agents.
 
-use crate::api::terminals::TerminalSessionStatus;
+use crate::api::terminals::{TerminalActivity, TerminalSessionStatus};
 use crate::ids::{TerminalSessionId, UnixTimestampMillis};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -120,6 +120,10 @@ pub struct TerminalSessionRecord {
     pub number: u32,
     pub created_at: UnixTimestampMillis,
     pub status: TerminalSessionStatus,
+    /// What the shell is doing now. Defaults to nothing known, so an agent built before the
+    /// field existed still reports its sessions.
+    #[serde(default)]
+    pub activity: TerminalActivity,
 }
 
 /// Lifecycle notifications sent from the agent terminal to the browser.
