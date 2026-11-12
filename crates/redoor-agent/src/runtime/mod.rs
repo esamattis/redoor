@@ -53,6 +53,13 @@ pub(crate) enum AgentMsg {
     SendRawText {
         text: String,
     },
+    /// `rd-open` asks the browsers to show a path; `reply` tells the command whether the
+    /// request reached the connection.
+    OpenPath {
+        path: String,
+        kind: redoor_protocol::api::ui_events::OpenPathKind,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    },
     /// Stops the runtime cleanly when its owning transport has ended.
     Shutdown,
     ExitWithError,
@@ -112,6 +119,23 @@ impl AgentHandle {
         message: AgentMsg,
     ) -> Result<(), mpsc::error::TrySendError<AgentMsg>> {
         self.sender.try_send(message)
+    }
+
+    /// Asks the server, through the current connection, to have the browsers show `path`.
+    ///
+    /// Fails when the agent has no connection, because then no browser can learn about it
+    /// and the person typing `rd-open` should know.
+    pub(crate) async fn open_path(
+        &self,
+        path: String,
+        kind: redoor_protocol::api::ui_events::OpenPathKind,
+    ) -> Result<(), String> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let stopped = || "the redoor agent is shutting down".to_string();
+        self.send(AgentMsg::OpenPath { path, kind, reply })
+            .await
+            .map_err(|_| stopped())?;
+        answer.await.map_err(|_| stopped())?
     }
 
     /// Reports transport lifecycle without competing with bounded application traffic.
@@ -450,6 +474,7 @@ impl AgentRuntime {
                     log_error!(error, "Failed to send message; connection may be lost");
                 }
             }
+            AgentMsg::OpenPath { path, kind, reply } => self.send_open_path(path, kind, reply),
             AgentMsg::Shutdown => return Some(AgentExit::Shutdown),
             AgentMsg::ExitWithError => {
                 let error = anyhow::anyhow!("agent received fatal exit signal");
@@ -458,6 +483,30 @@ impl AgentRuntime {
             }
         }
         None
+    }
+
+    /// Queues an `rd-open` request on the current connection and answers `reply` once it is
+    /// queued. The send runs in its own task, so a full control lane cannot stall the loop.
+    fn send_open_path(
+        &self,
+        path: String,
+        kind: redoor_protocol::api::ui_events::OpenPathKind,
+        reply: tokio::sync::oneshot::Sender<Result<(), String>>,
+    ) {
+        let Some(control) = self.control.sender().cloned() else {
+            let _ = reply.send(Err(
+                "the redoor agent is not connected to its server".to_string()
+            ));
+            return;
+        };
+        tokio::spawn(async move {
+            let frame = OutboundFrame::message(AgentToServer::OpenPath { path, kind });
+            let sent = control
+                .send(frame)
+                .await
+                .map_err(|_| "the redoor agent lost its server connection".to_string());
+            let _ = reply.send(sent);
+        });
     }
 
     /// Applies transport lifecycle ahead of bounded application traffic.
@@ -1171,6 +1220,7 @@ mod tests {
                 // Never created: these tests do not write partials.
                 redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
                 crate::commands::systemd::Systemd::unsupported(),
+                None,
                 None,
             ),
             None,

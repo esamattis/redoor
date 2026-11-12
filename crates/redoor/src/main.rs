@@ -177,6 +177,16 @@ enum AgentCommand {
     /// Keep a server-managed agent's daemon running; started by the server.
     #[command(hide = true, after_help = examples::AGENT_MANAGED)]
     Managed(managed::ManagedArgs),
+    /// Open a path in the web UI from a redoor terminal; what the `rd-open` command runs.
+    #[command(hide = true, after_help = examples::AGENT_OPEN)]
+    Open(AgentOpenArgs),
+}
+
+/// The path `rd-open` was given.
+#[derive(Args)]
+struct AgentOpenArgs {
+    /// File or directory to open, relative to the current directory.
+    path: PathBuf,
 }
 
 /// Requires an explicit lifecycle action for one configured relay.
@@ -393,6 +403,7 @@ async fn run_agent_command(
             service::run_launchd(launchd, ServiceRole::Agent, paths).await?
         }
         Some(AgentCommand::Managed(managed)) => return managed::run(managed, &context).await,
+        Some(AgentCommand::Open(open)) => redoor_agent::open_path::run_cli(&open.path).await?,
         Some(AgentCommand::Relay(relay)) => match relay.command {
             RelayCommand::Ls(list) => list_relays(list, paths).await?,
             RelayCommand::Start(start) => return run_named_relay(start, &context, parent).await,

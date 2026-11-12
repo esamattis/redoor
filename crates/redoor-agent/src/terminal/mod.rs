@@ -375,10 +375,21 @@ pub(crate) async fn refuse(interactive: ControlSender, stream: RequestId, messag
 pub(crate) struct LivePtyOutput {
     reader: pty_process::OwnedReadPty,
     buffer: Vec<u8>,
+    /// Shown once before the shell's own output. It goes through the session like any
+    /// output, so the screen mirror keeps it and reattaching browsers still see it.
+    tip: Option<Bytes>,
 }
+
+/// Tells people about `rd-open` in every new shell where it works, since a command that
+/// only exists inside redoor terminals is otherwise hard to discover.
+const RD_OPEN_TIP: &str =
+    "\x1b[2mTip: run rd-open <path> to open a file or directory in redoor\x1b[0m\r\n";
 
 impl PtyOutput for LivePtyOutput {
     async fn recv(&mut self) -> Option<Bytes> {
+        if let Some(tip) = self.tip.take() {
+            return Some(tip);
+        }
         // Linux reports a PTY whose other side closed as EIO, which ends output like EOF.
         let read = self.reader.read(&mut self.buffer).await.ok()?;
         (read > 0).then(|| Bytes::copy_from_slice(&self.buffer[..read]))
@@ -463,11 +474,12 @@ async fn watch_shell(
 }
 
 /// Allocates the PTY, starts the login shell in `cwd` with the extra variables `env` from the
-/// server and wires it for a session.
+/// server and the agent's own `open_env` for `rd-open`, and wires it for a session.
 pub(crate) fn start_pty(
     size: TerminalSize,
     cwd: &str,
     env: &BTreeMap<String, String>,
+    open_env: &[(&'static str, OsString)],
 ) -> Result<PtyIo<LivePtyOutput, LivePtyInput>> {
     let (pty, pts) = pty_process::open().context("failed to allocate PTY")?;
     pty.resize(pty_process::Size::new(size.rows, size.cols))
@@ -495,6 +507,11 @@ pub(crate) fn start_pty(
     });
     if let Some(variable) = locale {
         command = command.env(variable, UTF8_FALLBACK_LOCALE);
+    }
+    // After the device's variables, so its `terminal_env` cannot replace the token or drop
+    // the script's directory from PATH (the PATH here already extends the device's own).
+    for (name, value) in open_env {
+        command = command.env(name, value);
     }
     // Last, so nothing above can put it back: the token would let anything running in the
     // shell pass as the server.
@@ -525,6 +542,8 @@ pub(crate) fn start_pty(
         output: LivePtyOutput {
             reader,
             buffer: vec![0; PTY_BUFFER_SIZE],
+            // Without the variables the command cannot reach the agent, so no tip.
+            tip: (!open_env.is_empty()).then(|| Bytes::from_static(RD_OPEN_TIP.as_bytes())),
         },
         input: LivePtyInput {
             writes,

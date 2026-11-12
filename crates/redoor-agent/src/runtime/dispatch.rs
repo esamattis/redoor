@@ -303,6 +303,7 @@ mod tests {
                 redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
                 crate::commands::systemd::Systemd::unsupported(),
                 None,
+                None,
             );
             let (control, frames) = mpsc::channel(8);
             let (bulk, payload) = mpsc::channel(8);

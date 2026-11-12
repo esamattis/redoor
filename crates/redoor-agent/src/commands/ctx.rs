@@ -55,13 +55,14 @@ pub(crate) struct AgentServices {
 }
 
 impl AgentServices {
-    /// Bundles the startup-selected trash provider, partial store, systemd support and config
-    /// origin with fresh shared state.
+    /// Bundles the startup-selected trash provider, partial store, systemd support, config
+    /// origin and `rd-open` environment with fresh shared state.
     pub(crate) fn new(
         trash: Trash,
         partial_store: redoor_core::partials::PartialStore,
         systemd: crate::commands::systemd::Systemd,
         loaded_config_path: Option<&std::path::Path>,
+        open_env: Option<crate::open_path::ShellOpenEnv>,
     ) -> Self {
         Self {
             partial_store,
@@ -70,7 +71,7 @@ impl AgentServices {
             grep_slots: Arc::new(Semaphore::new(CONTENT_GREP_SLOTS)),
             upload_routes: UploadRoutes::default(),
             terminal_inputs: TerminalInputs::default(),
-            terminal_sessions: TerminalSessions::default(),
+            terminal_sessions: TerminalSessions::new(open_env),
             output_credits: OutputCredits::default(),
             results: ResultLedger::default(),
             loaded_config_path: loaded_config_path
@@ -214,6 +215,7 @@ impl CommandCtx {
                     Trash::unsupported(),
                     redoor_core::partials::PartialStore::new("/nonexistent/redoor-agent".into()),
                     crate::commands::systemd::Systemd::unsupported(),
+                    None,
                     None,
                 ),
             },

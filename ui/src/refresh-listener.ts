@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import { type ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { UiEvent } from "#bindings/UiEvent";
+import type { OpenPathKind } from "#bindings/OpenPathKind";
 import type { VaultSession } from "#ui/vault/vault-session";
 import {
     invalidateAgentData,
@@ -12,14 +13,27 @@ import {
     queryKeys,
 } from "#ui/queries";
 
-const uiEventSchema: z.ZodType<UiEvent> = z.object({
-    type: z.union([
-        z.literal("agents_changed"),
-        z.literal("routes_changed"),
-        z.literal("transfers_changed"),
-        z.literal("terminals_changed"),
-    ]),
-});
+const openPathKindSchema: z.ZodType<OpenPathKind> = z.union([
+    z.literal("file"),
+    z.literal("directory"),
+]);
+
+const uiEventSchema: z.ZodType<UiEvent> = z.discriminatedUnion("type", [
+    z.object({ type: z.literal("agents_changed") }),
+    z.object({ type: z.literal("routes_changed") }),
+    z.object({ type: z.literal("transfers_changed") }),
+    z.object({ type: z.literal("terminals_changed") }),
+    z.object({
+        type: z.literal("open_path"),
+        agent_id: z.string(),
+        device_name: z.string(),
+        path: z.string(),
+        kind: openPathKindSchema,
+    }),
+]);
+
+/** An `rd-open` request from a terminal: show `path` of a device in this window. */
+export type OpenPathEvent = Extract<UiEvent, { type: "open_path" }>;
 
 /**
  * Finds agents whose connection was replaced, ended or appeared between two inventory
@@ -48,7 +62,8 @@ export function agentsWithReplacedConnection(
 /**
  * Turns server hints into query invalidations. Events only say what kind of data changed,
  * so the cache is the single place where views learn about it: components and route
- * loaders read the same queries and need no separate reload signal.
+ * loaders read the same queries and need no separate reload signal. The one command among
+ * them, `rd-open`, is handed to `onOpenPath`, because only the shell can navigate.
  */
 export class RefreshListener {
     private reconnectTimer: number | null = null;
@@ -59,7 +74,10 @@ export class RefreshListener {
     constructor(
         private api: ApiClient,
         private queryClient: QueryClient,
-        private vault: Pick<VaultSession, "check">,
+        private shell: {
+            vault: Pick<VaultSession, "check">;
+            onOpenPath: (event: OpenPathEvent) => void;
+        },
     ) {}
 
     /** Starts the UI event connection once for the authenticated shell. */
@@ -113,6 +131,12 @@ export class RefreshListener {
 
     /** Applies one validated server hint to the data it announces. */
     private handleEvent(event: UiEvent) {
+        if (event.type === "open_path") {
+            this.shell.onOpenPath(event);
+
+            return;
+        }
+
         if (event.type === "transfers_changed") {
             void this.queryClient.invalidateQueries({
                 queryKey: queryKeys.transfers(),
@@ -164,7 +188,7 @@ export class RefreshListener {
 
         void invalidateAllAgentData(this.queryClient);
         // A server restart forgets every vault device secret, so tabs holding keys must lock.
-        void this.vault.check();
+        void this.shell.vault.check();
     }
 
     /** Connects to the event stream and scopes each event to affected data. */
@@ -219,16 +243,23 @@ export class RefreshListener {
 /**
  * Ties the UI event connection to the authenticated shell: it opens when the shell mounts,
  * after the loaders have proven the session valid, and closes when the shell unmounts, so
- * the login page never holds an event socket.
+ * the login page never holds an event socket. `onOpenPath` may change on every render
+ * without reconnecting.
  */
 export function useRefreshListener(
     api: ApiClient,
     vault: Pick<VaultSession, "check">,
+    onOpenPath: (event: OpenPathEvent) => void,
 ) {
     const queryClient = useQueryClient();
+    const openPath = React.useEffectEvent(onOpenPath);
 
     React.useEffect(() => {
-        const refreshListener = new RefreshListener(api, queryClient, vault);
+        const refreshListener = new RefreshListener(api, queryClient, {
+            vault,
+            onOpenPath: (event) => openPath(event),
+        });
+
         refreshListener.start();
 
         return () => refreshListener.stop();

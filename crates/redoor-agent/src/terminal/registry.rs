@@ -5,6 +5,7 @@
 //! registry is the only place sessions are created, found and closed.
 
 use super::session::{SessionsChanged, TerminalSessionHandle, spawn_session};
+use crate::open_path::ShellOpenEnv;
 use redoor_core::log;
 use redoor_protocol::{
     api::terminals::TerminalSessionStatus,
@@ -16,6 +17,8 @@ use redoor_protocol::{
         terminal::TerminalSessionRecord,
     },
 };
+use std::collections::HashMap;
+use std::ffi::OsString;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::watch;
 
@@ -33,18 +36,78 @@ pub(crate) struct TerminalSessions {
     /// Signals every change of the list or of a session's status, so the current
     /// connection can send the new list.
     changed: SessionsChanged,
+    /// Where shells find the `rd-open` socket; `None` when it could not be set up, so
+    /// terminals still start without the command.
+    open_env: Option<ShellOpenEnv>,
+    /// `rd-open` token of each session's shell, so a request proves which terminal sent it.
+    open_tokens: Arc<Mutex<HashMap<String, TerminalSessionId>>>,
 }
 
 impl Default for TerminalSessions {
     fn default() -> Self {
-        Self {
-            sessions: Arc::default(),
-            changed: Arc::new(watch::channel(()).0),
-        }
+        Self::new(None)
     }
 }
 
 impl TerminalSessions {
+    /// Creates an empty registry whose shells get `open_env` for `rd-open`.
+    pub(crate) fn new(open_env: Option<ShellOpenEnv>) -> Self {
+        Self {
+            sessions: Arc::default(),
+            changed: Arc::new(watch::channel(()).0),
+            open_env,
+            open_tokens: Arc::default(),
+        }
+    }
+
+    /// Locks the token map, tolerating poison because every operation leaves it valid.
+    fn open_tokens(&self) -> MutexGuard<'_, HashMap<String, TerminalSessionId>> {
+        self.open_tokens
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Whether `token` belongs to a shell that still runs, so only the agent's own terminals
+    /// can open paths in the browsers, and not after their tab was closed.
+    pub(crate) fn accepts_open_token(&self, token: &str) -> bool {
+        let Some(id) = self.open_tokens().get(token).copied() else {
+            return false;
+        };
+        self.get(id)
+            .is_some_and(|session| session.record().status == TerminalSessionStatus::Running)
+    }
+
+    /// The `rd-open` variables of a new shell with its fresh token, registered for `id`.
+    ///
+    /// The token is random and per shell: it lives only in that shell's environment and its
+    /// children's, which is what lets the agent tell a terminal from any other local process.
+    fn issue_open_env(
+        &self,
+        id: TerminalSessionId,
+        server_env: &std::collections::BTreeMap<String, String>,
+    ) -> Vec<(&'static str, OsString)> {
+        let Some(open_env) = &self.open_env else {
+            return Vec::new();
+        };
+        let token = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().simple(),
+            uuid::Uuid::new_v4().simple()
+        );
+        self.open_tokens().insert(token.clone(), id);
+        // A device's own PATH from `terminal_env` replaces the agent's, so extend that one.
+        let path = server_env
+            .get("PATH")
+            .map(OsString::from)
+            .or_else(|| std::env::var_os("PATH"));
+        open_env.variables(&token, path)
+    }
+
+    /// Forgets the `rd-open` token of session `id`.
+    fn revoke_open_token(&self, id: TerminalSessionId) {
+        self.open_tokens().retain(|_, session| *session != id);
+    }
+
     /// Locks the list, tolerating poison because every operation leaves it valid.
     fn sessions(&self) -> MutexGuard<'_, Vec<TerminalSessionHandle>> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
@@ -84,18 +147,22 @@ impl TerminalSessions {
                 "Too many terminal sessions are open; close some terminal tabs",
             ));
         }
-        let io = super::start_pty(request.size, &request.cwd, &request.env).map_err(|error| {
-            log!(
-                Level::Warning,
-                "Failed to start a terminal: cwd={}, error={:#}",
-                request.cwd,
-                error
-            );
-            CommandError::new(
-                CommandErrorKind::Internal,
-                format!("Failed to start terminal: {error:#}"),
-            )
-        })?;
+        let open_env = self.issue_open_env(request.id, &request.env);
+        let io = super::start_pty(request.size, &request.cwd, &request.env, &open_env).map_err(
+            |error| {
+                self.revoke_open_token(request.id);
+                log!(
+                    Level::Warning,
+                    "Failed to start a terminal: cwd={}, error={:#}",
+                    request.cwd,
+                    error
+                );
+                CommandError::new(
+                    CommandErrorKind::Internal,
+                    format!("Failed to start terminal: {error:#}"),
+                )
+            },
+        )?;
         let record = TerminalSessionRecord {
             id: request.id,
             cwd: request.cwd,
@@ -143,6 +210,7 @@ impl TerminalSessions {
         let Some(session) = removed else {
             return false;
         };
+        self.revoke_open_token(id);
         session.close().await;
         log!(Level::Info, "Terminal closed: id={}", id);
         self.changed.send_replace(());
@@ -226,5 +294,30 @@ mod tests {
         // The reason reaches the creating window.
         assert!(error.message.starts_with("Failed to start terminal"));
         assert!(sessions.records().is_empty());
+    }
+
+    /// Only a running shell's own token is accepted, and closing its tab revokes it, so no
+    /// other local process and no stale shell can steer the browsers.
+    #[tokio::test]
+    async fn open_tokens_follow_their_session() {
+        let sessions = TerminalSessions::new(Some(ShellOpenEnv::new(
+            "/nonexistent/terminal-open.sock".into(),
+            "/nonexistent/terminal-bin".into(),
+        )));
+        let record = sessions.create(create("/")).unwrap();
+        let token = sessions
+            .open_tokens()
+            .iter()
+            .find(|(_, id)| **id == record.id)
+            .map(|(token, _)| token.clone())
+            .unwrap();
+        // The shell's token opens paths while its shell runs.
+        assert!(sessions.accepts_open_token(&token));
+        // A guessed token is refused.
+        assert!(!sessions.accepts_open_token("guess"));
+        sessions.close(record.id).await;
+        // The closed terminal's token no longer works, and the map does not grow.
+        assert!(!sessions.accepts_open_token(&token));
+        assert!(sessions.open_tokens().is_empty());
     }
 }

@@ -466,6 +466,16 @@ impl RouterState {
             RouterMsg::OpenAgentLogStream(request) => self.open_log_stream(request),
             RouterMsg::CloseStream { agent_id, stream } => self.close_stream(&agent_id, stream),
             RouterMsg::TerminalsChanged => self.notify_terminals_changed(),
+            RouterMsg::OpenPath {
+                agent_id,
+                socket_id,
+                path,
+                kind,
+            } => {
+                if self.accepts_agent_frame(&agent_id, &socket_id, "open path") {
+                    self.notify_open_path(&agent_id, path, kind)
+                }
+            }
             RouterMsg::CheckPendingUiRefresh => self.tick(),
             RouterMsg::Shutdown => {}
         }

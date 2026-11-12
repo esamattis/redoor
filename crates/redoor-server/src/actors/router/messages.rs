@@ -577,6 +577,14 @@ pub enum RouterMsg {
     },
     /// A terminal session was created, closed or exited; open windows refresh their tabs.
     TerminalsChanged,
+    /// `rd-open` ran in a terminal of `agent_id`; browsers are asked to show `path`.
+    OpenPath {
+        agent_id: AgentId,
+        /// Session the frame arrived on, so a replaced connection cannot steer browsers.
+        socket_id: SocketId,
+        path: String,
+        kind: redoor_protocol::api::ui_events::OpenPathKind,
+    },
     /// Periodic tick: prunes abandoned replies, publishes stream progress, releases
     /// throttled UI refreshes and ends device id conflicts that went quiet.
     CheckPendingUiRefresh,

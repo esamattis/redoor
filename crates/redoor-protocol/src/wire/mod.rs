@@ -210,6 +210,15 @@ pub enum AgentToServer {
     TerminalSessions {
         sessions: Vec<terminal::TerminalSessionRecord>,
     },
+
+    /// `rd-open` ran in one of the agent's terminals: asks the browsers to show `path`.
+    ///
+    /// The agent already checked the terminal's token and that the path exists, so the
+    /// server only relays it; it is not a request and gets no result.
+    OpenPath {
+        path: String,
+        kind: crate::api::ui_events::OpenPathKind,
+    },
 }
 
 impl AgentToServer {
@@ -231,6 +240,7 @@ impl AgentToServer {
             Self::Credit { .. } => "credit",
             Self::TerminalEvent { .. } => "terminal_event",
             Self::TerminalSessions { .. } => "terminal_sessions",
+            Self::OpenPath { .. } => "open_path",
         }
     }
 }
@@ -330,6 +340,13 @@ mod tests {
                     frames: 2,
                 },
                 r#"{"type":"credit","stream":6,"frames":2}"#,
+            ),
+            (
+                AgentToServer::OpenPath {
+                    path: "/home/u/notes.md".to_string(),
+                    kind: crate::api::ui_events::OpenPathKind::File,
+                },
+                r#"{"type":"open_path","path":"/home/u/notes.md","kind":"file"}"#,
             ),
         ];
         for (frame, expected) in frames {

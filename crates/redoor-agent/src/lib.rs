@@ -8,6 +8,7 @@ mod errors;
 mod exec;
 mod logs;
 mod notification;
+pub mod open_path;
 mod ownership;
 mod platform;
 mod runtime;
@@ -163,12 +164,26 @@ impl PreparedAgent {
         }
 
         let (handle, receiver, lifecycle_receiver) = AgentHandle::channel(AGENT_MAILBOX_CAPACITY);
+        let data_dir = runtime.paths.data_dir()?;
+        // Terminals work without `rd-open`, so a failure (such as a socket path longer than
+        // the OS allows) only disables the command.
+        let open_listener = match open_path::OpenListener::install(&data_dir).await {
+            Ok(listener) => Some(listener),
+            Err(error) => {
+                log!(Level::Warning, "rd-open is unavailable: {:#}", error);
+                None
+            }
+        };
         let services = AgentServices::new(
             trash,
-            redoor_core::partials::PartialStore::new(runtime.paths.data_dir()?),
+            redoor_core::partials::PartialStore::new(data_dir),
             commands::systemd::Systemd::detect().await,
             loaded_config_path.as_deref(),
+            open_listener.as_ref().map(open_path::OpenListener::env),
         );
+        if let Some(listener) = open_listener {
+            listener.serve(services.terminal_sessions.clone(), handle.clone());
+        }
         services
             .start_partial_cleanup(settings.partial_max_age_days.saturating_mul(24 * 60 * 60))
             .await;

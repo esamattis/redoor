@@ -348,6 +348,13 @@ any browser can pick it up again with a snapshot of the screen.
   one is not UTF-8, because the browser terminal always speaks UTF-8 and agents started over
   SSH or by a service manager often inherit `LANG=C`. `terminal_env` has its own endpoint, so
   saving it does not stop the agent like the device edit does.
+- `rd-open <path>` in a terminal opens the path in the web UI. The agent writes an
+  `rd-open` script (which execs the hidden `redoor agent open`) into its data directory, puts
+  that directory first on each shell's `PATH`, and gives each shell its private Unix socket
+  and a random per-terminal token. The token is what the agent trusts: only its own running
+  shells know one, so other local processes cannot steer browsers. The agent stats the path
+  and sends `open_path` to the server, which broadcasts it to every UI window; the command
+  does not wait for a browser. Login shells whose profile resets `PATH` hide the command.
 - Live logs stream NDJSON log events over a stream of the same connection.
 
 ## Systemd units
@@ -391,7 +398,9 @@ The UI is a TanStack Router application embedded in the server binary.
 - **Live updates are invalidation hints.** `/api/v1/ui/ws` carries payload-free events
   (`agents_changed`, `routes_changed`, `transfers_changed`, `terminals_changed`) that become
   TanStack Query invalidations. REST stays the single source of truth, so there are no deltas
-  to keep consistent and a missed event only means a later refresh.
+  to keep consistent and a missed event only means a later refresh. The one exception is
+  `open_path` from `rd-open`: it is a command, not changed state, so it carries its payload
+  and skips the refresh throttle. The focused window navigates; others offer it in a toast.
 - **The query cache is the only server state.** Route loaders prime it; components read the
   same queries; mutations and events invalidate it under one key hierarchy per agent.
 - **The authenticated app** lives under the pathless `_app` layout, whose shell hosts the

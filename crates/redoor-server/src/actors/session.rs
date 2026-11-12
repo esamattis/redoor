@@ -404,6 +404,19 @@ impl SessionRuntime {
             AgentToServer::TerminalSessions { sessions } => {
                 self.terminals.report(&agent_id, sessions);
             }
+            AgentToServer::OpenPath { path, kind } => {
+                // Rare and typed by a person, so waiting for mailbox capacity is cheap while
+                // dropping it would silently ignore the command.
+                let _ = self
+                    .router_ref
+                    .send_async(RouterMsg::OpenPath {
+                        agent_id,
+                        socket_id: self.socket_id.clone(),
+                        path,
+                        kind,
+                    })
+                    .await;
+            }
             AgentToServer::TransferVerification {
                 id,
                 bytes,

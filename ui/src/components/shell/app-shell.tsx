@@ -10,6 +10,7 @@ import { GlobalFileImportHandler } from "#ui/components/global-file-import-handl
 import { OverlayChromeLayout } from "#ui/components/overlay-chrome-layout";
 import { ApplicationBottomDrawer } from "#ui/components/shell/bottom-drawer";
 import { DocumentTitle } from "#ui/components/shell/document-title";
+import { useOpenPathRequests } from "#ui/components/shell/open-path-requests";
 import { RouteLoadingIndicator } from "#ui/components/shell/route-loading-indicator";
 import { SessionActivity } from "#ui/components/shell/session-activity";
 import { ThemeManager } from "#ui/components/theme-toggle";
@@ -35,7 +36,12 @@ export function AppShell() {
     const [isTerminalFullWindow, setIsTerminalFullWindow] =
         React.useState(false);
 
-    useRefreshListener(api, vault);
+    // A full-window terminal would cover the path it just asked to open.
+    const openPathRequests = useOpenPathRequests(() =>
+        setIsTerminalFullWindow(false),
+    );
+
+    useRefreshListener(api, vault, openPathRequests.onOpenPath);
     useReloadOnServerBuildChange();
     useTerminalSessionSync();
     useRememberAgentTabLocation();
@@ -53,6 +59,7 @@ export function AppShell() {
                 <DocumentTitle />
                 <RouteLoadingIndicator />
                 <UserStatePersistToast />
+                {openPathRequests.toast}
                 <SessionActivity />
                 <VaultDialog />
                 {openFileShortcutDialog}

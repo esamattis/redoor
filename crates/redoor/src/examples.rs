@@ -94,6 +94,14 @@ pub(crate) const AGENT_MANAGED: &str = "Examples:
   # Stop it and delete its namespace's data, cache, config and logs
   redoor --app-name redoor-dev_abcdefghijklmnopqrst agent managed --remove";
 
+/// Shown by `redoor agent open --help`.
+pub(crate) const AGENT_OPEN: &str = "Examples:
+  # What `rd-open` runs inside a redoor terminal; type `rd-open notes.md` there instead
+  redoor agent open notes.md
+
+  # Directories open in the file browser
+  redoor agent open ..";
+
 /// Shown by `redoor agent status --help`.
 pub(crate) const AGENT_STATUS: &str = "Examples:
   # Check whether the standalone agent is running
