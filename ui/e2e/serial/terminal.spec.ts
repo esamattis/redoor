@@ -115,6 +115,34 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Outside text entry, the single-key shortcut invokes the same reuse action.
         await expectTerminalFocused(terminal);
         expect(terminalSockets).toHaveLength(1);
+
+        const fullWindowButton = page.getByRole("button", {
+            name: "Expand editor to full window",
+        });
+
+        await fullWindowButton.focus();
+        await page.keyboard.press("Alt+e");
+        // Alt+e is global, so it reaches the editor from any control, not only from the shell.
+        await expect(editor).toBeFocused();
+
+        await fullWindowButton.focus();
+        await page.keyboard.press("Alt+t");
+        // Alt+t is global too, and returns to the same shell from outside the editor.
+        await expectTerminalFocused(terminal);
+        expect(terminalSockets).toHaveLength(1);
+
+        await page.keyboard.press("Alt+e");
+        await page.keyboard.press("ControlOrMeta+f");
+
+        const findInput = page.getByLabel("Find in file");
+
+        await expect(findInput).toBeFocused();
+        await page.keyboard.press("Alt+e");
+        // Text fields keep Alt chords for their own typing instead of jumping to the editor.
+        await expect(findInput).toBeFocused();
+        await page.keyboard.press("Alt+t");
+        // The same holds for Alt+t, so typing in the field never opens a shell.
+        await expect(findInput).toBeFocused();
     });
 
     test("types Finnish macOS Option characters without terminal escape prefixes", async ({

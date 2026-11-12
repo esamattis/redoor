@@ -30,7 +30,6 @@ import { cn } from "#ui/utils/cn";
 import {
     formatKeyChord,
     isApplePlatform,
-    isEditorInputTarget,
     isPlainKey,
     isTerminalInputTarget,
     isTextEntryElement,
@@ -55,10 +54,12 @@ const terminalPasteShortcut = formatKeyChord({
 });
 
 /**
- * Registers the open-terminal shortcuts: `t` outside text entry, and Alt+t from the editor,
- * where `t` would be typed. The registry runs them in the capture phase, so Alt+t reaches
- * the terminal action before Vim consumes the key. The registrations are stable, because the
- * registry reads the target and picker state through the latest render.
+ * Registers the open-terminal shortcuts: `t` outside text entry, and Alt+t from anywhere but
+ * text fields and the shell itself, so the terminal is one chord away even from the editor,
+ * where `t` would be typed. The shell keeps Alt+t for its own bindings, since it already has
+ * the focus the shortcut would give it. The registry runs them in the capture phase, so
+ * Alt+t reaches the terminal action before Vim consumes the key. The registrations are
+ * stable, because the registry reads the target and picker state through the latest render.
  */
 function useTerminalShortcuts(
     terminals: TerminalSessions,
@@ -103,11 +104,11 @@ function useTerminalShortcuts(
     });
 
     useShortcut({
-        name: "open-terminal-from-editor",
+        name: "open-terminal-with-alt",
         phase: "capture",
         priority: shortcutPriority.app,
         match: (event) =>
-            isUnmodifiedAltKey(event, "t") && isEditorInputTarget(event.target),
+            isUnmodifiedAltKey(event, "t") && !isTextEntryElement(event.target),
         run: openTerminal,
     });
 }

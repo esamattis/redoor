@@ -16,13 +16,20 @@ import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { resolvedThemeAtom } from "#ui/theme-state";
 import { useTerminals } from "#ui/use-terminals";
 import type { OpenFileReveal } from "#ui/user-state";
-import { isTerminalInputTarget, isUnmodifiedAltKey } from "#ui/utils/keyboard";
+import {
+    isEditorInputTarget,
+    isTerminalInputTarget,
+    isTextEntryElement,
+    isUnmodifiedAltKey,
+} from "#ui/utils/keyboard";
 
 const rootRouteApi = getRouteApi("__root__");
 
 /**
- * Reclaims editor focus from an active shell with Alt-e, and drops a pending delayed
- * correction when a newer terminal activation arrives, which must win.
+ * Focuses the editor with Alt-e from anywhere on the page, the shell included, so the
+ * keyboard gets back to the file without a click. Other text fields keep the chord for their
+ * own typing, and the editor itself keeps it, since it already has focus. A pending delayed
+ * correction is dropped when a newer terminal activation arrives, which must win.
  */
 function useFocusEditorShortcut(view: EditorView | null) {
     const terminals = useTerminals();
@@ -60,7 +67,12 @@ function useFocusEditorShortcut(view: EditorView | null) {
                 // that finishes connecting later must not take focus again.
                 terminals.cancelPendingFocus();
 
-                if (view === null || !isTerminalInputTarget(event.target)) {
+                if (
+                    view === null ||
+                    isEditorInputTarget(event.target) ||
+                    (isTextEntryElement(event.target) &&
+                        !isTerminalInputTarget(event.target))
+                ) {
                     return false;
                 }
 

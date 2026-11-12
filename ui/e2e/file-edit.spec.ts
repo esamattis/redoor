@@ -1125,7 +1125,7 @@ const b = 2;`,
         await page
             .getByRole("button", { name: "New terminal", exact: true })
             .hover();
-        // The plus action advertises both the global and editor-scoped shortcuts.
+        // The plus action advertises both terminal shortcuts.
         await expect(page.getByRole("tooltip")).toHaveText(
             `New terminal in ${ctx.agentName} (t, Alt+t)`,
         );
