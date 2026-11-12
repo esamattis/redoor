@@ -52,7 +52,8 @@ test.describe("Session length", () => {
     test("warns before the session ends and renews it on interaction", async ({
         page,
     }) => {
-        // The shared session is long, so its expiry is held to 30 seconds away.
+        // Only the initial read is near expiry; confirmation must see the renewed session.
+        let renewed = false;
         await page.route("**/api/v1/auth/me", (route) =>
             route.fulfill({
                 json: {
@@ -61,7 +62,7 @@ test.describe("Session length", () => {
                     token_id: null,
                     session: {
                         expires_at: new Date(Date.now() + 30_000).toISOString(),
-                        expires_in_seconds: 30,
+                        expires_in_seconds: renewed ? 3600 : 30,
                     },
                 },
             }),
@@ -75,6 +76,11 @@ test.describe("Session length", () => {
         // Less than a minute is left, so the user is told before being signed out.
         await expect(warning).toBeVisible();
 
+        await page.route("**/api/v1/session/activity", async (route) => {
+            const response = await route.fetch();
+            renewed = true;
+            await route.fulfill({ response });
+        });
         const activity = page.waitForResponse("**/api/v1/session/activity");
         // A key press is an interaction that does not dismiss the toast by itself.
         await page.keyboard.press("Shift");
