@@ -26,6 +26,7 @@
 - When creating a function always consider first if it should be a method on a struct instead
 - Do not add one-line passthrough wrappers that only call another function or re-export a type. Call the real module directly.
 - After every architectural change (new or changed crates, actors, flows, wire protocol, lifecycles, trust boundaries, or the reasons behind them) update `ARCHITECTURE.md` in the same change so it never describes a design that no longer exists
+    - Keep `ARCHITECTURE.md` updates short: a few sentences on the design and why. Leave implementation details (function names, gix APIs, limits, fallbacks, edge cases) to code comments
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
 - The generated ts bindings are put in the `bindings` directory
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
