@@ -28,6 +28,7 @@ import { IconButton } from "#ui/components/icon-button";
 import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tab, TabList } from "#ui/components/tabs";
 import { terminalSessionsQueryOptions } from "#ui/queries";
+import { formatKeyChord } from "#ui/utils/keyboard";
 import type { ItemMove } from "#ui/utils/reorder";
 
 const rootRouteApi = getRouteApi("__root__");
@@ -300,6 +301,11 @@ function TerminalTabDetails(props: {
                     {shellTitle}
                 </TerminalTabDetail>
             ) : null}
+            {/* The tabs are where switching is learned, and the keys work from the shell. */}
+            <span className="opacity-70">
+                Switch tabs: {formatKeyChord({ key: "h", alt: true })} /{" "}
+                {formatKeyChord({ key: "l", alt: true })}
+            </span>
         </span>
     );
 }

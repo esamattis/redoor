@@ -595,6 +595,34 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
         this.persistTabs();
     }
 
+    /**
+     * Shows the tab beside the active one, wrapping at either end, and focuses its shell so
+     * typing goes on there. Only a visible panel with another tab to go to switches, so the
+     * key is left to others when there is nothing on screen to move between.
+     */
+    selectAdjacent(step: 1 | -1): boolean {
+        const count = this.sessions.length;
+
+        const active = this.sessions.findIndex(
+            (session) => session.tab.id === this.activeTabId,
+        );
+
+        if (!this.isPanelVisible || count < 2 || active === -1) {
+            return false;
+        }
+
+        const next = this.sessions[(active + step + count) % count];
+
+        if (next === undefined) {
+            return false;
+        }
+
+        this.select(next.tab.id);
+        this.requestFocus();
+
+        return true;
+    }
+
     /** Closes a tab and stops its shell on the server. */
     close(tabId: number): void {
         const session = this.sessions.find((entry) => entry.tab.id === tabId);

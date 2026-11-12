@@ -32,6 +32,8 @@ import {
     isApplePlatform,
     isEditorInputTarget,
     isPlainKey,
+    isTerminalInputTarget,
+    isTextEntryElement,
     isUnmodifiedAltKey,
 } from "#ui/utils/keyboard";
 
@@ -81,6 +83,25 @@ function useTerminalShortcuts(
         run: openTerminal,
     });
 
+    // Alt+h/l step through the tabs like Vim's left and right. They also work from inside the
+    // shell, which is where the user is when switching, so they are swallowed before it sees
+    // them; other text fields keep them for their own typing.
+    useShortcut({
+        name: "switch-terminal-tab",
+        phase: "capture",
+        priority: shortcutPriority.app,
+        effect: "swallow",
+        match: (event) =>
+            terminalTabStep(event) !== null &&
+            (!isTextEntryElement(event.target) ||
+                isTerminalInputTarget(event.target)),
+        run: (event) => {
+            const step = terminalTabStep(event);
+
+            return step !== null && terminals.selectAdjacent(step);
+        },
+    });
+
     useShortcut({
         name: "open-terminal-from-editor",
         phase: "capture",
@@ -89,6 +110,15 @@ function useTerminalShortcuts(
             isUnmodifiedAltKey(event, "t") && isEditorInputTarget(event.target),
         run: openTerminal,
     });
+}
+
+/** Reads which way a terminal tab shortcut moves: Alt+l to the next tab, Alt+h back. */
+function terminalTabStep(event: KeyboardEvent): 1 | -1 | null {
+    if (isUnmodifiedAltKey(event, "l")) {
+        return 1;
+    }
+
+    return isUnmodifiedAltKey(event, "h") ? -1 : null;
 }
 
 /** Owns the terminal chrome only; the shells and tabs belong to the application's owner. */

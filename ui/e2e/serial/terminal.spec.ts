@@ -676,6 +676,70 @@ test.describe.serial("Terminal panel lifecycle", () => {
         ).toHaveCount(0);
     });
 
+    test("switches terminal tabs with Alt+h and Alt+l from the shell", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+
+        const newTerminal = page.getByRole("button", {
+            name: "New terminal",
+            exact: true,
+        });
+
+        await newTerminal.click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+        await newTerminal.click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 2: Connected" }),
+        ).toBeVisible();
+
+        const firstTab = page.getByRole("tab", { name: "agent1_src 1" });
+        const secondTab = page.getByRole("tab", { name: "agent1_src 2" });
+
+        const firstTerminal = page.getByLabel(
+            `agent1_src 1 for ${ctx.agentName}`,
+        );
+
+        const secondTerminal = page.getByLabel(
+            `agent1_src 2 for ${ctx.agentName}`,
+        );
+
+        await expectTerminalFocused(secondTerminal);
+        await page.keyboard.press("Alt+h");
+        // Alt+h is taken from the shell and goes to the previous tab, focusing its shell.
+        await expect(firstTab).toHaveAttribute("aria-selected", "true");
+        await expectTerminalFocused(firstTerminal);
+
+        await page.keyboard.press("Alt+h");
+        // Previous from the first tab wraps around to the last one.
+        await expect(secondTab).toHaveAttribute("aria-selected", "true");
+        await expectTerminalFocused(secondTerminal);
+
+        await page.keyboard.press("Alt+l");
+        // Next from the last tab wraps around to the first one.
+        await expect(firstTab).toHaveAttribute("aria-selected", "true");
+        await expectTerminalFocused(firstTerminal);
+
+        const filterInput = page.getByRole("searchbox", {
+            name: "Filter files",
+        });
+
+        await filterInput.focus();
+        await page.keyboard.press("Alt+l");
+        // Text fields keep Alt chords for their own typing, so the tab stays put.
+        await expect(filterInput).toBeFocused();
+        await expect(firstTab).toHaveAttribute("aria-selected", "true");
+
+        await secondTab.hover();
+        // The tab tooltip is where the switching keys are learned.
+        await expect(page.getByRole("tooltip")).toContainText(
+            "Switch tabs: Alt+H / Alt+L",
+        );
+    });
+
     test("shows the running command and directory in the tab tooltip", async ({
         page,
     }) => {
