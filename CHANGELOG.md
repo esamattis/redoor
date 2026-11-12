@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.11.0
+
+_2026-11-12_
+
+### Features
+
+- Terminal tab tooltips show the command running in the shell, its current directory and any title the shell set, so tabs can be told apart without switching to each.
+- Switch terminal tabs with Alt (Option) + h/l, also from inside the shell.
+- Alt+e (focus the editor) and Alt+t (open or focus the terminal) now work from anywhere on the page, not only from the terminal or the editor.
+- Open files with the same name show the parent directories that tell them apart, such as `open-pr/SKILL.md` and `code-review/SKILL.md`.
+
 ## v2.10.0
 
 _2026-11-12_
