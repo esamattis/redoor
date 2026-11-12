@@ -18,6 +18,7 @@ import {
 
 import { ApiClient } from "#ui/api-client";
 import type { CurrentUserResponse } from "#bindings/CurrentUserResponse";
+import { currentUserQueryOptions } from "#ui/queries";
 import { SessionActivity } from "./session-activity";
 
 /** A signed-in browser session that ends in an hour. */
@@ -56,6 +57,8 @@ function sessionApi() {
 /** Renders the component with real query and router providers around the stubbed API. */
 async function renderSessionActivity(api: ReturnType<typeof sessionApi>) {
     const queryClient = new QueryClient();
+    // Resolve the session before advancing timers; a request starting does not mean React received it.
+    await queryClient.fetchQuery(currentUserQueryOptions(api.client));
 
     const rootRoute = createRootRouteWithContext<{ api: ApiClient }>()();
 
