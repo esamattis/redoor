@@ -374,14 +374,17 @@ function ReferenceBadge(props: { reference: GitViewReference }) {
 }
 
 /**
- * What the "vs origin/main" tab opens: the range comparing the checkout with the default
- * remote branch, or the reason there is nothing to compare, which the tab's own panel
- * explains. Absent while the Git context loads.
+ * What the "vs origin/main" tab opens: the range comparing the checkout's working tree with
+ * the default remote branch, or the reason there is nothing to compare, which the tab's own
+ * panel explains. Absent while the Git context loads.
+ *
+ * A checkout still on the default remote branch's commit opens the range too, because its
+ * uncommitted changes are what it adds; only the range itself can tell that the working
+ * tree is clean as well, so it says there is nothing to compare.
  */
 type DefaultRemoteComparison =
     | { type: "range"; rev: string; branchName: string }
     | { type: "no_remote" }
-    | { type: "same"; branchName: string }
     | { type: "unborn"; branchName: string };
 
 /**
@@ -411,10 +414,6 @@ function useDefaultRemoteComparison(
 
     if (context.head_commit_id === null) {
         return { type: "unborn", branchName };
-    }
-
-    if (context.head_commit_id === branch.commit_id) {
-        return { type: "same", branchName };
     }
 
     return {
@@ -453,11 +452,6 @@ function DefaultRemoteEmptyState(props: { agent: Agent; path: string }) {
                 >
                     Compare the checkout with {comparison.branchName}
                 </Link>
-            ) : comparison.type === "same" ? (
-                <p>
-                    Checkout is {comparison.branchName}. There is nothing to
-                    compare.
-                </p>
             ) : comparison.type === "unborn" ? (
                 <p>The checkout has no commits to compare yet.</p>
             ) : (
@@ -534,7 +528,7 @@ function GitViewNav(props: {
                 />
             ),
             active: comparisonOpen,
-            tooltip: `What this checkout adds compared with ${comparisonName}, as if merged now`,
+            tooltip: `What this checkout adds compared with ${comparisonName}, uncommitted changes included, as if committed and merged now`,
         },
         {
             key: "commits",

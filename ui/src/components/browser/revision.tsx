@@ -29,12 +29,14 @@ import {
     GitPanelBar,
     changeLabel,
     commitDiffRevision,
-    defaultRemoteRevision,
+    commitsOnlyRevision,
     displayRevision,
     type GitChangeKind,
+    isWorktreeRange,
     revisionRange,
     revisionRefKind,
     shortCommitId,
+    WORKTREE_REVISION,
 } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
 import { GitComparePicker } from "#ui/components/browser/git-compare-picker";
@@ -424,6 +426,8 @@ function CommitStepper(props: {
  * Resolves a commit's changed files to the diff cards that show them. File names link to the
  * file at the commit, or at the parent for deleted files, which no longer exist at the
  * commit, and links keep the browsed revision so they follow a branch rather than pin it.
+ * When the diff ends at the working tree, files link to the working copy itself, since that
+ * is the version the diff shows and no commit holds it yet.
  */
 function commitDiffFiles(options: {
     agent: Agent;
@@ -431,6 +435,7 @@ function commitDiffFiles(options: {
     diff: GitCommitDiffResponse;
 }): GitDiffListFile[] {
     const parentId = options.diff.parent_id;
+    const newerRev = isWorktreeRange(options.rev) ? undefined : options.rev;
 
     return options.diff.files.map((file) => {
         // A conflicted file the merge preview left unmodified is listed only for its
@@ -449,9 +454,7 @@ function commitDiffFiles(options: {
                 agent: options.agent,
                 search: {
                     rev:
-                        onlyInParent && parentId !== null
-                            ? parentId
-                            : options.rev,
+                        onlyInParent && parentId !== null ? parentId : newerRev,
                 },
                 hasWorkingCopy: !onlyInParent,
             },
@@ -569,7 +572,17 @@ export function GitCommitView(props: {
 
     const diff = diffQuery.data;
     const now = Date.now();
-    const subject = diff.range === null ? "This commit" : "These commits";
+    const worktree = isWorktreeRange(props.rev);
+
+    const subject = worktree
+        ? "The working tree"
+        : diff.range === null
+          ? "This commit"
+          : "These commits";
+
+    // Compared with the very commit it is built on, a clean working tree adds nothing, which
+    // is the one case where the comparison with the default branch has nothing to compare.
+    const sameAsBase = worktree && diff.parent_id === diff.commit.id;
 
     const filter = filterQuery.filter;
 
@@ -632,7 +645,9 @@ export function GitCommitView(props: {
                         role="status"
                         className="px-2 text-sm text-slate-300 @xl:px-0"
                     >
-                        {subject} changed nothing below this path.
+                        {sameAsBase
+                            ? `Checkout is ${displayRevision(revisionRange(props.rev)?.base || "HEAD")} and has no uncommitted changes. There is nothing to compare.`
+                            : `${subject} changed nothing below this path.`}
                     </p>
                 ) : null}
                 {diff.truncated ? (
@@ -677,6 +692,10 @@ export function GitCommitView(props: {
  * since it is a comparison of branches rather than a run of commits, and it still names the
  * merge base, linking to the history-style diff from there. When the agent could not merge
  * and fell back to that diff, a note says so, because squashed work then shows up again.
+ *
+ * When B is the working tree, the diff is what committing everything and merging it would
+ * bring, so the header says so, names HEAD as the commit the working tree is on, and links to
+ * the same comparison of commits only.
  */
 function CommitRangeHeader(props: {
     agent: Agent;
@@ -690,11 +709,17 @@ function CommitRangeHeader(props: {
     const sides = revisionRange(props.rev);
     const base = props.range.base;
     const into = displayRevision(sides?.base || "HEAD");
+    const worktree = isWorktreeRange(props.rev);
 
-    const title =
-        props.range.merge_base && sides !== null
-            ? `What ${displayRevision(sides.head || "HEAD")} adds to ${into}`
-            : "Changes of a commit range";
+    const title = worktree
+        ? `What your working tree adds to ${into}`
+        : props.range.merge_base && sides !== null
+          ? `What ${displayRevision(sides.head || "HEAD")} adds to ${into}`
+          : "Changes of a commit range";
+
+    // The history diff starts at the merge base and keeps the working tree as its newer side,
+    // so it still includes the uncommitted changes the comparison is about.
+    const historyEnd = worktree ? WORKTREE_REVISION : props.diff.commit.id;
 
     return (
         <header className="grid gap-2 border-b border-slate-800 px-4 py-3 @xl:px-5 @xl:py-4">
@@ -704,7 +729,9 @@ function CommitRangeHeader(props: {
             {props.range.merge_base ? (
                 <p className="text-xs text-slate-400">
                     {props.range.merge_preview
-                        ? `As if merged into ${into} now.`
+                        ? worktree
+                            ? `As if everything were committed and merged into ${into} now, uncommitted and untracked files included.`
+                            : `As if merged into ${into} now.`
                         : "Changes since the merge base. The merge preview was not available, so work that already reached the other side under other commits may show again."}{" "}
                     <DefaultRemoteFreshness
                         agent={props.agent}
@@ -745,7 +772,7 @@ function CommitRangeHeader(props: {
                                 {...browserRoute(props.agent, props.path)}
                                 search={{
                                     view: "git",
-                                    rev: `${base.id}..${props.diff.commit.id}`,
+                                    rev: `${base.id}..${historyEnd}`,
                                 }}
                                 className="shrink-0 text-blue-300 hover:underline"
                             >
@@ -755,13 +782,32 @@ function CommitRangeHeader(props: {
                     ) : null}
                 </dd>
                 <dt className="font-medium text-slate-400">To</dt>
-                <dd className="min-w-0">
+                <dd className="flex min-w-0 items-center gap-2">
+                    {worktree ? (
+                        <span className="shrink-0 text-slate-300">
+                            Working tree on
+                        </span>
+                    ) : null}
                     <CommitRangeEnd
                         agent={props.agent}
                         path={props.path}
                         commit={props.diff.commit}
                         now={props.now}
                     />
+                    {worktree ? (
+                        <Tooltip content="Compare only what is committed, leaving out uncommitted and untracked files">
+                            <Link
+                                {...browserRoute(props.agent, props.path)}
+                                search={{
+                                    view: "git",
+                                    rev: commitsOnlyRevision(props.rev),
+                                }}
+                                className="shrink-0 text-blue-300 hover:underline"
+                            >
+                                Commits only
+                            </Link>
+                        </Tooltip>
+                    ) : null}
                 </dd>
             </dl>
             <CommitNotes
@@ -774,9 +820,9 @@ function CommitRangeHeader(props: {
 }
 
 /**
- * Says when the default remote branch was last fetched while the range compares the checkout
- * with it, because the comparison is only as fresh as that fetch. Other ranges name local
- * refs and say nothing.
+ * Says when the default remote branch was last fetched while a symmetric range compares the
+ * checkout or its working tree with it, because the comparison is only as fresh as that
+ * fetch. Other ranges name local refs and say nothing.
  */
 function DefaultRemoteFreshness(props: {
     agent: Agent;
@@ -793,10 +839,14 @@ function DefaultRemoteFreshness(props: {
             ? context.default_remote_branch
             : null;
 
+    const range = revisionRange(props.rev);
+
+    // Both the working tree and the commits-only comparison are measured against it.
     if (
         branch === null ||
         branch.fetched_at === null ||
-        props.rev !== defaultRemoteRevision(branch.full_name)
+        range?.separator !== "..." ||
+        range.base !== branch.full_name
     ) {
         return null;
     }

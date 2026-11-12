@@ -21,8 +21,8 @@ merge_base: boolean,
  * True when a symmetric range was diffed as a merge preview: A's tree against an
  * in-memory merge of B into A, so work A already has under other commit ids cancels out.
  * False when the merge failed or ran out of time and the diff fell back to comparing
- * the merge base with B, which the view mentions because squashed or cherry-picked work
- * then shows up again. Always false for other ranges and for agents that predate merge
+ * the merge base with B, or with the working tree when B is `:worktree`, which the view
+ * mentions because squashed or cherry-picked work then shows up again. Always false for other ranges and for agents that predate merge
  * previews, which only ever compared with the merge base.
  */
 merge_preview: boolean, };

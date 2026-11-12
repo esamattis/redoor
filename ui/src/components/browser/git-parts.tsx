@@ -9,6 +9,31 @@ export function shortCommitId(id: string): string {
 }
 
 /**
+ * The pseudo revision the agent reads as the working tree: HEAD plus every staged, unstaged
+ * and untracked file that is not ignored, as committing everything would record it. It is
+ * only valid as the right side of a range. A ref name cannot contain `:`, so no branch can
+ * shadow it.
+ */
+export const WORKTREE_REVISION = ":worktree";
+
+/** True for a range whose newer side is the working tree rather than a commit. */
+export function isWorktreeRange(rev: string): boolean {
+    return revisionRange(rev)?.head === WORKTREE_REVISION;
+}
+
+/**
+ * The same comparison with the working tree swapped for HEAD, so it shows only what is
+ * committed. Other revisions are returned unchanged.
+ */
+export function commitsOnlyRevision(rev: string): string {
+    const range = revisionRange(rev);
+
+    return range === null || range.head !== WORKTREE_REVISION
+        ? rev
+        : `${range.base}${range.separator}HEAD`;
+}
+
+/**
  * Splits a revision range `A..B` or `A...B` into its sides and separator, or returns null for
  * a single revision. Ref names cannot contain `..`, so the first one always separates the
  * sides, and a third dot right after it makes the range symmetric (compared with the merge
@@ -41,19 +66,26 @@ export function revisionRange(
 export function commitDiffRevision(rev: string, commitId: string): string {
     const range = revisionRange(rev);
 
-    return range === null
-        ? commitId
+    if (range === null) {
+        return commitId;
+    }
+
+    // The working tree has no commit to pin to; it changes with every edit, so its diff is
+    // fetched again on every navigation instead.
+    return range.head === WORKTREE_REVISION
+        ? rev
         : `${range.base}${range.separator}${commitId}`;
 }
 
 /**
  * The range the Git view's "vs origin/main" tab opens: what the checkout would bring to the
- * default remote branch if merged now. HEAD stays symbolic, so the tab follows new commits,
- * and the branch is its full remote-tracking name, so a local branch of the same short name
- * can never stand in for it.
+ * default remote branch if everything in its working tree were committed and merged now.
+ * Uncommitted work is included because that is what people are about to push, and a
+ * checkout still on origin/main would otherwise have nothing to show. The branch is its full
+ * remote-tracking name, so a local branch of the same short name can never stand in for it.
  */
 export function defaultRemoteRevision(fullName: string): string {
-    return `${fullName}...HEAD`;
+    return `${fullName}...${WORKTREE_REVISION}`;
 }
 
 /**
@@ -69,13 +101,18 @@ export function commitRunRevision(oldestId: string, newestId: string): string {
  * Full commit ids are unreadable in a banner, so they are shortened, also when followed by
  * a parent suffix such as `^`. Branch and tag lists link by full ref name to stay
  * unambiguous, so the ref namespace is dropped the way `git branch -a` shows names; anything
- * else stays as typed. A range shows both of its sides that way.
+ * else stays as typed, except the working tree, which is named in words. A range shows both
+ * of its sides that way.
  */
 export function displayRevision(rev: string): string {
     const range = revisionRange(rev);
 
     if (range !== null) {
         return `${displayRevision(range.base)}${range.separator}${displayRevision(range.head)}`;
+    }
+
+    if (rev === WORKTREE_REVISION) {
+        return "working tree";
     }
 
     const commit = /^([0-9a-f]{40,64})([~^].*)?$/i.exec(rev);

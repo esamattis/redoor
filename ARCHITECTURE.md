@@ -379,13 +379,28 @@ store instead of inflating whole objects in memory.
   that checks a time budget and the request's cancellation, since gix cannot otherwise stop a
   merge midway; on failure or timeout the diff falls back to the merge-base diff, logs it,
   and reports `merge_preview: false` so the view can say so.
+- **`:worktree` is the working tree** as the right side of a range (`A...:worktree`,
+  `A..:worktree`): what `git add -A && git commit` would record, i.e. staged, unstaged and
+  untracked-not-ignored files. It is a pseudo revision because ranges travel as one string
+  through URLs, pickers and caches, and `:` can never appear in a ref name. It resolves to
+  HEAD (so browsing shows HEAD's files), and only the commit diff swaps HEAD's tree for a
+  working tree tree (`worktree_tree.rs`): HEAD's tree edited at every path the Changes view's
+  status walk lists, written into the same object memory as the merge. Files are never read
+  whole to build it: each blob id is streamed through the hasher, and files absent from the
+  object database are served from disk on demand, to the merge through the same reading
+  wrapper and limits (so only paths changed on both sides, or rename candidates, are read) and
+  to the diff with the Changes view's size bounds. No clean filters or line-ending conversion
+  run, since those can execute configured commands. The fallback is the merge base against
+  the working tree. Conflict reasons speak of "your changes" rather than "your branch".
 - **The default remote branch** is the remote-tracking branch `refs/remotes/<remote>/HEAD`
   names, for the default fetch remote. Only `git clone` (and `git fetch` from Git 2.48) writes
   that ref, so without it the upstream of the local default branch (`init.defaultBranch`,
   `main`, `master`) is used, mapped through the remote's fetch refspec by gix, if it was
   fetched. The Git context carries it (with its commit and the
   newest `FETCH_HEAD` or reflog mtime as the fetch time), and the Git view's "vs origin/main"
-  tab opens `<that ref>...HEAD`. It is never local `main`, which may be behind or ahead. The
+  tab opens `<that ref>...:worktree`, with a "Commits only" link to `<that ref>...HEAD`. It
+  says there is nothing to compare only when that diff is empty and HEAD is the branch's
+  commit, so the cheap Git context needs no status walk. It is never local `main`, which may be behind or ahead. The
   Branches list's default branch still prefers the local branch of the same name, because
   that is the one people check out.
 

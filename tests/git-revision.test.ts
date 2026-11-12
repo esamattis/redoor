@@ -506,7 +506,10 @@ describe("Git revision REST API", () => {
         await $({ cwd: squashed })`git checkout main`;
         await $({ cwd: squashed })`git merge --squash feature`;
         await commitAll(squashed, "Squash of the feature");
-        await writeFile(join(squashed, "shared.txt"), "one\nmain side\nthree\n");
+        await writeFile(
+            join(squashed, "shared.txt"),
+            "one\nmain side\nthree\n",
+        );
         await writeFile(join(squashed, "dropped.txt"), "edited on main\n");
         await commitAll(squashed, "Main edits the shared file");
         await $({ cwd: squashed })`git checkout feature`;
@@ -564,6 +567,81 @@ describe("Git revision REST API", () => {
         const status = await $({ cwd: squashed })`git status --porcelain`;
         // Previewing a merge never touches the worktree or index.
         expect(status.stdout).toBe("");
+    });
+
+    it("compares the working tree with a branch as if committed and merged", async () => {
+        const dirty = await createRepository("-git-revision-worktree");
+        await writeFile(join(dirty, "shared.txt"), "one\ntwo\nthree\n");
+        await writeFile(join(dirty, ".gitignore"), "ignored.log\n");
+        const head = await commitAll(dirty, "Shared start");
+        // HEAD is main itself, so a comparison of commits alone has nothing to show.
+        await $({ cwd: dirty })`git update-ref refs/remotes/origin/main HEAD`;
+        await writeFile(join(dirty, "shared.txt"), "one\nedited\nthree\n");
+        await writeFile(join(dirty, "untracked.txt"), "brand new\n");
+        await writeFile(join(dirty, "ignored.log"), "noise\n");
+
+        const commitsOnly: GitCommitDiffResponse =
+            await testAgent.gitCommitDiff(
+                dirty,
+                "refs/remotes/origin/main...HEAD",
+            );
+
+        // The commits are identical, so the commits-only comparison is empty.
+        expect(commitsOnly.files).toEqual([]);
+
+        const worktree: GitCommitDiffResponse = await testAgent.gitCommitDiff(
+            dirty,
+            "refs/remotes/origin/main...:worktree",
+        );
+
+        // The uncommitted edit and the untracked file show, the ignored file does not.
+        expect(
+            worktree.files.map((file) => [
+                file.repository_relative_path,
+                file.change,
+            ]),
+        ).toEqual([
+            ["shared.txt", "modified"],
+            ["untracked.txt", "added"],
+        ]);
+
+        const untracked = worktree.files.find(
+            (file) => file.repository_relative_path === "untracked.txt",
+        );
+
+        // The untracked file's content comes from disk, since no commit holds it.
+        expect(
+            untracked?.result.type === "text"
+                ? untracked.result.unified_diff
+                : "",
+        ).toContain("+brand new");
+        // The range names HEAD, the commit the working tree is built on.
+        expect(worktree.commit.id).toBe(head);
+        // It is still a merge preview into main, not a fallback.
+        expect(worktree.range?.merge_base).toBe(true);
+        expect(worktree.range?.merge_preview).toBe(true);
+
+        const tree = await testAgent.gitRevisionTree(
+            dirty,
+            "refs/remotes/origin/main...:worktree",
+        );
+
+        // Browsing the range shows HEAD's committed files, which the working tree builds on.
+        expect(tree.commit.id).toBe(head);
+
+        const leftSide = await revisionRequest(
+            "commit-diff",
+            dirty,
+            ":worktree...main",
+        );
+
+        // The working tree can only be the newer side of a range.
+        expect(leftSide.status).toBe(400);
+        expect(await leftSide.text()).toContain("right side");
+
+        const status = await $({ cwd: dirty })`git status --porcelain`;
+        // Comparing never stages or commits anything.
+        expect(status.stdout).toBe(" M shared.txt\n?? untracked.txt\n");
     });
 
     it("rejects revisions that name a blob or tree instead of a commit", async () => {

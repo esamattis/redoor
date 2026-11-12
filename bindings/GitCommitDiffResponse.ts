@@ -9,7 +9,8 @@ import type { GitCommitSummary } from "./GitCommitSummary";
  */
 export type GitCommitDiffResponse = { 
 /**
- * The commit the revision names; for a range, its newer end B.
+ * The commit the revision names; for a range, its newer end B. When B is the working
+ * tree (`:worktree`), HEAD, the commit the working tree's changes are on top of.
  */
 commit: GitCommitSummary, 
 /**

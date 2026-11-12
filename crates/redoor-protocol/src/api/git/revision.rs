@@ -7,6 +7,15 @@ use ts_rs::TS;
 /// Longest revision text accepted, so a URL parameter cannot make the agent parse unbounded input.
 pub const MAX_REVISION_LENGTH: usize = 256;
 
+/// Names the working tree as the right side of a range, such as `origin/main...:worktree`:
+/// every staged, unstaged and untracked-but-not-ignored file as `git add -A` would commit it.
+///
+/// It lives in the revision text rather than in a separate parameter so ranges keep flowing
+/// through URLs, pickers and caches as one string. A ref name cannot contain `:`, and in Git's
+/// own syntax `:path` names an index blob, never a commit, so no revision that names a commit
+/// can ever be spelled this way.
+pub const WORKTREE_REVISION: &str = ":worktree";
+
 /// Rejects revision text before it reaches the agent's revision parser.
 ///
 /// Control characters are refused because revisions are echoed into logs and error messages,

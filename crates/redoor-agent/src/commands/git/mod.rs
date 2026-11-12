@@ -14,6 +14,7 @@ pub(crate) mod status;
 pub(crate) mod tree;
 pub(crate) mod worktree_list;
 pub(crate) mod worktree_status;
+pub(crate) mod worktree_tree;
 
 use redoor_protocol::wire::{command::CommandErrorKind, request::CommandError};
 use std::{

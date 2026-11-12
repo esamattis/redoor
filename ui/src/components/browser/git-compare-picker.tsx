@@ -8,6 +8,7 @@ import { Select } from "#ui/components/select";
 import {
     displayRevision,
     revisionRange,
+    WORKTREE_REVISION,
 } from "#ui/components/browser/git-parts";
 import { gitRefsQueryOptions } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
@@ -30,6 +31,10 @@ type CompareOptions = {
  * used because phones open them as their own full-screen pickers, which beats any dropdown
  * squeezed into a narrow column. In a narrow column the two selects stack beside one swap
  * button instead of sitting in one row, so neither branch name is cut to a few letters.
+ *
+ * The compared side can also be the working tree, uncommitted changes included. The agent
+ * only merges the working tree into a commit, never the other way round, so the base side
+ * does not offer it and the sides cannot be swapped while it is picked.
  */
 export function GitComparePicker(props: {
     agent: Agent;
@@ -87,36 +92,41 @@ export function GitComparePicker(props: {
                 label="Base"
                 value={base}
                 headLabel={headLabel}
+                offersWorktree={false}
                 options={options}
                 onChange={(value) => open(value, compare)}
                 className="col-start-1 row-start-1"
             />
             {/* The tooltip wraps the link, so this box is what the grid places: beside both
-                stacked selects in a narrow column, between them in a wide one. */}
+                stacked selects in a narrow column, between them in a wide one. It stays empty
+                while the working tree is compared, so the selects keep their places. */}
             <div className="col-start-2 row-start-1 row-end-3 flex items-center @xl:row-end-2">
-                <IconLinkButton
-                    {...browserRoute(props.agent, props.path)}
-                    search={(previous) => ({
-                        ...previous,
-                        view: "git",
-                        rev: `${compare}...${base}`,
-                    })}
-                    label="Swap compared branches"
-                    tooltip={`Show what ${displayRevision(base)} adds to ${displayRevision(compare)} instead`}
-                    variant="outline"
-                    size="xl"
-                >
-                    {/* Up and down when the sides are stacked, left and right when in a row. */}
-                    <ArrowLeftRight
-                        className="h-4 w-4 @max-xl:rotate-90"
-                        aria-hidden="true"
-                    />
-                </IconLinkButton>
+                {compare === WORKTREE_REVISION ? null : (
+                    <IconLinkButton
+                        {...browserRoute(props.agent, props.path)}
+                        search={(previous) => ({
+                            ...previous,
+                            view: "git",
+                            rev: `${compare}...${base}`,
+                        })}
+                        label="Swap compared branches"
+                        tooltip={`Show what ${displayRevision(base)} adds to ${displayRevision(compare)} instead`}
+                        variant="outline"
+                        size="xl"
+                    >
+                        {/* Up and down when the sides are stacked, left and right when in a row. */}
+                        <ArrowLeftRight
+                            className="h-4 w-4 @max-xl:rotate-90"
+                            aria-hidden="true"
+                        />
+                    </IconLinkButton>
+                )}
             </div>
             <CompareSide
                 label="Compare"
                 value={compare}
                 headLabel={headLabel}
+                offersWorktree={true}
                 options={options}
                 onChange={(value) => open(base, value)}
                 className="col-start-1 row-start-2 @xl:col-start-3 @xl:row-start-1"
@@ -130,6 +140,8 @@ function CompareSide(props: {
     label: string;
     value: string;
     headLabel: string;
+    /** True on the compared side, the only one the working tree can be. */
+    offersWorktree: boolean;
     options: CompareOptions;
     onChange: (value: string) => void;
     className: string;
@@ -148,6 +160,11 @@ function CompareSide(props: {
                 containerClassName="min-w-0 flex-1"
                 className="font-mono text-sm"
             >
+                {props.offersWorktree ? (
+                    <option value={WORKTREE_REVISION}>
+                        Working tree (uncommitted changes)
+                    </option>
+                ) : null}
                 <option value={HEAD}>{props.headLabel}</option>
                 <OptionGroup label="Local" options={props.options.local} />
                 <OptionGroup label="Remote" options={props.options.remote} />
@@ -184,7 +201,7 @@ function OptionGroup(props: {
  */
 function compareOptions(refs: GitRef[], selected: string[]): CompareOptions {
     const options: CompareOptions = { local: [], remote: [], other: [] };
-    const known = new Set([HEAD]);
+    const known = new Set([HEAD, WORKTREE_REVISION]);
 
     for (const ref of refs) {
         known.add(ref.full_name);

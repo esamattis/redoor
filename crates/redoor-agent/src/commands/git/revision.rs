@@ -5,7 +5,10 @@ use std::path::{Path, PathBuf};
 use gix::bstr::ByteSlice;
 
 use redoor_protocol::{
-    api::git::{commit::GitCommitSummary, revision::validate_revision},
+    api::git::{
+        commit::GitCommitSummary,
+        revision::{WORKTREE_REVISION, validate_revision},
+    },
     ids::UnixTimestampSeconds,
     wire::command::CommandErrorKind,
 };
@@ -30,12 +33,26 @@ const MAX_TAG_DEPTH: usize = 16;
 /// compares A with what merging B into it would produce, so a branch shows only its own work,
 /// neither the reverse of what A gained since they split nor work A already has under other
 /// commit ids.
+///
+/// The right side of a range may be the working tree, [`WORKTREE_REVISION`], which names
+/// HEAD: the files are browsed as committed, and only a commit diff swaps HEAD's tree for one
+/// built from the working tree, since that is the only view that compares content.
 pub(super) struct RevisionPath {
     pub(super) repository: RepositoryPath,
     /// The repository-relative path in `/` form, empty for the repository root.
     pub(super) relative: String,
     pub(super) commit_id: gix::ObjectId,
     pub(super) base: RevisionBase,
+    /// True when the range's right side is the working tree, whose tree is HEAD's plus every
+    /// uncommitted change, so a diff shows what committing everything would bring.
+    pub(super) worktree: bool,
+}
+
+/// What a revision resolved to inside one repository, before the path is located in it.
+struct ResolvedRevision {
+    commit_id: gix::ObjectId,
+    base: RevisionBase,
+    worktree: bool,
 }
 
 /// What a commit diff compares the resolved commit with.
@@ -70,7 +87,11 @@ impl RevisionPath {
             .map_err(|message| GitFailure::new(CommandErrorKind::InvalidInput, message))?;
         let mut repository = discover_required_repository(path)?;
         let requested = repository.requested.clone();
-        let (commit_id, base) = loop {
+        let ResolvedRevision {
+            commit_id,
+            base,
+            worktree,
+        } = loop {
             if let Some(resolved) = resolve_revision(&repository.repo, rev)? {
                 break resolved;
             }
@@ -95,6 +116,7 @@ impl RevisionPath {
             relative,
             commit_id,
             base,
+            worktree,
         })
     }
 
@@ -151,23 +173,61 @@ impl<'a> RangeSides<'a> {
 fn resolve_revision(
     repo: &gix::Repository,
     rev: &str,
-) -> Result<Option<(gix::ObjectId, RevisionBase)>, GitFailure> {
+) -> Result<Option<ResolvedRevision>, GitFailure> {
     let Some(RangeSides {
         left,
         right,
         symmetric,
     }) = RangeSides::parse(rev)
     else {
-        return Ok(resolve_commit(repo, rev)?.map(|id| (id, RevisionBase::FirstParent)));
+        if rev == WORKTREE_REVISION {
+            return Err(worktree_side_failure());
+        }
+        return Ok(
+            resolve_commit(repo, rev)?.map(|commit_id| ResolvedRevision {
+                commit_id,
+                base: RevisionBase::FirstParent,
+                worktree: false,
+            }),
+        );
     };
+    if left == WORKTREE_REVISION {
+        return Err(worktree_side_failure());
+    }
+    let worktree = right == WORKTREE_REVISION;
+    // The working tree is built on HEAD, so HEAD is the commit the range names and where the
+    // merge base with A is found.
+    let right = if worktree { "HEAD" } else { right };
     let Some(commit_id) = resolve_commit(repo, right)? else {
+        if worktree {
+            return Err(GitFailure::new(
+                CommandErrorKind::InvalidInput,
+                "The checkout has no commits yet, so its working tree has nothing to compare from",
+            ));
+        }
         return Ok(None);
     };
-    if symmetric {
-        return resolve_merge_base(repo, left, commit_id)
-            .map(|base| base.map(|base| (commit_id, base)));
-    }
-    Ok(resolve_range_base(repo, left)?.map(|base| (commit_id, base)))
+    let base = if symmetric {
+        resolve_merge_base(repo, left, commit_id)?
+    } else {
+        resolve_range_base(repo, left)?
+    };
+    Ok(base.map(|base| ResolvedRevision {
+        commit_id,
+        base,
+        worktree,
+    }))
+}
+
+/// Explains that the working tree only works as the newer side of a range: alone it would be
+/// the Changes view, and on the left a merge would have to read it as the side merged into.
+fn worktree_side_failure() -> GitFailure {
+    GitFailure::new(
+        CommandErrorKind::InvalidInput,
+        format!(
+            "{WORKTREE_REVISION} can only be the right side of a range such as main...{WORKTREE_REVISION}"
+        ),
+    )
 }
 
 /// Resolves the left side of a symmetric range and finds where it split from the right side,

@@ -4,6 +4,7 @@ import type { Agent } from "#ui/api-client";
 import type { BrowserSearch } from "#ui/browser-search";
 import {
     commitDiffRevision,
+    isWorktreeRange,
     revisionRange,
 } from "#ui/components/browser/git-parts";
 import {
@@ -196,9 +197,10 @@ export async function loadRevision(options: {
             ),
             // A symmetric range keeps its base as typed, usually a branch such as main that
             // moves while HEAD stays put, so its merge base and diff are fetched again on
-            // every navigation instead of served from a cache pinned only by HEAD.
+            // every navigation instead of served from a cache pinned only by HEAD. A range
+            // ending at the working tree changes with every edit, so it is fetched again too.
             staleTime:
-                revisionRange(rev)?.separator === "..."
+                revisionRange(rev)?.separator === "..." || isWorktreeRange(rev)
                     ? 0
                     : Number.POSITIVE_INFINITY,
         });

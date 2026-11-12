@@ -238,7 +238,7 @@ pub(super) fn read_object_blob(
 }
 
 /// Reads a worktree file with metadata and post-read bounds, never following symlinks.
-fn worktree_blob(path: &Path) -> Result<DiffSource, GitFailure> {
+pub(super) fn worktree_blob(path: &Path) -> Result<DiffSource, GitFailure> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)

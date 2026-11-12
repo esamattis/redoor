@@ -1,7 +1,10 @@
 import { expect, test } from "vitest";
 import {
+    WORKTREE_REVISION,
     commitDiffRevision,
+    commitsOnlyRevision,
     displayRevision,
+    isWorktreeRange,
     revisionRange,
 } from "./git-parts";
 
@@ -36,4 +39,22 @@ test("keeps the separator when pinning and displaying a range", () => {
     );
     // The banner drops the ref namespace on both sides and keeps the dots.
     expect(displayRevision("refs/heads/main...HEAD")).toBe("main...HEAD");
+});
+
+test("keeps the working tree side of a range unpinned and readable", () => {
+    // The working tree has no commit, so pinning it to HEAD would cache a stale diff and
+    // drop the uncommitted changes the range exists for.
+    expect(commitDiffRevision(`main...${WORKTREE_REVISION}`, commitId)).toBe(
+        `main...${WORKTREE_REVISION}`,
+    );
+    expect(isWorktreeRange(`main...${WORKTREE_REVISION}`)).toBe(true);
+    expect(isWorktreeRange("main...HEAD")).toBe(false);
+    // "Commits only" swaps the working tree for HEAD and keeps the separator.
+    expect(
+        commitsOnlyRevision(`refs/remotes/origin/main...${WORKTREE_REVISION}`),
+    ).toBe("refs/remotes/origin/main...HEAD");
+    // Banners name the working tree in words rather than the pseudo revision.
+    expect(
+        displayRevision(`refs/remotes/origin/main...${WORKTREE_REVISION}`),
+    ).toBe("origin/main...working tree");
 });

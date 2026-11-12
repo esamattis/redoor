@@ -1,12 +1,16 @@
 //! What one commit changed: its tree compared with its first parent's, below one path. A
 //! range compares its newer end with its start instead, so several commits read as one, and
 //! a symmetric range `A...B` compares A with an in-memory merge of B into A, so a branch shows
-//! exactly what merging it now would change.
+//! exactly what merging it now would change. B may be the working tree, which shows what
+//! committing everything and merging it now would change.
 
 use std::{
     cell::Cell,
     collections::{HashMap, HashSet},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -17,6 +21,7 @@ use redoor_protocol::{
     api::git::{
         GitChangeState, GitDiffResult,
         commit::{GitCommitDiffResponse, GitCommitFileChange, GitCommitRange},
+        revision::WORKTREE_REVISION,
         worktree::GitDiffRequest,
     },
     wire::{command::CommandErrorKind, log::Level, request::CommandError},
@@ -28,6 +33,7 @@ use super::{
     internal_failure,
     revision::{RangeSides, RevisionBase, RevisionPath, commit_summary, tree_entry},
     run_blocking,
+    worktree_tree::WorktreeTree,
 };
 
 /// How long the merge of a symmetric range may take before the diff falls back to the merge
@@ -130,20 +136,45 @@ pub(crate) async fn commit_diff(
 fn commit_diff_blocking(
     path: &str,
     rev: &str,
-    interrupt: &AtomicBool,
+    interrupt: &Arc<AtomicBool>,
     merge_limits: MergeLimits,
 ) -> Result<GitCommitDiffResponse, GitFailure> {
     let target = RevisionPath::open(path, rev)?;
-    // A merge preview writes merged blobs and trees. Keeping writes in this handle's memory
-    // leaves the repository's object database untouched, since viewing must never change
-    // the repository, and every read below goes through the same handle so the diff sees them.
+    // A merge preview writes merged blobs and trees, and a working tree comparison writes the
+    // working tree's trees. Keeping writes in this handle's memory leaves the repository's
+    // object database untouched, since viewing must never change the repository, and every
+    // read below goes through the same handle so the diff sees them.
     let mut repo = target.repository.repo.clone().with_object_memory();
     repo.object_cache_size_if_unset(MERGE_OBJECT_CACHE_BYTES);
     let repo = &repo;
     let commit = repo
         .find_commit(target.commit_id)
         .map_err(|error| internal_failure("read Git commit", error))?;
-    let comparison = compare(repo, &target, &commit, rev, interrupt, merge_limits)?;
+    let worktree = if target.worktree {
+        let head_tree = commit
+            .tree_id()
+            .map_err(|error| internal_failure("read Git commit tree", error))?;
+        Some(WorktreeTree::build(
+            repo,
+            &target.repository.root,
+            head_tree.detach(),
+            interrupt,
+        )?)
+    } else {
+        None
+    };
+    let worktree = worktree.as_ref();
+    let comparison = compare(
+        repo,
+        &target,
+        &commit,
+        Revision {
+            text: rev,
+            worktree,
+        },
+        interrupt,
+        merge_limits,
+    )?;
 
     let mut changes = collect_changes(
         repo,
@@ -171,8 +202,8 @@ fn commit_diff_blocking(
             GitDiffResult::UnsupportedEntry
         } else {
             budget.compare(
-                side_source(repo, change.old)?,
-                side_source(repo, change.new)?,
+                side_source(repo, worktree, change.old)?,
+                side_source(repo, worktree, change.new)?,
                 &change.relative,
             )?
         };
@@ -185,8 +216,10 @@ fn commit_diff_blocking(
             result,
         });
     }
-    let truncated =
-        add_unlisted_conflicts(&target, &comparison.conflicted, &mut files) || truncated;
+    // Uncommitted changes left out of the working tree's tree are missing from the list too.
+    let truncated = add_unlisted_conflicts(&target, &comparison.conflicted, &mut files)
+        || truncated
+        || worktree.is_some_and(|worktree| worktree.truncated);
 
     let range = match target.base {
         RevisionBase::FirstParent => None,
@@ -216,21 +249,37 @@ fn commit_diff_blocking(
     })
 }
 
+/// The revision as typed, with the working tree its right side names, if it names one.
+#[derive(Clone, Copy)]
+struct Revision<'a> {
+    text: &'a str,
+    worktree: Option<&'a WorktreeTree>,
+}
+
 /// Chooses the trees to compare for the revision's kind.
 ///
 /// Merges are shown against their first parent, the branch they were merged into, and a
 /// range against its start, so its commits read as one change. A symmetric range is shown as
 /// a merge preview, falling back to its merge base when the merge fails or runs out of time.
+/// A range ending at the working tree compares with the working tree's tree instead of
+/// HEAD's, and its fallback is the merge base against the working tree.
 fn compare<'repo>(
     repo: &'repo gix::Repository,
     target: &RevisionPath,
     commit: &gix::Commit<'repo>,
-    rev: &str,
+    rev: Revision<'_>,
     interrupt: &AtomicBool,
     merge_limits: MergeLimits,
 ) -> Result<Comparison<'repo>, GitFailure> {
-    let commit_tree = commit
-        .tree()
+    let new_tree_id = match rev.worktree {
+        Some(worktree) => worktree.tree_id,
+        None => commit
+            .tree_id()
+            .map_err(|error| internal_failure("read Git commit tree", error))?
+            .detach(),
+    };
+    let new_root = repo
+        .find_tree(new_tree_id)
         .map_err(|error| internal_failure("read Git commit tree", error))?;
     let parent_id = match target.base {
         RevisionBase::FirstParent => commit.parent_ids().next().map(gix::Id::detach),
@@ -242,8 +291,9 @@ fn compare<'repo>(
                 limits: merge_limits,
                 read: Cell::new(0),
                 interrupt,
+                worktree: rev.worktree,
             };
-            match preview.merge(base, left, target.commit_id, rev) {
+            match preview.merge(base, left, new_tree_id, rev.text) {
                 Ok((merged_tree, conflicted)) => {
                     let parent = find_commit(repo, left)?;
                     return Ok(Comparison {
@@ -267,7 +317,8 @@ fn compare<'repo>(
                     // only says that it shows the merge-base diff instead.
                     log!(
                         Level::Warning,
-                        "Git merge preview fell back to the merge base: rev={rev} error={error}"
+                        "Git merge preview fell back to the merge base: rev={} error={error}",
+                        rev.text
                     );
                     Some(base)
                 }
@@ -279,7 +330,7 @@ fn compare<'repo>(
     Ok(Comparison {
         parent,
         old_root,
-        new_root: commit_tree,
+        new_root,
         conflicted: HashMap::new(),
         merge_preview: false,
     })
@@ -362,12 +413,19 @@ fn commit_tree_of<'repo>(commit: &gix::Commit<'repo>) -> Result<gix::Tree<'repo>
 /// budget runs out. Rename detection and blob merges read through it too, which makes it the
 /// one place that sees every blob loaded, including those a `diff.<name>.binary=false` driver
 /// makes gix load regardless of their size.
+///
+/// When the right side is the working tree, uncommitted files are served from disk through it
+/// as well. The merge asks for a blob's content only where both sides changed a path, or to
+/// detect renames, so every other file is passed along by the id it was hashed to and never
+/// read, and the files that are read count against the same limits as blobs.
 struct MergePreview<'a> {
     repo: &'a gix::Repository,
     limits: MergeLimits,
     /// Blob bytes loaded so far, checked against the read limit.
     read: Cell<u64>,
     interrupt: &'a AtomicBool,
+    /// The working tree the right side names, whose uncommitted files no object database holds.
+    worktree: Option<&'a WorktreeTree>,
 }
 
 impl MergePreview<'_> {
@@ -379,23 +437,33 @@ impl MergePreview<'_> {
     /// range's sides as typed, so their diff shows what conflicts. gix's conflict list rather
     /// than the content tells which files those are, because content can contain marker-like
     /// lines of its own.
-    fn merge(
+    ///
+    /// `right_tree` is the tree of the commit B names, or the working tree's.
+    fn merge<'a>(
         &self,
         base: gix::ObjectId,
         left: gix::ObjectId,
-        right: gix::ObjectId,
-        rev: &str,
+        right_tree: gix::ObjectId,
+        rev: &'a str,
     ) -> Result<(gix::ObjectId, HashMap<String, String>), gix::Error> {
         let repo = self.repo;
         let tree_of = |id: gix::ObjectId| -> Result<gix::ObjectId, gix::Error> {
             Ok(repo.find_commit(id)?.tree_id()?.detach())
         };
-        let (base_tree, left_tree, right_tree) = (tree_of(base)?, tree_of(left)?, tree_of(right)?);
+        let (base_tree, left_tree) = (tree_of(base)?, tree_of(left)?);
         let sides = RangeSides::parse(rev);
+        // The working tree is labelled in words, as the pseudo revision means nothing in a file.
+        let right_label = |sides: &RangeSides<'a>| -> &'a gix::bstr::BStr {
+            if sides.right == WORKTREE_REVISION {
+                "working tree".into()
+            } else {
+                sides.right.into()
+            }
+        };
         let labels = gix::merge::blob::builtin_driver::text::Labels {
             ancestor: Some("merge base".into()),
             current: sides.as_ref().map(|sides| sides.left.into()),
-            other: sides.as_ref().map(|sides| sides.right.into()),
+            other: sides.as_ref().map(right_label),
         };
         let options: gix::merge::tree::Options = repo.tree_merge_options()?;
         let mut diff_cache = repo.diff_resource_cache_for_tree_diff()?;
@@ -445,13 +513,18 @@ impl MergePreview<'_> {
             || "the base".to_string(),
             |sides| short_ref_name(sides.left),
         );
+        let author = if self.worktree.is_some() {
+            ConflictAuthor::WorkingTree
+        } else {
+            ConflictAuthor::Branch
+        };
         let mut conflicted = HashMap::new();
         for conflict in outcome
             .conflicts
             .iter()
             .filter(|conflict| conflict.is_unresolved(unresolved))
         {
-            let reason = conflict_reason(conflict, &left_tree, &base_name)?;
+            let reason = conflict_reason(conflict, &left_tree, &base_name, author)?;
             for location in [conflict.ours.location(), conflict.theirs.location()] {
                 if let Ok(location) = location.to_str() {
                     conflicted.insert(location.to_string(), reason.clone());
@@ -488,7 +561,7 @@ impl gix::objs::Find for MergePreview<'_> {
         // The header tells the size before the blob is loaded, so an oversized one is never
         // held in memory. Trees are not counted: the object cache bounds them, while loaded
         // blobs pile up in rename detection's cache.
-        if let Some(header) = gix::objs::FindHeader::try_header(self.repo, id)?
+        if let Some(header) = gix::objs::FindHeader::try_header(self, id)?
             && header.kind == gix::objs::Kind::Blob
         {
             if header.size > self.limits.blob_bytes {
@@ -506,6 +579,18 @@ impl gix::objs::Find for MergePreview<'_> {
             }
             self.read.set(read);
         }
+        if let Some(read) = self.worktree.and_then(|worktree| worktree.read(id, buffer)) {
+            read.map_err(|error| {
+                gix::error::Message::new(format!(
+                    "Git merge preview could not read a working tree file: {error}"
+                ))
+            })?;
+            return Ok(Some(gix::objs::Data::new(
+                buffer,
+                gix::objs::Kind::Blob,
+                self.repo.object_hash(),
+            )));
+        }
         gix::objs::Find::try_find(self.repo, id, buffer)
     }
 }
@@ -514,6 +599,9 @@ impl gix::objs::FindHeader for MergePreview<'_> {
     /// Reads an object header for the merge unless it has to stop.
     fn try_header(&self, id: &gix::hash::oid) -> Result<Option<gix::objs::Header>, gix::Error> {
         self.check()?;
+        if let Some(header) = self.worktree.and_then(|worktree| worktree.header(id)) {
+            return Ok(Some(header));
+        }
         gix::objs::FindHeader::try_header(self.repo, id)
     }
 }
@@ -541,14 +629,20 @@ impl SideAction {
         }
     }
 
-    /// The verb for the branch, which is about to do this by merging.
-    fn present(self) -> &'static str {
-        match self {
-            Self::Add => "adds",
-            Self::Delete => "deletes",
-            Self::Modify => "changes",
-            Self::Rename => "renames",
-            Self::Copy => "copies",
+    /// The verb for the side being merged, which is about to do this by merging, agreeing
+    /// with its subject in number.
+    fn present(self, author: ConflictAuthor) -> &'static str {
+        match (self, author) {
+            (Self::Add, ConflictAuthor::Branch) => "adds",
+            (Self::Delete, ConflictAuthor::Branch) => "deletes",
+            (Self::Modify, ConflictAuthor::Branch) => "changes",
+            (Self::Rename, ConflictAuthor::Branch) => "renames",
+            (Self::Copy, ConflictAuthor::Branch) => "copies",
+            (Self::Add, ConflictAuthor::WorkingTree) => "add",
+            (Self::Delete, ConflictAuthor::WorkingTree) => "delete",
+            (Self::Modify, ConflictAuthor::WorkingTree) => "change",
+            (Self::Rename, ConflictAuthor::WorkingTree) => "rename",
+            (Self::Copy, ConflictAuthor::WorkingTree) => "copy",
         }
     }
 
@@ -564,8 +658,37 @@ impl SideAction {
     }
 }
 
+/// Who made the merged side's changes, which decides how a conflict reason names them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConflictAuthor {
+    /// A branch or commit: its commits are what would be merged.
+    Branch,
+    /// The working tree: the checkout's commits plus its uncommitted changes, which may not
+    /// be on any branch yet, so they are "your changes" rather than "your branch".
+    WorkingTree,
+}
+
+impl ConflictAuthor {
+    /// The subject a reason starts with.
+    fn subject(self) -> &'static str {
+        match self {
+            Self::Branch => "Your branch",
+            Self::WorkingTree => "Your changes",
+        }
+    }
+
+    /// When the other side's change happened, measured from where the merged side started.
+    fn since(self) -> &'static str {
+        match self {
+            Self::Branch => "since the branch split off",
+            Self::WorkingTree => "since your checkout split off",
+        }
+    }
+}
+
 /// Explains a conflict in terms of what each side did, with A as the base the branch merges
-/// into and B as "your branch", so the user learns what to resolve without running the merge.
+/// into and B as "your branch", or "your changes" for the working tree, so the user learns
+/// what to resolve without running the merge.
 ///
 /// gix may store the two changes swapped relative to A and B, and keeps which way private, so
 /// the side that made a change is found by checking which change A's tree reflects.
@@ -573,7 +696,9 @@ fn conflict_reason(
     conflict: &gix::merge::plumbing::tree::Conflict,
     left_tree: &gix::Tree<'_>,
     base_name: &str,
+    author: ConflictAuthor,
 ) -> Result<String, gix::Error> {
+    let (who, since) = (author.subject(), author.since());
     let ours_is_left = is_left_change(&conflict.ours, left_tree)?;
     let theirs_is_left = is_left_change(&conflict.theirs, left_tree)?;
     let (left, right) = match (ours_is_left, theirs_is_left) {
@@ -582,25 +707,25 @@ fn conflict_reason(
         // Neither or both match A, so there is no telling who did what.
         _ => {
             return Ok(format!(
-                "Your branch and {base_name} changed this file in ways that do not merge cleanly."
+                "{who} and {base_name} changed this file in ways that do not merge cleanly."
             ));
         }
     };
     let (left, right) = (SideAction::of(left), SideAction::of(right));
     Ok(match (right, left) {
-        (SideAction::Modify, SideAction::Modify) => format!(
-            "Your branch and {base_name} both changed the same lines of this file since the branch split off."
-        ),
+        (SideAction::Modify, SideAction::Modify) => {
+            format!("{who} and {base_name} both changed the same lines of this file {since}.")
+        }
         (SideAction::Add, SideAction::Add) => {
-            format!("Your branch and {base_name} both added this file with different contents.")
+            format!("{who} and {base_name} both added this file with different contents.")
         }
         (right, left) if right == left => format!(
-            "Your branch and {base_name} both {} this file differently since the branch split off.",
+            "{who} and {base_name} both {} this file differently {since}.",
             left.past()
         ),
         (right, left) => format!(
-            "Your branch {} this file, but {base_name} {} it since the branch split off.",
-            right.present(),
+            "{who} {} this file, but {base_name} {} it {since}.",
+            right.present(author),
             left.past()
         ),
     })
@@ -803,10 +928,17 @@ fn subtree<'repo>(
 }
 
 /// Reads one side's blob within the per-file bound; symlinks and submodules have no text diff.
-fn side_source(repo: &gix::Repository, side: Side) -> Result<DiffSource, GitFailure> {
+/// An uncommitted file of the working tree is read from disk, since no object database has it.
+fn side_source(
+    repo: &gix::Repository,
+    worktree: Option<&WorktreeTree>,
+    side: Side,
+) -> Result<DiffSource, GitFailure> {
     match side {
         None => Ok(DiffSource::Missing),
-        Some((mode, id)) if mode.is_blob() => read_object_blob(repo, id),
+        Some((mode, id)) if mode.is_blob() => worktree
+            .and_then(|worktree| worktree.diff_source(&id))
+            .unwrap_or_else(|| read_object_blob(repo, id)),
         Some(_) => Ok(DiffSource::Unsupported),
     }
 }
@@ -880,7 +1012,7 @@ mod tests {
         commit_diff_blocking(
             &root.display().to_string(),
             rev,
-            &AtomicBool::new(false),
+            &Arc::new(AtomicBool::new(false)),
             limits,
         )
         .unwrap()
@@ -1246,6 +1378,225 @@ three
         );
         // Zero means unlimited in Git, which the preview must not allow.
         assert_eq!(limits.blob_threshold(0), MERGE_PREVIEW_BLOB_BYTES);
+    }
+
+    /// An uncommitted edit shows up even when HEAD is the compared branch itself, which a
+    /// comparison of commits alone would call identical, and nothing is written to the
+    /// repository to build the working tree's tree.
+    #[test]
+    fn worktree_edit_on_base_commit_shows() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, "shared.txt", "one\ntwo edited\nthree\n");
+        let objects_before = git(root, &["count-objects", "-v"]);
+
+        let response = diff(root, &format!("main...{WORKTREE_REVISION}"));
+        // HEAD is main, so the uncommitted edit is all that differs.
+        assert_eq!(paths(&response), ["shared.txt"]);
+        assert!(patch(&response, "shared.txt").contains("+two edited"));
+        // The merge of the working tree into main succeeded rather than falling back.
+        assert!(response.range.as_ref().unwrap().merge_preview);
+        // The range names HEAD, the commit the working tree is built on.
+        assert_eq!(response.commit.id, git(root, &["rev-parse", "HEAD"]));
+        // Viewing must never write to the repository, so the built trees stay in memory.
+        assert_eq!(git(root, &["count-objects", "-v"]), objects_before);
+    }
+
+    /// Untracked, staged and deleted files all count as the working tree, the way
+    /// `git add -A` would commit them, but ignored files do not.
+    #[test]
+    fn worktree_includes_untracked_but_not_ignored_files() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, ".gitignore", "ignored.log\n");
+        commit(root, "ignore logs");
+        write(root, "new.txt", "fresh\n");
+        write(root, "ignored.log", "noise\n");
+        write(root, "staged.txt", "staged\n");
+        git(root, &["add", "staged.txt"]);
+        std::fs::remove_file(root.join("other.txt")).unwrap();
+
+        let response = diff(root, &format!("main...{WORKTREE_REVISION}"));
+        // The ignored log is left out like `git status` leaves it out.
+        assert_eq!(paths(&response), ["new.txt", "other.txt", "staged.txt"]);
+        // The untracked file's content is read from disk, since no object database has it.
+        assert!(patch(&response, "new.txt").contains("+fresh"));
+        let states: Vec<_> = response.files.iter().map(|file| file.change).collect();
+        // The deleted file is removed from the working tree's tree, the others added.
+        assert_eq!(
+            states,
+            [
+                GitChangeState::Added,
+                GitChangeState::Deleted,
+                GitChangeState::Added
+            ]
+        );
+
+        // A two-dot range compares the same working tree without a merge.
+        let response = diff(root, &format!("main..{WORKTREE_REVISION}"));
+        assert_eq!(paths(&response), ["new.txt", "other.txt", "staged.txt"]);
+        assert!(!response.range.as_ref().unwrap().merge_preview);
+    }
+
+    /// A file untracked with `git rm --cached` and then ignored stays on disk, yet
+    /// `git add -A` would record its deletion, so the working tree must not keep it.
+    #[test]
+    fn untracked_and_ignored_file_counts_as_deleted() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, "secret.txt", "do not commit\n");
+        commit(root, "commit a secret");
+        git(root, &["branch", "-f", "base"]);
+        std::fs::create_dir(root.join("secrets")).unwrap();
+        write(root, "secrets/key.txt", "do not commit either\n");
+        std::fs::create_dir(root.join("logs")).unwrap();
+        write(root, "logs/kept.txt", "tracked log\n");
+        commit(root, "commit secrets and a log");
+        git(root, &["branch", "-f", "base"]);
+        git(root, &["rm", "-q", "--cached", "secret.txt"]);
+        git(root, &["rm", "-q", "-r", "--cached", "secrets"]);
+        write(root, ".gitignore", "secret.txt\nsecrets/\nlogs/\n");
+        write(root, "logs/kept.txt", "tracked log edited\n");
+
+        let response = diff(root, &format!("base...{WORKTREE_REVISION}"));
+        let change = |relative: &str| {
+            response
+                .files
+                .iter()
+                .find(|file| file.repository_relative_path == relative)
+                .unwrap_or_else(|| panic!("{relative} must be listed"))
+                .change
+        };
+        // The file on disk is ignored and out of the index, so committing everything
+        // deletes it; showing it as kept would hide that the merge removes it.
+        assert_eq!(change("secret.txt"), GitChangeState::Deleted);
+        // Status reports the ignored directory as one collapsed entry, so its files that
+        // left the index must be found deleted through that ancestor.
+        assert_eq!(change("secrets/key.txt"), GitChangeState::Deleted);
+        // A file still in the index stays tracked inside an ignored directory, so its
+        // working tree edit is what committing everything records.
+        assert!(patch(&response, "logs/kept.txt").contains("+tracked log edited"));
+    }
+
+    /// A large untracked file only one side changed is passed along by its streamed hash,
+    /// so the merge never loads it, and its diff is too large without reading it either.
+    #[test]
+    fn large_untracked_file_is_hashed_without_being_loaded() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, "other.txt", "changed on main\n");
+        commit(root, "main moves on");
+        git(root, &["checkout", "-q", "feature"]);
+        let big = "line of a large untracked file\n"
+            .repeat((super::super::diff::MAX_DIFF_INPUT_BYTES as usize) / 16);
+        write(root, "big.txt", &big);
+
+        // Limits far below the file's size fail the merge if it reads the file at all.
+        let response = diff_with_limits(
+            root,
+            &format!("main...{WORKTREE_REVISION}"),
+            MergeLimits {
+                blob_bytes: 1024,
+                read_bytes: 1024,
+                ..MergeLimits::starting_now()
+            },
+        );
+        assert!(response.range.as_ref().unwrap().merge_preview);
+        let file = response
+            .files
+            .iter()
+            .find(|file| file.repository_relative_path == "big.txt")
+            .unwrap();
+        // The file is listed as added, with its content over the diff's per-file bound.
+        assert_eq!(file.change, GitChangeState::Added);
+        assert_eq!(file.result, GitDiffResult::TooLarge);
+        // Main's own change is already in main, so only the branch's file shows.
+        assert_eq!(paths(&response), ["big.txt"]);
+    }
+
+    /// A file both main and the working tree changed must be loaded to merge; over the read
+    /// limit the view falls back to the merge base against the working tree.
+    #[test]
+    fn worktree_merge_over_read_limit_falls_back_to_merge_base() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, "shared.txt", "one changed on main\ntwo\nthree\n");
+        commit(root, "main edit");
+        git(root, &["checkout", "-q", "feature"]);
+        write(root, "shared.txt", "one\ntwo\nthree changed here\n");
+
+        let response = diff_with_limits(
+            root,
+            &format!("main...{WORKTREE_REVISION}"),
+            MergeLimits {
+                read_bytes: 16,
+                ..MergeLimits::starting_now()
+            },
+        );
+        let range = response.range.as_ref().unwrap();
+        // The view must learn that the diff is the merge-base comparison.
+        assert!(!range.merge_preview);
+        // The fallback compares the merge base with the working tree, not with HEAD.
+        assert_eq!(
+            response.parent_id.as_deref(),
+            Some(range.base.as_ref().unwrap().id.as_str())
+        );
+        let shared = patch(&response, "shared.txt");
+        assert!(shared.contains("+three changed here"), "{shared}");
+        // Main's edit is not part of the merge-base diff.
+        assert!(!shared.contains("changed on main"), "{shared}");
+
+        // With the full budget the same files merge cleanly.
+        let response = diff(root, &format!("main...{WORKTREE_REVISION}"));
+        assert!(response.range.as_ref().unwrap().merge_preview);
+        assert!(patch(&response, "shared.txt").contains("+three changed here"));
+    }
+
+    /// An uncommitted edit conflicting with main is labelled, and its reason speaks of the
+    /// user's changes rather than a branch, since they may not be committed anywhere.
+    #[test]
+    fn worktree_conflict_reason_names_your_changes() {
+        let temp = fixture();
+        let root = temp.path();
+        write(root, "shared.txt", "one\nmain side\nthree\n");
+        commit(root, "main edit");
+        git(root, &["checkout", "-q", "feature"]);
+        write(root, "shared.txt", "one\nworking side\nthree\n");
+
+        let response = diff(root, &format!("main...{WORKTREE_REVISION}"));
+        let file = response
+            .files
+            .iter()
+            .find(|file| file.repository_relative_path == "shared.txt")
+            .unwrap();
+        assert!(file.conflicted);
+        assert_eq!(
+            file.conflict_reason.as_deref(),
+            Some(
+                "Your changes and main both changed the same lines of this file since your checkout split off."
+            )
+        );
+        // The markers name the working tree in words rather than the pseudo revision.
+        assert!(patch(&response, "shared.txt").contains("+>>>>>>> working tree"));
+    }
+
+    /// The working tree only makes sense as the newer side of a range.
+    #[test]
+    fn worktree_is_rejected_outside_the_right_side() {
+        let temp = fixture();
+        let root = temp.path().display().to_string();
+        let interrupt = Arc::new(AtomicBool::new(false));
+        for rev in [
+            WORKTREE_REVISION.to_string(),
+            format!("{WORKTREE_REVISION}...main"),
+        ] {
+            let result = commit_diff_blocking(&root, &rev, &interrupt, MergeLimits::starting_now());
+            // A clear input error rather than resolving `:worktree` as an index path.
+            assert!(
+                matches!(&result, Err(failure) if failure.kind == CommandErrorKind::InvalidInput),
+                "{rev}"
+            );
+        }
     }
 
     /// Two-dot ranges stay literal history diffs rather than merge previews.
