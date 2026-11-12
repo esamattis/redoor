@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.10.0
+
+_2026-11-12_
+
+### Features
+
+- A new "vs origin/main" tab in the Git view shows what origin/main would look like if everything in your working tree, including uncommitted and untracked files, were committed and merged now. "Commits only" switches to committed work.
+- Branch comparisons (`A...B`) now preview the merge: work that already landed upstream as squash merges or cherry-picks no longer shows up, and files that would conflict are flagged with the reason, even when the conflict leaves nothing to diff.
+- Copy absolute or repository references (`path#Lline`) from text selected in a diff, including multi-line selections.
+
+### Fixes
+
+- A file opened while its device was offline now opens once the device connects, instead of staying on "Opening path..." or an outdated offline view.
+
 ## v2.9.0
 
 _2026-11-10_
