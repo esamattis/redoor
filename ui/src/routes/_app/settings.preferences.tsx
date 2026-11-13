@@ -1,12 +1,24 @@
 import * as React from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { FileClock, Keyboard, SlidersHorizontal } from "lucide-react";
+import { useStore } from "jotai";
+import {
+    CircleCheck,
+    FileClock,
+    Keyboard,
+    SlidersHorizontal,
+} from "lucide-react";
 
 import { Checkbox } from "#ui/components/checkbox";
 import { parseVimConfig } from "#ui/editor/vim-config";
 import { TextareaControl } from "#ui/components/textarea-control";
 import { Select } from "#ui/components/select";
-import { useUserState } from "#ui/user-state";
+import { Toast } from "#ui/components/toast";
+import {
+    useUserState,
+    userStatePersistErrorAtom,
+    waitForUserStatePersist,
+    type UserState,
+} from "#ui/user-state";
 
 export const Route = createFileRoute("/_app/settings/preferences")({
     component: PreferencesPage,
@@ -30,12 +42,52 @@ function formatHours(hours: number) {
 }
 
 /**
+ * The user state for the preferences page, with a setter that confirms each change once it
+ * has reached the server. Settings save automatically, so without the toast nothing tells
+ * the user the change stuck. Only this page's writes are confirmed; background writes such
+ * as caret lines would turn it into noise. Failed writes are left to the shell's error toast.
+ */
+function usePreferencesState() {
+    const [userState, setUserState] = useUserState();
+    const store = useStore();
+    // A new count remounts the toast, so a later save restarts its dismiss timer.
+    const [savedCount, setSavedCount] = React.useState(0);
+
+    const savePreference = React.useCallback(
+        (update: (current: UserState) => UserState) => {
+            setUserState(update);
+            void waitForUserStatePersist().then(() => {
+                if (store.get(userStatePersistErrorAtom) === null) {
+                    setSavedCount((count) => count + 1);
+                }
+            });
+        },
+        [setUserState, store],
+    );
+
+    const savedToast =
+        savedCount > 0 ? (
+            <Toast
+                key={savedCount}
+                tone="success"
+                icon={<CircleCheck className="h-4 w-4" />}
+                dismissAriaLabel="Dismiss settings saved notification"
+                onDismiss={() => setSavedCount(0)}
+            >
+                Settings saved
+            </Toast>
+        ) : null;
+
+    return [userState, savePreference, savedToast] as const;
+}
+
+/**
  * Collects the personal preferences that otherwise hide in the menus where they act, so they
  * can be found and changed in one place. They are stored in the user state, so they follow
  * the user to every browser.
  */
 function PreferencesPage() {
-    const [userState, setUserState] = useUserState();
+    const [userState, setUserState, savedToast] = usePreferencesState();
     const afterHours = userState.autoCloseOpenFilesAfterHours;
 
     // A delay set outside these steps, such as by an older choice list, stays selectable.
@@ -44,12 +96,10 @@ function PreferencesPage() {
         : [...AUTO_CLOSE_HOUR_CHOICES, afterHours].sort((a, b) => a - b);
 
     const delayId = React.useId();
-    const vimConfigId = React.useId();
-    const vimConfigHelpId = React.useId();
-    const vimConfigErrors = parseVimConfig(userState.vimConfig).errors;
 
     return (
         <div className="min-h-full bg-canvas px-4 py-8 @xl:px-8">
+            {savedToast}
             <div className="mx-auto grid max-w-3xl gap-6">
                 <header className="flex items-start gap-4 rounded-xl border border-slate-800 bg-surface bg-gradient-to-r from-blue-500/10 via-transparent to-transparent px-6 py-6 @xl:px-8">
                     <div className="rounded-lg border border-blue-500/30 bg-blue-500/10 p-2.5 text-blue-300">
@@ -140,60 +190,91 @@ function PreferencesPage() {
                         Edit files with Vim keybindings. Also available in the
                         editor&apos;s options menu.
                     </p>
-                    <label
-                        htmlFor={vimConfigId}
-                        className="mt-4 px-2 text-sm font-medium text-slate-300"
-                    >
-                        Vim configuration
-                    </label>
-                    <TextareaControl
-                        id={vimConfigId}
-                        value={userState.vimConfig}
-                        rows={10}
-                        spellCheck={false}
-                        autoCapitalize="off"
-                        autoCorrect="off"
-                        aria-describedby={vimConfigHelpId}
-                        aria-invalid={vimConfigErrors.length > 0}
-                        className="mt-2 w-full font-mono text-sm"
-                        placeholder={`" Exit insert mode with jj
-inoremap jj <Esc>
-map ö ^`}
-                        onChange={(event) => {
-                            const vimConfig = event.target.value;
-                            setUserState((current) => ({
-                                ...current,
-                                vimConfig,
-                            }));
-                        }}
+                    <VimConfigField
+                        savedValue={userState.vimConfig}
+                        setUserState={setUserState}
                     />
-                    <p
-                        id={vimConfigHelpId}
-                        className="mt-1 px-2 text-xs text-slate-500"
-                    >
-                        Saved automatically. Applies when Vim mode is enabled.
-                        Supports map, nmap, vmap, imap, noremap, nnoremap,
-                        vnoremap and inoremap with two key sequences. Use
-                        &lt;Space&gt; for spaces and &lt;Esc&gt; for Escape.
-                        Lines starting with &quot; are comments. Other Vimscript
-                        and mapping options are unsupported. Invalid lines are
-                        skipped.
-                    </p>
-                    {vimConfigErrors.length > 0 ? (
-                        <ul
-                            className="mt-2 px-2 text-sm text-amber-300"
-                            aria-label="Vim configuration errors"
-                        >
-                            {vimConfigErrors.map((error) => (
-                                <li key={error.line}>
-                                    Line {error.line}: {error.message}
-                                </li>
-                            ))}
-                        </ul>
-                    ) : null}
                 </PreferenceSection>
             </div>
         </div>
+    );
+}
+
+/**
+ * The Vim configuration editor. It types into a local draft and saves it only when focus
+ * leaves the textarea, so a half-typed mapping is never applied and typing does not send a
+ * settings write per keystroke. The draft is taken from the user state once, so a refetch
+ * cannot replace what is being typed.
+ */
+function VimConfigField(props: {
+    /** The persisted configuration, so leaving the field unchanged saves nothing. */
+    savedValue: string;
+    setUserState: (update: (current: UserState) => UserState) => void;
+}) {
+    const [draft, setDraft] = React.useState(props.savedValue);
+    const vimConfigId = React.useId();
+    const vimConfigHelpId = React.useId();
+    const vimConfigErrors = parseVimConfig(draft).errors;
+
+    return (
+        <>
+            <label
+                htmlFor={vimConfigId}
+                className="mt-4 px-2 text-sm font-medium text-slate-300"
+            >
+                Vim configuration
+            </label>
+            <TextareaControl
+                id={vimConfigId}
+                value={draft}
+                rows={10}
+                spellCheck={false}
+                autoCapitalize="off"
+                autoCorrect="off"
+                aria-describedby={vimConfigHelpId}
+                aria-invalid={vimConfigErrors.length > 0}
+                className="mt-2 w-full font-mono text-sm"
+                placeholder={`" Exit insert mode with jj
+inoremap jj <Esc>
+map ö ^`}
+                onChange={(event) => {
+                    setDraft(event.target.value);
+                }}
+                onBlur={() => {
+                    if (draft === props.savedValue) {
+                        return;
+                    }
+
+                    props.setUserState((current) => ({
+                        ...current,
+                        vimConfig: draft,
+                    }));
+                }}
+            />
+            <p
+                id={vimConfigHelpId}
+                className="mt-1 px-2 text-xs text-slate-500"
+            >
+                Saved when you leave the field. Applies when Vim mode is
+                enabled. Supports map, nmap, vmap, imap, noremap, nnoremap,
+                vnoremap and inoremap with two key sequences. Use &lt;Space&gt;
+                for spaces and &lt;Esc&gt; for Escape. Lines starting with
+                &quot; are comments. Other Vimscript and mapping options are
+                unsupported. Invalid lines are skipped.
+            </p>
+            {vimConfigErrors.length > 0 ? (
+                <ul
+                    className="mt-2 px-2 text-sm text-amber-300"
+                    aria-label="Vim configuration errors"
+                >
+                    {vimConfigErrors.map((error) => (
+                        <li key={error.line}>
+                            Line {error.line}: {error.message}
+                        </li>
+                    ))}
+                </ul>
+            ) : null}
+        </>
     );
 }
 

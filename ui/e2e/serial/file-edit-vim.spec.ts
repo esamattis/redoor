@@ -129,6 +129,12 @@ map x l`;
         });
 
         await configuration.fill(config);
+        // The configuration is saved only when focus leaves the textarea.
+        await configuration.blur();
+        // Preferences save automatically, so the toast is the only sign the write landed.
+        await expect(
+            page.getByRole("status").filter({ hasText: "Settings saved" }),
+        ).toBeVisible();
         await page
             .getByRole("button", { name: "Vim mode", exact: true })
             .click();
@@ -139,6 +145,16 @@ map x l`;
         await page.reload();
         // Reload proves the source belongs to the user's persisted preferences.
         await expect(configuration).toHaveValue(config);
+        await configuration.focus();
+        await configuration.press("ControlOrMeta+Home");
+        await configuration.pressSequentially(`" Top\n`);
+        const editedConfig = `" Top\n${config}`;
+        // Typing before existing text must keep the caret there, not jump to the end.
+        await expect(configuration).toHaveValue(editedConfig);
+        await configuration.blur();
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ vimConfig: editedConfig });
         await page.goto(fileUrl);
         const editor = page.getByLabel("File editor", { exact: true });
         await expect(editor).toHaveText("  one two");
@@ -162,6 +178,7 @@ map x l`;
         await page.keyboard.press("Escape");
         await page.goto(`${WEB_BASE_URL}/settings/preferences`);
         await configuration.fill("");
+        await configuration.blur();
         await expect
             .poll(async () => (await api.getUserState()).state)
             .toMatchObject({ vimConfig: "" });
