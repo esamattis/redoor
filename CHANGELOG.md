@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.13.0
+
+_2026-11-13_
+
+### Features
+
+- Open files left untouched for a day now close automatically. Unsaved drafts and the file on screen always stay open. Change the delay or turn it off on the new Preferences page, which also holds the Vim mode toggle.
+- Custom Vim key mappings for normal, visual and insert mode can be set in Preferences and are kept across editor sessions.
+
 ## v2.12.0
 
 _2026-11-13_
