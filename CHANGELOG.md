@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.12.0
+
+_2026-11-13_
+
+### Features
+
+- `rd-open <path>` in a redoor terminal opens that file or directory in the web UI of the device running the shell. The focused browser window opens it right away; other windows offer it in a toast.
+
+### Fixes
+
+- Passkey prompts injected by password managers such as 1Password are no longer hidden behind open dialogs, so unlocking the vault with a passkey works again.
+
 ## v2.11.0
 
 _2026-11-12_
