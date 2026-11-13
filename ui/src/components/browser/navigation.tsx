@@ -16,6 +16,7 @@ import {
 import type { Agent } from "#ui/api-client";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import { Button } from "#ui/components/button";
+import { CopyableGitRef } from "#ui/components/copyable-git-ref";
 import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
 import { IconLinkButton } from "#ui/components/icon-button";
 import { SearchButton } from "#ui/components/search-button";
@@ -258,22 +259,41 @@ function GitHeadContext(props: {
             ? `Branch ${head.name}`
             : `Detached HEAD: ${label}`;
 
-    return (
+    const labelElement = (
         <Tooltip content={description} className="min-w-0 max-w-full">
             <span
                 aria-label={description}
-                className={cn(
-                    "inline-flex max-w-full items-center px-2 py-1 text-xs",
-                    head.type === "detached"
-                        ? "text-amber-300"
-                        : "text-slate-400",
-                )}
+                className="inline-flex max-w-full items-center py-1"
             >
                 <span className="max-w-48 truncate @max-xl/main:max-w-32">
                     {label}
                 </span>
             </span>
         </Tooltip>
+    );
+
+    // The branch name or detached commit is often needed in a terminal, so it can be copied.
+    const copyValue = head.type === "branch" ? head.name : head.commitId;
+
+    return (
+        <span
+            className={cn(
+                "inline-flex min-w-0 max-w-full items-center pl-2 text-xs",
+                head.type === "detached" ? "text-amber-300" : "text-slate-400",
+                copyValue === null && "pr-2",
+            )}
+        >
+            {copyValue === null ? (
+                labelElement
+            ) : (
+                <CopyableGitRef
+                    kind={head.type === "branch" ? "branch" : "commit"}
+                    value={copyValue}
+                >
+                    {labelElement}
+                </CopyableGitRef>
+            )}
+        </span>
     );
 }
 

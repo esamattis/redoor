@@ -490,5 +490,14 @@ test.describe.serial("Git commit, branch and tag lists", () => {
         await expect
             .poll(() => page.evaluate(() => navigator.clipboard.readText()))
             .toBe("feature");
+
+        // The checked-out branch beside the path can be copied without opening the Git view.
+        await page.goto(deviceBrowserUrl(ctx.agentName, repositoryPath));
+        await page
+            .getByRole("button", { name: "Copy branch name main" })
+            .click();
+        await expect
+            .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+            .toBe("main");
     });
 });

@@ -202,13 +202,15 @@ export function PathBreadcrumbs(props: {
     return (
         <div className="flex min-w-0 flex-1 items-center gap-1">
             {/* Only the crumbs scroll, so copy and edit stay in reach on a long path. The
+                crumbs only take the width they need, so the buttons sit right after the path
+                instead of at the far end of the row. The
                 scrollbar is hidden, since the crumbs start scrolled to the end anyway. Padded
                 tap targets of short segments overhang the row, so the y axis is padded and
                 clipped. */}
             <nav
                 ref={crumbsRef}
                 aria-label={labels.navigation}
-                className="scrollbar-hidden flex min-w-0 flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1 text-sm"
+                className="scrollbar-hidden flex min-w-0 items-center gap-2 overflow-x-auto overflow-y-hidden overscroll-x-contain py-1 text-sm"
             >
                 {isAtRoot ? (
                     <span className="shrink-0 font-medium text-slate-100">
