@@ -1,5 +1,19 @@
 # Changelog
 
+## v2.13.1
+
+_2026-11-13_
+
+### Features
+
+- Open files with unsaved changes are marked in the open files list, and the mark persists across reloads and other computers.
+- `:wa` in Vim mode saves every edited open file. Encrypted files and files changed on the device are skipped and named in the Vim message.
+- The file path header keeps its copy and edit buttons next to the path, and the checked-out branch name can be copied.
+
+### Fixes
+
+- Typing in the Vim configuration field no longer jumps the caret to the end. Changes are saved when the field loses focus and confirmed with a toast.
+
 ## v2.13.0
 
 _2026-11-13_
