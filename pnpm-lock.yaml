@@ -166,7 +166,7 @@ overrides:
   postcss-selector-parser@<6.1.5: ^6.1.5
 
 patchedDependencies:
-  '@replit/codemirror-vim-core@0.1.0': f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583
+  '@replit/codemirror-vim-core@0.1.0': 6a8c2a0354c917476b2daaa57a46571e24aeebcee36189522fe56fe35f59f23e
   '@wterm/dom@0.5.10': 8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563
 
 importers:
@@ -3665,7 +3665,7 @@ snapshots:
     dependencies:
       playwright: 1.64.1
 
-  '@replit/codemirror-vim-core@0.1.0(patch_hash=f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583)': {}
+  '@replit/codemirror-vim-core@0.1.0(patch_hash=6a8c2a0354c917476b2daaa57a46571e24aeebcee36189522fe56fe35f59f23e)': {}
 
   '@replit/codemirror-vim@6.4.0(@codemirror/commands@6.11.1)(@codemirror/language@6.13.1)(@codemirror/search@6.7.2)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)':
     dependencies:
@@ -3674,7 +3674,7 @@ snapshots:
       '@codemirror/search': 6.7.2
       '@codemirror/state': 6.7.6
       '@codemirror/view': 6.43.15
-      '@replit/codemirror-vim-core': 0.1.0(patch_hash=f2369b4dfcec51c74f78d8372a149891a40d01fdb80da0ac1cda1c4c2f2a0583)
+      '@replit/codemirror-vim-core': 0.1.0(patch_hash=6a8c2a0354c917476b2daaa57a46571e24aeebcee36189522fe56fe35f59f23e)
 
   '@rolldown/binding-android-arm-eabi@1.2.15':
     optional: true

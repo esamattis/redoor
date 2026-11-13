@@ -117,6 +117,7 @@ type CodeEditorProps = {
     stored: StoredBuffer | null;
     editable: boolean;
     vimMode: boolean;
+    vimConfig: string;
     wrapLines: boolean;
     scrollToLine?: number;
     /** The open files list's request to show a line, once, when the file was opened elsewhere. */
@@ -179,6 +180,7 @@ export function CodeEditor(props: CodeEditorProps) {
 
     const settings = {
         vimMode: props.vimMode,
+        vimConfig: props.vimConfig,
         wrapLines: props.wrapLines,
         theme: resolvedTheme,
         editable: props.editable,
@@ -276,6 +278,7 @@ export function CodeEditor(props: CodeEditorProps) {
     React.useLayoutEffect(() => {
         workspace.applySettings({
             vimMode: props.vimMode,
+            vimConfig: props.vimConfig,
             wrapLines: props.wrapLines,
             theme: resolvedTheme,
             editable: props.editable,
@@ -283,6 +286,7 @@ export function CodeEditor(props: CodeEditorProps) {
     }, [
         props.editable,
         props.vimMode,
+        props.vimConfig,
         props.wrapLines,
         resolvedTheme,
         workspace,

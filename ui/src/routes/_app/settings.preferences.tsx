@@ -3,6 +3,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { FileClock, Keyboard, SlidersHorizontal } from "lucide-react";
 
 import { Checkbox } from "#ui/components/checkbox";
+import { parseVimConfig } from "#ui/editor/vim-config";
+import { TextareaControl } from "#ui/components/textarea-control";
 import { Select } from "#ui/components/select";
 import { useUserState } from "#ui/user-state";
 
@@ -42,6 +44,9 @@ function PreferencesPage() {
         : [...AUTO_CLOSE_HOUR_CHOICES, afterHours].sort((a, b) => a - b);
 
     const delayId = React.useId();
+    const vimConfigId = React.useId();
+    const vimConfigHelpId = React.useId();
+    const vimConfigErrors = parseVimConfig(userState.vimConfig).errors;
 
     return (
         <div className="min-h-full bg-canvas px-4 py-8 @xl:px-8">
@@ -135,6 +140,57 @@ function PreferencesPage() {
                         Edit files with Vim keybindings. Also available in the
                         editor&apos;s options menu.
                     </p>
+                    <label
+                        htmlFor={vimConfigId}
+                        className="mt-4 px-2 text-sm font-medium text-slate-300"
+                    >
+                        Vim configuration
+                    </label>
+                    <TextareaControl
+                        id={vimConfigId}
+                        value={userState.vimConfig}
+                        rows={10}
+                        spellCheck={false}
+                        autoCapitalize="off"
+                        autoCorrect="off"
+                        aria-describedby={vimConfigHelpId}
+                        aria-invalid={vimConfigErrors.length > 0}
+                        className="mt-2 w-full font-mono text-sm"
+                        placeholder={`" Exit insert mode with jj
+inoremap jj <Esc>
+map ö ^`}
+                        onChange={(event) => {
+                            const vimConfig = event.target.value;
+                            setUserState((current) => ({
+                                ...current,
+                                vimConfig,
+                            }));
+                        }}
+                    />
+                    <p
+                        id={vimConfigHelpId}
+                        className="mt-1 px-2 text-xs text-slate-500"
+                    >
+                        Saved automatically. Applies when Vim mode is enabled.
+                        Supports map, nmap, vmap, imap, noremap, nnoremap,
+                        vnoremap and inoremap with two key sequences. Use
+                        &lt;Space&gt; for spaces and &lt;Esc&gt; for Escape.
+                        Lines starting with &quot; are comments. Other Vimscript
+                        and mapping options are unsupported. Invalid lines are
+                        skipped.
+                    </p>
+                    {vimConfigErrors.length > 0 ? (
+                        <ul
+                            className="mt-2 px-2 text-sm text-amber-300"
+                            aria-label="Vim configuration errors"
+                        >
+                            {vimConfigErrors.map((error) => (
+                                <li key={error.line}>
+                                    Line {error.line}: {error.message}
+                                </li>
+                            ))}
+                        </ul>
+                    ) : null}
                 </PreferenceSection>
             </div>
         </div>

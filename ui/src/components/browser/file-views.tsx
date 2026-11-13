@@ -349,6 +349,7 @@ function FileEditorSurface(props: {
     fileName: string;
     editable: boolean;
     vimMode: boolean;
+    vimConfig: string;
     wrapLines: boolean;
     preview: boolean;
     scrollToLine?: number;
@@ -391,6 +392,7 @@ function FileEditorSurface(props: {
                     repositoryRoot={props.repositoryRoot}
                     editable={props.editable}
                     vimMode={props.vimMode}
+                    vimConfig={props.vimConfig}
                     wrapLines={props.wrapLines}
                     scrollToLine={props.scrollToLine}
                     reveal={props.reveal}
@@ -1001,6 +1003,7 @@ export function FileEditView(props: FileEditViewProps) {
                             fileName={props.fileName}
                             editable={canEdit}
                             vimMode={userState.vimMode}
+                            vimConfig={userState.vimConfig}
                             wrapLines={userState.wrapEditorLines}
                             preview={isPreviewShown}
                             scrollToLine={props.scrollToLine}

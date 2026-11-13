@@ -100,6 +100,7 @@ export const userStateSchema = z.object({
     bookmarks: z.array(bookmarkSchema).catch([]),
     openFiles: z.array(openFileSchema).catch([]),
     vimMode: z.boolean().catch(false),
+    vimConfig: z.string().catch(""),
     autoCloseOpenFiles: z.boolean().catch(true),
     autoCloseOpenFilesAfterHours: z
         .number()

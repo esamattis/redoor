@@ -420,6 +420,9 @@ The UI is a TanStack Router application embedded in the server binary.
 - **Long-lived resources are classes created once in `main.tsx`** (`TerminalSessions`,
   `UploadQueue`, `EditorWorkspace`, `ShortcutRegistry`, `VaultSession`) and exposed through
   the router context, instead of work run from component effects.
+- **Vim configuration** is a mapping-only source string in user state. Settings validates
+  each line, and the editor replaces the Vim adapter's page-wide user mappings when the
+  preference changes, so removed overrides restore defaults without recreating buffers.
 - **Editor buffers** are one CodeMirror view with one state per open file. They are stored on
   the server per user, so editing can continue on another computer, and device text never
   replaces unsaved edits.

@@ -83,6 +83,7 @@ class FakeBufferApi implements EditorBufferApi {
 
 const settings = {
     vimMode: false,
+    vimConfig: "",
     wrapLines: false,
     theme: "dark",
     editable: true,

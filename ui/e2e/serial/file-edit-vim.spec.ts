@@ -107,6 +107,72 @@ test.describe.serial("File editor options", () => {
         ).toHaveText("content1");
     });
 
+    test("should persist and replace Vim mappings from preferences", async ({
+        page,
+    }) => {
+        const config = `" Custom keys
+inoremap jj <esc>
+map ö ^
+map ä $
+vmap ä $
+map x l`;
+
+        const filePath = path.join(ctx.testDirPath, "vim-config.txt");
+        const fileUrl = `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(filePath)}`;
+        await fs.writeFile(filePath, "  one two");
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+        await page.goto(`${WEB_BASE_URL}/settings/preferences`);
+
+        const configuration = page.getByRole("textbox", {
+            name: "Vim configuration",
+        });
+
+        await configuration.fill(config);
+        await page
+            .getByRole("button", { name: "Vim mode", exact: true })
+            .click();
+        // Readback ensures navigation cannot abort a pending settings write.
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ vimConfig: config, vimMode: true });
+        await page.reload();
+        // Reload proves the source belongs to the user's persisted preferences.
+        await expect(configuration).toHaveValue(config);
+        await page.goto(fileUrl);
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("  one two");
+        await editor.focus();
+        await page.keyboard.type("x");
+        // Custom x moves rather than deleting the file's first character.
+        await expect(editor).toHaveText("  one two");
+        await page.keyboard.press("i");
+        await page.keyboard.type("jj");
+        // A multi-key insert mapping must exit without leaving either j behind.
+        await expect(page.getByText("--NORMAL--")).toBeVisible();
+        await expect(editor).toHaveText("  one two");
+        // Playwright has no Unicode keyboard layout; send the localized key event.
+        await editor.dispatchEvent("keydown", { key: "ö", code: "Semicolon" });
+        await page.keyboard.type("v");
+        await editor.dispatchEvent("keydown", { key: "ä", code: "Quote" });
+        // Unicode mappings work in both normal and visual contexts.
+        await expect(
+            page.getByLabel("Editor selected text", { exact: true }),
+        ).toHaveText("one two");
+        await page.keyboard.press("Escape");
+        await page.goto(`${WEB_BASE_URL}/settings/preferences`);
+        await configuration.fill("");
+        await expect
+            .poll(async () => (await api.getUserState()).state)
+            .toMatchObject({ vimConfig: "" });
+        await page.goto(fileUrl);
+        await expect(editor).toHaveText("  one two");
+        await editor.focus();
+        await page.keyboard.type("0x");
+        // Removing the source restores Vim's built-in delete key for an existing buffer.
+        await expect(editor).toHaveText(" one two");
+    });
+
     test("should briefly highlight a Vim yank in the file editor", async ({
         page,
     }) => {

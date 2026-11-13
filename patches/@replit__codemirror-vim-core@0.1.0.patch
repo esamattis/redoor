@@ -1,8 +1,40 @@
 diff --git a/vim.js b/vim.js
-index 3cafa6bcf0c99f2ae25a5da8936d3f29445f2d6d..12cc77618d2212b3af06ba026fadde84c6f35efc 100644
+index 3cafa6bcf0c99f2ae25a5da8936d3f29445f2d6d..e532045a51607ac154a7172fe15d661dd1c05815 100644
 --- a/vim.js
 +++ b/vim.js
-@@ -2905,3 +2905,9 @@ export function initVim(CM) {
+@@ -144,6 +144,8 @@ export function initVim(CM) {
+     { keys: '-', type: 'motion', motion: 'moveByLines', motionArgs: { forward: false, toFirstChar:true }},
+     { keys: '_', type: 'motion', motion: 'moveByLines', motionArgs: { forward: true, toFirstChar:true, repeatOffset:-1 }},
+     { keys: '$', type: 'motion', motion: 'moveToEol', motionArgs: { inclusive: true }},
++    // Keep g_ built in so nonrecursive mappings can use the last nonblank motion.
++    { keys: 'g_', type: 'motion', motion: 'moveToLastNonWhiteSpaceCharacter', motionArgs: { inclusive: true }},
+     { keys: '%', type: 'motion', motion: 'moveToMatchedSymbol', motionArgs: { inclusive: true, toJumplist: true }},
+     { keys: 'f<character>', type: 'motion', motion: 'moveToCharacter', motionArgs: { forward: true , inclusive: true }},
+     { keys: 'F<character>', type: 'motion', motion: 'moveToCharacter', motionArgs: { forward: false }},
+@@ -851,6 +853,10 @@ export function initVim(CM) {
+       var actualLength = defaultKeymap.length,
+           origLength = defaultKeymapLength;
+       var userKeymap = defaultKeymap.slice(0, actualLength - origLength);
++      // Release removed keys before retained contexts are registered again below.
++      for (var mapping of userKeymap) {
++        if (mapping.keys) removeUsedKeys(mapping.keys);
++      }
+       defaultKeymap = defaultKeymap.slice(actualLength - origLength);
+       if (ctx) {
+         // If a specific context is being cleared, we need to keep mappings
+@@ -2530,6 +2536,11 @@ export function initVim(CM) {
+     moveToEol: function(cm, head, motionArgs, vim) {
+       return moveToEol(cm, head, motionArgs, vim, false);
+     },
++    // Unlike $, g_ stops before trailing whitespace and counts target lines.
++    moveToLastNonWhiteSpaceCharacter: function(cm, head, motionArgs) {
++      var line = Math.min(cm.lastLine(), head.line + motionArgs.repeat - 1);
++      return new Pos(line, Math.max(0, cm.getLine(line).trimEnd().length - 1));
++    },
+     moveToFirstNonWhiteSpaceCharacter: function(cm, head) {
+       // Go to the start of the line where the text begins, or the end for
+       // whitespace-only lines
+@@ -2905,3 +2916,9 @@ export function initVim(CM) {
        vimGlobalState.registerController.pushText(
            args.registerName, 'yank',
            text, args.linewise, vim.visualBlock);

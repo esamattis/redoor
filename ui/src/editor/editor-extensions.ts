@@ -1,3 +1,4 @@
+import { applyVimConfig } from "./vim-config";
 import {
     autocompletion,
     closeBrackets,
@@ -65,6 +66,7 @@ import { getBaseName } from "#ui/utils/path";
  */
 export type EditorSettings = {
     vimMode: boolean;
+    vimConfig: string;
     wrapLines: boolean;
     theme: "light" | "dark";
     editable: boolean;
@@ -305,6 +307,8 @@ export class EditorConfiguration {
 
     /** Picks the shared Vim extension for the preference. */
     private vimContent(settings: EditorSettings) {
+        applyVimConfig(settings.vimMode ? settings.vimConfig : "");
+
         return settings.vimMode ? this.vimOn : this.vimOff;
     }
 
