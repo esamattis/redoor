@@ -758,6 +758,108 @@ test.describe.serial("Vault", () => {
         await expect(page.getByLabel("Vault status")).toHaveText("Locked");
     });
 
+    test("shows the dialog non-modally while a passkey prompt is pending", async ({
+        page,
+    }) => {
+        await addVirtualAuthenticator(page);
+        await page.goto(`${WEB_BASE_URL}/settings/vault`);
+        await page.getByRole("button", { name: "Create vault" }).click();
+        const create = page.getByRole("dialog", { name: "Create vault" });
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passkey" })
+            .click();
+        await create.getByLabel("Passkey name").fill("Virtual key");
+        await create
+            .getByRole("checkbox", { name: "Unlock with a passphrase" })
+            .click();
+        await create.getByRole("button", { name: "Create vault" }).click();
+        await expect(create).toBeHidden({ timeout: 30_000 });
+
+        // Holds every passkey request open until the test refuses it, like a password manager
+        // waiting for the user, and records aborts.
+        await page.evaluate(() => {
+            navigator.credentials.get = (options) =>
+                new Promise<Credential | null>((_resolve, reject) => {
+                    const signal = options?.signal;
+                    document.body.dataset.passkeyPending = "true";
+
+                    window.addEventListener(
+                        "refuse-passkey",
+                        () => {
+                            delete document.body.dataset.passkeyPending;
+                            reject(
+                                new DOMException("Refused", "NotAllowedError"),
+                            );
+                        },
+                        { once: true },
+                    );
+
+                    signal?.addEventListener("abort", () => {
+                        delete document.body.dataset.passkeyPending;
+                        document.body.dataset.passkeyAborted = "true";
+                        reject(signal.reason);
+                    });
+                });
+        });
+
+        await page.getByRole("button", { name: "Lock now" }).click();
+        await page.getByRole("button", { name: "Unlock", exact: true }).click();
+        const dialog = page.getByRole("dialog", { name: "Unlock vault" });
+
+        const passkey = dialog.getByRole("button", {
+            name: "Unlock with passkey",
+        });
+
+        // Page content outside the dialog; a CSS locator, because role queries skip inert content.
+        const pageContent = page.locator("[aria-label='Vault status']");
+        const isModal = () => dialog.evaluate((el) => el.matches(":modal"));
+
+        const isPageInert = () =>
+            pageContent.evaluate((el) => el.closest("[inert]") !== null);
+
+        // The dialog starts out modal, as every dialog without a pending prompt.
+        await expect.poll(isModal).toBe(true);
+
+        await passkey.click();
+        await expect(page.locator("body")).toHaveAttribute(
+            "data-passkey-pending",
+            "true",
+        );
+        // A modal dialog would cover and inert a prompt a password manager injects into <body>.
+        await expect.poll(isModal).toBe(false);
+        // The page behind the dialog still cannot be used while the dialog is non-modal.
+        await expect.poll(isPageInert).toBe(true);
+        // The dialog itself stays usable.
+        await expect(
+            dialog.getByRole("button", { name: "Cancel" }).last(),
+        ).toBeEnabled();
+
+        await page.evaluate(() => {
+            window.dispatchEvent(new Event("refuse-passkey"));
+        });
+        // A settled prompt makes the still open dialog modal again.
+        await expect.poll(isModal).toBe(true);
+        // Nothing stays inert once the dialog is modal again.
+        await expect.poll(isPageInert).toBe(false);
+
+        await passkey.click();
+        await expect(page.locator("body")).toHaveAttribute(
+            "data-passkey-pending",
+            "true",
+        );
+        await expect.poll(isModal).toBe(false);
+        await page.keyboard.press("Escape");
+        // Escape still cancels the non-modal dialog, which gets no native cancel event.
+        await expect(dialog).toBeHidden();
+        // Cancelling aborted the pending passkey request.
+        await expect(page.locator("body")).toHaveAttribute(
+            "data-passkey-aborted",
+            "true",
+        );
+        // The page is usable again after the dialog closed.
+        await expect.poll(isPageInert).toBe(false);
+    });
+
     test("hides a dialog while the vault unlock it asks for is open", async ({
         page,
     }) => {
@@ -773,8 +875,8 @@ test.describe.serial("Vault", () => {
 
         const unlock = page.getByRole("dialog", { name: "Unlock vault" });
         await expect(unlock).toBeVisible();
-        // Only the topmost dialog stays open, so password managers that draw their passkey
-        // prompt into the open dialog do not put it in the covered one.
+        // Only the topmost dialog stays open, so a passkey prompt only has to lift the modality
+        // of that one dialog.
         await expect(rename).toBeHidden();
 
         await unlock.getByRole("button", { name: "Cancel" }).first().click();

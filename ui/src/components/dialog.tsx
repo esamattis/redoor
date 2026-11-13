@@ -54,41 +54,87 @@ type StackedDialog = {
     focus: HTMLElement | null;
 };
 
+/** Marks the topmost dialog while it is shown non-modally, so its classes can stand in for the modal layout. */
+const suspendedAttribute = "data-modality-suspended";
+
 /**
  * Keeps only the topmost dialog open when dialogs stack, such as the vault unlock dialog a
- * form dialog asks for. Password managers like 1Password draw their passkey prompt into the
- * page, and with several open modal dialogs it lands in a covered, inert one, so the prompt
- * never shows. The covered dialogs stay mounted with their state and reopen when the dialog
- * above them closes.
+ * form dialog asks for. The covered dialogs stay mounted with their state and reopen when the
+ * dialog above them closes, so only one dialog ever needs to change its modality.
+ *
+ * Password managers like 1Password draw their passkey prompt as an ordinary element in
+ * `<body>`. A modal dialog sits in the browser top layer and makes everything else inert, so
+ * that prompt is drawn underneath it, cannot be clicked and the passkey request never
+ * settles. While a passkey prompt runs, `suspendModality` therefore shows the topmost dialog
+ * non-modally and makes only the page content around it inert.
  */
 class ModalDialogStack {
     private entries: StackedDialog[] = [];
+    /** Number of passkey prompts in flight; refcounted because prompts can overlap. */
+    private suspensions = 0;
+    /** Elements this stack made inert, so restoring touches nothing it did not set. */
+    private inertElements: HTMLElement[] = [];
+    /** The dialog that currently carries the suspended layout. */
+    private suspendedDialog: HTMLDialogElement | null = null;
+    /** Removes the Escape handler that replaces the native cancel of modal dialogs. */
+    private removeEscapeHandler: (() => void) | null = null;
 
     /**
-     * Shows the dialog modally above all others and hides the one it covers. Returns the
-     * release that closes it again and reopens the dialog below.
+     * Shows the dialog above all others and hides the one it covers. Returns the release
+     * that closes it again and reopens the dialog below.
      */
     push(dialog: HTMLDialogElement): () => void {
         const covered = this.entries.at(-1);
 
         if (covered !== undefined) {
-            const active = document.activeElement;
-
-            covered.focus =
-                active instanceof HTMLElement && covered.dialog.contains(active)
-                    ? active
-                    : null;
-
+            covered.focus = focusedWithin(covered.dialog);
             covered.dialog.close();
         }
 
         this.entries.push({ dialog, focus: null });
 
         if (!dialog.open) {
-            dialog.showModal();
+            this.open(dialog);
         }
 
+        this.refreshSuspension();
+
         return () => this.release(dialog);
+    }
+
+    /**
+     * Shows the topmost dialog non-modally until the returned release runs, so content that a
+     * password manager injects into `<body>` stays visible and clickable. The release is
+     * idempotent, and modality only returns once every overlapping suspension released.
+     */
+    suspendModality(): () => void {
+        let released = false;
+        this.suspensions += 1;
+
+        if (this.suspensions === 1) {
+            this.reopenTopmost();
+            this.addEscapeHandler();
+        }
+
+        this.refreshSuspension();
+
+        return () => {
+            if (released) {
+                return;
+            }
+
+            released = true;
+            this.suspensions -= 1;
+
+            if (this.suspensions > 0) {
+                return;
+            }
+
+            this.removeEscapeHandler?.();
+            this.removeEscapeHandler = null;
+            this.refreshSuspension();
+            this.reopenTopmost();
+        };
     }
 
     /**
@@ -113,21 +159,145 @@ class ModalDialogStack {
 
         const uncovered = this.entries.at(-1);
 
-        if (!wasTopmost || uncovered === undefined) {
+        if (wasTopmost && uncovered !== undefined) {
+            if (!uncovered.dialog.open) {
+                this.open(uncovered.dialog);
+            }
+
+            uncovered.focus?.focus();
+            uncovered.focus = null;
+        }
+
+        this.refreshSuspension();
+    }
+
+    /** Opens a dialog in the modality the stack is currently in. */
+    private open(dialog: HTMLDialogElement): void {
+        if (this.suspensions > 0) {
+            dialog.show();
+        } else {
+            dialog.showModal();
+        }
+    }
+
+    /**
+     * Reopens the topmost dialog in the current modality, because a dialog cannot switch
+     * between modal and non-modal while open. The focused control is put back, since closing
+     * and opening move focus.
+     */
+    private reopenTopmost(): void {
+        const topmost = this.entries.at(-1);
+
+        if (topmost === undefined || !topmost.dialog.open) {
             return;
         }
 
-        if (!uncovered.dialog.open) {
-            uncovered.dialog.showModal();
+        const isModal = topmost.dialog.matches(":modal");
+
+        if (isModal === (this.suspensions === 0)) {
+            return;
         }
 
-        uncovered.focus?.focus();
-        uncovered.focus = null;
+        const focus = focusedWithin(topmost.dialog);
+        topmost.dialog.close();
+        this.open(topmost.dialog);
+        focus?.focus();
+    }
+
+    /**
+     * Moves the suspended layout and the inert page content to the current topmost dialog,
+     * or removes them when modality is not suspended.
+     */
+    private refreshSuspension(): void {
+        for (const element of this.inertElements) {
+            element.inert = false;
+        }
+
+        this.inertElements = [];
+        this.suspendedDialog?.removeAttribute(suspendedAttribute);
+        this.suspendedDialog = null;
+
+        const topmost = this.entries.at(-1);
+
+        if (this.suspensions === 0 || topmost === undefined) {
+            return;
+        }
+
+        topmost.dialog.setAttribute(suspendedAttribute, "");
+        this.suspendedDialog = topmost.dialog;
+
+        // Making the app root inert would make the dialog inside it inert too, so every
+        // sibling on the way from the dialog up to the app root is made inert instead. The
+        // rest of <body> stays untouched for the password manager's injected prompt.
+        const appRoot = topmost.dialog.closest("#app");
+        let node: Element = topmost.dialog;
+
+        while (appRoot !== null && node !== appRoot && node.parentElement) {
+            for (const sibling of node.parentElement.children) {
+                if (
+                    sibling !== node &&
+                    sibling instanceof HTMLElement &&
+                    !sibling.inert
+                ) {
+                    sibling.inert = true;
+                    this.inertElements.push(sibling);
+                }
+            }
+
+            node = node.parentElement;
+        }
+    }
+
+    /**
+     * Non-modal dialogs get no native `cancel` on Escape, so this dispatches one on the
+     * topmost dialog and the dialog's own cancel handling (which respects busy state) runs.
+     */
+    private addEscapeHandler(): void {
+        const onKeyDown = (event: KeyboardEvent) => {
+            const topmost = this.entries.at(-1);
+
+            // Escape inside the password manager's own prompt belongs to the prompt.
+            const fromDialog =
+                event.target === document.body ||
+                (event.target instanceof Node &&
+                    topmost?.dialog.contains(event.target) === true);
+
+            if (
+                event.key !== "Escape" ||
+                topmost === undefined ||
+                !fromDialog
+            ) {
+                return;
+            }
+
+            event.preventDefault();
+            event.stopPropagation();
+            topmost.dialog.dispatchEvent(
+                new Event("cancel", { cancelable: true }),
+            );
+        };
+
+        window.addEventListener("keydown", onKeyDown, true);
+
+        this.removeEscapeHandler = () =>
+            window.removeEventListener("keydown", onKeyDown, true);
     }
 }
 
-/** Shared by every dialog, because stacking spans unrelated components. */
-const modalDialogStack = new ModalDialogStack();
+/** The focused control inside the dialog, to restore it after the dialog closes and reopens. */
+function focusedWithin(dialog: HTMLDialogElement): HTMLElement | null {
+    const active = document.activeElement;
+
+    return active instanceof HTMLElement && dialog.contains(active)
+        ? active
+        : null;
+}
+
+/**
+ * Shared by every dialog, because stacking spans unrelated components, and by the passkey
+ * prompts, which suspend modality for whichever dialog is on top.
+ */
+export const modalDialogStack = new ModalDialogStack();
 
 export function Dialog(props: DialogProps) {
     const titleId = React.useId();
@@ -259,7 +429,7 @@ export function Dialog(props: DialogProps) {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
-            className={`m-auto touch-pan-y overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "search" ? "h-dvh max-h-dvh w-full max-w-none sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl" : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${props.size === "wide" ? "max-w-4xl" : props.size === "medium" ? "max-w-2xl" : "max-w-md"}`}`}
+            className={`m-auto touch-pan-y data-modality-suspended:fixed data-modality-suspended:inset-0 data-modality-suspended:z-[90] data-modality-suspended:shadow-[0_0_0_100vmax_rgb(0_0_0/0.6)] overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "search" ? "h-dvh max-h-dvh w-full max-w-none sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl" : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${props.size === "wide" ? "max-w-4xl" : props.size === "medium" ? "max-w-2xl" : "max-w-md"}`}`}
             onCancel={(event) => {
                 event.preventDefault();
 

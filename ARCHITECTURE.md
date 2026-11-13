@@ -452,6 +452,9 @@ stores only wrapped keys (`vault.json`) and never sees the vault key.
   decrypts as a stream of authenticated 64 KiB chunks, so plaintext never touches disk on the
   server and agents only ever store ciphertext. Writes go through staging with a precondition
   on the version read. The server makes itself non-dumpable on Linux.
+- **Passkey prompts lift dialog modality.** Password managers such as 1Password inject their
+  passkey prompt into `<body>`, where a modal dialog would cover it and make it inert, so the
+  topmost dialog is shown non-modally (with the page around it inert) while a prompt runs.
 
 ## SSH device keys
 

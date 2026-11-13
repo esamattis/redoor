@@ -16,6 +16,7 @@ import {
     randomBytes,
     toBase64Url,
 } from "#ui/vault/vault-crypto";
+import { modalDialogStack } from "#ui/components/dialog";
 import {
     callerStack,
     nextPasskeyPromptId,
@@ -70,6 +71,9 @@ function toArrayBuffer(source: BufferSource): ArrayBuffer {
  * Runs one browser passkey prompt with console logging of its start, end and failure. A
  * password manager sometimes shows a prompt twice, and the numbered lines with caller
  * stacks show whether redoor asked twice or the prompt repeated by itself.
+ *
+ * Dialog modality is suspended for the prompt, because password managers such as 1Password
+ * inject their prompt into `<body>`, where a modal dialog would cover it and make it inert.
  */
 async function loggedPrompt<T>(
     options: {
@@ -99,6 +103,9 @@ async function loggedPrompt<T>(
         userActivation: navigator.userActivation?.isActive,
         stack: callerStack(),
     });
+
+    const restoreModality = modalDialogStack.suspendModality();
+    vaultDebug(`passkey prompt #${id} (${kind}) suspended dialog modality`);
 
     try {
         const result = await prompt();
@@ -136,6 +143,8 @@ async function loggedPrompt<T>(
         throw error;
     } finally {
         signal?.removeEventListener("abort", onAbort);
+        restoreModality();
+        vaultDebug(`passkey prompt #${id} (${kind}) restored dialog modality`);
     }
 }
 
