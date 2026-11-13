@@ -8,6 +8,7 @@ import {
     type StateEffect,
 } from "@codemirror/state";
 import { EditorView, type ViewUpdate } from "@codemirror/view";
+import { getCM } from "@replit/codemirror-vim";
 import { MutationObserver, type QueryClient } from "@tanstack/react-query";
 import type { DeleteEditorBufferResponse } from "#bindings/DeleteEditorBufferResponse";
 import type { PutEditorBufferRequest } from "#bindings/PutEditorBufferRequest";
@@ -198,18 +199,31 @@ export class EditorWorkspace extends ExternalStore<
         string
     >;
 
+    private readonly onCaretLine: (caret: CaretReport) => void;
+    private readonly saveInBackground: (
+        keys: string[],
+    ) => Promise<string | null>;
+
     /**
      * Wires CodeMirror callbacks to whichever editor component is mounted at call time.
      * `onCaretLine` hears an open file's caret line whenever its buffer is written, so the
      * open files list can show where each file was left without loading the buffers.
+     * `saveInBackground` saves files that are not shown, for `:wall`: the workspace knows
+     * which buffers have unsaved edits but not the devices they belong to. It resolves to a
+     * message for the user, or null when there is nothing to say.
      */
     constructor(
         api: EditorBufferApi,
         queryClient: QueryClient,
-        private readonly onCaretLine: (caret: CaretReport) => void = () =>
-            undefined,
+        hooks: {
+            onCaretLine?: (caret: CaretReport) => void;
+            saveInBackground?: (keys: string[]) => Promise<string | null>;
+        } = {},
     ) {
         super(new Map());
+        this.onCaretLine = hooks.onCaretLine ?? (() => undefined);
+        this.saveInBackground =
+            hooks.saveInBackground ?? (() => Promise.resolve(null));
 
         this.writes = new MutationObserver(queryClient, {
             mutationFn: (write: BufferWrite) =>
@@ -226,6 +240,12 @@ export class EditorWorkspace extends ExternalStore<
             onSave: () => {
                 this.handlers?.current.onSave();
                 this.view?.focus();
+            },
+            onSaveAll: () => {
+                // The shown file saves through its editor, which also handles encrypted files.
+                this.handlers?.current.onSave();
+                this.view?.focus();
+                void this.saveOthers();
             },
         });
     }
@@ -958,6 +978,36 @@ export class EditorWorkspace extends ExternalStore<
             buffer.conflict = conflict;
             this.publishStatuses();
         }
+    }
+
+    /**
+     * Saves the open files with unsaved edits that are not shown, and reports the outcome
+     * in the editor the way Vim reports command results.
+     */
+    private async saveOthers() {
+        const keys = [...this.buffers.values()].flatMap((buffer) =>
+            buffer.isDirty &&
+            this.openKeys.has(buffer.key) &&
+            !this.isShown(buffer.key)
+                ? [buffer.key]
+                : [],
+        );
+
+        if (keys.length === 0) {
+            return;
+        }
+
+        const message = await this.saveInBackground(keys);
+        const cm = this.view === null ? null : getCM(this.view);
+
+        if (message === null || cm === null) {
+            return;
+        }
+
+        const element = document.createElement("span");
+        element.className = "cm-vim-message";
+        element.textContent = message;
+        cm.openNotification(element, { bottom: true, duration: 10_000 });
     }
 
     /** Whether a buffer is the one in the view right now. */

@@ -84,6 +84,15 @@ Vim.defineEx("write", "w", (cm) => {
     cm.cm6.state.facet(vimWriteHandler)?.();
 });
 
+/** Carries the `:wall` handler the same way, since that command is page-wide too. */
+const vimWriteAllHandler = Facet.define<() => void, (() => void) | null>({
+    combine: (handlers) => handlers[0] ?? null,
+});
+
+Vim.defineEx("wall", "wa", (cm) => {
+    cm.cm6.state.facet(vimWriteAllHandler)?.();
+});
+
 /**
  * How many undo events each buffer keeps at least (CodeMirror prunes beyond roughly this
  * depth). It bounds the memory and storage an open file's history can take.
@@ -116,6 +125,8 @@ export type EditorCallbacks = {
     onUpdate: (update: ViewUpdate) => void;
     onFocus: () => void;
     onSave: () => void;
+    /** `:wall`, which saves every open file with unsaved changes, not just the shown one. */
+    onSaveAll: () => void;
 };
 
 /**
@@ -195,6 +206,7 @@ export class EditorConfiguration {
             vim({ status: true }),
             vimYankHighlightExtension,
             vimWriteHandler.of(() => callbacks.onSave()),
+            vimWriteAllHandler.of(() => callbacks.onSaveAll()),
             EditorView.contentAttributes.of({ "data-vim-mode": "true" }),
         ];
 

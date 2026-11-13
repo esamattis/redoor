@@ -116,9 +116,9 @@ afterEach(() => {
 function createWorkspace(api = new FakeBufferApi()) {
     const caretLines: CaretReport[] = [];
 
-    const workspace = new EditorWorkspace(api, new QueryClient(), (caret) =>
-        caretLines.push(caret),
-    );
+    const workspace = new EditorWorkspace(api, new QueryClient(), {
+        onCaretLine: (caret) => caretLines.push(caret),
+    });
 
     onTestFinished(() => workspace.deactivate(container));
 

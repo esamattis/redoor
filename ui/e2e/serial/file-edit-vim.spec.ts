@@ -3,6 +3,7 @@ import { test, expect } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";
+import { defaultUserState, type OpenFile } from "#ui/user-state";
 import {
     deleteAllTerminalSessions,
     expectTerminalBlurred,
@@ -338,5 +339,65 @@ five`,
         // :w must not bounce focus to chrome, or the next Vim motion leaves the buffer.
         await expect(editor).toBeFocused();
         await expect(page.getByText("--NORMAL--")).toBeVisible();
+    });
+
+    test("should save every edited open file with :wa", async ({ page }) => {
+        const api = new ApiClient(API_BASE_URL);
+        await api.login("test-user", "test-password");
+
+        const files: OpenFile[] = ["vim-wall-a.txt", "vim-wall-b.txt"].map(
+            (name) => ({
+                agentId: ctx.agentId,
+                path: path.join(ctx.testDirPath, name),
+                name,
+                agentName: ctx.agentName,
+            }),
+        );
+
+        const [first, second] = files;
+
+        if (first === undefined || second === undefined) {
+            throw new Error("Expected two open files");
+        }
+
+        await fs.writeFile(first.path, "alpha");
+        await fs.writeFile(second.path, "beta");
+        await api.updateUserState({
+            state: { ...defaultUserState, vimMode: true, openFiles: files },
+        });
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(first.path)}`,
+        );
+        const editor = page.getByLabel("File editor", { exact: true });
+        await expect(editor).toHaveText("alpha");
+        await editor.focus();
+        await page.keyboard.press("A");
+        await page.keyboard.type("1");
+        await page.keyboard.press("Escape");
+        await expect(
+            page.getByRole("button", { name: "Save file" }),
+        ).toBeEnabled();
+
+        // Switching in the app keeps the first file's unsaved buffer in this page.
+        await page
+            .getByRole("navigation", { name: "Application" })
+            .getByRole("list", { name: "Open files" })
+            .getByRole("link", { name: second.name, exact: true })
+            .click();
+        await expect(editor).toHaveText("beta");
+        await editor.focus();
+        await page.keyboard.press("A");
+        await page.keyboard.type("2");
+        await page.keyboard.press("Escape");
+
+        await page.keyboard.type(":wa");
+        await page.keyboard.press("Enter");
+        // The shown file saves through its own editor, like :w.
+        await expect(page.getByLabel("File edit status")).toHaveText("Saved");
+        // The file that is not shown is saved too, with its unsaved text.
+        await expect(page.getByText("Saved 1 other file")).toBeVisible();
+        await expect.poll(() => fs.readFile(first.path, "utf8")).toBe("alpha1");
+        await expect.poll(() => fs.readFile(second.path, "utf8")).toBe("beta2");
     });
 });

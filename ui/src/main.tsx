@@ -14,6 +14,7 @@ import { ShortcutRegistry, ShortcutRegistryContext } from "#ui/shortcuts";
 import { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import { findCachedAgent, invalidateAllAgentData } from "#ui/queries";
 import { UploadQueue } from "#ui/upload-queue";
+import { saveFilesInBackground } from "#ui/editor/save-in-background";
 import { EditorWorkspace } from "#ui/editor/editor-workspace";
 import { VaultSession } from "#ui/vault/vault-session";
 import { setOpenFileLine, updateUserState } from "#ui/user-state";
@@ -69,14 +70,19 @@ const uploads = new UploadQueue({
 // Open files keep their editor buffers (caret, scroll, undo history, unsaved text) while the
 // user moves between pages, and one CodeMirror view serves them all for the page's lifetime.
 // The open files list mirrors each caret line, so the menu can show it.
-const editor = new EditorWorkspace(api, queryClient, (caret) => {
-    updateUserState({ api, queryClient, store }, (current) => {
-        const openFiles = setOpenFileLine(current.openFiles, caret);
+// `:wall` saves the open files that are not shown through the devices they belong to.
+const editor: EditorWorkspace = new EditorWorkspace(api, queryClient, {
+    onCaretLine: (caret) => {
+        updateUserState({ api, queryClient, store }, (current) => {
+            const openFiles = setOpenFileLine(current.openFiles, caret);
 
-        return openFiles === current.openFiles
-            ? current
-            : { ...current, openFiles };
-    });
+            return openFiles === current.openFiles
+                ? current
+                : { ...current, openFiles };
+        });
+    },
+    saveInBackground: (keys) =>
+        saveFilesInBackground({ api, queryClient, editor }, keys),
 });
 
 editor.start(window);

@@ -425,7 +425,10 @@ The UI is a TanStack Router application embedded in the server binary.
   preference changes, so removed overrides restore defaults without recreating buffers.
 - **Editor buffers** are one CodeMirror view with one state per open file. They are stored on
   the server per user, so editing can continue on another computer, and device text never
-  replaces unsaved edits.
+  replaces unsaved edits. Vim's `:wall` saves the shown file through its editor and the
+  other edited buffers loaded in the page through a save hook `main.tsx` gives the
+  workspace, since only the app knows each file's device. Encrypted and conflicting files
+  are skipped, because saving them needs the user in that file's editor.
 - **Open files close themselves when left alone.** Each open file records when it was last
   opened, shown, left or edited, and the browser closes clean files untouched for longer than
   the user's delay (24 hours by default, set in Preferences). The sweep runs in the browser
