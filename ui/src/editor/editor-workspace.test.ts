@@ -296,8 +296,15 @@ test("each buffer write reports the caret line for the open files list", async (
     // The line is reported with the debounced write, not on every caret move.
     expect(caretLines).toEqual([]);
     await vi.advanceTimersByTimeAsync(1000);
-    // The write carries the line the caret is on.
-    expect(caretLines).toEqual([{ key: "a", line: 2, appliedReveal: null }]);
+    // The write carries the line the caret is on, and that a caret move left it unedited.
+    expect(caretLines).toEqual([
+        { key: "a", line: 2, appliedReveal: null, dirty: false },
+    ]);
+
+    view.dispatch({ changes: { from: 0, insert: "x" } });
+    await vi.advanceTimersByTimeAsync(1000);
+    // An edit is reported as unsaved, so the open files list can mark the file.
+    expect(caretLines.at(-1)).toMatchObject({ key: "a", dirty: true });
 });
 
 test("scrolling alone never writes, and hiding the page only writes what changed", async () => {

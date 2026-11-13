@@ -65,6 +65,12 @@ export const openFileSchema = z.object({
      * was recorded have none until the auto-close sweep stamps them.
      */
     touchedAt: z.number().optional().catch(undefined),
+    /**
+     * Whether the file's buffer had unsaved edits when it was last written, so the open files
+     * list can mark it without loading a buffer this page has not shown, and so the mark
+     * follows the user to another computer. A buffer loaded in the page reports its own state.
+     */
+    dirty: z.boolean().optional().catch(undefined),
 });
 
 export type OpenFile = z.infer<typeof openFileSchema>;
@@ -208,11 +214,12 @@ export function openFileAtLine(
 }
 
 /**
- * Records where an open file's caret is, as its buffer is written, and that the file was
- * touched, since a buffer is only written when the user edits or scrolls it. An unchanged
- * line with a recent touch keeps the same list, so moving within a line or retyping it
- * sends no settings write. While a line request the buffer has not applied is pending, the
- * caret has not gone there yet, so the requested line stays listed.
+ * Records where an open file's caret is and whether it has unsaved edits, as its buffer is
+ * written, and that the file was touched, since a buffer is only written when the user edits
+ * or scrolls it. An unchanged line and unsaved state with a recent touch keeps the same list,
+ * so moving within a line or retyping it sends no settings write. While a line request the
+ * buffer has not applied is pending, the caret has not gone there yet, so the requested line
+ * stays listed and only the unsaved state follows the buffer.
  */
 export function setOpenFileLine(
     openFiles: OpenFile[],
@@ -221,24 +228,35 @@ export function setOpenFileLine(
 ) {
     const target = openFiles.find((file) => getOpenFileKey(file) === caret.key);
 
-    if (
-        target === undefined ||
-        (target.reveal !== undefined &&
-            target.reveal.id !== caret.appliedReveal)
-    ) {
+    if (target === undefined) {
         return openFiles;
+    }
+
+    const isDirtyUnchanged = (target.dirty === true) === caret.dirty;
+
+    if (
+        target.reveal !== undefined &&
+        target.reveal.id !== caret.appliedReveal
+    ) {
+        return isDirtyUnchanged
+            ? openFiles
+            : openFiles.map((file) =>
+                  file === target ? { ...file, dirty: caret.dirty } : file,
+              );
     }
 
     const isTouchFresh =
         target.touchedAt !== undefined &&
         now - target.touchedAt < TOUCH_REFRESH_MS;
 
-    if (target.line === caret.line && isTouchFresh) {
+    if (target.line === caret.line && isDirtyUnchanged && isTouchFresh) {
         return openFiles;
     }
 
     return openFiles.map((file) =>
-        file === target ? { ...file, line: caret.line, touchedAt: now } : file,
+        file === target
+            ? { ...file, line: caret.line, dirty: caret.dirty, touchedAt: now }
+            : file,
     );
 }
 

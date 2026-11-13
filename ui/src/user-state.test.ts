@@ -202,6 +202,7 @@ test("records an open file's caret line without rewriting an unchanged list", ()
         key: "a:/two",
         line: 7,
         appliedReveal: null,
+        dirty: false,
     });
 
     // Only the file whose buffer was written gets the line.
@@ -211,7 +212,12 @@ test("records an open file's caret line without rewriting an unchanged list", ()
 
     // The same line again keeps the list, so a write within a line sends no settings write.
     expect(
-        setOpenFileLine(moved, { key: "a:/two", line: 7, appliedReveal: null }),
+        setOpenFileLine(moved, {
+            key: "a:/two",
+            line: 7,
+            appliedReveal: null,
+            dirty: false,
+        }),
     ).toBe(moved);
     // A buffer of a file no longer open changes nothing.
     expect(
@@ -219,6 +225,7 @@ test("records an open file's caret line without rewriting an unchanged list", ()
             key: "a:/gone",
             line: 3,
             appliedReveal: null,
+            dirty: false,
         }),
     ).toBe(files);
 });
@@ -236,6 +243,7 @@ test("a caret written before a line request is shown keeps the requested line", 
             key: "a:/one",
             line: 5,
             appliedReveal: "r1",
+            dirty: false,
         }),
     ).toBe(requested);
 
@@ -243,6 +251,7 @@ test("a caret written before a line request is shown keeps the requested line", 
         key: "a:/one",
         line: 43,
         appliedReveal: "r2",
+        dirty: false,
     });
 
     // Once the request is applied, the caret is followed again.
@@ -376,6 +385,43 @@ test("stamps and touches open files without rewriting unchanged lists", () => {
     expect(touchOpenFiles(stamped, new Set(["a:/gone"]), 70)).toBe(stamped);
 });
 
+test("a buffer write records whether the open file has unsaved edits", () => {
+    const files = [{ ...openEntry("a", "one"), line: 3, touchedAt: 0 }];
+    const now = 1;
+
+    const edited = setOpenFileLine(
+        files,
+        { key: "a:/one", line: 3, appliedReveal: null, dirty: true },
+        now,
+    );
+
+    // The list marks unsaved files without loading their buffers.
+    expect(edited[0]?.dirty).toBe(true);
+
+    const saved = setOpenFileLine(
+        edited,
+        { key: "a:/one", line: 3, appliedReveal: null, dirty: false },
+        now,
+    );
+
+    // A save clears the mark even though the caret stayed on the same line.
+    expect(saved[0]?.dirty).toBe(false);
+
+    const requested = openFileAtLine(saved, openEntry("a", "one"), {
+        line: 42,
+        id: "r1",
+    });
+
+    const pending = setOpenFileLine(
+        requested,
+        { key: "a:/one", line: 3, appliedReveal: null, dirty: true },
+        now,
+    );
+
+    // An unapplied line request keeps its line, but the unsaved mark still follows the buffer.
+    expect(pending[0]).toMatchObject({ line: 42, dirty: true });
+});
+
 test("a caret report refreshes an old touch time even on the same line", () => {
     const files = [{ ...openEntry("a", "one"), line: 3, touchedAt: 0 }];
 
@@ -383,7 +429,7 @@ test("a caret report refreshes an old touch time even on the same line", () => {
     expect(
         setOpenFileLine(
             files,
-            { key: "a:/one", line: 3, appliedReveal: null },
+            { key: "a:/one", line: 3, appliedReveal: null, dirty: false },
             TOUCH_REFRESH_MS - 1,
         ),
     ).toBe(files);
@@ -391,7 +437,7 @@ test("a caret report refreshes an old touch time even on the same line", () => {
     // Editing a file for longer than the refresh interval keeps it from looking untouched.
     const refreshed = setOpenFileLine(
         files,
-        { key: "a:/one", line: 3, appliedReveal: null },
+        { key: "a:/one", line: 3, appliedReveal: null, dirty: false },
         TOUCH_REFRESH_MS,
     );
 

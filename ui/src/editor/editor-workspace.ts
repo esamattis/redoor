@@ -68,14 +68,15 @@ export type LineTargets = {
 };
 
 /**
- * Where an open file's caret was when its buffer was written. `appliedReveal` is the line
- * request the buffer has already shown, so a caret written before a newer request is shown
- * cannot replace that request in the open files list.
+ * Where an open file's caret was when its buffer was written, and whether it had unsaved
+ * edits. `appliedReveal` is the line request the buffer has already shown, so a caret written
+ * before a newer request is shown cannot replace that request in the open files list.
  */
 export type CaretReport = {
     key: string;
     line: number;
     appliedReveal: string | null;
+    dirty: boolean;
 };
 
 /** Everything needed to show one file in the shared view. */
@@ -1082,6 +1083,7 @@ export class EditorWorkspace extends ExternalStore<
             key,
             line: state.doc.lineAt(state.selection.main.head).number,
             appliedReveal: buffer.revealEntry,
+            dirty: buffer.isDirty,
         });
         const data = this.serialize(buffer);
         buffer.unsynced = false;

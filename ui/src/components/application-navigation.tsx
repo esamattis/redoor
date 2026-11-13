@@ -711,6 +711,14 @@ function OpenFiles(props: { isCompact: boolean }) {
     const closer = useCloseOpenFiles();
     const browser = useBrowserLocation();
     const parentLabels = getOpenFileParentLabels(openFiles);
+    const { editor } = rootRouteApi.useRouteContext();
+
+    // Buffers loaded in this page know their unsaved state at once; the others are known
+    // from their last write, recorded in the open files list.
+    const bufferStatuses = React.useSyncExternalStore(
+        editor.subscribe,
+        editor.getSnapshot,
+    );
 
     // Clear keeps the file on screen, since the user is still working on it.
     const clearable = openFiles.filter(
@@ -794,6 +802,10 @@ function OpenFiles(props: { isCompact: boolean }) {
                                     null
                                 }
                                 agent={agentsById.get(file.agentId)}
+                                isDirty={
+                                    bufferStatuses.get(getOpenFileKey(file))
+                                        ?.isDirty ?? file.dirty === true
+                                }
                                 isCompact={props.isCompact}
                                 onClose={(closed) =>
                                     closer.requestClose([closed])
@@ -852,6 +864,8 @@ function OpenFileRow(props: {
     parentLabel: string | null;
     /** The open file's device, or undefined while it is absent from the inventory. */
     agent: Agent | undefined;
+    /** Whether the file has unsaved edits, marked so they are not forgotten in another file. */
+    isDirty: boolean;
     /** Phones get taller rows, because a finger needs a bigger target than a pointer. */
     isCompact: boolean;
     onClose: (file: OpenFile) => void;
@@ -907,6 +921,13 @@ function OpenFileRow(props: {
                         :{props.file.line}
                     </span>
                 )}
+                {props.isDirty ? (
+                    <span
+                        role="img"
+                        aria-label="Unsaved changes"
+                        className="ml-1.5 h-2 w-2 shrink-0 self-center rounded-full bg-amber-400"
+                    />
+                ) : null}
             </span>
             <span className="flex min-w-0 items-center gap-1.5 text-[11px] leading-tight text-slate-500">
                 {props.agent ? (
