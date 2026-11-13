@@ -59,6 +59,12 @@ export const openFileSchema = z.object({
     line: z.number().int().min(1).optional().catch(undefined),
     // A malformed request only loses the line, never the open file itself.
     reveal: openFileRevealSchema.optional().catch(undefined),
+    /**
+     * When the file was last opened, shown, left or edited, in epoch milliseconds, so files
+     * the user has stopped working on can be closed automatically. Files opened before this
+     * was recorded have none until the auto-close sweep stamps them.
+     */
+    touchedAt: z.number().optional().catch(undefined),
 });
 
 export type OpenFile = z.infer<typeof openFileSchema>;
@@ -74,6 +80,19 @@ export const terminalTabsSchema = z.object({
 
 export type TerminalTabs = z.infer<typeof terminalTabsSchema>;
 
+/** Shortest auto-close delay, so a file is never closed while the user steps away briefly. */
+export const MIN_AUTO_CLOSE_HOURS = 1;
+
+/** Longest auto-close delay; anyone wanting more can turn auto-close off instead. */
+export const MAX_AUTO_CLOSE_HOURS = 24 * 365;
+
+/**
+ * How stale an open file's `touchedAt` may get before a caret report refreshes it. Buffer
+ * writes come with every debounced edit, so refreshing on each would turn typing into a
+ * stream of settings writes; minutes are far finer than any auto-close delay.
+ */
+export const TOUCH_REFRESH_MS = 10 * 60 * 1000;
+
 /** Known UI preferences; extra server keys are ignored until they have a schema. */
 export const userStateSchema = z.object({
     showHiddenFiles: z.boolean().catch(true),
@@ -81,6 +100,13 @@ export const userStateSchema = z.object({
     bookmarks: z.array(bookmarkSchema).catch([]),
     openFiles: z.array(openFileSchema).catch([]),
     vimMode: z.boolean().catch(false),
+    autoCloseOpenFiles: z.boolean().catch(true),
+    autoCloseOpenFilesAfterHours: z
+        .number()
+        .int()
+        .min(MIN_AUTO_CLOSE_HOURS)
+        .max(MAX_AUTO_CLOSE_HOURS)
+        .catch(24),
     wrapEditorLines: z.boolean().catch(false),
     recursiveSearchTimeoutSeconds: z.number().int().min(1).max(60).catch(5),
     recursiveSearchIncludeHidden: z.boolean().catch(false),
@@ -135,12 +161,16 @@ export function isFileOpen(
  * Appends a newly opened file so later files stay below earlier ones.
  * Opening a file that is already open keeps its place instead of jumping to the bottom.
  */
-export function openFile(openFiles: OpenFile[], file: OpenFile) {
+export function openFile(
+    openFiles: OpenFile[],
+    file: OpenFile,
+    now = Date.now(),
+) {
     if (isFileOpen(openFiles, file)) {
         return openFiles;
     }
 
-    return [...openFiles, file];
+    return [...openFiles, { ...file, touchedAt: now }];
 }
 
 /**
@@ -154,43 +184,116 @@ export function openFileAtLine(
     file: OpenFile,
     reveal: OpenFileReveal | undefined,
 ) {
+    const now = Date.now();
+
     if (reveal === undefined) {
-        return openFile(openFiles, file);
+        return openFile(openFiles, file, now);
     }
 
     if (!isFileOpen(openFiles, file)) {
-        return [...openFiles, { ...file, reveal, line: reveal.line }];
+        return [
+            ...openFiles,
+            { ...file, reveal, line: reveal.line, touchedAt: now },
+        ];
     }
 
     const targetKey = getOpenFileKey(file);
 
     return openFiles.map((entry) =>
         getOpenFileKey(entry) === targetKey
-            ? { ...entry, reveal, line: reveal.line }
+            ? { ...entry, reveal, line: reveal.line, touchedAt: now }
             : entry,
     );
 }
 
 /**
- * Records where an open file's caret is, as its buffer is written. An unchanged line keeps
- * the same list, so moving within a line or retyping it sends no settings write. While a
- * line request the buffer has not applied is pending, the caret has not gone there yet, so
- * the requested line stays listed.
+ * Records where an open file's caret is, as its buffer is written, and that the file was
+ * touched, since a buffer is only written when the user edits or scrolls it. An unchanged
+ * line with a recent touch keeps the same list, so moving within a line or retyping it
+ * sends no settings write. While a line request the buffer has not applied is pending, the
+ * caret has not gone there yet, so the requested line stays listed.
  */
-export function setOpenFileLine(openFiles: OpenFile[], caret: CaretReport) {
+export function setOpenFileLine(
+    openFiles: OpenFile[],
+    caret: CaretReport,
+    now = Date.now(),
+) {
     const target = openFiles.find((file) => getOpenFileKey(file) === caret.key);
 
     if (
         target === undefined ||
-        target.line === caret.line ||
         (target.reveal !== undefined &&
             target.reveal.id !== caret.appliedReveal)
     ) {
         return openFiles;
     }
 
+    const isTouchFresh =
+        target.touchedAt !== undefined &&
+        now - target.touchedAt < TOUCH_REFRESH_MS;
+
+    if (target.line === caret.line && isTouchFresh) {
+        return openFiles;
+    }
+
     return openFiles.map((file) =>
-        file === target ? { ...file, line: caret.line } : file,
+        file === target ? { ...file, line: caret.line, touchedAt: now } : file,
+    );
+}
+
+/**
+ * Marks open files as touched now, when one is shown or left. Unknown keys are ignored, so a
+ * file closed meanwhile is not brought back, and an untouched list keeps its identity.
+ */
+export function touchOpenFiles(
+    openFiles: OpenFile[],
+    keys: ReadonlySet<string>,
+    now = Date.now(),
+) {
+    if (!openFiles.some((file) => keys.has(getOpenFileKey(file)))) {
+        return openFiles;
+    }
+
+    return openFiles.map((file) =>
+        keys.has(getOpenFileKey(file)) ? { ...file, touchedAt: now } : file,
+    );
+}
+
+/**
+ * The open files untouched for longer than the user's auto-close delay, which the sweep
+ * closes unless they have unsaved changes or are on screen. Files without a touch time are
+ * not stale: the sweep stamps them first, so they get the full delay from then on.
+ */
+export function getStaleOpenFiles(
+    userState: Pick<
+        UserState,
+        "openFiles" | "autoCloseOpenFiles" | "autoCloseOpenFilesAfterHours"
+    >,
+    now = Date.now(),
+): OpenFile[] {
+    if (!userState.autoCloseOpenFiles) {
+        return [];
+    }
+
+    const maxAgeMs = userState.autoCloseOpenFilesAfterHours * 60 * 60 * 1000;
+
+    return userState.openFiles.filter(
+        (file) =>
+            file.touchedAt !== undefined && now - file.touchedAt > maxAgeMs,
+    );
+}
+
+/** Gives files opened before touch times were recorded one now, so their delay can start. */
+export function stampUntouchedOpenFiles(
+    openFiles: OpenFile[],
+    now = Date.now(),
+) {
+    if (openFiles.every((file) => file.touchedAt !== undefined)) {
+        return openFiles;
+    }
+
+    return openFiles.map((file) =>
+        file.touchedAt === undefined ? { ...file, touchedAt: now } : file,
     );
 }
 
@@ -352,6 +455,16 @@ export const userStatePersistErrorAtom = atom<string | null>(null);
 /** Lets window-focus refetch wait until an in-flight write has reached disk. */
 export function isUserStatePersistPending() {
     return persistPending > 0;
+}
+
+/**
+ * Resolves once every queued settings write has finished, including writes queued while
+ * waiting, so a fresh read afterwards cannot replace a change that has not been saved yet.
+ */
+export async function waitForUserStatePersist() {
+    while (persistPending > 0) {
+        await persistChain;
+    }
 }
 
 function persistErrorMessage(cause: unknown) {

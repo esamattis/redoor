@@ -423,6 +423,11 @@ The UI is a TanStack Router application embedded in the server binary.
 - **Editor buffers** are one CodeMirror view with one state per open file. They are stored on
   the server per user, so editing can continue on another computer, and device text never
   replaces unsaved edits.
+- **Open files close themselves when left alone.** Each open file records when it was last
+  opened, shown, left or edited, and the browser closes clean files untouched for longer than
+  the user's delay (24 hours by default, set in Preferences). The sweep runs in the browser
+  rather than the server because only the browser knows the file on screen and its in-memory
+  dirty state.
 - **A new server build reloads the page**, since old lazily loaded chunks no longer exist.
 
 ## Vault and encrypted files

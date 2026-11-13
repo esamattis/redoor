@@ -4,11 +4,15 @@ import {
     commitDeviceOrder,
     defaultUserState,
     getOpenFileParentLabels,
+    getStaleOpenFiles,
     openFileAtLine,
     reorderBookmarks,
     reorderOpenFiles,
     resolveDeviceOrder,
     setOpenFileLine,
+    stampUntouchedOpenFiles,
+    TOUCH_REFRESH_MS,
+    touchOpenFiles,
     userStateSchema,
     type Bookmark,
     type OpenFile,
@@ -317,4 +321,79 @@ test("leaves the same path on two devices to the device name", () => {
 
     // Directories cannot tell identical paths apart; the row shows the device instead.
     expect(labels.size).toBe(0);
+});
+
+const HOUR_MS = 60 * 60 * 1000;
+
+test("finds open files untouched for longer than the auto-close delay", () => {
+    const now = 100 * HOUR_MS;
+    const fresh = { ...openEntry("a", "fresh"), touchedAt: now - HOUR_MS };
+    const stale = { ...openEntry("a", "stale"), touchedAt: now - 25 * HOUR_MS };
+    const unknown = openEntry("a", "unknown");
+
+    const state = {
+        openFiles: [fresh, stale, unknown],
+        autoCloseOpenFiles: true,
+        autoCloseOpenFilesAfterHours: 24,
+    };
+
+    // Only the file past the delay is stale; one without a touch time waits to be stamped.
+    expect(getStaleOpenFiles(state, now)).toEqual([stale]);
+    // A shorter delay catches the recently touched file too.
+    expect(
+        getStaleOpenFiles({ ...state, autoCloseOpenFilesAfterHours: 1 }, now),
+    ).toEqual([stale]);
+    expect(
+        getStaleOpenFiles(
+            { ...state, autoCloseOpenFilesAfterHours: 1 },
+            now + 1,
+        ),
+    ).toEqual([fresh, stale]);
+    // Turning auto-close off keeps every file open.
+    expect(
+        getStaleOpenFiles({ ...state, autoCloseOpenFiles: false }, now),
+    ).toEqual([]);
+});
+
+test("stamps and touches open files without rewriting unchanged lists", () => {
+    const files = [
+        { ...openEntry("a", "one"), touchedAt: 1 },
+        openEntry("a", "two"),
+    ];
+
+    const stamped = stampUntouchedOpenFiles(files, 50);
+    // Files from before touch times were recorded start their delay now.
+    expect(stamped[1]?.touchedAt).toBe(50);
+    // A file that already has a touch time keeps it.
+    expect(stamped[0]).toBe(files[0]);
+    // A fully stamped list is returned as is, so the sweep sends no settings write.
+    expect(stampUntouchedOpenFiles(stamped, 60)).toBe(stamped);
+
+    const touched = touchOpenFiles(stamped, new Set(["a:/one"]), 70);
+    // Showing or leaving a file restarts its delay.
+    expect(touched[0]?.touchedAt).toBe(70);
+    // A key that is no longer open does not bring the file back or rewrite the list.
+    expect(touchOpenFiles(stamped, new Set(["a:/gone"]), 70)).toBe(stamped);
+});
+
+test("a caret report refreshes an old touch time even on the same line", () => {
+    const files = [{ ...openEntry("a", "one"), line: 3, touchedAt: 0 }];
+
+    // A recent touch on the same line sends no settings write while typing.
+    expect(
+        setOpenFileLine(
+            files,
+            { key: "a:/one", line: 3, appliedReveal: null },
+            TOUCH_REFRESH_MS - 1,
+        ),
+    ).toBe(files);
+
+    // Editing a file for longer than the refresh interval keeps it from looking untouched.
+    const refreshed = setOpenFileLine(
+        files,
+        { key: "a:/one", line: 3, appliedReveal: null },
+        TOUCH_REFRESH_MS,
+    );
+
+    expect(refreshed[0]?.touchedAt).toBe(TOUCH_REFRESH_MS);
 });

@@ -18,6 +18,7 @@ import { Route as AppAgentsIndexRouteImport } from './routes/_app/agents.index'
 import { Route as AppAgentsDeviceNameRouteImport } from './routes/_app/agents.$deviceName'
 import { Route as AppAgentsNewRouteImport } from './routes/_app/agents.new'
 import { Route as AppCliLoginIdRouteImport } from './routes/_app/cli-login.$id'
+import { Route as AppSettingsPreferencesRouteImport } from './routes/_app/settings.preferences'
 import { Route as AppSettingsSessionsRouteImport } from './routes/_app/settings.sessions'
 import { Route as AppSettingsVaultRouteImport } from './routes/_app/settings.vault'
 import { Route as AppTransfersIndexRouteImport } from './routes/_app/transfers.index'
@@ -76,6 +77,11 @@ const AppAgentsNewRoute = AppAgentsNewRouteImport.update({
 const AppCliLoginIdRoute = AppCliLoginIdRouteImport.update({
   id: '/cli-login/$id',
   path: '/cli-login/$id',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsPreferencesRoute = AppSettingsPreferencesRouteImport.update({
+  id: '/settings/preferences',
+  path: '/settings/preferences',
   getParentRoute: () => AppRoute,
 } as any)
 const AppSettingsSessionsRoute = AppSettingsSessionsRouteImport.update({
@@ -171,6 +177,7 @@ export interface FileRoutesByFullPath {
   '/agents/$deviceName': typeof AppAgentsDeviceNameRouteWithChildren
   '/agents/new': typeof AppAgentsNewRoute
   '/cli-login/$id': typeof AppCliLoginIdRoute
+  '/settings/preferences': typeof AppSettingsPreferencesRoute
   '/settings/sessions': typeof AppSettingsSessionsRoute
   '/settings/vault': typeof AppSettingsVaultRoute
   '/agents/': typeof AppAgentsIndexRoute
@@ -195,6 +202,7 @@ export interface FileRoutesByTo {
   '/': typeof AppIndexRoute
   '/agents/new': typeof AppAgentsNewRoute
   '/cli-login/$id': typeof AppCliLoginIdRoute
+  '/settings/preferences': typeof AppSettingsPreferencesRoute
   '/settings/sessions': typeof AppSettingsSessionsRoute
   '/settings/vault': typeof AppSettingsVaultRoute
   '/agents': typeof AppAgentsIndexRoute
@@ -221,6 +229,7 @@ export interface FileRoutesById {
   '/_app/agents/$deviceName': typeof AppAgentsDeviceNameRouteWithChildren
   '/_app/agents/new': typeof AppAgentsNewRoute
   '/_app/cli-login/$id': typeof AppCliLoginIdRoute
+  '/_app/settings/preferences': typeof AppSettingsPreferencesRoute
   '/_app/settings/sessions': typeof AppSettingsSessionsRoute
   '/_app/settings/vault': typeof AppSettingsVaultRoute
   '/_app/agents/': typeof AppAgentsIndexRoute
@@ -248,6 +257,7 @@ export interface FileRouteTypes {
     | '/agents/$deviceName'
     | '/agents/new'
     | '/cli-login/$id'
+    | '/settings/preferences'
     | '/settings/sessions'
     | '/settings/vault'
     | '/agents/'
@@ -272,6 +282,7 @@ export interface FileRouteTypes {
     | '/'
     | '/agents/new'
     | '/cli-login/$id'
+    | '/settings/preferences'
     | '/settings/sessions'
     | '/settings/vault'
     | '/agents'
@@ -297,6 +308,7 @@ export interface FileRouteTypes {
     | '/_app/agents/$deviceName'
     | '/_app/agents/new'
     | '/_app/cli-login/$id'
+    | '/_app/settings/preferences'
     | '/_app/settings/sessions'
     | '/_app/settings/vault'
     | '/_app/agents/'
@@ -383,6 +395,13 @@ declare module '@tanstack/react-router' {
       path: '/cli-login/$id'
       fullPath: '/cli-login/$id'
       preLoaderRoute: typeof AppCliLoginIdRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/settings/preferences': {
+      id: '/_app/settings/preferences'
+      path: '/settings/preferences'
+      fullPath: '/settings/preferences'
+      preLoaderRoute: typeof AppSettingsPreferencesRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/settings/sessions': {
@@ -544,6 +563,7 @@ interface AppRouteChildren {
   AppAgentsDeviceNameRoute: typeof AppAgentsDeviceNameRouteWithChildren
   AppAgentsNewRoute: typeof AppAgentsNewRoute
   AppCliLoginIdRoute: typeof AppCliLoginIdRoute
+  AppSettingsPreferencesRoute: typeof AppSettingsPreferencesRoute
   AppSettingsSessionsRoute: typeof AppSettingsSessionsRoute
   AppSettingsVaultRoute: typeof AppSettingsVaultRoute
   AppAgentsIndexRoute: typeof AppAgentsIndexRoute
@@ -559,6 +579,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAgentsDeviceNameRoute: AppAgentsDeviceNameRouteWithChildren,
   AppAgentsNewRoute: AppAgentsNewRoute,
   AppCliLoginIdRoute: AppCliLoginIdRoute,
+  AppSettingsPreferencesRoute: AppSettingsPreferencesRoute,
   AppSettingsSessionsRoute: AppSettingsSessionsRoute,
   AppSettingsVaultRoute: AppSettingsVaultRoute,
   AppAgentsIndexRoute: AppAgentsIndexRoute,

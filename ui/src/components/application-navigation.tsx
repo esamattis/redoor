@@ -16,6 +16,7 @@ import {
     FileText,
     RefreshCw,
     ScrollText,
+    SlidersHorizontal,
     UserRound,
     Users,
     X,
@@ -79,7 +80,8 @@ type NavigationItem = {
         | "/transfers"
         | "/settings/tokens"
         | "/settings/sessions"
-        | "/settings/vault";
+        | "/settings/vault"
+        | "/settings/preferences";
     /** Short visible name, shown as the tooltip because the icon has no text beside it. */
     label: string;
     /** Accessible name; the existing names stay so tests and screen readers keep working. */
@@ -139,6 +141,13 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         label: "Vault",
         ariaLabel: "Manage vault",
         icon: LockKeyhole,
+        exact: true,
+    },
+    {
+        to: "/settings/preferences",
+        label: "Preferences",
+        ariaLabel: "Preferences",
+        icon: SlidersHorizontal,
         exact: true,
     },
 ];
@@ -292,7 +301,7 @@ function NavigationBar(props: {
 
     // One column per destination plus More, so every button stays on the one bottom row.
     return (
-        <div className="grid grid-cols-8 gap-0.5 border-t border-slate-800 p-2">
+        <div className="grid grid-cols-9 gap-0.5 border-t border-slate-800 p-2">
             {navigationItems.map((item) => (
                 <NavigationLink
                     key={item.to}

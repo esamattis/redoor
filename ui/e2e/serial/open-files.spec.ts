@@ -640,6 +640,9 @@ test.describe.serial("Open files", () => {
                     path: path.join(ctx.testDirPath, name),
                     name,
                     agentName: ctx.agentName,
+                    // A touch time keeps the auto-close sweep from stamping the files with
+                    // a write of its own, which the no-write assertion below would count.
+                    touchedAt: Date.now(),
                 })),
             },
         });
