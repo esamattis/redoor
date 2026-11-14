@@ -100,7 +100,7 @@ test.describe.serial("Create archive", () => {
         await waitForFile(archivePath);
         // The archive stores the file under its own name rather than its absolute path.
         await expect
-            .poll(() => listArchiveEntries(archivePath))
+            .poll(() => listArchiveEntries(archivePath).catch(() => []))
             .toEqual(["file1.txt"]);
         // The listing refreshes after the terminal command so the new archive is visible.
         await expect(
@@ -246,7 +246,7 @@ test.describe.serial("Create archive", () => {
         await waitForFile(archivePath);
         // Items from different directories are stored side by side under their own names.
         await expect
-            .poll(() => listArchiveEntries(archivePath))
+            .poll(() => listArchiveEntries(archivePath).catch(() => []))
             .toEqual(["file2.txt", "nested1.txt"]);
         await expect(
             page.getByRole("link", { name: "archive.tar.gz", exact: true }),
