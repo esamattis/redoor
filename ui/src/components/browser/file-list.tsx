@@ -310,6 +310,7 @@ export function FileList(props: {
                     <InputControl
                         ref={filterInputRef}
                         type="search"
+                        codeMode
                         aria-label="Filter files"
                         value={filter}
                         onChange={(event) => setFilter(event.target.value)}

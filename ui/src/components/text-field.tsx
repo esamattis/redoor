@@ -14,6 +14,8 @@ export function TextField(props: {
     required?: boolean;
     autoFocus?: boolean;
     autoComplete?: string;
+    /** Passes through to the input for literal text such as paths and file names. */
+    codeMode?: boolean;
     type?: React.HTMLInputTypeAttribute;
     min?: number;
     max?: number;
@@ -47,6 +49,7 @@ export function TextField(props: {
                 aria-required={props.required || undefined}
                 aria-describedby={descriptionId}
                 autoFocus={props.autoFocus}
+                codeMode={props.codeMode}
                 autoComplete={props.autoComplete}
                 type={props.type}
                 min={props.min}

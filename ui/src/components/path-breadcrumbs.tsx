@@ -174,6 +174,7 @@ export function PathBreadcrumbs(props: {
                 <InputControl
                     ref={pathInputRef}
                     type="text"
+                    codeMode
                     value={editedPath}
                     onChange={(event) => setEditedPath(event.target.value)}
                     onKeyDown={(event) => {

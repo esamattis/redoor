@@ -660,8 +660,7 @@ function DiffSearchBar(props: {
                     aria-label="Search in diffs"
                     placeholder="Search in diffs"
                     value={props.query}
-                    autoComplete="off"
-                    spellCheck={false}
+                    codeMode
                     enterKeyHint="search"
                     // Focus is when the reader means to search, so every patch loads then.
                     onFocus={() =>

@@ -152,8 +152,7 @@ export function SearchQueryBar(props: {
                     }
                     value={props.query}
                     disabled={props.disabled}
-                    autoComplete="off"
-                    spellCheck={false}
+                    codeMode
                     onChange={(event) =>
                         props.onQueryChange(event.target.value)
                     }

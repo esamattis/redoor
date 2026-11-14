@@ -127,6 +127,7 @@ function RestoreTrashDialog(props: {
             <form className="mt-4" onSubmit={restore}>
                 <TextField
                     label="Restore path"
+                    codeMode
                     value={destinationPath}
                     placeholder="/absolute/path/to/item"
                     description="The parent directory must already exist. Existing files are not replaced."

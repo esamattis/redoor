@@ -78,6 +78,7 @@ function AgentPathFields(props: {
                 Path
                 <InputControl
                     type="text"
+                    codeMode
                     aria-label="Sync path"
                     value={props.path}
                     onChange={(event) => props.onPathChange(event.target.value)}

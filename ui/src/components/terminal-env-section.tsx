@@ -157,8 +157,7 @@ export function TerminalEnvSection(props: {
                             aria-label={`Name of variable ${index + 1}`}
                             value={row.name}
                             placeholder="NAME"
-                            autoComplete="off"
-                            spellCheck={false}
+                            codeMode
                             disabled={saveMutation.isPending}
                             onChange={(event) =>
                                 updateRow(row.key, { name: event.target.value })
@@ -169,8 +168,7 @@ export function TerminalEnvSection(props: {
                             aria-label={`Value of variable ${index + 1}`}
                             value={row.value}
                             placeholder="value"
-                            autoComplete="off"
-                            spellCheck={false}
+                            codeMode
                             disabled={saveMutation.isPending}
                             onChange={(event) =>
                                 updateRow(row.key, {

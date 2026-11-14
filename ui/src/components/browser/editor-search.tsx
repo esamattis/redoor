@@ -369,6 +369,7 @@ function SearchReplaceFields(props: {
                     <InputControl
                         ref={props.searchInputRef}
                         type="search"
+                        codeMode
                         aria-label="Find in file"
                         placeholder="Find in file"
                         value={props.search}
@@ -447,6 +448,7 @@ function SearchReplaceFields(props: {
                     <label className="min-w-0 flex-1">
                         <InputControl
                             type="text"
+                            codeMode
                             aria-label="Replace with"
                             placeholder="Replace with"
                             value={props.replace}

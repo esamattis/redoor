@@ -115,6 +115,7 @@ export function CreateArchiveDialog(props: {
             <form noValidate onSubmit={handleSubmit}>
                 <TextField
                     label="Archive name"
+                    codeMode
                     value={name}
                     placeholder="archive"
                     description={`Saved as ${archiveName}`}

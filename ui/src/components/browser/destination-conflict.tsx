@@ -96,6 +96,7 @@ export function DestinationRow(props: {
                             : undefined
                     }
                     autoFocus={props.hasFocus}
+                    codeMode
                     aria-label={`Name for ${item.name}`}
                     aria-invalid={props.row.error !== null}
                     value={props.row.value}

@@ -32,8 +32,7 @@ export function ClearableInput(props: {
                     aria-label={props.label}
                     value={props.value}
                     placeholder={props.placeholder}
-                    autoComplete="off"
-                    spellCheck={false}
+                    codeMode
                     onChange={(event) => props.onChange(event.target.value)}
                     className="w-full py-1.5 pr-8 text-sm placeholder:text-slate-600"
                 />

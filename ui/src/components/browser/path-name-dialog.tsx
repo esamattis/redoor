@@ -118,6 +118,7 @@ export function PathNameDialog(props: {
             <form noValidate onSubmit={submit} className="mt-4">
                 <TextField
                     label={props.fieldLabel}
+                    codeMode
                     ariaLabel={props.fieldAriaLabel}
                     inputRef={
                         props.selectNameStem === true

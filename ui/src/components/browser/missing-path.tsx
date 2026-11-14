@@ -111,6 +111,7 @@ export function MissingPathCreationForm(props: { agent: Agent; path: string }) {
                 >
                     <TextField
                         label="File name"
+                        codeMode
                         value={fileName}
                         placeholder="notes.txt"
                         description={`Name to create in ${parentPath}.`}
