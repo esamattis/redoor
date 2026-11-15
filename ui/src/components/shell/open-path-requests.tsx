@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useRouter } from "@tanstack/react-router";
+import { getRouteApi, useRouter } from "@tanstack/react-router";
 import { FileText, Folder } from "lucide-react";
 
 import { browserRoute } from "#ui/browser-route";
@@ -7,6 +7,9 @@ import { Button } from "#ui/components/button";
 import { Toast } from "#ui/components/toast";
 import type { OpenPathEvent } from "#ui/refresh-listener";
 import { useAgents } from "#ui/use-agents";
+import { getOpenFileKey } from "#ui/user-state";
+
+const rootRouteApi = getRouteApi("__root__");
 
 /**
  * Carries out `rd-open` requests from terminals. Every window receives them, so the one the
@@ -18,6 +21,7 @@ import { useAgents } from "#ui/use-agents";
  */
 export function useOpenPathRequests(onBeforeOpen: () => void) {
     const router = useRouter();
+    const { editor } = rootRouteApi.useRouteContext();
     const agents = useAgents();
 
     const [offer, setOffer] = React.useState<{
@@ -38,6 +42,15 @@ export function useOpenPathRequests(onBeforeOpen: () => void) {
         };
 
         onBeforeOpen();
+
+        // Typing goes on in the file, also when it is the one already shown, unless it
+        // opens in its preview.
+        if (event.kind === "file") {
+            editor.requestFocus(
+                getOpenFileKey({ agentId: event.agent_id, path: event.path }),
+            );
+        }
+
         void router.navigate({
             ...browserRoute(device, event.path),
             // The path on disk, not the Git revision this window may be browsing.

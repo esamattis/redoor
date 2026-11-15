@@ -72,6 +72,29 @@ test.describe.serial("rd-open", () => {
         );
     });
 
+    test("focuses the editor, also when the file is already shown", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        const terminalInput = await openTerminal(page);
+        const editor = page.getByLabel("File editor", { exact: true });
+
+        await terminalInput.pressSequentially(
+            `cd '${ctx.testDirPath}' && rd-open file1.txt`,
+        );
+        await terminalInput.press("Enter");
+        await expect(editor).toContainText("content1");
+        // Typing goes on in the opened file instead of the terminal.
+        await expect(editor).toBeFocused();
+
+        await terminalInput.focus();
+        await expect(editor).not.toBeFocused();
+        await terminalInput.pressSequentially("rd-open file1.txt");
+        await terminalInput.press("Enter");
+        // The file on screen takes focus too, although nothing new is mounted for it.
+        await expect(editor).toBeFocused();
+    });
+
     test("offers to open the path in windows without focus", async ({
         page,
         context,

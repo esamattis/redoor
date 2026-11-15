@@ -380,9 +380,18 @@ export class EditorWorkspace extends ExternalStore<
     /**
      * Asks for a buffer's editor to take focus the next time it is shown, so keyboard users
      * can keep typing after switching files or leaving a preview without reaching for the
-     * mouse.
+     * mouse. A buffer already on screen takes focus at once, because navigating to the file
+     * it shows remounts nothing that would settle the request. One behind a preview keeps
+     * the request until the preview closes.
      */
     requestFocus(key: string) {
+        if (this.isShown(key) && this.view?.dom.checkVisibility() === true) {
+            this.focusRequest = null;
+            this.view.focus();
+
+            return;
+        }
+
         this.focusRequest = key;
     }
 
