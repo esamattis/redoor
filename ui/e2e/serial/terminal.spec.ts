@@ -464,7 +464,9 @@ test.describe.serial("Terminal panel lifecycle", () => {
             ctx.testDirPath,
         );
 
-        await page.getByRole("tab", { name: "agent1_src 1" }).click();
+        await page
+            .getByRole("tab", { name: "agent1_src 2" })
+            .press("ArrowLeft");
         await expect(
             page.getByRole("tab", { name: "agent1_src 1" }),
         ).toHaveAttribute("aria-selected", "true");
@@ -473,7 +475,8 @@ test.describe.serial("Terminal panel lifecycle", () => {
                 .getByLabel(`agent1_src 1 for ${ctx.agentName}`)
                 .filter({ has: page.locator("textarea") }),
         ).toBeVisible();
-        // Activating a terminal must leave focus in the tablist for keyboard navigation.
+        // Activating a terminal from the keyboard must leave focus in the tablist for
+        // further keyboard navigation.
         await expect(
             page.getByRole("tab", { name: "agent1_src 1" }),
         ).toBeFocused();

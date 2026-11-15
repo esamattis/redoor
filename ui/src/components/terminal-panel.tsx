@@ -56,7 +56,7 @@ const terminalPasteShortcut = formatKeyChord({
 /**
  * Registers the open-terminal shortcuts: `t` outside text entry, and Alt+t from anywhere but
  * text fields and the shell itself, so the terminal is one chord away even from the editor,
- * where `t` would be typed. The shell keeps Alt+t for its own bindings, since it already has
+ * where `t` would be typed. Alt+t focuses the visible shell when there is one. The shell keeps Alt+t for its own bindings, since it already has
  * the focus the shortcut would give it. The registry runs them in the capture phase, so
  * Alt+t reaches the terminal action before Vim consumes the key. The registrations are
  * stable, because the registry reads the target and picker state through the latest render.
@@ -103,13 +103,19 @@ function useTerminalShortcuts(
         },
     });
 
+    // Unlike t, Alt+t goes back into the shell already on screen whatever the route is, so
+    // it is a dependable way back to the terminal from the editor.
     useShortcut({
         name: "open-terminal-with-alt",
         phase: "capture",
         priority: shortcutPriority.app,
         match: (event) =>
             isUnmodifiedAltKey(event, "t") && !isTextEntryElement(event.target),
-        run: openTerminal,
+        run: () => {
+            if (!terminals.focusVisible()) {
+                return openTerminal();
+            }
+        },
     });
 }
 
@@ -161,7 +167,13 @@ export function TerminalPanel(props: {
                     onClose={(tabId) => terminals.close(tabId)}
                     onMove={(move) => terminals.move(move)}
                     onRestart={(tabId) => terminals.restart(tabId)}
-                    onSelect={(tabId) => terminals.select(tabId)}
+                    onSelect={(tabId, focusShell) => {
+                        if (focusShell) {
+                            terminals.selectAndFocus(tabId);
+                        } else {
+                            terminals.select(tabId);
+                        }
+                    }}
                 />
             </TerminalToolbar>
             <div

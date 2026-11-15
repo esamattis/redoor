@@ -596,6 +596,30 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
     }
 
     /**
+     * Shows a tab and focuses its shell, for a click on the tab: the user picked it to type
+     * in it, so the keyboard follows even when the tab was already the visible one.
+     */
+    selectAndFocus(tabId: number): void {
+        this.select(tabId);
+        this.requestFocus();
+    }
+
+    /**
+     * Focuses the shell already on screen, which Alt+t prefers over opening the routed
+     * directory's terminal: the user wants back into what they see, not a different shell.
+     * Returns false when no shell is shown, so the caller can open one instead.
+     */
+    focusVisible(): boolean {
+        if (!this.isPanelVisible || this.activeTabId === null) {
+            return false;
+        }
+
+        this.requestFocus();
+
+        return true;
+    }
+
+    /**
      * Shows the tab beside the active one, wrapping at either end, and focuses its shell so
      * typing goes on there. Only a visible panel with another tab to go to switches, so the
      * key is left to others when there is nothing on screen to move between.
@@ -617,8 +641,7 @@ export class TerminalSessions extends ExternalStore<TerminalSessionsSnapshot> {
             return false;
         }
 
-        this.select(next.tab.id);
-        this.requestFocus();
+        this.selectAndFocus(next.tab.id);
 
         return true;
     }

@@ -71,7 +71,8 @@ export function TerminalTabActions(props: {
     onClose: (tabId: number) => void;
     onMove: (move: ItemMove) => void;
     onRestart: (tabId: number) => void;
-    onSelect: (tabId: number) => void;
+    /** `focusShell` is set for pointer clicks, which move the keyboard into the shell. */
+    onSelect: (tabId: number, focusShell: boolean) => void;
 }) {
     const listRef = React.useRef<HTMLDivElement>(null);
     const { api } = rootRouteApi.useRouteContext();
@@ -187,7 +188,8 @@ function TerminalTabControl(props: {
     isActive: boolean;
     onClose: (tabId: number) => void;
     onRestart: (tabId: number) => void;
-    onSelect: (tabId: number) => void;
+    /** `focusShell` is set for pointer clicks, which move the keyboard into the shell. */
+    onSelect: (tabId: number, focusShell: boolean) => void;
 }) {
     const status = getTerminalStatus(props.tab.state);
 
@@ -223,7 +225,12 @@ function TerminalTabControl(props: {
                         }
                         selected={props.isActive}
                         aria-controls={`terminal-panel-${props.tab.id}`}
-                        onClick={() => props.onSelect(props.tab.id)}
+                        // A pointer click has a click count, while the tab list's arrow keys
+                        // and Enter or Space click with none: those keep focus in the tab
+                        // list so the keyboard can go on moving through the tabs.
+                        onClick={(event) =>
+                            props.onSelect(props.tab.id, event.detail > 0)
+                        }
                         className={`flex h-8 items-center gap-2 px-2.5 text-xs font-medium transition-colors ${props.isActive ? "text-slate-100" : "text-slate-400 hover:bg-tint hover:text-slate-200"}`}
                     >
                         <span className="max-w-36 truncate whitespace-nowrap">

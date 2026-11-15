@@ -3,6 +3,7 @@
 import { expect, test, type Page } from "../fixtures";
 import {
     deleteAllTerminalSessions,
+    expectTerminalFocused,
     setupTestDir,
     teardownTestDir,
     type TestContext,
@@ -31,6 +32,62 @@ test.describe.serial("Persistent terminal sessions", () => {
     test.afterEach(async () => {
         // Sessions outlive the page; the next test must not restore this test's shells.
         await deleteAllTerminalSessions();
+    });
+
+    test("focuses the visible terminal from a tab click and Alt+t", async ({
+        page,
+    }) => {
+        await page.goto(ctx.agentBrowserUrl);
+        await page.getByRole("tab", { name: "Terminal" }).click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 1: Connected" }),
+        ).toBeVisible();
+
+        await page
+            .getByRole("link", { name: ctx.testDirName, exact: true })
+            .click();
+        await page
+            .getByRole("button", { name: "New terminal", exact: true })
+            .click();
+        await expect(
+            page.getByRole("status", { name: "agent1_src 2: Connected" }),
+        ).toBeVisible();
+
+        const firstTerminal = page.getByRole("textbox", {
+            name: `agent1_src 1 for ${ctx.agentName}`,
+        });
+
+        await page.getByRole("tab", { name: "agent1_src 1" }).click();
+        // Clicking a tab means the user wants to type in it, so its shell takes the keyboard.
+        await expectTerminalFocused(firstTerminal);
+
+        const fileLink = page.getByRole("link", {
+            name: "file1.txt",
+            exact: true,
+        });
+
+        await fileLink.focus();
+        await page.keyboard.press("Alt+t");
+        // Alt+t returns to the shell on screen even though the route's directory has its
+        // own shell in the other tab.
+        await expectTerminalFocused(firstTerminal);
+        await expect(
+            page.getByRole("tab", { name: "agent1_src 1" }),
+        ).toHaveAttribute("aria-selected", "true");
+
+        await fileLink.click();
+        const editor = page.getByLabel("File editor", { exact: true });
+
+        await editor.click();
+        await editor.press("Alt+t");
+        // The editor gets the same behaviour, without switching or creating tabs.
+        await expectTerminalFocused(firstTerminal);
+        await expect(
+            page.getByRole("tab", { name: /^agent1_src / }),
+        ).toHaveCount(2);
     });
 
     /** The rendered terminal of a tab, whose text is the screen the user sees. */
