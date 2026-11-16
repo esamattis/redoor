@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.13.2
+
+_2026-11-16_
+
+### Fixes
+
+- Clicking a terminal tab puts the keyboard in the shell right away, and Alt+t returns to the terminal already on screen instead of switching to the routed directory's terminal.
+- A file opened with `rd-open` gets keyboard focus, including when it is already on screen.
+- Phone keyboards no longer capitalize, autocorrect or suggest words in path, filter, search and file name fields, and show a keyboard with `/` and `.` within reach.
+
 ## v2.13.1
 
 _2026-11-13_
