@@ -9,7 +9,9 @@ Create a non-interactive Git tag release from a clean, fully synced `main`.
 
 ## Resolve The Bump
 
-Accept only `patch`, `minor`, or `major`. If the user did not name one, ask and stop until they answer. Do not invent a bump type.
+Study the change choose between `patch` and `minor`. Patch for bug fixes and if
+any new features or breaking changes do `minor`. Never do major version release
+unless explicitly asked for.
 
 ## Preconditions
 
