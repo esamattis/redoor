@@ -80,6 +80,20 @@ fn make_directory_accessible(_path: &Path, _metadata: &std::fs::Metadata) -> std
     Ok(())
 }
 
+/// Starts a `git` command that reads the repository's shared test config instead of the
+/// developer's, so fixture commits are never signed (signing prompts for key passphrases)
+/// and other personal settings cannot change what the fixtures contain.
+pub fn git_command() -> std::process::Command {
+    let mut command = std::process::Command::new("git");
+    command
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../../tests/gitconfig"),
+        )
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    command
+}
+
 /// Builds a valid device id that is the same for the same label in every test.
 ///
 /// The router rejects a `hello` whose id is not in the device id format, so tests cannot use

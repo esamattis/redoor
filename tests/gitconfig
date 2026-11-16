@@ -1,0 +1,8 @@
+# Global git config for every test suite, set through `GIT_CONFIG_GLOBAL` so the
+# developer's own config (signing keys, hooks, aliases) never reaches test repos.
+# Signing would prompt for key passphrases and turn plain `git tag` calls into
+# annotated tags that need a message.
+[commit]
+	gpgsign = false
+[tag]
+	gpgsign = false

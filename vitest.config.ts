@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 import {
     INTEGRATION_LANES,
@@ -16,7 +17,9 @@ export default defineConfig({
             REDOOR_RECONNECT_DELAY: "200ms",
             // Keeps the developer's own git config out of the test repos: settings such as
             // `tag.gpgsign` turn a plain `git tag` into a signed tag that needs a message.
-            GIT_CONFIG_GLOBAL: "/dev/null",
+            GIT_CONFIG_GLOBAL: fileURLToPath(
+                new URL("./tests/gitconfig", import.meta.url),
+            ),
             GIT_CONFIG_NOSYSTEM: "1",
         },
         hookTimeout: 10000,

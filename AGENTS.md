@@ -29,6 +29,7 @@
     - Keep `ARCHITECTURE.md` updates short: a few sentences on the design and why. Leave implementation details (function names, gix APIs, limits, fallbacks, edge cases) to code comments
 - When creating or updating structs or enums with `#[ts(export)]` always run `scripts/generate-ts-bindings` afterwards to generate the typescript interfaces
 - The generated ts bindings are put in the `bindings` directory
+- Tests that run `git` must never sign commits or tags. Point `GIT_CONFIG_GLOBAL` at `tests/gitconfig` and set `GIT_CONFIG_NOSYSTEM=1` in the environment instead of passing `--no-gpg-sign` or reading the developer's config: the vitest and Playwright configs already do this, and Rust tests use `redoor_core::test_support::git_command()`
 - Never sleep in tests. Instead wait for a log message to appear or poll some API until the desired state is set
 - Integration tests for the server and agent are in the `tests` directory. The tests are authored in Typescript and vitest. Run with `pn integration-test`
 - UI unit tests live next to the source in `ui/src` as `*.test.ts(x)`. Run with `pn test:unit` (also part of `pn test`)

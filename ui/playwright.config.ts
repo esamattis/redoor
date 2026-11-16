@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { defineConfig, devices } from "@playwright/test";
 import { testPorts } from "#test-ports";
 
@@ -24,7 +25,9 @@ const earlyLogSpecPattern = /\/server-logs\.spec\.ts$/;
 // Keeps the developer's own git config out of the spec repos: settings such as
 // `tag.gpgsign` turn a plain `git tag` into a signed tag that needs a message. Set on
 // `process.env` because every worker loads this file and the web server inherits it.
-process.env.GIT_CONFIG_GLOBAL = "/dev/null";
+process.env.GIT_CONFIG_GLOBAL = fileURLToPath(
+    new URL("../tests/gitconfig", import.meta.url),
+);
 
 process.env.GIT_CONFIG_NOSYSTEM = "1";
 

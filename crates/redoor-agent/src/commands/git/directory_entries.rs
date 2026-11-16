@@ -543,13 +543,12 @@ impl ChildStates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redoor_core::test_support::TempDir;
+    use redoor_core::test_support::{TempDir, git_command};
     use redoor_protocol::api::git::GitChangeState;
-    use std::process::Command;
 
     /// Runs git in `dir` with a fixed identity, so fixtures do not depend on the host config.
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = git_command()
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .current_dir(dir)
@@ -968,7 +967,7 @@ vendor/
         git(root, &["checkout", "-q", "main"]);
         write(root, "dir/conflict.txt", "main");
         git(root, &["commit", "-q", "-am", "main"]);
-        let merge = Command::new("git")
+        let merge = git_command()
             .args(["-c", "user.name=t", "-c", "user.email=t@t", "merge", "side"])
             .current_dir(root)
             .output()

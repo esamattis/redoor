@@ -226,12 +226,11 @@ fn read_text(repo: &gix::Repository, object: &BaseObject) -> Result<BaseText, Gi
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redoor_core::test_support::TempDir;
-    use std::process::Command;
+    use redoor_core::test_support::{TempDir, git_command};
 
     /// Runs git in `dir` with a fixed identity, so fixtures do not depend on the host config.
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = git_command()
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .current_dir(dir)
@@ -379,7 +378,7 @@ mod tests {
         write(repo.path(), "file.txt", "one\nmain\n");
         git(repo.path(), &["commit", "-q", "-am", "main"]);
         // The merge fails on the conflict, which is the state under test.
-        let _ = Command::new("git")
+        let _ = git_command()
             .args([
                 "-c",
                 "user.name=t",

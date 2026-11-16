@@ -558,13 +558,13 @@ impl<R: Read> Read for ExactLength<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redoor_core::test_support::TempDir;
+    use redoor_core::test_support::{TempDir, git_command};
     use std::process::Command;
 
     /// Runs git in `dir`; the fixtures use the real CLI so loose, packed and deltified objects
     /// are laid out exactly as Git writes them.
     fn git(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
+        let status = git_command()
             .args([
                 "-c",
                 "user.name=t",

@@ -963,13 +963,13 @@ fn change_state(old: Side, new: Side) -> GitChangeState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use redoor_core::test_support::TempDir;
-    use std::{path::Path, process::Command};
+    use redoor_core::test_support::{TempDir, git_command};
+    use std::path::Path;
 
     /// Runs git in `dir` with a fixed identity and returns its trimmed output, so fixtures do
     /// not depend on the host config.
     fn git(dir: &Path, args: &[&str]) -> String {
-        let output = Command::new("git")
+        let output = git_command()
             .args(["-c", "user.name=t", "-c", "user.email=t@t"])
             .args(args)
             .current_dir(dir)
