@@ -103,6 +103,48 @@ test("lists every line separately when merging is turned off", () => {
     ).toEqual(["delete", "insert"]);
 });
 
+test("marks the changed words of similar lines shown separately", () => {
+    const hunk = parseDiff(
+        `--- a/x.ts
++++ b/x.ts
+@@ -1,3 +1,3 @@
+-await expect(separate).toBe(false);
+-something removed entirely
++await expect(inline).toBe(false);
++nothing alike here at all!
+`,
+        { mergeModifiedLines: false },
+    )[0]?.hunks[0];
+
+    const lines = hunk?.type === "hunk" ? hunk.lines : [];
+
+    // Similar lines keep their own -/+ rows in patch order instead of merging.
+    expect(lines.map((line) => line.kind)).toEqual([
+        "delete",
+        "delete",
+        "insert",
+        "insert",
+    ]);
+    // Each row holds only its own side, so only the replaced word stands out.
+    expect(lines[0]?.segments).toEqual([
+        { value: "await expect(", type: "normal" },
+        { value: "separate", type: "delete" },
+        { value: ").toBe(false);", type: "normal" },
+    ]);
+    expect(lines[2]?.segments).toEqual([
+        { value: "await expect(", type: "normal" },
+        { value: "inline", type: "insert" },
+        { value: ").toBe(false);", type: "normal" },
+    ]);
+    // Unrelated lines stay unmarked, since a word diff of them would be noise.
+    expect(lines[1]?.segments).toEqual([
+        { value: "something removed entirely", type: "normal" },
+    ]);
+    expect(lines[3]?.segments).toEqual([
+        { value: "nothing alike here at all!", type: "normal" },
+    ]);
+});
+
 test("reads added and deleted files written without /dev/null", () => {
     const added = parseDiff(`--- a/new.txt
 +++ b/new.txt

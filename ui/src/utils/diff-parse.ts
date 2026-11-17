@@ -90,7 +90,10 @@ export interface ParseOptions {
     maxDiffDistance: number;
     /** The largest share of changed characters at which two lines still count as similar. */
     maxChangeRatio: number;
-    /** Whether to pair similar lines at all, instead of listing every -/+ line by itself. */
+    /**
+     * Whether a similar removed and added line show as one row. When off, every -/+ line
+     * keeps its own row, but similar ones are still paired so their changed words stand out.
+     */
     mergeModifiedLines: boolean;
     /** Replaced words differing by at most this many characters show a character diff. */
     inlineMaxCharEdits: number;
@@ -580,6 +583,35 @@ function modifiedLine(
     };
 }
 
+/**
+ * A paired line on its own -/+ row. Its segments are one side of the pair's word diff, so
+ * only the words that differ from the other line are marked.
+ */
+function separateLine(
+    change: DeleteChange | InsertChange,
+    pairSegments: LineSegment[],
+): DiffLine {
+    const skipped = change.type === "delete" ? "insert" : "delete";
+    const segments: LineSegment[] = [];
+
+    for (const segment of pairSegments) {
+        if (segment.type === skipped) {
+            continue;
+        }
+
+        const last = segments.at(-1);
+
+        // Dropping the other side leaves kept text next to kept text, which reads as one run.
+        if (last !== undefined && last.type === segment.type) {
+            last.value += segment.value;
+        } else {
+            segments.push({ ...segment });
+        }
+    }
+
+    return { ...changeToLine(change), segments };
+}
+
 /** Pairs only directly adjacent delete/insert lines, for a distance of one. */
 function mergeAdjacentLines(
     changes: RawChange[],
@@ -728,6 +760,56 @@ class HunkPairing {
         return (prefix[upper] ?? 0) - (prefix[lower] ?? 0) > 0;
     }
 
+    /**
+     * Emits every change as its own row in patch order, marking the changed words of paired
+     * lines. Nothing moves, so pairs need none of the reordering checks of `lines()`.
+     */
+    separateLines(): DiffLine[] {
+        /** Each pair's word diff by its delete's index, so both rows share one diff. */
+        const pairSegments = new Map<number, LineSegment[]>();
+
+        const segmentsOf = (
+            del: DeleteChange,
+            add: InsertChange,
+            delIdx: number,
+        ) => {
+            let segments = pairSegments.get(delIdx);
+
+            if (segments === undefined) {
+                segments = buildInlineDiffSegments(
+                    del.content,
+                    add.content,
+                    this.options,
+                );
+                pairSegments.set(delIdx, segments);
+            }
+
+            return segments;
+        };
+
+        return this.changes.map((change, index) => {
+            if (change.type === "delete") {
+                const addIdx = this.pairOfDel[index] ?? UNPAIRED;
+                const add = this.changes[addIdx];
+
+                return add?.type === "insert"
+                    ? separateLine(change, segmentsOf(change, add, index))
+                    : changeToLine(change);
+            }
+
+            if (change.type === "insert") {
+                const delIdx = this.pairOfAdd[index] ?? UNPAIRED;
+                const del = this.changes[delIdx];
+
+                return del?.type === "delete"
+                    ? separateLine(change, segmentsOf(del, change, delIdx))
+                    : changeToLine(change);
+            }
+
+            return changeToLine(change);
+        });
+    }
+
     /** Emits rows in patch order, placing each modified row where its insert was. */
     lines(): DiffLine[] {
         const out: DiffLine[] = [];
@@ -786,7 +868,7 @@ class HunkPairing {
 /** Turns a read hunk into rows, paired or plain depending on the options. */
 function parseHunk(hunk: RawHunk, options: ParseOptions): DiffHunk {
     const lines = !options.mergeModifiedLines
-        ? hunk.changes.map(changeToLine)
+        ? new HunkPairing(hunk.changes, options).separateLines()
         : options.maxDiffDistance === 1
           ? mergeAdjacentLines(hunk.changes, options)
           : new HunkPairing(hunk.changes, options).lines();

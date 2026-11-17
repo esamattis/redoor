@@ -412,7 +412,8 @@ function Gutter(props: {
 
 /**
  * One diff row. Whole-line inserts and deletes use `<ins>` and `<del>` so assistive
- * technology announces them; a modified row marks only its changed segments that way.
+ * technology announces them; a modified row marks only its changed segments that way. Changed
+ * words of a whole-line row, from a pair shown as separate lines, only get a stronger colour.
  * It is memoized because a large diff re-renders often and the rows themselves rarely change.
  */
 const Line = React.memo(function Line(props: {
@@ -434,6 +435,11 @@ const Line = React.memo(function Line(props: {
             : line.kind === "delete"
               ? "del"
               : "span";
+
+    // Changed words inside a whole-line insert or delete are already announced by the row's
+    // own tag, so they only get the stronger colour instead of a nested `<ins>` or `<del>`.
+    const InsertTag = Tag === "span" ? "ins" : "span";
+    const DeleteTag = Tag === "span" ? "del" : "span";
 
     return (
         <>
@@ -467,19 +473,19 @@ const Line = React.memo(function Line(props: {
                     <Tag className="no-underline">
                         {parts.map((part, index) =>
                             part.type === "insert" ? (
-                                <ins
+                                <InsertTag
                                     key={index}
                                     className="rounded-sm bg-diff-insert-strong no-underline"
                                 >
                                     <HighlightedTokens tokens={part.tokens} />
-                                </ins>
+                                </InsertTag>
                             ) : part.type === "delete" ? (
-                                <del
+                                <DeleteTag
                                     key={index}
                                     className="rounded-sm bg-diff-delete-strong"
                                 >
                                     <HighlightedTokens tokens={part.tokens} />
-                                </del>
+                                </DeleteTag>
                             ) : (
                                 <HighlightedTokens
                                     key={index}
