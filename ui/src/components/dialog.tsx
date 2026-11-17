@@ -402,7 +402,10 @@ export function Dialog(props: DialogProps) {
     );
 
     if (isAnchored) {
-        // Anchored menus escape overflow containers such as collapsed bottom panels.
+        // Anchored menus escape overflow containers such as collapsed bottom panels. A menu
+        // opened from inside a modal dialog joins that dialog instead, because the dialog sits
+        // in the browser top layer and makes the rest of <body> inert, so a menu there would
+        // be drawn underneath it and could not be clicked.
         return createPortal(
             <div
                 className="fixed inset-0 z-[70]"
@@ -418,7 +421,7 @@ export function Dialog(props: DialogProps) {
             >
                 {panel}
             </div>,
-            document.body,
+            props.anchorRef?.current?.closest("dialog") ?? document.body,
         );
     }
 
