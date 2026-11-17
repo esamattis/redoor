@@ -84,6 +84,11 @@ type NavigationItem = {
     icon: LucideIcon;
     /** Whether only the destination itself, and not its children, marks the link current. */
     exact: boolean;
+    /**
+     * Whether the phone bar shows the destination as a button. A phone-width row fits only a
+     * few icons at a comfortable tap size, so the less visited destinations go in More.
+     */
+    inPhoneBar: boolean;
 };
 
 const navigationItems: ReadonlyArray<NavigationItem> = [
@@ -93,6 +98,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Server home",
         icon: Home,
         exact: true,
+        inPhoneBar: true,
     },
     {
         to: "/agents",
@@ -100,6 +106,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Manage devices",
         icon: Users,
         exact: true,
+        inPhoneBar: true,
     },
     {
         to: "/logs",
@@ -107,6 +114,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Server logs",
         icon: ScrollText,
         exact: true,
+        inPhoneBar: false,
     },
     // The history page has no children today, but keeps highlighting if one is added.
     {
@@ -115,6 +123,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Transfers",
         icon: ArrowLeftRight,
         exact: false,
+        inPhoneBar: true,
     },
     {
         to: "/settings/tokens",
@@ -123,6 +132,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         icon: KeyRound,
         // Stays highlighted on a token's edit page.
         exact: false,
+        inPhoneBar: false,
     },
     {
         to: "/settings/sessions",
@@ -130,6 +140,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Manage browser sessions",
         icon: MonitorSmartphone,
         exact: true,
+        inPhoneBar: false,
     },
     {
         to: "/settings/vault",
@@ -137,6 +148,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Manage vault",
         icon: LockKeyhole,
         exact: true,
+        inPhoneBar: true,
     },
     {
         to: "/settings/preferences",
@@ -144,6 +156,7 @@ const navigationItems: ReadonlyArray<NavigationItem> = [
         ariaLabel: "Preferences",
         icon: SlidersHorizontal,
         exact: true,
+        inPhoneBar: false,
     },
 ];
 
@@ -283,9 +296,10 @@ function NavigationRail(props: {
 }
 
 /**
- * Lines up the destinations along the bottom of the phone drawer. Restart and logout sit
- * behind the last button because, unlike the destinations, a mistaken tap on them costs the
- * user their session or interrupts every device's transfers.
+ * Lines up the most used destinations along the bottom of the phone drawer, with the rest in
+ * the More menu so the icons keep a comfortable tap size. Restart and logout sit behind More
+ * too, because unlike the destinations, a mistaken tap on them costs the user their session
+ * or interrupts every device's transfers.
  */
 function NavigationBar(props: {
     onRestart: () => void;
@@ -294,10 +308,14 @@ function NavigationBar(props: {
     const logout = useLogout();
     const user = useCurrentUser();
 
-    // One column per destination plus More, so every button stays on the one bottom row.
+    const closeMenu = useCloseSideMenu();
+    const barItems = navigationItems.filter((item) => item.inPhoneBar);
+    const moreItems = navigationItems.filter((item) => !item.inPhoneBar);
+
+    // One column per bar destination plus More, so every button stays on the one bottom row.
     return (
-        <div className="grid grid-cols-9 gap-0.5 border-t border-slate-800 p-2">
-            {navigationItems.map((item) => (
+        <div className="grid grid-cols-5 gap-0.5 border-t border-slate-800 p-2">
+            {barItems.map((item) => (
                 <NavigationLink
                     key={item.to}
                     item={item}
@@ -315,6 +333,28 @@ function NavigationBar(props: {
             >
                 {(close) => (
                     <>
+                        {moreItems.map((item) => (
+                            <ActionMenuButton key={item.to} asChild>
+                                <Link
+                                    to={item.to}
+                                    aria-label={item.ariaLabel}
+                                    activeOptions={{ exact: item.exact }}
+                                    className="aria-[current=page]:bg-tint-strong"
+                                    onClick={() => {
+                                        // The drawer covers the page on phones, so both go.
+                                        close();
+                                        closeMenu();
+                                    }}
+                                >
+                                    <item.icon
+                                        className="h-4 w-4"
+                                        aria-hidden="true"
+                                    />
+                                    {item.label}
+                                </Link>
+                            </ActionMenuButton>
+                        ))}
+                        <div className="my-1 border-t border-slate-800" />
                         {user ? (
                             <SignedInUser user={user} className="px-3 py-2" />
                         ) : null}

@@ -223,8 +223,8 @@ test.describe.serial("Application menu layout", () => {
             .getByRole("link", { name: "Server home" })
             .boundingBox();
 
-        const tokensBox = await drawer
-            .getByRole("link", { name: "Manage access tokens" })
+        const vaultBox = await drawer
+            .getByRole("link", { name: "Manage vault" })
             .boundingBox();
 
         const moreBox = await drawer
@@ -235,22 +235,36 @@ test.describe.serial("Application menu layout", () => {
             .getByLabel("app.log", { exact: true })
             .boundingBox();
 
-        // All eight buttons share one row along the bottom, below the open files list.
-        expect(tokensBox?.y).toBe(homeBox?.y);
+        // The bar buttons share one row along the bottom, below the open files list.
+        expect(vaultBox?.y).toBe(homeBox?.y);
         expect(moreBox?.y).toBe(homeBox?.y);
-        expect(moreBox?.x ?? 0).toBeGreaterThan(tokensBox?.x ?? 1);
+        expect(moreBox?.x ?? 0).toBeGreaterThan(vaultBox?.x ?? 1);
         expect(homeBox?.y ?? 0).toBeGreaterThan(lastOpenFileBox?.y ?? 1);
         expect((homeBox?.y ?? 0) + (homeBox?.height ?? 0)).toBeGreaterThan(780);
 
-        await drawer.getByRole("link", { name: "Server logs" }).click();
+        // Less visited destinations leave the bar so the rest keep a comfortable tap size.
+        await expect(
+            drawer.getByRole("link", { name: "Server logs" }),
+        ).toHaveCount(0);
+
+        await drawer.getByRole("link", { name: "Transfers" }).click();
         // A destination in the bar navigates and closes the drawer like the old links.
-        await expect(page).toHaveURL(`${WEB_BASE_URL}/logs`);
+        await expect(page).toHaveURL(`${WEB_BASE_URL}/transfers`);
         await expect(drawer).toBeHidden();
 
         await openMenu.click();
         await drawer.getByRole("button", { name: "More" }).click();
 
         const moreMenu = page.getByRole("dialog", { name: "More actions" });
+
+        await moreMenu.getByRole("link", { name: "Server logs" }).click();
+        // A destination in More navigates and gets both the menu and the drawer out of the way.
+        await expect(page).toHaveURL(`${WEB_BASE_URL}/logs`);
+        await expect(moreMenu).toBeHidden();
+        await expect(drawer).toBeHidden();
+
+        await openMenu.click();
+        await drawer.getByRole("button", { name: "More" }).click();
 
         // The More menu holds both account and process actions.
         await expect(
