@@ -90,6 +90,17 @@ function resolveSearchDirectory(
         return getImmediateParentPath(browser.resolvedPath) ?? "/";
     }
 
+    // A revision page browses a folder of the worktree too, so the reader expects to search
+    // there rather than in the agent's home. Search reads the disk, so a folder the commit
+    // has but the worktree lacks fails the search instead of showing committed results.
+    if (browser?.revision?.entry === "directory") {
+        return browser.path;
+    }
+
+    if (browser?.revision?.entry === "file") {
+        return getImmediateParentPath(browser.path) ?? "/";
+    }
+
     return agent.status === "connected" ? agent.cwd : null;
 }
 

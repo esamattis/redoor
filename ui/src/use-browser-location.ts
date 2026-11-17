@@ -21,7 +21,8 @@ export type BrowserLocation = {
     /**
      * The browsed Git revision and what the path is at it, or null for the worktree. It is
      * kept apart from `entry`, which describes the disk, so worktree consumers such as
-     * terminals and search never treat a committed path as existing. `entry` here is null
+     * terminals never treat a committed path as existing. Search opts in to it on purpose,
+     * since the reader expects to search the folder they browse. `entry` here is null
      * when the path did not resolve at the revision.
      */
     revision: { rev: string; entry: "directory" | "file" | null } | null;
@@ -54,8 +55,8 @@ export function useBrowserLocation(): BrowserLocation | null {
                 return null;
             }
 
-            // A Git revision is not on disk, so worktree consumers such as terminals and
-            // search must not treat its path as an existing file or directory.
+            // A Git revision is not on disk, so worktree consumers such as terminals must
+            // not treat its path as an existing file or directory.
             if (data.kind === "revision") {
                 return {
                     agentId: data.agentId,
