@@ -81,7 +81,7 @@ test.describe("Application navigation", () => {
             .poll(async () => (await devices.boundingBox())?.width)
             .toBe(180);
         await page.setViewportSize({ width: 390, height: 844 });
-        // Responsive drawers retain their own mobile sizing and expose no persistent resize handle.
+        // The sidebar and its resize handle leave the layout once the menu becomes a drawer.
         await expect(handle).toBeHidden();
         await page.getByRole("button", { name: "Open device menu" }).click();
         await expect(
@@ -342,6 +342,44 @@ test.describe("Application navigation", () => {
         await expect(
             sidebarMode.getByRole("button", { name: "Hide" }),
         ).toHaveAttribute("aria-pressed", "true");
+
+        const drawer = page.locator("#application-menu-drawer");
+
+        const drawerHandle = drawer.getByRole("separator", {
+            name: "Resize application menu",
+        });
+
+        const handleBox = await drawerHandle.boundingBox();
+
+        if (!handleBox) {
+            throw new Error("Missing drawer resize handle");
+        }
+
+        await page.mouse.move(
+            handleBox.x + handleBox.width / 2,
+            handleBox.y + handleBox.height / 2,
+        );
+        await page.mouse.down();
+        await page.mouse.move(
+            handleBox.x + handleBox.width / 2 + 300,
+            handleBox.y + handleBox.height / 2,
+            { steps: 8 },
+        );
+        await page.mouse.up();
+        // The drawer resizes like the sidebar, and may grow past the sidebar's 480px cap
+        // because it covers the page instead of sharing the row with it.
+        await expect
+            .poll(async () => (await drawer.boundingBox())?.width)
+            .toBe(560);
+        // Dragging the handle must not count as a backdrop click that dismisses the drawer.
+        await expect(
+            page.getByRole("dialog", { name: "Application menu" }),
+        ).toBeVisible();
+        await page.keyboard.press("Escape");
+        // Closing returns focus to the opener, not to the drawer's own removed resize handle.
+        await expect(
+            page.getByRole("button", { name: "Open application menu" }),
+        ).toBeFocused();
 
         await page.reload();
         // Session storage must restore Hide after a reload in the same tab.

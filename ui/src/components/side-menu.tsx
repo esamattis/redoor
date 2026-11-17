@@ -46,12 +46,12 @@ export function SideMenu(props: {
     children: React.ReactNode;
 }) {
     const drawerRef = React.useRef<HTMLElement>(null);
-    const resize = useSideMenuResize(props.placement);
     const panelId = React.useId();
     const [openMenu, setOpenMenu] = useAtom(openSideMenuAtom);
     const isPersistent = usePersistentSideMenus();
     const drawerId = sideMenuDrawerIds[props.menu];
     const isOpen = openMenu === props.menu;
+    const resize = useSideMenuResize(props.placement, isOpen);
 
     const onClose = React.useCallback(() => setOpenMenu(null), [setOpenMenu]);
 
@@ -77,13 +77,14 @@ export function SideMenu(props: {
         // opened programmatically or by a browser that does not focus clicked buttons, and
         // when another drawer was closing and had just moved focus. A control may mark itself
         // as the frontmost opener, so the full-window editor's button wins over the covered
-        // top bar's.
+        // top bar's. Requiring aria-haspopup skips the drawer's own resize handle, which also
+        // controls the drawer but disappears with it.
         const opener =
             document.querySelector<HTMLElement>(
                 `[data-side-menu-opener="${drawerId}"]`,
             ) ??
             document.querySelector<HTMLElement>(
-                `[aria-controls="${drawerId}"]`,
+                `[aria-haspopup="dialog"][aria-controls="${drawerId}"]`,
             );
 
         const drawer = drawerRef.current;
@@ -137,23 +138,11 @@ export function SideMenu(props: {
             >
                 {props.children}
                 {isPersistent ? (
-                    <div
-                        role="separator"
-                        aria-label={`Resize ${props.label.toLowerCase()}`}
-                        aria-controls={panelId}
-                        aria-orientation="vertical"
-                        aria-description="Drag or use the left and right arrow keys to resize"
-                        aria-valuemin={180}
-                        aria-valuemax={resize.maxWidth}
-                        aria-valuenow={Math.round(resize.width)}
-                        tabIndex={0}
-                        onPointerDown={resize.handleStart}
-                        onPointerMove={resize.handleMove}
-                        onPointerUp={resize.handleEnd}
-                        onPointerCancel={resize.handleEnd}
-                        onLostPointerCapture={resize.handleEnd}
-                        onKeyDown={resize.handleKeyDown}
-                        className={`absolute inset-y-0 z-20 w-2 touch-none cursor-col-resize select-none hover:bg-blue-400/25 focus:outline-none focus-visible:bg-blue-400/40 ${props.placement === "left" ? "-right-1" : "-left-1"} ${resize.isResizing ? "bg-blue-400/40" : ""}`}
+                    <SideMenuResizeHandle
+                        resize={resize}
+                        controls={panelId}
+                        label={props.label}
+                        placement={props.placement}
                     />
                 ) : null}
             </aside>
@@ -173,31 +162,46 @@ export function SideMenu(props: {
                         ref={drawerRef}
                         id={drawerId}
                         tabIndex={-1}
+                        style={{ width: resize.width }}
                         className={cn(
-                            "absolute flex h-full w-72 max-w-[85vw] flex-col overflow-y-auto border-slate-700 bg-surface shadow-2xl shadow-black/50",
+                            "absolute flex h-full flex-col border-slate-700 bg-surface shadow-2xl shadow-black/50",
                             edgeClass,
                             borderClass,
-                            !props.flush && "p-3",
                         )}
                     >
-                        <SideMenuCloseContext.Provider
-                            value={{ label: props.label, close: onClose }}
-                        >
-                            {props.closeButtonInContent ? null : (
-                                <div
-                                    className={cn(
-                                        "mb-2 flex",
-                                        props.placement === "left"
-                                            ? "justify-end"
-                                            : "justify-start",
-                                        props.flush && "px-3 pt-3",
-                                    )}
-                                >
-                                    <SideMenuCloseButton />
-                                </div>
+                        {/* The content scrolls in its own box so the resize handle stays pinned
+                            to the drawer edge instead of scrolling away with the menu. */}
+                        <div
+                            className={cn(
+                                "flex min-h-0 flex-1 flex-col overflow-y-auto",
+                                !props.flush && "p-3",
                             )}
-                            {props.children}
-                        </SideMenuCloseContext.Provider>
+                        >
+                            <SideMenuCloseContext.Provider
+                                value={{ label: props.label, close: onClose }}
+                            >
+                                {props.closeButtonInContent ? null : (
+                                    <div
+                                        className={cn(
+                                            "mb-2 flex",
+                                            props.placement === "left"
+                                                ? "justify-end"
+                                                : "justify-start",
+                                            props.flush && "px-3 pt-3",
+                                        )}
+                                    >
+                                        <SideMenuCloseButton />
+                                    </div>
+                                )}
+                                {props.children}
+                            </SideMenuCloseContext.Provider>
+                        </div>
+                        <SideMenuResizeHandle
+                            resize={resize}
+                            controls={drawerId}
+                            label={props.label}
+                            placement={props.placement}
+                        />
                     </aside>
                 </div>
             ) : null}
@@ -232,8 +236,54 @@ export function SideMenuCloseButton() {
     );
 }
 
-/** Shares edge-aware resizing while reserving space for the central route on smaller screens. */
-function useSideMenuResize(placement: "left" | "right") {
+/**
+ * Draws the drag border on a menu's inner edge. The persistent sidebar and the drawer share
+ * it, so a menu can be resized the same way whichever presentation the sidebar mode picks.
+ */
+function SideMenuResizeHandle(props: {
+    resize: ReturnType<typeof useSideMenuResize>;
+    /** The element whose width the handle changes, for `aria-controls`. */
+    controls: string;
+    label: string;
+    placement: "left" | "right";
+}) {
+    const resize = props.resize;
+
+    return (
+        <div
+            role="separator"
+            aria-label={`Resize ${props.label.toLowerCase()}`}
+            aria-controls={props.controls}
+            aria-orientation="vertical"
+            aria-description="Drag or use the left and right arrow keys to resize"
+            aria-valuemin={minSideMenuWidth}
+            aria-valuemax={resize.maxWidth}
+            aria-valuenow={Math.round(resize.width)}
+            tabIndex={0}
+            onPointerDown={resize.handleStart}
+            onPointerMove={resize.handleMove}
+            onPointerUp={resize.handleEnd}
+            onPointerCancel={resize.handleEnd}
+            onLostPointerCapture={resize.handleEnd}
+            onKeyDown={resize.handleKeyDown}
+            className={cn(
+                "absolute inset-y-0 z-20 w-2 touch-none cursor-col-resize select-none hover:bg-blue-400/25 focus:outline-none focus-visible:bg-blue-400/40",
+                props.placement === "left" ? "-right-1" : "-left-1",
+                resize.isResizing && "bg-blue-400/40",
+            )}
+        />
+    );
+}
+
+/** Narrowest width at which the navigation controls in either menu stay usable. */
+const minSideMenuWidth = 180;
+
+/**
+ * Shares edge-aware resizing between the sidebar and the drawer. Both use the same stored
+ * width, but the sidebar is capped lower because it must leave room for the page beside it,
+ * while the drawer covers the page and only has to leave a strip of backdrop to tap away.
+ */
+function useSideMenuResize(placement: "left" | "right", isDrawer: boolean) {
     const [widths, setWidths] = useAtom(sidebarWidthsAtom);
     const [viewportWidth, setViewportWidth] = React.useState(window.innerWidth);
     const [isResizing, setIsResizing] = React.useState(false);
@@ -244,11 +294,15 @@ function useSideMenuResize(placement: "left" | "right") {
         startWidth: number;
     } | null>(null);
 
-    const maxWidth = Math.max(180, Math.min(480, viewportWidth * 0.35));
+    const maxWidth = Math.max(
+        minSideMenuWidth,
+        isDrawer ? viewportWidth * 0.85 : Math.min(480, viewportWidth * 0.35),
+    );
+
     const storedWidth = widths[placement];
 
     const width = Math.max(
-        180,
+        minSideMenuWidth,
         Math.min(
             maxWidth,
             Number.isFinite(storedWidth)
@@ -271,7 +325,7 @@ function useSideMenuResize(placement: "left" | "right") {
     const updateWidth = (next: number) => {
         setWidths((current) => ({
             ...current,
-            [placement]: Math.max(180, Math.min(maxWidth, next)),
+            [placement]: Math.max(minSideMenuWidth, Math.min(maxWidth, next)),
         }));
     };
 
