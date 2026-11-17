@@ -183,20 +183,20 @@ test.describe("Diff context expansion", () => {
             name: "Show whole file notes.txt",
         });
 
-        const separate = diff
+        const inline = diff
             .getByRole("group", { name: "Diff layout for notes.txt" })
-            .getByRole("button", { name: "Separate lines" });
+            .getByRole("button", { name: "Inline changes" });
 
-        // Every diff starts from the fixed defaults: folded and with inline changes.
+        // Every diff starts from the defaults: folded and with separate lines.
         await expect(wholeFile).toHaveAttribute("aria-pressed", "false");
-        await expect(separate).toHaveAttribute("aria-pressed", "false");
+        await expect(inline).toHaveAttribute("aria-pressed", "false");
         await expect(folds).toHaveCount(2);
 
         await wholeFile.click();
-        await separate.click();
+        await inline.click();
 
         // The whole file shows every line, so nothing is folded.
-        await expect(separate).toHaveAttribute("aria-pressed", "true");
+        await expect(inline).toHaveAttribute("aria-pressed", "true");
         await expect(row(60)).toBeVisible();
         await expect(folds).toHaveCount(0);
 
@@ -220,7 +220,7 @@ test.describe("Diff context expansion", () => {
 
         // The choices belong to the history entry, so back shows the diff as it was left.
         await expect(wholeFile).toHaveAttribute("aria-pressed", "true");
-        await expect(separate).toHaveAttribute("aria-pressed", "true");
+        await expect(inline).toHaveAttribute("aria-pressed", "true");
         await expect(row(60)).toBeVisible();
         await expect(folds).toHaveCount(0);
 
@@ -228,7 +228,7 @@ test.describe("Diff context expansion", () => {
 
         // Nothing is saved as a preference, so a new visit starts from the defaults again.
         await expect(wholeFile).toHaveAttribute("aria-pressed", "false");
-        await expect(separate).toHaveAttribute("aria-pressed", "false");
+        await expect(inline).toHaveAttribute("aria-pressed", "false");
         await expect(folds).toHaveCount(2);
     });
 });

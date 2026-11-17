@@ -4,6 +4,7 @@ import { useStore } from "jotai";
 import {
     CircleCheck,
     FileClock,
+    GitCompare,
     Keyboard,
     SlidersHorizontal,
 } from "lucide-react";
@@ -168,6 +169,29 @@ function PreferencesPage() {
                             ))}
                         </Select>
                     </div>
+                </PreferenceSection>
+                <PreferenceSection
+                    title="Diffs"
+                    icon={<GitCompare className="h-5 w-5" aria-hidden="true" />}
+                >
+                    <Checkbox
+                        checked={userState.inlineDiffChanges}
+                        title={false}
+                        className="w-full px-2 py-2 text-left"
+                        onCheckedChange={(checked) => {
+                            setUserState((current) => ({
+                                ...current,
+                                inlineDiffChanges: checked,
+                            }));
+                        }}
+                    >
+                        Show inline changes by default
+                    </Checkbox>
+                    <p className="px-2 text-xs text-slate-500">
+                        Show an edited line as one row that marks the changed
+                        words, instead of separate removed and added lines. Each
+                        diff can still switch its own layout.
+                    </p>
                 </PreferenceSection>
                 <PreferenceSection
                     title="Editor"

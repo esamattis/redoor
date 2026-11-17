@@ -348,6 +348,8 @@ test.describe.serial("Git browser", () => {
 
         const modifiedRow = fullDiff.locator('tr[data-line-kind="modified"]');
 
+        // Diffs start with separate lines, so the inline layout is picked to see word changes.
+        await fullDiff.getByRole("button", { name: "Inline changes" }).click();
         // A similar edited line shows as one row, so the change reads within the line.
         await expect(modifiedRow).toHaveCount(1);
         // Only the changed word is marked, as removed old text and inserted new text.

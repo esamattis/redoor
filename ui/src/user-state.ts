@@ -115,6 +115,11 @@ export const userStateSchema = z.object({
         .max(MAX_AUTO_CLOSE_HOURS)
         .catch(24),
     wrapEditorLines: z.boolean().catch(false),
+    /**
+     * Whether diffs start with an edited line as one row marking the changed words, instead
+     * of separate removed and added rows. Each diff card can still switch its own file.
+     */
+    inlineDiffChanges: z.boolean().catch(false),
     recursiveSearchTimeoutSeconds: z.number().int().min(1).max(60).catch(5),
     recursiveSearchIncludeHidden: z.boolean().catch(false),
     recursiveSearchRespectGitignore: z.boolean().catch(true),

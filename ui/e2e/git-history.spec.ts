@@ -228,6 +228,8 @@ test.describe.serial("Git history browsing", () => {
         await expect(
             page.getByText("Raises the version for the release."),
         ).toBeVisible();
+        // Diffs start with separate lines, so the inline layout is picked to see word changes.
+        await modified.getByRole("button", { name: "Inline changes" }).click();
         // The commit's own patch is shown against its parent, as one edited line.
         await expect(modifiedRow).toContainText("export const version");
         await expect(modifiedRow.getByRole("deletion")).toHaveText("first");
@@ -310,12 +312,12 @@ test.describe.serial("Git history browsing", () => {
             `${deviceBrowserUrl(ctx.agentName, path.join(repositoryPath, "src", "app.ts"))}?view=git&rev=${secondCommit}`,
         );
 
-        // The file's own change is shown.
+        // The file's own change is shown, as its own added row in the default layout.
         await expect(
             page
                 .getByRole("region", { name: "Commit diff for src/app.ts" })
-                .getByRole("insertion"),
-        ).toHaveText("second");
+                .locator('tr[data-line-kind="insert"]'),
+        ).toContainText("second");
         // Changes to other files in the same commit are left out.
         await expect(
             page.getByRole("region", { name: /Commit diff for/ }),

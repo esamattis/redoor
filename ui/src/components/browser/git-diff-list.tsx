@@ -52,6 +52,7 @@ import {
 } from "#ui/history-entry-state";
 import { cn } from "#ui/utils/cn";
 import { FileNameFilter } from "#ui/utils/file-name-filter";
+import { useUserState } from "#ui/user-state";
 
 /** How one diff card shows its patch, as chosen in the card's header. */
 export type GitDiffBodyView = {
@@ -168,7 +169,7 @@ export function useCollapsedGitDiffs(options: {
 /** The collapse state a diff list and its controls share. */
 export type CollapsedGitDiffs = ReturnType<typeof useCollapsedGitDiffs>;
 
-/** What the reader chose in one file's header. Unset choices follow the fixed defaults. */
+/** What the reader chose in one file's header. Unset choices follow the defaults. */
 type GitDiffFileChoices = {
     inline?: boolean;
     wrapLines?: boolean;
@@ -176,14 +177,15 @@ type GitDiffFileChoices = {
 };
 
 /**
- * Resolves a file's choices against the fixed defaults. Files without a choice start inline,
- * unwrapped and folded.
+ * Resolves a file's choices against the defaults. Files without a choice start unwrapped and
+ * folded, in the layout the user picked in their preferences.
  */
 function gitDiffBodyView(
     choice: GitDiffFileChoices | undefined,
+    defaultInline: boolean,
 ): GitDiffBodyView {
     return {
-        mergeModifiedLines: choice?.inline ?? true,
+        mergeModifiedLines: choice?.inline ?? defaultInline,
         wrapLines: choice?.wrapLines ?? false,
         wholeFile: choice?.wholeFile ?? false,
     };
@@ -196,8 +198,8 @@ const fileChoiceStates = new HistoryEntryStore<
 /**
  * Remembers how each file of a list is shown, because one file's edits read best as inline
  * word changes while a rewritten file reads best as separate lines, and only a file with long
- * lines needs to wrap. The defaults are fixed rather than a saved preference, so a choice made
- * in one diff never changes another one on screen. The choices start over with the scope, like
+ * lines needs to wrap. A choice is never saved as a preference, so a choice made in one diff
+ * never changes another one on screen; only the starting layout comes from the preferences. The choices start over with the scope, like
  * the collapse state, since the same paths in another commit are other edits. They are kept
  * per history entry because wrapping and whole files change the list's height, which the
  * restored scroll position depends on, and so back restores every diff the way the reader
@@ -378,6 +380,8 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
     onToggle: ((path: string) => void) | null;
     /** Undefined until the reader picks a layout, wrapping or whole file for this file. */
     choice: GitDiffFileChoices | undefined;
+    /** The preferred layout for a file whose layout the reader has not picked. */
+    defaultInline: boolean;
     onChoose: (path: string, choice: GitDiffFileChoices) => void;
     /** Whether the list's file filter leaves the file out. */
     filteredOut: boolean;
@@ -386,7 +390,7 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
     const link = file.link;
     const collapsed = props.collapsed;
     const onToggle = props.onToggle;
-    const view = gitDiffBodyView(props.choice);
+    const view = gitDiffBodyView(props.choice, props.defaultInline);
     const parts = splitRelativePath(file.relativePath);
     const bodyId = React.useId();
 
@@ -612,6 +616,7 @@ export function GitDiffList(props: {
     const collapsed = props.collapsed;
     const filter = props.filter;
     const choices = fileChoices.choices;
+    const defaultInline = useUserState()[0].inlineDiffChanges;
     const [searchStore] = React.useState(() => new DiffSearchStore());
     const listRef = React.useRef<HTMLDivElement>(null);
     const copyReference = useDiffCopyReference(props.files);
@@ -628,10 +633,12 @@ export function GitDiffList(props: {
                 .map((file) => ({
                     path: file.path,
                     source: file.searchSource,
-                    mergeModifiedLines: gitDiffBodyView(choices.get(file.path))
-                        .mergeModifiedLines,
+                    mergeModifiedLines: gitDiffBodyView(
+                        choices.get(file.path),
+                        defaultInline,
+                    ).mergeModifiedLines,
                 })),
-        [props.files, filter, choices],
+        [props.files, filter, choices, defaultInline],
     );
 
     /** Expands the card the search steps into, leaving an expanded one as it is. */
@@ -716,6 +723,7 @@ export function GitDiffList(props: {
                                 }
                                 onToggle={collapsed?.toggle ?? null}
                                 choice={choices.get(file.path)}
+                                defaultInline={defaultInline}
                                 onChoose={fileChoices.choose}
                                 filteredOut={
                                     filter !== undefined &&

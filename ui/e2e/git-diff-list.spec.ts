@@ -77,16 +77,16 @@ test.describe("Git diff list", () => {
             name: `Git diff for ${path.join(repositoryPath, "src/server.test.ts")}`,
         });
 
-        // Each file carries its own layout switch, starting from the fixed inline default.
+        // Each file carries its own layout switch, starting from the separate lines default.
         await expect(
             serverTest
                 .getByRole("group", {
                     name: "Diff layout for src/server.test.ts",
                 })
-                .getByRole("button", { name: "Inline changes" }),
+                .getByRole("button", { name: "Separate lines" }),
         ).toHaveAttribute("aria-pressed", "true");
         await expect(
-            serverTest.locator('tr[data-line-kind="modified"]'),
+            serverTest.locator('tr[data-line-kind="delete"]'),
         ).toHaveCount(1);
 
         const serverLayout = server.getByRole("group", {
@@ -94,26 +94,26 @@ test.describe("Git diff list", () => {
         });
 
         await serverLayout
-            .getByRole("button", { name: "Separate lines" })
+            .getByRole("button", { name: "Inline changes" })
             .click();
 
-        // The switched file lists its removed and added lines as their own rows.
+        // The switched file shows its edited line as one row marking the changed words.
         await expect(
-            serverLayout.getByRole("button", { name: "Separate lines" }),
+            serverLayout.getByRole("button", { name: "Inline changes" }),
         ).toHaveAttribute("aria-pressed", "true");
-        await expect(server.locator('tr[data-line-kind="delete"]')).toHaveCount(
-            1,
-        );
         await expect(
             server.locator('tr[data-line-kind="modified"]'),
-        ).toHaveCount(0);
-
-        // The other file keeps its inline row, so the choice was only for one file.
-        await expect(
-            serverTest.locator('tr[data-line-kind="modified"]'),
         ).toHaveCount(1);
+        await expect(server.locator('tr[data-line-kind="delete"]')).toHaveCount(
+            0,
+        );
+
+        // The other file keeps its separate rows, so the choice was only for one file.
         await expect(
             serverTest.locator('tr[data-line-kind="delete"]'),
+        ).toHaveCount(1);
+        await expect(
+            serverTest.locator('tr[data-line-kind="modified"]'),
         ).toHaveCount(0);
     });
 

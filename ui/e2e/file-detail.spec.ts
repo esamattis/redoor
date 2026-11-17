@@ -244,6 +244,8 @@ test.describe.serial("File Detail View", () => {
 
         const diff = page.getByRole("region", { name: "File diff" });
         const modifiedRow = diff.locator('tr[data-line-kind="modified"]');
+        // Diffs start with separate lines, so the inline layout is picked to see word changes.
+        await diff.getByRole("button", { name: "Inline changes" }).click();
         // Signed fragments prove both endpoints reached the unified-diff API through Sync.
         await expect(modifiedRow.getByRole("deletion")).toHaveText("left");
         await expect(modifiedRow.getByRole("insertion")).toHaveText("right");
