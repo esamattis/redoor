@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.15.0
+
+_2026-11-17_
+
+### Features
+
+- The changed files list of a diff in the side menu is a foldable tree, with directories as slim bars and Fold all / Unfold all buttons. Folded directories are remembered when going back.
+- The split between open files and changed files in the side menu can be dragged or moved with the keyboard, and double-clicking it returns to the automatic size.
+- Radiator `.radconf` configuration files are syntax highlighted in the editor and in diffs.
+- The phone navigation bar keeps Home, Devices, Transfers and Vault, and moves Server logs, Access tokens, Sessions and Preferences into the More menu so the buttons are easier to tap.
+
 ## v2.14.0
 
 _2026-11-17_
