@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.13.3
+
+_2026-11-17_
+
+### Fixes
+
+- Opening search on a Git revision page searches the browsed folder instead of the agent's home folder.
+- Menus opened inside dialogs, such as the copy path menu in the search dialog, can be clicked again.
+
 ## v2.13.2
 
 _2026-11-16_
