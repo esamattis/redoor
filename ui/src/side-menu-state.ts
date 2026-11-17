@@ -67,3 +67,13 @@ export function usePersistentSideMenus(): boolean {
 
     return !isBelowLg;
 }
+
+/**
+ * Share of the application menu's file column given to the open files when changed files are
+ * listed below them, as a percentage. Null until the user drags the split, so the open files
+ * first take only the room their rows need.
+ */
+export const sidebarFilesSplitAtom = atomWithSessionStorage<number | null>(
+    "redoor.sidebar-files-split",
+    null,
+);

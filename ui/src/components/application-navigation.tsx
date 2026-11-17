@@ -39,6 +39,10 @@ import { SortableItem, SortableList } from "#ui/components/sortable-list";
 import { Tooltip } from "#ui/components/tooltip";
 import { useCloseSideMenu } from "#ui/side-menu-state";
 import {
+    SidebarFilesSplitHandle,
+    useSidebarFilesSplit,
+} from "#ui/components/sidebar-files-split";
+import {
     HistoryEntryStore,
     useHistoryEntryState,
 } from "#ui/history-entry-state";
@@ -548,18 +552,48 @@ function useLogout() {
 /**
  * Stacks the open files and the changed files of the diff on screen. Each list scrolls on its
  * own and they share the column's height, so a long list of either never pushes the other
- * out of reach.
+ * out of reach. The open files first take only the room their rows need, up to half the
+ * column, and a draggable split lets the user give either list more.
  */
 function SidebarFiles(props: { isCompact: boolean; className?: string }) {
     const outline = useAtomValue(changedFilesOutlineAtom);
+    const split = useSidebarFilesSplit();
 
     return (
         <div
+            ref={split.containerRef}
             className={cn("flex min-h-0 flex-1 flex-col pb-2", props.className)}
         >
-            <OpenFiles isCompact={props.isCompact} />
+            <OpenFiles
+                isCompact={props.isCompact}
+                rootRef={split.openFilesRef}
+                // Without changed files below, the open files may use the whole column. A
+                // dragged split keeps room for the header, a row and the shortcut tip, since a
+                // small share of a short column would hide every row.
+                className={
+                    outline === null
+                        ? undefined
+                        : split.percent === null
+                          ? "max-h-1/2"
+                          : "min-h-32"
+                }
+                style={
+                    outline === null || split.percent === null
+                        ? undefined
+                        : { flex: `0 1 ${String(split.percent)}%` }
+                }
+            />
             {outline === null ? null : (
-                <ChangedFiles outline={outline} isCompact={props.isCompact} />
+                <>
+                    <SidebarFilesSplitHandle
+                        split={split}
+                        isCompact={props.isCompact}
+                    />
+                    <ChangedFiles
+                        outline={outline}
+                        isCompact={props.isCompact}
+                    />
+                </>
             )}
         </div>
     );
@@ -600,7 +634,7 @@ function ChangedFiles(props: {
     return (
         <section
             aria-label="Changed files"
-            className="mt-2 flex min-h-24 shrink flex-col"
+            className="flex min-h-24 flex-1 flex-col"
         >
             <div className="flex min-h-7 items-center gap-1.5 py-1 pl-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
                 Changed files
@@ -702,7 +736,13 @@ function ChangedFileRow(props: {
  * while empty because open files are the column's main content, and a blank column would
  * not tell the user how to fill it. Closing a file with unsaved edits asks first.
  */
-function OpenFiles(props: { isCompact: boolean }) {
+function OpenFiles(props: {
+    isCompact: boolean;
+    /** Lets the split measure the section when a drag starts from its automatic size. */
+    rootRef: React.Ref<HTMLDivElement>;
+    className?: string;
+    style?: React.CSSProperties;
+}) {
     const [userState, setUserState] = useUserState();
     const agents = useAgents();
     const listRef = React.useRef<HTMLUListElement>(null);
@@ -738,8 +778,12 @@ function OpenFiles(props: { isCompact: boolean }) {
     };
 
     return (
-        <div className="flex min-h-0 shrink flex-col">
-            <div className="flex min-h-7 items-center justify-between gap-2 py-1 pl-1">
+        <div
+            ref={props.rootRef}
+            className={cn("flex min-h-0 shrink flex-col", props.className)}
+            style={props.style}
+        >
+            <div className="flex min-h-7 shrink-0 items-center justify-between gap-2 py-1 pl-1">
                 <span className="flex items-center gap-1.5 text-xs font-medium tracking-wide text-slate-500 uppercase">
                     Open files
                     {openFiles.length > 0 ? (
@@ -839,7 +883,7 @@ function KeyCap(props: { children: React.ReactNode }) {
  */
 function OpenFileShortcutTip() {
     return (
-        <p className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-slate-500">
+        <p className="mt-2 flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 px-1 text-[11px] text-slate-500">
             <span className="flex items-center gap-1">
                 <KeyCap>{formatKeyChord({ key: "j", alt: true })}</KeyCap>
                 <KeyCap>{formatKeyChord({ key: "k", alt: true })}</KeyCap>

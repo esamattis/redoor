@@ -313,6 +313,43 @@ test.describe("Git diff list", () => {
         await expect(changedFiles).toHaveCount(0);
     });
 
+    test("resizes the split between open files and changed files", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${agentName}/browser/${encodeFilesystemPath(repositoryPath)}?view=git`,
+        );
+
+        const separator = page.getByRole("separator", {
+            name: "Resize open files",
+        });
+
+        // Until dragged, the open files size themselves, so no stored share is reported.
+        await expect(separator).not.toHaveAttribute("aria-valuenow");
+
+        for (let step = 0; step < 20; step += 1) {
+            await separator.press("ArrowUp");
+        }
+
+        // Shrinking stops while the open files still show a sliver of their list.
+        await expect(separator).toHaveAttribute("aria-valuenow", "10");
+
+        await separator.press("ArrowDown");
+
+        // Each key press moves the split by a fixed step.
+        await expect(separator).toHaveAttribute("aria-valuenow", "15");
+
+        await page.reload();
+
+        // The dragged split survives a reload instead of snapping back.
+        await expect(separator).toHaveAttribute("aria-valuenow", "15");
+
+        await separator.dblclick();
+
+        // Double-clicking returns to sizing the open files by their rows.
+        await expect(separator).not.toHaveAttribute("aria-valuenow");
+    });
+
     test("brings filtered-out files back expanded when the filter is widened", async ({
         page,
     }) => {
