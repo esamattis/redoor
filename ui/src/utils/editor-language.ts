@@ -25,6 +25,7 @@ import { ruby } from "@codemirror/legacy-modes/mode/ruby";
 import { shell } from "@codemirror/legacy-modes/mode/shell";
 import { toml } from "@codemirror/legacy-modes/mode/toml";
 import { isSystemdUnitPath, systemd } from "#ui/utils/systemd-language";
+import { radconf } from "#ui/utils/radconf-language";
 
 export type SupportedSyntaxLanguage =
     | "cpp"
@@ -42,6 +43,7 @@ export type SupportedSyntaxLanguage =
     | "perl"
     | "properties"
     | "python"
+    | "radconf"
     | "ruby"
     | "rust"
     | "shell"
@@ -143,6 +145,8 @@ export function syntaxLanguageSupport(
             return StreamLanguage.define(properties);
         case "systemd":
             return StreamLanguage.define(systemd);
+        case "radconf":
+            return StreamLanguage.define(radconf);
         case "cpp":
         case "csharp":
             return cpp();
@@ -284,6 +288,8 @@ export function syntaxLanguageFromFileName(
         case "cfg":
         case "conf":
             return "properties";
+        case "radconf":
+            return "radconf";
         case "c":
         case "h":
         case "cpp":
