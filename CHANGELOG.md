@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.14.0
+
+_2026-11-17_
+
+### Features
+
+- Diffs show removed and added lines as separate rows by default. Inline word changes can be chosen once under Preferences, and each diff card can still switch its own layout.
+- In the separate lines layout, the changed words of similar removed and added lines are highlighted.
+- Side menus opened as drawers, with the sidebar mode set to Hide or on narrow windows, can be resized like the sidebars.
+
 ## v2.13.3
 
 _2026-11-17_
