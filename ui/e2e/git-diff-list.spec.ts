@@ -247,8 +247,46 @@ test.describe("Git diff list", () => {
             name: "Changed files",
         });
 
+        // Directory rows are fold toggles, so the remaining rows are the files.
+        const fileRows = changedFiles
+            .getByRole("listitem")
+            .filter({ hasNot: page.locator("[aria-expanded]") });
+
         // The side menu names every file of the diff on screen.
-        await expect(changedFiles.getByRole("listitem")).toHaveCount(3);
+        await expect(fileRows).toHaveCount(3);
+
+        const myTest = changedFiles.getByRole("button", {
+            name: "my-test",
+            exact: true,
+        });
+
+        await myTest.click();
+
+        // Folding a directory hides its files but leaves the others.
+        await expect(myTest).toHaveAttribute("aria-expanded", "false");
+        await expect(fileRows).toHaveCount(2);
+
+        await myTest.click();
+
+        // Unfolding brings its files back.
+        await expect(fileRows).toHaveCount(3);
+
+        await changedFiles
+            .getByRole("button", {
+                name: "Fold all directories",
+                exact: true,
+            })
+            .click();
+
+        // Folding all hides every file, since each one is inside a directory.
+        await expect(fileRows).toHaveCount(0);
+
+        await changedFiles
+            .getByRole("button", { name: "Unfold all directories" })
+            .click();
+
+        // Unfolding all brings back every file, including those in nested directories.
+        await expect(fileRows).toHaveCount(3);
 
         const filter = changedFiles.getByRole("textbox", {
             name: "Filter changed files",
@@ -257,7 +295,7 @@ test.describe("Git diff list", () => {
         await filter.fill("HELPERS");
 
         // The filter narrows the list by path, ignoring case.
-        await expect(changedFiles.getByRole("listitem")).toHaveCount(1);
+        await expect(fileRows).toHaveCount(1);
         await expect(
             changedFiles.getByRole("button", {
                 name: "src/my-test/helpers.ts",
@@ -270,7 +308,7 @@ test.describe("Git diff list", () => {
 
         // Clearing the filter brings every file back.
         await expect(filter).toHaveValue("");
-        await expect(changedFiles.getByRole("listitem")).toHaveCount(3);
+        await expect(fileRows).toHaveCount(3);
 
         await changedFiles
             .getByRole("button", { name: "src/my-test/helpers.ts" })
@@ -303,7 +341,7 @@ test.describe("Git diff list", () => {
             .fill("-test");
 
         // Files the filter hides in the list are left out of the side menu too.
-        await expect(changedFiles.getByRole("listitem")).toHaveCount(1);
+        await expect(fileRows).toHaveCount(1);
 
         await page
             .getByRole("link", { name: "server.ts", exact: true })

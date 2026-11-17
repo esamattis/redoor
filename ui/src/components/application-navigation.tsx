@@ -26,7 +26,6 @@ import {
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
-import { ClearableInput } from "#ui/components/clearable-input";
 import { ChangePasswordFlow } from "#ui/components/change-password-dialog";
 import { SignedInUser, useCurrentUser } from "#ui/components/signed-in-user";
 import { AgentStatusDot } from "#ui/components/agent-status-dot";
@@ -42,10 +41,6 @@ import {
     SidebarFilesSplitHandle,
     useSidebarFilesSplit,
 } from "#ui/components/sidebar-files-split";
-import {
-    HistoryEntryStore,
-    useHistoryEntryState,
-} from "#ui/history-entry-state";
 import { useAgents } from "#ui/use-agents";
 import { useBrowserLocation } from "#ui/use-browser-location";
 import { useBeginServerRestart } from "#ui/use-server-restart";
@@ -56,12 +51,8 @@ import {
     useCloseOpenFiles,
 } from "#ui/components/browser/open-file-actions";
 import { formatKeyChord } from "#ui/utils/keyboard";
-import {
-    changedFilesOutlineAtom,
-    type ChangedFilesOutlineFile,
-    type ChangedFilesOutlineSnapshot,
-} from "#ui/components/browser/changed-files-outline";
-import { ChangeBadge } from "#ui/components/browser/git-parts";
+import { changedFilesOutlineAtom } from "#ui/components/browser/changed-files-outline";
+import { ChangedFiles } from "#ui/components/browser/changed-files-list";
 import {
     getOpenFileKey,
     getOpenFileParentLabels,
@@ -596,138 +587,6 @@ function SidebarFiles(props: { isCompact: boolean; className?: string }) {
                 </>
             )}
         </div>
-    );
-}
-
-/**
- * The changed files filter of each history entry, so going back to a diff shows the same
- * narrowed list the reader left.
- */
-const changedFilesFilters = new HistoryEntryStore<string>();
-
-/**
- * Lists the files of the diff on screen, so a long change set can be navigated by name
- * instead of scrolling past every patch. Picking one expands its diff and scrolls to it.
- */
-function ChangedFiles(props: {
-    outline: ChangedFilesOutlineSnapshot;
-    isCompact: boolean;
-}) {
-    const closeMenu = useCloseSideMenu();
-    const files = props.outline.files;
-
-    const [filter, setFilter] = useHistoryEntryState({
-        store: changedFilesFilters,
-        scope: "changed-files",
-        initial: (previous) => previous ?? "",
-    });
-
-    const needle = filter.trim().toLowerCase();
-
-    const shownFiles =
-        needle === ""
-            ? files
-            : files.filter((file) =>
-                  file.relativePath.toLowerCase().includes(needle),
-              );
-
-    return (
-        <section
-            aria-label="Changed files"
-            className="flex min-h-24 flex-1 flex-col"
-        >
-            <div className="flex min-h-7 items-center gap-1.5 py-1 pl-1 text-xs font-medium tracking-wide text-slate-500 uppercase">
-                Changed files
-                <span
-                    className="rounded-full bg-tint-strong px-1.5 text-[10px] leading-4 tracking-normal text-slate-300"
-                    aria-label={`${files.length} changed`}
-                >
-                    {files.length}
-                </span>
-            </div>
-            {files.length === 0 ? null : (
-                <ClearableInput
-                    label="Filter changed files"
-                    clearLabel="Clear changed files filter"
-                    value={filter}
-                    placeholder="Filter"
-                    onChange={(value) => setFilter(() => value)}
-                    className="mt-1 shrink-0"
-                />
-            )}
-            {shownFiles.length === 0 ? (
-                <p className="mt-1 px-1 text-xs text-slate-500">
-                    {files.length === 0
-                        ? "No files to show"
-                        : "No files match the filter"}
-                </p>
-            ) : (
-                // Positioned so the badges' absolutely placed screen reader labels are
-                // clipped by the list instead of hanging below the window, which would make
-                // the whole shell scrollable.
-                <ul
-                    aria-label="Changed files"
-                    className="relative mt-1 flex min-h-0 flex-col gap-0.5 overflow-y-auto"
-                >
-                    {shownFiles.map((file) => (
-                        <ChangedFileRow
-                            key={file.path}
-                            file={file}
-                            isCompact={props.isCompact}
-                            onReveal={(path) => {
-                                // The drawer covers the diff on phones, so it gets out of the way.
-                                closeMenu();
-                                props.outline.reveal(path);
-                            }}
-                        />
-                    ))}
-                </ul>
-            )}
-        </section>
-    );
-}
-
-/** One changed file, leading with its name and dimming its directory below it. */
-function ChangedFileRow(props: {
-    file: ChangedFilesOutlineFile;
-    /** Phones get taller rows, because a finger needs a bigger target than a pointer. */
-    isCompact: boolean;
-    onReveal: (path: string) => void;
-}) {
-    const relativePath = props.file.relativePath;
-    const slash = relativePath.lastIndexOf("/");
-    const name = slash === -1 ? relativePath : relativePath.slice(slash + 1);
-    const directory = slash === -1 ? "" : relativePath.slice(0, slash);
-
-    return (
-        <li>
-            <Button
-                type="button"
-                variant="ghost"
-                aria-label={relativePath}
-                tooltip={`Show the diff of ${relativePath}`}
-                tooltipClassName="w-full min-w-0"
-                onClick={() => props.onReveal(props.file.path)}
-                className={cn(
-                    "w-full min-w-0 justify-start gap-2 px-2.5 text-left font-normal text-slate-300",
-                    props.isCompact ? "py-2" : "py-1.5",
-                )}
-            >
-                {props.file.change === null ? null : (
-                    <ChangeBadge kind={props.file.change} />
-                )}
-                <span className="flex min-w-0 flex-1 flex-col">
-                    <span className="truncate text-sm text-slate-200">
-                        {name}
-                    </span>
-                    {directory === "" ? null : (
-                        <span className="truncate text-[11px] leading-tight text-slate-500">
-                            {directory}
-                        </span>
-                    )}
-                </span>
-            </Button>
-        </li>
     );
 }
 
