@@ -39,7 +39,11 @@ const openPathEventSchema = z.object({
     agent_id: z.string(),
     device_name: z.string(),
     path: z.string(),
-    kind: z.union([z.literal("file"), z.literal("directory")]),
+    kind: z.union([
+        z.literal("file"),
+        z.literal("directory"),
+        z.literal("missing"),
+    ]),
 });
 
 type OpenPathEvent = z.infer<typeof openPathEventSchema>;
@@ -106,7 +110,7 @@ function waitForEvents(events: OpenPathEvent[], count: number) {
 }
 
 describe("rd-open", () => {
-    it("opens files and directories of the terminal in the browsers", async () => {
+    it("opens files, directories and missing paths of the terminal in the browsers", async () => {
         writeFileSync(join(agentCwd, "notes.txt"), "notes\n");
         mkdirSync(join(agentCwd, "sub"));
         const events = await recordOpenPathEvents();
@@ -122,10 +126,12 @@ describe("rd-open", () => {
             "cd sub && rd-open ../sub/. && printf '__OPENED_%s__\\n' dir\n",
         );
         await viewer.waitForOutput("__OPENED_dir__");
+        viewer.type("rd-open ../new.txt && printf '__OPENED_%s__\\n' missing\n");
+        await viewer.waitForOutput("__OPENED_missing__");
 
         // The agent decided the kind and the path is absolute and normalized, so the browser
         // can build the file browser URL without asking the agent again.
-        expect(await waitForEvents(events, 2)).toEqual([
+        expect(await waitForEvents(events, 3)).toEqual([
             {
                 type: "open_path",
                 agent_id: testAgent.id,
@@ -140,21 +146,20 @@ describe("rd-open", () => {
                 path: join(agentCwd, "sub"),
                 kind: "directory",
             },
+            // A path that does not exist yet still opens, so the browser can create it.
+            {
+                type: "open_path",
+                agent_id: testAgent.id,
+                device_name: testAgent.name,
+                path: join(agentCwd, "new.txt"),
+                kind: "missing",
+            },
         ]);
     });
 
     it("explains failures in the terminal and opens nothing", async () => {
         const events = await recordOpenPathEvents();
         const { viewer } = await openTerminal(api, testAgent, agentCwd);
-
-        viewer.type(
-            "rd-open missing.txt || printf '__FAILED_%s__\\n' missing\n",
-        );
-        const missing = await viewer.waitForOutput("__FAILED_missing__");
-        // The person learns the path does not exist instead of seeing nothing happen.
-        expect(missing).toContain(
-            `${join(agentCwd, "missing.txt")}: No such file or directory`,
-        );
 
         viewer.type(
             "REDOOR_OPEN_TOKEN=forged rd-open . || printf '__FAILED_%s__\\n' forged\n",

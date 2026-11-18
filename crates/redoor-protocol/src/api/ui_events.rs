@@ -34,11 +34,15 @@ pub enum UiEvent {
 }
 
 /// What an `rd-open` path is, decided by the agent that could stat it, so the browser knows
-/// whether it opens a file view or a directory listing without asking again.
+/// whether it opens a file view, a directory listing or the form that creates the path,
+/// without asking again.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 #[serde(rename_all = "snake_case")]
 pub enum OpenPathKind {
     File,
     Directory,
+    /// Nothing exists at the path yet, as with `rd-open new-notes.md`; the browser offers to
+    /// create it as a file or a directory.
+    Missing,
 }

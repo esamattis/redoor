@@ -353,7 +353,7 @@ any browser can pick it up again with a snapshot of the screen.
   that directory first on each shell's `PATH`, and gives each shell its private Unix socket
   and a random per-terminal token. The token is what the agent trusts: only its own running
   shells know one, so other local processes cannot steer browsers. The agent stats the path
-  and sends `open_path` to the server, which broadcasts it to every UI window; the command
+  (a missing one still opens, as the browser's create form) and sends `open_path` to the server, which broadcasts it to every UI window; the command
   does not wait for a browser. Login shells whose profile resets `PATH` hide the command.
 - Live logs stream NDJSON log events over a stream of the same connection.
 

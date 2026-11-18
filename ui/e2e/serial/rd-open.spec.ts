@@ -42,7 +42,7 @@ test.describe.serial("rd-open", () => {
             .locator("textarea");
     }
 
-    test("opens files and directories from the terminal in the focused window", async ({
+    test("opens files, directories and missing paths from the terminal in the focused window", async ({
         page,
     }) => {
         await page.goto(ctx.agentBrowserUrl);
@@ -70,6 +70,23 @@ test.describe.serial("rd-open", () => {
         expect(decodeURIComponent(new URL(page.url()).pathname)).toBe(
             `/agents/${ctx.agentName}/browser${path.join(ctx.testDirPath, "subdir1")}`,
         );
+
+        await terminalInput.pressSequentially("rd-open from-terminal.txt");
+        await terminalInput.press("Enter");
+        // A path that does not exist yet opens the form that creates it, named as typed.
+        await expect(
+            page.getByRole("heading", {
+                name: "File or directory does not exist",
+            }),
+        ).toBeVisible();
+        await expect(page.getByLabel("File name")).toHaveValue(
+            "from-terminal.txt",
+        );
+        await page.getByRole("button", { name: "File", exact: true }).click();
+        // Creating it turns the page into the new, empty file.
+        await expect(
+            page.getByLabel("File editor", { exact: true }),
+        ).toBeVisible();
     });
 
     test("focuses the editor, also when the file is already shown", async ({

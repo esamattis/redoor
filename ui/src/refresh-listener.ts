@@ -16,6 +16,7 @@ import {
 const openPathKindSchema: z.ZodType<OpenPathKind> = z.union([
     z.literal("file"),
     z.literal("directory"),
+    z.literal("missing"),
 ]);
 
 const uiEventSchema: z.ZodType<UiEvent> = z.discriminatedUnion("type", [

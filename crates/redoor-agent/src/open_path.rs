@@ -199,19 +199,13 @@ async fn open(
     if !request.path.starts_with('/') {
         return Err(format!("{} is not an absolute path", request.path));
     }
-    let metadata =
-        tokio::fs::metadata(&request.path)
-            .await
-            .map_err(|error| match error.kind() {
-                std::io::ErrorKind::NotFound => {
-                    format!("{}: No such file or directory", request.path)
-                }
-                _ => format!("{}: {error}", request.path),
-            })?;
-    let kind = if metadata.is_dir() {
-        OpenPathKind::Directory
-    } else {
-        OpenPathKind::File
+    // A missing path still opens: the browser offers to create it, so `rd-open notes.md`
+    // works for a file that is about to be written.
+    let kind = match tokio::fs::metadata(&request.path).await {
+        Ok(metadata) if metadata.is_dir() => OpenPathKind::Directory,
+        Ok(_) => OpenPathKind::File,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => OpenPathKind::Missing,
+        Err(error) => return Err(format!("{}: {error}", request.path)),
     };
     log!(
         Level::Info,

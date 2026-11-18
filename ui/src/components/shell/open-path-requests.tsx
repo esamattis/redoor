@@ -1,6 +1,6 @@
 import * as React from "react";
 import { getRouteApi, useRouter } from "@tanstack/react-router";
-import { FileText, Folder } from "lucide-react";
+import { FilePlus, FileText, Folder, type LucideIcon } from "lucide-react";
 
 import { browserRoute } from "#ui/browser-route";
 import { Button } from "#ui/components/button";
@@ -86,13 +86,27 @@ export function useOpenPathRequests(onBeforeOpen: () => void) {
     return { onOpenPath, toast };
 }
 
+/** Shows at a glance whether the offered path is a file, a directory or not created yet. */
+const openPathIcons = {
+    file: FileText,
+    directory: Folder,
+    missing: FilePlus,
+} satisfies Record<OpenPathEvent["kind"], LucideIcon>;
+
+/** Says what opening does, which for a missing path is offering to create it. */
+const openPathTooltips = {
+    file: "Show this file in this window",
+    directory: "Show this directory in this window",
+    missing: "Show this path in this window to create it",
+} satisfies Record<OpenPathEvent["kind"], string>;
+
 /** Offers to open a path that a terminal asked for while this window had no focus. */
 function OpenPathToast(props: {
     event: OpenPathEvent;
     onOpen: () => void;
     onDismiss: () => void;
 }) {
-    const Icon = props.event.kind === "directory" ? Folder : FileText;
+    const Icon = openPathIcons[props.event.kind];
 
     return (
         <Toast
@@ -102,7 +116,7 @@ function OpenPathToast(props: {
                 <Button
                     size="sm"
                     onClick={props.onOpen}
-                    tooltip={`Show this ${props.event.kind} in this window`}
+                    tooltip={openPathTooltips[props.event.kind]}
                 >
                     Open
                 </Button>

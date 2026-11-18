@@ -2,6 +2,7 @@
 
 /**
  * What an `rd-open` path is, decided by the agent that could stat it, so the browser knows
- * whether it opens a file view or a directory listing without asking again.
+ * whether it opens a file view, a directory listing or the form that creates the path,
+ * without asking again.
  */
-export type OpenPathKind = "file" | "directory";
+export type OpenPathKind = "file" | "directory" | "missing";
