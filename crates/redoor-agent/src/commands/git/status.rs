@@ -24,9 +24,9 @@ use redoor_protocol::{
 };
 
 use super::{
-    GitFailure, RepositoryPath, discover_repository, head_tree, internal_failure, io_failure,
-    not_git_repository, refs::RemoteDefaultBranch, run_blocking, utf8_relative,
-    validate_absolute_path,
+    GitFailure, RepositoryPath, check_interrupt, diff::LineCounter, discover_repository, head_tree,
+    internal_failure, io_failure, not_git_repository, refs::RemoteDefaultBranch, run_blocking,
+    utf8_relative, validate_absolute_path,
 };
 
 /// Bounds status memory and the size of its WebSocket response.
@@ -171,7 +171,7 @@ fn status_blocking(
         // Limiting gix to the directory keeps a status of a small subdirectory from walking
         // the whole checkout; the prefix filter above stays as a guard on what is reported.
         directory_pathspec(&selected_relative),
-        interrupt,
+        interrupt.clone(),
     )?;
     let prefix = if selected_relative.is_empty() {
         None
@@ -181,6 +181,7 @@ fn status_blocking(
 
     let mut entries = Vec::new();
     let mut truncated = overflowed;
+    let mut line_counter = LineCounter::new(&repository.repo)?;
     for (relative_bytes, status) in &mut changes {
         let Some(relative) = relative_bytes.as_bstr().to_str().ok() else {
             continue;
@@ -197,18 +198,23 @@ fn status_blocking(
             truncated = true;
             break;
         }
+        check_interrupt(&interrupt, "count Git status lines")?;
+        let path = repository.root.join(Path::new(relative));
+        // A conflicted file's worktree holds conflict markers, not a change to count.
+        let line_changes = if status.conflict_state.is_some() {
+            None
+        } else {
+            line_counter.count(Path::new(relative), &path, status.is_untracked())?
+        };
         entries.push(GitStatusEntry {
-            path: repository
-                .root
-                .join(Path::new(relative))
-                .display()
-                .to_string(),
+            path: path.display().to_string(),
             repository_relative_path: relative.to_string(),
             original_path: status.original_path.take(),
             index_state: status.index_state,
             worktree_state: status.worktree_state,
             conflict_state: status.conflict_state,
             entry_kind: status.entry_kind,
+            line_changes,
         });
     }
 

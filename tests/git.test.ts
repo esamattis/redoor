@@ -290,6 +290,41 @@ describe("Git browser REST API", () => {
         expect(symlinkDiff.result.type).toBe("unsupported_entry");
     });
 
+    it("counts status lines only for files with a text diff", async () => {
+        const repo = tempFiles.tempDirectory({ suffix: "-git-status-lines" });
+        await initRepository(repo);
+        await writeFile(join(repo, "gone.txt"), "one\ntwo\nthree\n");
+        await writeFile(join(repo, "data.bin"), Buffer.from([0, 1, 2]));
+        await mkdir(join(repo, "folder"));
+        await writeFile(join(repo, "folder", "child.txt"), "child\n");
+        await $({ cwd: repo })`git add .`;
+        await $({ cwd: repo })`git commit -m initial`;
+        await rm(join(repo, "gone.txt"));
+        await writeFile(join(repo, "data.bin"), Buffer.from([0, 3, 4]));
+        await rm(join(repo, "folder"), { recursive: true });
+        await writeFile(join(repo, "folder"), "now a file\n");
+
+        const status = await gitStatus(repo);
+
+        const byPath = new Map(
+            status.entries.map((entry) => [
+                entry.repository_relative_path,
+                entry.line_changes,
+            ]),
+        );
+
+        // A deleted file removes every line it had at HEAD.
+        expect(byPath.get("gone.txt")).toEqual({ added: 0, removed: 3 });
+        // Binary files have no lines to count, matching their binary diff.
+        expect(byPath.get("data.bin")).toBeNull();
+        // A directory replaced by a file leaves its child deleted; reading the child through
+        // the file must not fail the whole status.
+        expect(byPath.get("folder/child.txt")).toEqual({ added: 0, removed: 1 });
+        // The file now at the directory's path is untracked, so it counts as wholly added
+        // like its diff shows, not as a change from the directory HEAD holds there.
+        expect(byPath.get("folder")).toEqual({ added: 1, removed: 0 });
+    });
+
     it("returns filtered deterministic status and separates full from staged diffs", async () => {
         const repo = tempFiles.tempDirectory({ suffix: "-git-status" });
         const nested = join(repo, "nested");
@@ -323,6 +358,11 @@ describe("Git browser REST API", () => {
         });
         // Individual untracked files are explicit rather than collapsed directories.
         expect(entries[1]).toMatchObject({ worktree_state: "added" });
+        // Line counts compare HEAD with the worktree, as the full diff does, so the staged
+        // middle version of the file is not counted on its own.
+        expect(entries[0]?.line_changes).toEqual({ added: 1, removed: 1 });
+        // An untracked file counts every line as added.
+        expect(entries[1]?.line_changes).toEqual({ added: 1, removed: 0 });
 
         const full = await gitDiff(file);
         const staged = await gitDiff(file, "?mode=staged");

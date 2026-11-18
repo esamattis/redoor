@@ -12,7 +12,10 @@ use gix::bstr::ByteSlice;
 use redoor_protocol::{
     api::git::{
         GitDiffResult, MAX_FULL_CONTEXT_PATCH_BYTES,
-        worktree::{GitDiffMode, GitDiffRequest, GitDiffResponse, GitFileDiff, GitTrackingState},
+        worktree::{
+            GitDiffMode, GitDiffRequest, GitDiffResponse, GitFileDiff, GitLineChanges,
+            GitTrackingState,
+        },
     },
     wire::{command::CommandErrorKind, request::CommandError},
 };
@@ -38,6 +41,9 @@ const MAX_BATCH_CONTEXT_BYTES: usize = 4 * 1024 * 1024;
 /// The unchanged lines `similar` and `git diff` keep around each change by default, which is
 /// what a patch falls back to when its whole file does not fit.
 const DEFAULT_CONTEXT_LINES: usize = 3;
+/// Caps the file bytes one status walk reads to count changed lines, so a checkout with
+/// thousands of large untracked files still answers status quickly. Paths past it go uncounted.
+const MAX_LINE_COUNT_INPUT_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Keeps size and entry-kind classifications out of the command-error channel.
 pub(super) enum DiffSource {
@@ -155,7 +161,10 @@ fn diff_file_blocking(
     if let Some(result) = early_result {
         return Ok(GitFileDiff { path, result });
     }
-    if path_declared_binary(&repository.repo, &repository.relative)? {
+    if declared_binary(
+        &mut attribute_stack(&repository.repo)?,
+        &repository.relative,
+    )? {
         return Ok(GitFileDiff {
             path,
             result: GitDiffResult::Binary,
@@ -165,7 +174,11 @@ fn diff_file_blocking(
     let head_source = if tracking == GitTrackingState::Untracked {
         DiffSource::Missing
     } else {
-        head_blob(&repository.repo, &repository.relative)?
+        tree_blob(
+            &repository.repo,
+            head_tree(&repository.repo)?.as_ref(),
+            &repository.relative,
+        )?
     };
     let right_source = match mode {
         GitDiffMode::Full => worktree_blob(&requested)?,
@@ -175,11 +188,16 @@ fn diff_file_blocking(
     Ok(GitFileDiff { path, result })
 }
 
-/// Reads a bounded blob from HEAD, treating only an unborn HEAD as an empty side.
-fn head_blob(repo: &gix::Repository, relative: &Path) -> Result<DiffSource, GitFailure> {
-    let tree = match head_tree(repo)? {
-        Some(tree) => tree,
-        None => return Ok(DiffSource::Missing),
+/// Reads a bounded blob from a tree, normally HEAD's. The tree is passed in so a status
+/// walk can look up many paths in it without peeling HEAD each time, and an absent tree is
+/// an unborn HEAD, which reads as an empty side.
+fn tree_blob(
+    repo: &gix::Repository,
+    tree: Option<&gix::Tree<'_>>,
+    relative: &Path,
+) -> Result<DiffSource, GitFailure> {
+    let Some(tree) = tree else {
+        return Ok(DiffSource::Missing);
     };
     let Some(entry) = tree
         .lookup_entry_by_path(relative)
@@ -236,11 +254,17 @@ pub(super) fn read_object_blob(
 pub(super) fn worktree_blob(path: &Path) -> Result<DiffSource, GitFailure> {
     let file = match std::fs::OpenOptions::new()
         .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        // Non-blocking, so a FIFO where a file was cannot hang the read before the check
+        // below rejects it; it changes nothing for regular files.
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
         .open(path)
     {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        // A parent directory replaced by a file leaves its former children deleted.
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                || error.raw_os_error() == Some(libc::ENOTDIR) =>
+        {
             return Ok(DiffSource::Missing);
         }
         Err(error) if error.raw_os_error() == Some(libc::ELOOP) => {
@@ -293,33 +317,11 @@ impl DiffBudget {
         right: DiffSource,
         relative: &str,
     ) -> Result<GitDiffResult, GitFailure> {
-        if matches!(left, DiffSource::TooLarge) || matches!(right, DiffSource::TooLarge) {
-            return Ok(GitDiffResult::TooLarge);
-        }
-        if matches!(left, DiffSource::Unsupported) || matches!(right, DiffSource::Unsupported) {
-            return Ok(GitDiffResult::UnsupportedEntry);
-        }
-        let left = match left {
-            DiffSource::Content(content) => content,
-            DiffSource::Missing => Vec::new(),
-            DiffSource::TooLarge | DiffSource::Unsupported => unreachable!("classified above"),
+        let (left, right) = match text_pair(left, right) {
+            Ok(pair) => pair,
+            Err(result) => return Ok(result),
         };
-        let right = match right {
-            DiffSource::Content(content) => content,
-            DiffSource::Missing => Vec::new(),
-            DiffSource::TooLarge | DiffSource::Unsupported => unreachable!("classified above"),
-        };
-        if left == right {
-            return Ok(GitDiffResult::NoChanges);
-        }
-        if left.contains(&0) || right.contains(&0) {
-            return Ok(GitDiffResult::Binary);
-        }
-        let (Ok(left), Ok(right)) = (std::str::from_utf8(&left), std::str::from_utf8(&right))
-        else {
-            return Ok(GitDiffResult::Binary);
-        };
-        let text_diff = similar::TextDiff::from_lines(left, right);
+        let text_diff = similar::TextDiff::from_lines(&left, &right);
         // The default-context patch decides whether the file fits at all, exactly as before
         // whole files were sent, so the extra context can never turn a file into `TooLarge`.
         let Some(compact) = format_patch(
@@ -353,6 +355,123 @@ impl DiffBudget {
     }
 }
 
+/// Turns both sides of a comparison into text, or into the outcome that stands in for a patch
+/// when there is none to show. Patches and line counts share it so a file the diff calls
+/// binary, or whose input is too large to diff, is never counted.
+fn text_pair(left: DiffSource, right: DiffSource) -> Result<(String, String), GitDiffResult> {
+    if matches!(left, DiffSource::TooLarge) || matches!(right, DiffSource::TooLarge) {
+        return Err(GitDiffResult::TooLarge);
+    }
+    if matches!(left, DiffSource::Unsupported) || matches!(right, DiffSource::Unsupported) {
+        return Err(GitDiffResult::UnsupportedEntry);
+    }
+    let left = match left {
+        DiffSource::Content(content) => content,
+        DiffSource::Missing => Vec::new(),
+        DiffSource::TooLarge | DiffSource::Unsupported => unreachable!("classified above"),
+    };
+    let right = match right {
+        DiffSource::Content(content) => content,
+        DiffSource::Missing => Vec::new(),
+        DiffSource::TooLarge | DiffSource::Unsupported => unreachable!("classified above"),
+    };
+    if left == right {
+        return Err(GitDiffResult::NoChanges);
+    }
+    if left.contains(&0) || right.contains(&0) {
+        return Err(GitDiffResult::Binary);
+    }
+    match (String::from_utf8(left), String::from_utf8(right)) {
+        (Ok(left), Ok(right)) => Ok((left, right)),
+        _ => Err(GitDiffResult::Binary),
+    }
+}
+
+/// Counts the lines each changed path of a status walk adds and removes compared with HEAD.
+/// It holds the HEAD tree and attribute stack for the whole walk, because looking them up
+/// per path would cost more than counting, and it spends a byte budget so status stays quick
+/// however many files changed.
+pub(super) struct LineCounter<'repo> {
+    repo: &'repo gix::Repository,
+    head: Option<gix::Tree<'repo>>,
+    attributes: gix::AttributeStack<'repo>,
+    remaining_bytes: u64,
+}
+
+impl<'repo> LineCounter<'repo> {
+    /// Prepares counting against the repository's current HEAD.
+    pub(super) fn new(repo: &'repo gix::Repository) -> Result<Self, GitFailure> {
+        Ok(Self {
+            repo,
+            head: head_tree(repo)?,
+            attributes: attribute_stack(repo)?,
+            remaining_bytes: MAX_LINE_COUNT_INPUT_BYTES,
+        })
+    }
+
+    /// Counts one path's changes from HEAD to the worktree file at `worktree_path`, or returns
+    /// `None` when its diff would not be text or the budget is spent. An untracked path has no
+    /// HEAD side, as in its diff, even where HEAD holds a directory of the same name.
+    pub(super) fn count(
+        &mut self,
+        relative: &Path,
+        worktree_path: &Path,
+        untracked: bool,
+    ) -> Result<Option<GitLineChanges>, GitFailure> {
+        if self.remaining_bytes == 0 || declared_binary(&mut self.attributes, relative)? {
+            return Ok(None);
+        }
+        let left = if untracked {
+            DiffSource::Missing
+        } else {
+            tree_blob(self.repo, self.head.as_ref(), relative)?
+        };
+        // A file status could list but not read goes uncounted rather than failing status.
+        let Ok(right) = worktree_blob(worktree_path) else {
+            return Ok(None);
+        };
+        let read = [&left, &right]
+            .iter()
+            .map(|source| match source {
+                DiffSource::Content(content) => content.len() as u64,
+                _ => 0,
+            })
+            .sum::<u64>();
+        // The file is already read, so it is still counted; the budget bounds the rest.
+        self.remaining_bytes = self.remaining_bytes.saturating_sub(read);
+        let (left, right) = match text_pair(left, right) {
+            Ok(pair) => pair,
+            // A mode-only change has a status entry but no changed lines.
+            Err(GitDiffResult::NoChanges) => {
+                return Ok(Some(GitLineChanges {
+                    added: 0,
+                    removed: 0,
+                }));
+            }
+            Err(_) => return Ok(None),
+        };
+        let mut changes = GitLineChanges {
+            added: 0,
+            removed: 0,
+        };
+        for op in similar::TextDiff::from_lines(&left, &right).ops() {
+            let (tag, old, new) = op.as_tag_tuple();
+            // Inputs are capped at 2 MiB, so their line counts always fit in u32.
+            let (old, new) = (old.len() as u32, new.len() as u32);
+            match tag {
+                similar::DiffTag::Equal => {}
+                similar::DiffTag::Delete => changes.removed += old,
+                similar::DiffTag::Insert => changes.added += new,
+                similar::DiffTag::Replace => {
+                    changes.removed += old;
+                    changes.added += new;
+                }
+            }
+        }
+        Ok(Some(changes))
+    }
+}
+
 /// Formats a patch with `radius` unchanged lines around each change, or returns `None` when
 /// it would exceed `limit` JSON-encoded bytes, so an oversized patch is never held whole.
 fn format_patch(
@@ -374,20 +493,25 @@ fn format_patch(
     Some(output)
 }
 
-/// Honors Git's built-in `-diff` binary declaration without invoking configured drivers.
-pub(super) fn path_declared_binary(
+/// Prepares reading Git attributes, which a caller checking many paths builds once.
+pub(super) fn attribute_stack(
     repo: &gix::Repository,
-    relative: &Path,
-) -> Result<bool, GitFailure> {
+) -> Result<gix::AttributeStack<'_>, GitFailure> {
     let index = repo
         .index_or_empty()
         .map_err(|error| internal_failure("open Git index for attributes", error))?;
-    let mut attributes = repo
-        .attributes_only(
-            &index,
-            gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
-        )
-        .map_err(|error| internal_failure("prepare Git attributes", error))?;
+    repo.attributes_only(
+        &index,
+        gix::worktree::stack::state::attributes::Source::WorktreeThenIdMapping,
+    )
+    .map_err(|error| internal_failure("prepare Git attributes", error))
+}
+
+/// Honors Git's built-in `-diff` binary declaration without invoking configured drivers.
+pub(super) fn declared_binary(
+    attributes: &mut gix::AttributeStack<'_>,
+    relative: &Path,
+) -> Result<bool, GitFailure> {
     let mut matches = attributes.selected_attribute_matches(["diff"]);
     attributes
         .at_path(relative, None)

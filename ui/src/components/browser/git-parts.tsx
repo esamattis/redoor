@@ -1,4 +1,6 @@
 import type { GitChangeState } from "#bindings/GitChangeState";
+import type { GitLineChanges } from "#bindings/GitLineChanges";
+import { Tooltip } from "#ui/components/tooltip";
 import type { GitRefKind } from "#ui/components/copyable-git-ref";
 import { formatModifiedAge } from "#ui/components/browser/utils";
 import { cn } from "#ui/utils/cn";
@@ -296,6 +298,31 @@ export function GitPanelBar(props: {
                 </div>
             )}
         </div>
+    );
+}
+
+/**
+ * Says how many lines a change set adds and removes, for the summary bar of a Git panel, so
+ * its size shows and not only how many files it touches. Nothing shows when no line changed,
+ * such as a set of binary files, because "+0 −0" would only add noise.
+ */
+export function LineChangeTotals(props: { changes: GitLineChanges }) {
+    const added = props.changes.added;
+    const removed = props.changes.removed;
+
+    if (added === 0 && removed === 0) {
+        return null;
+    }
+
+    return (
+        <Tooltip
+            content={`${added} ${added === 1 ? "line" : "lines"} added and ${removed} removed across the files that could be counted`}
+        >
+            <span className="inline-flex items-center gap-1.5 font-mono text-xs tabular-nums">
+                <span className="text-emerald-400">+{added}</span>
+                <span className="text-red-400">−{removed}</span>
+            </span>
+        </Tooltip>
     );
 }
 

@@ -100,6 +100,15 @@ pub enum GitStatusEntryKind {
     Other,
 }
 
+/// How many lines a change adds and removes, like `git diff --numstat`, so a summary can say
+/// how big a change set is without fetching any patch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct GitLineChanges {
+    pub added: u32,
+    pub removed: u32,
+}
+
 /// Describes one changed path from the merged HEAD/index/worktree view.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
@@ -111,6 +120,12 @@ pub struct GitStatusEntry {
     pub worktree_state: GitChangeState,
     pub conflict_state: Option<GitConflictState>,
     pub entry_kind: GitStatusEntryKind,
+    /// The lines the worktree adds and removes compared with HEAD, which is what the Git
+    /// view's full diff of the file shows. Absent when the file has no text diff (binary,
+    /// too large, special entries or conflicts), when the status walk ran out of its
+    /// counting budget, and from agents that predate it.
+    #[serde(default)]
+    pub line_changes: Option<GitLineChanges>,
 }
 
 /// Returns bounded, deterministic status for one literal directory prefix.

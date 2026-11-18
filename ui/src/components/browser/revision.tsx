@@ -27,6 +27,7 @@ import {
     ChangeBadge,
     CommitAge,
     GitPanelBar,
+    LineChangeTotals,
     changeLabel,
     commitDiffRevision,
     commitsOnlyRevision,
@@ -47,6 +48,7 @@ import {
     gitContextQueryOptions,
 } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
+import { countPatchLines } from "#ui/utils/diff-parse";
 import { getErrorMessage } from "#ui/utils/error";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
 import type { GitCommitFileChange } from "#bindings/GitCommitFileChange";
@@ -298,6 +300,26 @@ function countChanges(diff: GitCommitDiffResponse) {
 }
 
 /**
+ * Totals the lines every shown patch adds and removes, so the summary bar says how big the
+ * change is and not only how many files it touches. Binary and oversized files have no patch
+ * and add nothing, and a truncated diff only totals the files it lists.
+ */
+function countChangedLines(diff: GitCommitDiffResponse) {
+    let added = 0;
+    let removed = 0;
+
+    for (const file of diff.files) {
+        if (file.result.type === "text") {
+            const counts = countPatchLines(file.result.unified_diff);
+            added += counts.added;
+            removed += counts.removed;
+        }
+    }
+
+    return { added, removed };
+}
+
+/**
  * One side of the commit stepper. It names the neighbouring commit by its summary, because
  * a short id says nothing about where the step leads, and stays in place as a disabled
  * cell when there is no commit that way, so the other side never jumps across.
@@ -545,6 +567,15 @@ export function GitCommitView(props: {
         [props.agent, props.rev, diffQuery.data],
     );
 
+    // Reads every patch, so it runs once per diff rather than on each filter keystroke.
+    const changedLines = React.useMemo(
+        () =>
+            diffQuery.data === undefined
+                ? null
+                : countChangedLines(diffQuery.data),
+        [diffQuery.data],
+    );
+
     if (diffQuery.isPending) {
         return (
             <p
@@ -638,6 +669,9 @@ export function GitCommitView(props: {
                         </span>
                     </span>
                 ))}
+                {changedLines === null ? null : (
+                    <LineChangeTotals changes={changedLines} />
+                )}
             </GitPanelBar>
             <div className="grid grid-cols-[minmax(0,1fr)] gap-3 px-2 py-3 @xl:gap-4 @xl:px-5 @xl:py-4">
                 {diff.files.length === 0 ? (

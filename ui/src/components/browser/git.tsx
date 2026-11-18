@@ -21,6 +21,7 @@ import {
 import {
     ChangeBadge,
     GitPanelBar,
+    LineChangeTotals,
     type GitChangeKind,
 } from "#ui/components/browser/git-parts";
 import {
@@ -87,7 +88,17 @@ function groupGitStatusEntries(entries: GitStatusEntry[]) {
         return [item];
     });
 
-    return { conflicts, staged, unstaged, untracked, diffItems };
+    // Counted over the de-duplicated list, so a file both staged and modified again adds
+    // its lines once. Files the agent could not count (binary, too large, conflicted) add none.
+    const lineChanges = diffItems.reduce(
+        (total, item) => ({
+            added: total.added + (item.entry.line_changes?.added ?? 0),
+            removed: total.removed + (item.entry.line_changes?.removed ?? 0),
+        }),
+        { added: 0, removed: 0 },
+    );
+
+    return { conflicts, staged, unstaged, untracked, diffItems, lineChanges };
 }
 
 /** Names a status group's count with a colored dot, for the summary above the lists. */
@@ -278,7 +289,8 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
         return null;
     }
 
-    const { conflicts, staged, unstaged, untracked, diffItems } = groups;
+    const { conflicts, staged, unstaged, untracked, diffItems, lineChanges } =
+        groups;
 
     // Omitted or truncated entries are changes too, so their warnings below must stay visible.
     if (
@@ -349,6 +361,7 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
                     count={untracked.length}
                     label="untracked"
                 />
+                <LineChangeTotals changes={lineChanges} />
             </GitPanelBar>
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4 px-4 py-4 @xl:px-5">
                 {status.truncated ? (

@@ -1,5 +1,6 @@
 import { expect, test } from "vitest";
 import {
+    countPatchLines,
     fileLines,
     isExpandable,
     lineSideText,
@@ -342,4 +343,21 @@ test("keeps single-line gaps visible instead of folding them", () => {
     expect(file?.hunks.map((hunk) => hunk.type)).toEqual(["hunk"]);
     // Nothing is folded, so there is nothing to expand.
     expect(file === undefined ? true : isExpandable(file)).toBe(false);
+});
+
+test("counts added and removed lines, reading a removed `---` line as content", () => {
+    const counts = countPatchLines(`--- a/notes.md
++++ b/notes.md
+@@ -1,4 +1,4 @@
+ # Notes
+---- old rule
++=== new rule
++one more
+ end
+-gone
+`);
+
+    // The `---- old rule` line sits inside the hunk, so it is a removal and not a file
+    // header, which a plain prefix check would get wrong.
+    expect(counts).toEqual({ added: 2, removed: 2 });
 });

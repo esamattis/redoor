@@ -371,6 +371,8 @@ file. These routes are session-only; tokens use exec instead.
 All Git work runs on the agent with gix in blocking tasks, and every response is bounded
 (entries, bytes, patch budgets) because a reply is a single control frame. Long walks (status,
 worktree status) are request-cancellable, so leaving a view stops the walk on the agent.
+Worktree status also counts each file's added and removed lines against HEAD, under its own
+byte budget, so the Changes tab can show the size of the change set without fetching patches.
 
 The browser can browse a revision or range (`rev` search key) read-only with the same
 components as the worktree, list history, branches, tags and worktrees with offset paging,

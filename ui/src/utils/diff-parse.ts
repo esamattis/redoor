@@ -1063,6 +1063,30 @@ export function parseDiff(
     }));
 }
 
+/**
+ * Counts the lines a patch adds and removes. It only reads the patch, skipping the pairing
+ * `parseDiff` does for rendering, so a summary can total many files without that cost, and
+ * it follows the hunk lengths so a removed line starting with `--` is not taken for a header.
+ */
+export function countPatchLines(patch: string) {
+    let added = 0;
+    let removed = 0;
+
+    for (const file of readPatch(patch)) {
+        for (const hunk of file.hunks) {
+            for (const change of hunk.changes) {
+                if (change.type === "insert") {
+                    added++;
+                } else if (change.type === "delete") {
+                    removed++;
+                }
+            }
+        }
+    }
+
+    return { added, removed };
+}
+
 /** The text of one side of a row: the old line for "old", the new line for "new". */
 export function lineSideText(line: DiffLine, side: "old" | "new"): string {
     const skipped = side === "old" ? "insert" : "delete";

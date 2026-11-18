@@ -24,7 +24,7 @@ use redoor_protocol::{
 
 use super::{
     GitFailure, check_interrupt,
-    diff::{DiffSource, json_encoded_len, path_declared_binary, read_object_blob},
+    diff::{DiffSource, attribute_stack, declared_binary, json_encoded_len, read_object_blob},
     discover_repository, head_tree, internal_failure, io_failure, run_blocking,
     status::classify_tracking,
     utf8_relative, validate_absolute_path,
@@ -142,7 +142,7 @@ fn bases_blocking(
     let head_object = head_object(repo, &repository.relative)?;
     if matches!(index_object, BaseObject::Unsupported)
         || matches!(head_object, BaseObject::Unsupported)
-        || path_declared_binary(repo, &repository.relative)?
+        || declared_binary(&mut attribute_stack(repo)?, &repository.relative)?
     {
         return Ok(GitFileBasesResponse::Unsupported);
     }
