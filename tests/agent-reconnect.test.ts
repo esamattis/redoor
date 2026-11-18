@@ -215,10 +215,13 @@ describe("Agent connection recovery", () => {
 
         // The failure status is what the watchdog or relay reacts to with a fresh SSH session.
         expect(exitCode).not.toBe(0);
-        // The agent says why it left, so a relay log explains the relaunch.
-        expect(processManager.getStdout(agentPid)).toContain(
-            "exiting so the supervisor can start a fresh agent",
-        );
+        // Exit can precede the final stdout data event; wait for the diagnostic independently.
+        await waitForValue({
+            description: "supervised agent exit diagnostic to drain from stdout",
+            predicate: async () => processManager.getStdout(agentPid).includes(
+                "exiting so the supervisor can start a fresh agent",
+            ),
+        });
         // It retried inside its window before giving up, so short outages need no relaunch.
         expect(
             (
@@ -227,5 +230,5 @@ describe("Agent connection recovery", () => {
                     .match(/Attempting to connect/g) ?? []
             ).length,
         ).toBeGreaterThan(1);
-    });
+    }, 30_000);
 });

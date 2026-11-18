@@ -899,10 +899,12 @@ test.describe.serial("File Detail View", () => {
         // Two independently created links prove creation remains available after the first request succeeds.
         await expect(oneTimeLinks).toHaveCount(2);
 
-        const firstUrl = await oneTimeLinks.nth(0).getAttribute("href");
-        const secondUrl = await oneTimeLinks.nth(1).getAttribute("href");
+        // Refetches can sort the appended tokens between reads; capture both in one DOM turn.
+        const [firstUrl, secondUrl] = await oneTimeLinks.evaluateAll((links) =>
+            links.map((link) => link.getAttribute("href")),
+        );
 
-        if (firstUrl === null || secondUrl === null) {
+        if (firstUrl == null || secondUrl == null) {
             throw new Error("Shareable links did not expose their URLs");
         }
 
