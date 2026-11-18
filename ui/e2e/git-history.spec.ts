@@ -1,5 +1,6 @@
 import { expect, test } from "./fixtures";
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { $ } from "zx";
 import {
@@ -14,6 +15,9 @@ test.describe.serial("Git history browsing", () => {
     let repositoryPath: string;
     let firstCommit: string;
     let secondCommit: string;
+    // The test directory lives inside the redoor checkout, so a repository whose parent is
+    // outside every repository goes in the system temp directory instead.
+    let outsideRoot: string;
 
     test.beforeAll(async () => {
         ctx = await setupTestDir("git-history");
@@ -55,10 +59,23 @@ test.describe.serial("Git history browsing", () => {
         secondCommit = (
             await $`git -C ${repositoryPath} rev-parse HEAD`
         ).stdout.trim();
+
+        outsideRoot = await fs.mkdtemp(
+            path.join(os.tmpdir(), "redoor-git-history-"),
+        );
+        const outsideRepository = path.join(outsideRoot, "repository");
+        await fs.mkdir(outsideRepository);
+        await fs.writeFile(path.join(outsideRepository, "a.txt"), "a\n");
+        await $`git -C ${outsideRepository} init -b main`;
+        await $`git -C ${outsideRepository} config user.email playwright@redoor.test`;
+        await $`git -C ${outsideRepository} config user.name Playwright`;
+        await $`git -C ${outsideRepository} add .`;
+        await $`git -C ${outsideRepository} commit -m ${"Only commit"}`;
     });
 
     test.afterAll(async () => {
         await teardownTestDir(ctx.testDirPath);
+        await fs.rm(outsideRoot, { force: true, recursive: true });
     });
 
     test("browses a tag's tree read-only and keeps the revision in every link", async ({
@@ -182,6 +199,36 @@ test.describe.serial("Git history browsing", () => {
         await expect(
             page.getByRole("region", { name: "Git revision" }),
         ).toHaveCount(0);
+    });
+
+    test("drops the revision when navigation leaves the repository", async ({
+        page,
+    }) => {
+        await page.goto(
+            `${deviceBrowserUrl(ctx.agentName, path.join(outsideRoot, "repository"))}?rev=main`,
+        );
+
+        const banner = page.getByRole("region", { name: "Git revision" });
+
+        await expect(banner).toContainText("Only commit");
+
+        await page
+            .getByRole("link", { name: "Go to the parent directory" })
+            .click();
+
+        // The parent is outside every repository, so its working tree is listed instead of
+        // a failure to read the revision there.
+        await expect(
+            page.getByRole("row", { name: "Directory entry repository" }),
+        ).toBeVisible();
+        await expect(page).not.toHaveURL(/rev=/);
+        await expect(banner).toHaveCount(0);
+
+        await page.goBack();
+
+        // The redirect replaced the history entry, so Back returns to the revision.
+        await expect(page).toHaveURL(/\/repository\?rev=main$/);
+        await expect(banner).toContainText("Only commit");
     });
 
     test("shows revision details in the same layout with writes disabled", async ({

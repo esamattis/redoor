@@ -126,7 +126,9 @@ fn command_status(kind: &CommandErrorKind) -> StatusCode {
     match kind {
         CommandErrorKind::NotFound | CommandErrorKind::NotADirectory => StatusCode::NOT_FOUND,
         CommandErrorKind::PermissionDenied => StatusCode::FORBIDDEN,
-        CommandErrorKind::IsDirectory | CommandErrorKind::InvalidInput => StatusCode::BAD_REQUEST,
+        CommandErrorKind::IsDirectory
+        | CommandErrorKind::InvalidInput
+        | CommandErrorKind::NotGitRepository => StatusCode::BAD_REQUEST,
         // Only the client side cancels, so the request is what ended the work.
         CommandErrorKind::SourceChanged => StatusCode::CONFLICT,
         CommandErrorKind::Canceled | CommandErrorKind::Paused => StatusCode::BAD_REQUEST,
@@ -142,13 +144,15 @@ fn command_status(kind: &CommandErrorKind) -> StatusCode {
 }
 
 /// The machine-readable code of an agent failure the UI words itself, so it need not parse
-/// agent messages to tell "no systemd here" from "the user's manager is not running".
+/// agent messages to tell "no systemd here" from "the user's manager is not running", or a
+/// path outside any repository from other Git failures.
 fn command_code(kind: &CommandErrorKind) -> Option<ApiErrorCode> {
     match kind {
         CommandErrorKind::SystemdUnsupported => Some(ApiErrorCode::SystemdUnsupported),
         CommandErrorKind::SystemdUserManagerNotRunning => {
             Some(ApiErrorCode::SystemdUserManagerNotRunning)
         }
+        CommandErrorKind::NotGitRepository => Some(ApiErrorCode::NotGitRepository),
         _ => None,
     }
 }
@@ -257,6 +261,7 @@ mod tests {
             (CommandErrorKind::PermissionDenied, StatusCode::FORBIDDEN),
             (CommandErrorKind::IsDirectory, StatusCode::BAD_REQUEST),
             (CommandErrorKind::InvalidInput, StatusCode::BAD_REQUEST),
+            (CommandErrorKind::NotGitRepository, StatusCode::BAD_REQUEST),
             (CommandErrorKind::Canceled, StatusCode::BAD_REQUEST),
             (CommandErrorKind::AlreadyExists, StatusCode::CONFLICT),
             (CommandErrorKind::Conflict, StatusCode::CONFLICT),

@@ -18,8 +18,8 @@ use redoor_protocol::{
 };
 
 use super::{
-    GitFailure, discover_repository, head_tree, internal_failure, io_failure, run_blocking,
-    status::classify_tracking, utf8_relative, validate_absolute_path,
+    GitFailure, discover_repository, head_tree, internal_failure, io_failure, not_git_repository,
+    run_blocking, status::classify_tracking, utf8_relative, validate_absolute_path,
 };
 
 /// Matches the editor's existing per-file safety policy for both sides of a diff.
@@ -129,12 +129,7 @@ fn diff_file_blocking(
     budget: &mut DiffBudget,
 ) -> Result<GitFileDiff, GitFailure> {
     let requested = validate_absolute_path(&path)?;
-    let repository = discover_repository(requested.clone())?.ok_or_else(|| {
-        GitFailure::new(
-            CommandErrorKind::InvalidInput,
-            "Path is not inside a non-bare Git worktree",
-        )
-    })?;
+    let repository = discover_repository(requested.clone())?.ok_or_else(not_git_repository)?;
     let relative = utf8_relative(&repository.relative)?;
     if relative.is_empty() {
         return Err(GitFailure::new(

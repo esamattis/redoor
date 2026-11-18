@@ -99,6 +99,9 @@ pub enum ApiErrorCode {
     /// The user's systemd manager does not run, typically because the user has no session
     /// and linger is off; enabling linger starts it.
     SystemdUserManagerNotRunning,
+    /// The path is outside any non-bare Git worktree, so a Git revision cannot be read there.
+    /// The file browser then shows the path's working tree instead.
+    NotGitRepository,
     /// Creating or rotating an access token, or approving a CLI login, needs a session whose
     /// credentials were checked within the last minute, so a copied browser profile cannot
     /// mint a long-lived token. The UI sends the user through the sign-in and back.

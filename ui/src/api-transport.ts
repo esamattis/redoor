@@ -28,6 +28,7 @@ const API_ERROR_CODES = [
     "vault_device_not_found",
     "systemd_unsupported",
     "systemd_user_manager_not_running",
+    "not_git_repository",
     "fresh_login_required",
 ] as const satisfies readonly ApiErrorCode[];
 

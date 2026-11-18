@@ -1,6 +1,7 @@
 /** Loads the file browser route for a path at a Git revision, apart from the worktree loader. */
 import { redirect } from "@tanstack/react-router";
 import type { Agent } from "#ui/api-client";
+import { ApiError } from "#ui/api-transport";
 import type { BrowserSearch } from "#ui/browser-search";
 import {
     commitDiffRevision,
@@ -120,6 +121,19 @@ export async function loadRevision(options: {
             staleTime: 0,
         });
     } catch (error) {
+        // The browsed revision follows every navigation, so leaving the repository through the
+        // breadcrumbs or the parent link would otherwise land on an error. The working tree of
+        // the path is shown instead, replacing the entry so Back still returns to the revision.
+        if (error instanceof ApiError && error.code === "not_git_repository") {
+            throw redirect({
+                to: "/agents/$deviceName/browser/$",
+                params,
+                // An explicit undefined, because the route's middleware keeps an absent `rev`.
+                search: { view, rev: undefined },
+                replace: true,
+            });
+        }
+
         const pathError = getPathLoadError(error);
 
         const deletion =

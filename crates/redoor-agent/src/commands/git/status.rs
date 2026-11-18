@@ -25,7 +25,8 @@ use redoor_protocol::{
 
 use super::{
     GitFailure, RepositoryPath, discover_repository, head_tree, internal_failure, io_failure,
-    refs::RemoteDefaultBranch, run_blocking, utf8_relative, validate_absolute_path,
+    not_git_repository, refs::RemoteDefaultBranch, run_blocking, utf8_relative,
+    validate_absolute_path,
 };
 
 /// Bounds status memory and the size of its WebSocket response.
@@ -149,12 +150,7 @@ fn status_blocking(
             "Git status path must be a directory",
         ));
     }
-    let repository = discover_repository(requested.clone())?.ok_or_else(|| {
-        GitFailure::new(
-            CommandErrorKind::InvalidInput,
-            "Path is not inside a non-bare Git worktree",
-        )
-    })?;
+    let repository = discover_repository(requested.clone())?.ok_or_else(not_git_repository)?;
     let selected_relative = utf8_relative(&repository.relative)?;
     let selected_bytes = selected_relative.as_bytes().to_vec();
     let StatusCollection {

@@ -141,12 +141,16 @@ pub(super) fn discover_repository(
 /// Discovers the repository containing an absolute path for commands that only make sense
 /// inside one, such as history and ref listings.
 pub(super) fn discover_required_repository(path: &str) -> Result<RepositoryPath, GitFailure> {
-    discover_repository(validate_absolute_path(path)?)?.ok_or_else(|| {
-        GitFailure::new(
-            CommandErrorKind::InvalidInput,
-            "Path is not inside a non-bare Git worktree",
-        )
-    })
+    discover_repository(validate_absolute_path(path)?)?.ok_or_else(not_git_repository)
+}
+
+/// The failure of a Git command on a path outside any non-bare worktree. Its own kind lets
+/// the UI leave a browsed revision when navigation leaves the repository.
+pub(super) fn not_git_repository() -> GitFailure {
+    GitFailure::new(
+        CommandErrorKind::NotGitRepository,
+        "Path is not inside a non-bare Git worktree",
+    )
 }
 
 /// Discovers the repository enclosing an existing directory and locates `requested` in it.

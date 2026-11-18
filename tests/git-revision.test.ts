@@ -213,6 +213,11 @@ describe("Git revision REST API", () => {
 
         // Paths outside a repository have no revisions.
         expect(outside.status).toBe(400);
+        // The code lets the browser fall back to the working tree when navigation leaves the
+        // repository, instead of showing the failure.
+        expect(await outside.json()).toMatchObject({
+            code: "not_git_repository",
+        });
     });
 
     it("diffs a commit against its parent, scoped to the browsed path", async () => {

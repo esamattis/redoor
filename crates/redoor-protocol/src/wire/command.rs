@@ -413,6 +413,10 @@ pub enum CommandErrorKind {
     /// The targeted user's systemd manager does not run, so its units cannot be reached
     /// until the user logs in or linger is enabled.
     SystemdUserManagerNotRunning,
+    /// A Git command reached a path outside any non-bare worktree; distinct from
+    /// `InvalidInput` so the UI can leave a browsed Git revision when the path leaves the
+    /// repository instead of reporting a failure.
+    NotGitRepository,
     Internal,
 }
 
@@ -451,7 +455,8 @@ impl CommandErrorKind {
             | Self::InvalidInput
             | Self::SourceChanged
             | Self::SystemdUnsupported
-            | Self::SystemdUserManagerNotRunning => Level::Info,
+            | Self::SystemdUserManagerNotRunning
+            | Self::NotGitRepository => Level::Info,
         }
     }
 }
