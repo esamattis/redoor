@@ -20,10 +20,16 @@ export function useSidebarFilesSplit() {
     const containerRef = React.useRef<HTMLDivElement>(null);
     const openFilesRef = React.useRef<HTMLDivElement>(null);
 
+    /**
+     * The share being dragged lives here and on the DOM until release, because writing the
+     * stored atom on every pointer move rerenders the whole files column. It stays null
+     * until the pointer moves, so a click does not replace the saved share with a measurement.
+     */
     const drag = React.useRef<{
         pointerId: number;
         startY: number;
         startPercent: number;
+        percent: number | null;
     } | null>(null);
 
     /** Measures the current share so dragging from the automatic size does not jump. */
@@ -35,15 +41,17 @@ export function useSidebarFilesSplit() {
     };
 
     /** Keeps both lists visible whatever the pointer or keyboard asks for. */
-    const update = (next: number) => {
-        setPercent(
-            Math.round(
-                Math.max(
-                    minFilesSplitPercent,
-                    Math.min(maxFilesSplitPercent, next),
-                ),
+    const clampPercent = (next: number) =>
+        Math.round(
+            Math.max(
+                minFilesSplitPercent,
+                Math.min(maxFilesSplitPercent, next),
             ),
         );
+
+    /** Stores a share the user has settled on, which also rerenders the split at it. */
+    const update = (next: number) => {
+        setPercent(clampPercent(next));
     };
 
     /** Captures the pointer so the drag continues after leaving the thin handle. */
@@ -56,6 +64,7 @@ export function useSidebarFilesSplit() {
             pointerId: event.pointerId,
             startY: event.clientY,
             startPercent: measurePercent(),
+            percent: null,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
         event.currentTarget.focus();
@@ -63,27 +72,59 @@ export function useSidebarFilesSplit() {
         event.preventDefault();
     };
 
-    /** Converts the pointer travel into a share of the column's height. */
+    /**
+     * Converts the pointer travel into a share of the column's height. The first move from
+     * the automatic size goes through state, because the open files swap their size classes
+     * for a fixed share then. Later moves write the share straight to the DOM so the drag
+     * does not rerender the column.
+     */
     const handleMove = (event: React.PointerEvent<HTMLDivElement>) => {
         const active = drag.current;
         const height = containerRef.current?.clientHeight ?? 0;
+        const openFiles = openFilesRef.current;
 
-        if (active?.pointerId === event.pointerId && height > 0) {
-            update(
-                active.startPercent +
-                    ((event.clientY - active.startY) / height) * 100,
-            );
+        if (
+            active?.pointerId !== event.pointerId ||
+            height <= 0 ||
+            !openFiles
+        ) {
+            return;
         }
+
+        const next = clampPercent(
+            active.startPercent +
+                ((event.clientY - active.startY) / height) * 100,
+        );
+
+        active.percent = next;
+
+        if (percent === null) {
+            setPercent(next);
+
+            return;
+        }
+
+        openFiles.style.flex = `0 1 ${String(next)}%`;
+        event.currentTarget.setAttribute("aria-valuenow", String(next));
     };
 
-    /** Clears drag feedback even when the browser cancels the capture. */
+    /**
+     * Stores the dragged share once, and clears drag feedback, even when the browser cancels
+     * the capture. A press without movement leaves the automatic size alone.
+     */
     const handleEnd = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (drag.current?.pointerId !== event.pointerId) {
+        const active = drag.current;
+
+        if (active?.pointerId !== event.pointerId) {
             return;
         }
 
         drag.current = null;
         setIsResizing(false);
+
+        if (active.percent !== null) {
+            setPercent(active.percent);
+        }
 
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);

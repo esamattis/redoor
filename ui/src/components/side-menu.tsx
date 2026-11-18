@@ -288,10 +288,18 @@ function useSideMenuResize(placement: "left" | "right", isDrawer: boolean) {
     const [viewportWidth, setViewportWidth] = React.useState(window.innerWidth);
     const [isResizing, setIsResizing] = React.useState(false);
 
+    /**
+     * The width being dragged lives here and on the DOM until release, because writing the
+     * stored atom on every pointer move rerenders its readers and rewrites session storage.
+     * It stays null until the pointer moves, so a click does not save a capped width over
+     * the preferred one.
+     */
     const drag = React.useRef<{
         pointerId: number;
         startX: number;
         startWidth: number;
+        width: number | null;
+        menu: HTMLElement;
     } | null>(null);
 
     const maxWidth = Math.max(
@@ -322,16 +330,22 @@ function useSideMenuResize(placement: "left" | "right", isDrawer: boolean) {
     }, []);
 
     /** Uses one bound for pointer and keyboard input so neither can consume the entire shell. */
+    const clampWidth = (next: number) =>
+        Math.max(minSideMenuWidth, Math.min(maxWidth, next));
+
+    /** Stores a width the user has settled on, which also rerenders the menu at that width. */
     const updateWidth = (next: number) => {
         setWidths((current) => ({
             ...current,
-            [placement]: Math.max(minSideMenuWidth, Math.min(maxWidth, next)),
+            [placement]: clampWidth(next),
         }));
     };
 
     /** Captures the pointer so dragging continues after leaving the narrow edge handle. */
     const handleStart = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (event.button !== 0 || drag.current) {
+        const menu = event.currentTarget.parentElement;
+
+        if (event.button !== 0 || drag.current || !menu) {
             return;
         }
 
@@ -339,6 +353,8 @@ function useSideMenuResize(placement: "left" | "right", isDrawer: boolean) {
             pointerId: event.pointerId,
             startX: event.clientX,
             startWidth: width,
+            width: null,
+            menu,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
         event.currentTarget.focus();
@@ -346,25 +362,46 @@ function useSideMenuResize(placement: "left" | "right", isDrawer: boolean) {
         event.preventDefault();
     };
 
-    /** Mirrors drag direction on the right edge to keep movement attached to the pointer. */
+    /**
+     * Mirrors drag direction on the right edge to keep movement attached to the pointer. The
+     * menu is resized directly on the DOM so the drag does not rerender anything.
+     */
     const handleMove = (event: React.PointerEvent<HTMLDivElement>) => {
         const active = drag.current;
 
-        if (active?.pointerId === event.pointerId) {
-            updateWidth(
-                active.startWidth + (event.clientX - active.startX) * direction,
-            );
+        if (active?.pointerId !== event.pointerId) {
+            return;
         }
+
+        const next = clampWidth(
+            active.startWidth + (event.clientX - active.startX) * direction,
+        );
+
+        active.width = next;
+        active.menu.style.width = `${String(next)}px`;
+        event.currentTarget.setAttribute(
+            "aria-valuenow",
+            String(Math.round(next)),
+        );
     };
 
-    /** Clears drag feedback even when capture is canceled by the browser. */
+    /**
+     * Stores the dragged width once, and clears drag feedback, even when capture is canceled
+     * by the browser.
+     */
     const handleEnd = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (drag.current?.pointerId !== event.pointerId) {
+        const active = drag.current;
+
+        if (active?.pointerId !== event.pointerId) {
             return;
         }
 
         drag.current = null;
         setIsResizing(false);
+
+        if (active.width !== null) {
+            updateWidth(active.width);
+        }
 
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);

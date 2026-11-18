@@ -92,6 +92,7 @@ export function TabbedBottomDrawer(props: {
                         onPointerMove={resize.handleResizeMove}
                         onPointerUp={resize.handleResizeEnd}
                         onPointerCancel={resize.handleResizeEnd}
+                        onLostPointerCapture={resize.handleResizeEnd}
                         onKeyDown={resize.handleResizeKeyDown}
                         className={`absolute inset-x-0 top-0 z-20 h-2 touch-none cursor-row-resize transition-colors focus:outline-none focus-visible:bg-blue-400/40 ${
                             resize.isResizing
@@ -295,12 +296,18 @@ function useBottomPanelResize(props: {
     const panelRef = React.useRef<HTMLElement | null>(null);
     const headerRef = React.useRef<HTMLDivElement | null>(null);
 
+    /**
+     * The height being dragged lives here and on the DOM until release, because reporting
+     * it on every pointer move rerenders the drawer and every pane in it. It stays null until
+     * the pointer moves, so a click does not save a capped height over the preferred one.
+     */
     const resizeRef = React.useRef<{
         pointerId: number;
         startY: number;
         startHeight: number;
         minHeight: number;
         maxHeight: number;
+        height: number | null;
     } | null>(null);
 
     /** Bounds resizing to the header and the space above the panel's fixed bottom edge. */
@@ -339,41 +346,59 @@ function useBottomPanelResize(props: {
             startHeight: bounds.currentHeight,
             minHeight: bounds.minHeight,
             maxHeight: bounds.maxHeight,
+            height: null,
         };
         event.currentTarget.setPointerCapture(event.pointerId);
         setIsResizing(true);
         event.preventDefault();
     };
 
-    /** Applies a drag while keeping the panel within its measured layout bounds. */
+    /**
+     * Applies a drag while keeping the panel within its measured layout bounds. The panel is
+     * resized directly on the DOM so the drag does not rerender the panes.
+     */
     const handleResizeMove = (event: React.PointerEvent<HTMLDivElement>) => {
         const activeResize = resizeRef.current;
+        const panel = panelRef.current;
 
-        if (!activeResize || activeResize.pointerId !== event.pointerId) {
+        if (
+            !activeResize ||
+            activeResize.pointerId !== event.pointerId ||
+            !panel
+        ) {
             return;
         }
 
-        props.onExpandedHeightChange(
-            Math.min(
-                activeResize.maxHeight,
-                Math.max(
-                    activeResize.minHeight,
-                    activeResize.startHeight +
-                        activeResize.startY -
-                        event.clientY,
-                ),
+        const height = Math.min(
+            activeResize.maxHeight,
+            Math.max(
+                activeResize.minHeight,
+                activeResize.startHeight + activeResize.startY - event.clientY,
             ),
+        );
+
+        activeResize.height = height;
+        panel.style.height = `${String(height)}px`;
+        event.currentTarget.setAttribute(
+            "aria-valuenow",
+            String(Math.round(height)),
         );
     };
 
-    /** Ends pointer capture without changing the size selected by the user. */
+    /** Reports the dragged height once and ends pointer capture. */
     const handleResizeEnd = (event: React.PointerEvent<HTMLDivElement>) => {
-        if (resizeRef.current?.pointerId !== event.pointerId) {
+        const activeResize = resizeRef.current;
+
+        if (activeResize?.pointerId !== event.pointerId) {
             return;
         }
 
         resizeRef.current = null;
         setIsResizing(false);
+
+        if (activeResize.height !== null) {
+            props.onExpandedHeightChange(activeResize.height);
+        }
 
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
             event.currentTarget.releasePointerCapture(event.pointerId);
