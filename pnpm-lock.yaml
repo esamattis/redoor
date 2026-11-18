@@ -177,6 +177,7 @@ overrides:
 patchedDependencies:
   '@replit/codemirror-vim-core@0.1.0': 6a8c2a0354c917476b2daaa57a46571e24aeebcee36189522fe56fe35f59f23e
   '@wterm/dom@0.5.10': 8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563
+  picomatch@4.0.7: a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27
 
 importers:
 
@@ -3849,7 +3850,7 @@ snapshots:
       launch-editor: 2.14.2
       magic-string: 0.30.21
       oxc-parser: 0.120.0(@emnapi/core@1.11.3)(@emnapi/runtime@1.11.3)
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
     transitivePeerDependencies:
       - '@emnapi/core'
       - '@emnapi/runtime'
@@ -4384,9 +4385,9 @@ snapshots:
 
   extend@3.0.2: {}
 
-  fdir@6.5.0(picomatch@4.0.7):
+  fdir@6.5.0(picomatch@4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)):
     optionalDependencies:
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
 
   fsevents@2.3.2:
     optional: true
@@ -5072,7 +5073,7 @@ snapshots:
 
   picocolors@1.1.1: {}
 
-  picomatch@4.0.7: {}
+  picomatch@4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27): {}
 
   playwright-core@1.63.0-alpha-2026-08-05: {}
 
@@ -5270,8 +5271,8 @@ snapshots:
 
   tinyglobby@0.2.17:
     dependencies:
-      fdir: 6.5.0(picomatch@4.0.7)
-      picomatch: 4.0.7
+      fdir: 6.5.0(picomatch@4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27))
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
 
   tinyrainbow@3.2.0: {}
 
@@ -5360,7 +5361,7 @@ snapshots:
   unplugin@3.5.0(rolldown@1.2.15)(vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1)):
     dependencies:
       '@jridgewell/remapping': 2.3.5
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
       webpack-virtual-modules: 0.6.2
     optionalDependencies:
       rolldown: 1.2.15
@@ -5391,7 +5392,7 @@ snapshots:
   vite@8.3.5(@types/node@26.6.5)(jiti@2.7.0)(yaml@2.9.1):
     dependencies:
       lightningcss: 1.33.0
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
       postcss: 8.5.32
       rolldown: 1.2.15
       tinyglobby: 0.2.17
@@ -5415,7 +5416,7 @@ snapshots:
       magic-string: 0.30.21
       obug: 2.2.1
       pathe: 2.0.3
-      picomatch: 4.0.7
+      picomatch: 4.0.7(patch_hash=a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27)
       std-env: 4.3.0
       tinybench: 2.9.0
       tinyexec: 1.3.1
