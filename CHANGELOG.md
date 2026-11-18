@@ -1,5 +1,20 @@
 # Changelog
 
+## v2.16.0
+
+_2026-11-18_
+
+### Features
+
+- The Git summary bar of commit and range views shows how many lines were added and removed, not just how many files changed. Agents need to be upgraded to report the counts.
+- `rd-open` can open paths that do not exist yet, offering to create them as a file or directory.
+- Browsers cache the UI's hashed assets permanently and always revalidate the page itself, so a new UI build is picked up right after an upgrade.
+
+### Fixes
+
+- Going up out of a repository while browsing a Git revision shows the folder instead of a "Path is not inside a non-bare Git worktree" error.
+- Drag-resizing panels and the bottom drawer follows the pointer smoothly, and clicking a resize handle no longer changes the panel size.
+
 ## v2.15.0
 
 _2026-11-17_
