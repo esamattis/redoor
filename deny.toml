@@ -23,13 +23,7 @@ all-features = true
 unmaintained = "all"
 yanked = "deny"
 # Each entry must say why the advisory does not apply and when to revisit it.
-ignore = [
-    # Maintenance-only advisory, with no reported vulnerability. axum-embed uses
-    # chrono only to format embedded asset Last-Modified headers. Accept this
-    # maintenance risk rather than maintain a local fork; revisit when axum-embed
-    # replaces chrono or a security advisory affects this use.
-    "RUSTSEC-2026-0543",
-]
+ignore = []
 
 [licenses]
 # redoor is AGPL-3.0; every license here is compatible with distributing the

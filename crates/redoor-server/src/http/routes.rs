@@ -65,7 +65,7 @@ use super::{
     transfer_cancellation::cancel_transfer_handler,
     transfer_progress::list_transfer_progress_handler,
     trash::{empty_trash_handler, list_trash_handler, restore_trash_handler},
-    ui::ui_service,
+    ui::serve_ui,
     user_state::{get_user_state_handler, update_user_state_handler},
     ws::ui_websocket_handler,
 };
@@ -650,7 +650,7 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
                 .allow_methods(Any)
                 .allow_headers(Any),
         )
-        .fallback_service(ui_service());
+        .fallback(serve_ui);
 
     browser_router.merge(mcp_router).with_state(server_state)
 }
