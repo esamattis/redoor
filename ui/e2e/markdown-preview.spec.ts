@@ -155,6 +155,45 @@ ${"```"}
         );
     });
 
+    test("shows a table of contents beside or over the document", async ({
+        page,
+    }) => {
+        await page.setViewportSize({ width: 1600, height: 900 });
+        await page.goto(markdownUrl);
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+        const toc = page.getByRole("navigation", { name: "Table of contents" });
+        const toggle = page.getByRole("button", { name: "Table of contents" });
+
+        // A wide preview keeps the contents in view as a column without any toggle.
+        await expect(toc).toBeVisible();
+        await expect(toggle).toBeHidden();
+        await toc.getByRole("link", { name: "Getting started!" }).click();
+        // Entries are fragment links, so jumping to a section is shareable like a permalink.
+        await expect(page).toHaveURL(
+            `${markdownUrl}?preview=true#getting-started`,
+        );
+
+        await page.setViewportSize({ width: 390, height: 700 });
+        await page.goto(markdownUrl);
+
+        // Phones need the whole width for the document, so the contents wait behind a toggle.
+        await expect(toc).toBeHidden();
+        await toggle.click();
+        await expect(toc).toBeVisible();
+        await toc.getByRole("link", { name: "Getting started!" }).click();
+        // Choosing a section hands the screen back to the document at that heading.
+        await expect(toc).toBeHidden();
+        await expect(
+            preview.getByRole("heading", { name: "Getting started!" }),
+        ).toBeInViewport();
+
+        await toggle.click();
+        await page.keyboard.press("Escape");
+        // Escape dismisses only the drawer; the preview itself stays open.
+        await expect(toc).toBeHidden();
+        await expect(preview).toBeVisible();
+    });
+
     test("toggles without losing the editor draft or caret", async ({
         page,
     }) => {

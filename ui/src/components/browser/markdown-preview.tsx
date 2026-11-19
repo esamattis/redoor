@@ -2,22 +2,26 @@ import {
     createElement,
     useId,
     useMemo,
+    useRef,
     useState,
     type ComponentProps,
 } from "react";
 import { Link } from "@tanstack/react-router";
-import ReactMarkdown, { type ExtraProps } from "react-markdown";
+import Markdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeSlug from "rehype-slug";
-import { Check, Copy, LinkIcon } from "lucide-react";
+import { Check, Copy, LinkIcon, ListTree } from "lucide-react";
 import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { browserRoute } from "#ui/browser-route";
 import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { FoldingSection } from "#ui/components/folding-section";
 import { HighlightedLines } from "#ui/components/highlighted-tokens";
 import { IconButton } from "#ui/components/icon-button";
+import { ToggleButton } from "#ui/components/toggle-button";
 import { Tooltip } from "#ui/components/tooltip";
+import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { cn } from "#ui/utils/cn";
+import { isPlainKey } from "#ui/utils/keyboard";
 import {
     highlightLines,
     languageForName,
@@ -363,6 +367,100 @@ function MarkdownLink(
     );
 }
 
+/** A heading of the rendered document, as the table of contents lists it. */
+type MarkdownTocHeading = {
+    /** The slug `rehype-slug` gave the heading, which the entry links to. */
+    id: string;
+    /** 1 to 6, so entries can be indented by heading level. */
+    depth: number;
+    text: string;
+};
+
+/** The rendered tree's root, typed through react-markdown so hast needs no direct dependency. */
+type MarkdownRoot = { children: MarkdownNodeChild[] };
+
+/**
+ * Builds a rehype plugin that records the document's headings into `headings` as the
+ * markdown is rendered. Reading them from the same tree that becomes the page, after
+ * `rehype-slug`, keeps the table of contents' links equal to the heading ids without
+ * parsing the document a second time.
+ */
+function collectMarkdownHeadings(headings: MarkdownTocHeading[]) {
+    const visit = (children: MarkdownNodeChild[]) => {
+        for (const child of children) {
+            if (child.type !== "element") continue;
+
+            const depth = /^h([1-6])$/.exec(child.tagName)?.[1];
+            // `rehype-slug` gives every heading an id; hast just types properties loosely.
+            const id = child.properties.id;
+
+            if (depth !== undefined && id !== undefined && id !== null) {
+                headings.push({
+                    id: String(id),
+                    depth: Number(depth),
+                    text: markdownNodeText(child.children),
+                });
+            } else {
+                visit(child.children);
+            }
+        }
+    };
+
+    return () => (tree: MarkdownRoot) => {
+        visit(tree.children);
+    };
+}
+
+/**
+ * Lists the document's headings. Entries are native fragment links like the heading
+ * permalinks, so jumping to a section behaves, and can be shared, the same way.
+ */
+function MarkdownTableOfContents(props: {
+    headings: MarkdownTocHeading[];
+    /** Whether the narrow-screen drawer is open; wide previews always show the column. */
+    open: boolean;
+    onNavigate: () => void;
+}) {
+    // Indent relative to the shallowest heading, so a document without an h1 is not shifted.
+    const minDepth = Math.min(
+        ...props.headings.map((heading) => heading.depth),
+    );
+
+    return (
+        <nav
+            aria-label="Table of contents"
+            className={cn(
+                "w-64 shrink-0 overflow-auto border-l border-slate-800 bg-surface pb-6 text-sm",
+                props.open
+                    ? "absolute inset-y-0 right-0 z-20 max-w-[85%] shadow-xl @4xl/markdown:static @4xl/markdown:max-w-none @4xl/markdown:shadow-none"
+                    : "hidden @4xl/markdown:block",
+            )}
+        >
+            {/* Not a heading, so the document's own heading outline stays its own. Right padding
+                keeps the title clear of the preview's buttons above it. */}
+            <p className="flex h-11 items-center pl-4 pr-24 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Contents
+            </p>
+            <ul>
+                {props.headings.map((heading) => (
+                    <li key={heading.id}>
+                        <a
+                            href={`#${heading.id}`}
+                            onClick={props.onNavigate}
+                            style={{
+                                paddingLeft: `${1 + (heading.depth - minDepth) * 0.75}rem`,
+                            }}
+                            className="block py-1.5 pr-4 text-slate-300 hover:bg-tint hover:text-slate-50 @max-4xl/markdown:py-2.5"
+                        >
+                            {heading.text}
+                        </a>
+                    </li>
+                ))}
+            </ul>
+        </nav>
+    );
+}
+
 /** Renders an untrusted markdown draft without enabling raw HTML execution. */
 export function MarkdownPreview(props: {
     content: string;
@@ -370,48 +468,122 @@ export function MarkdownPreview(props: {
     deviceName: string;
     filePath: string;
     repositoryRoot: string | null;
+    /** Controls placed in the preview's top-right corner, such as the way back to the editor. */
+    actions?: React.ReactNode;
+    /**
+     * False while the preview stays mounted behind the editor, so a drawer left open there
+     * does not take Escape from the editor. Defaults to shown.
+     */
+    shown?: boolean;
 }) {
     const frontmatter = parseMarkdownYamlFrontmatter(props.content);
     const markdown = frontmatter === null ? props.content : frontmatter.body;
+    const [isTocOpen, setTocOpen] = useState(false);
+
+    // `Markdown` is a plain synchronous function, so calling it here renders the document and
+    // fills `headings` in one pass, and a re-render that keeps the text skips both.
+    const { rendered, headings } = useMemo(() => {
+        const headings: MarkdownTocHeading[] = [];
+
+        const rendered = Markdown({
+            remarkPlugins: [remarkGfm],
+            rehypePlugins: [rehypeSlug, collectMarkdownHeadings(headings)],
+            components: {
+                code: MarkdownCode,
+                pre: MarkdownPre,
+                h1: MarkdownHeading,
+                h2: MarkdownHeading,
+                h3: MarkdownHeading,
+                h4: MarkdownHeading,
+                h5: MarkdownHeading,
+                h6: MarkdownHeading,
+                a: (linkProps) => (
+                    <MarkdownLink
+                        {...linkProps}
+                        deviceName={props.deviceName}
+                        filePath={props.filePath}
+                        repositoryRoot={props.repositoryRoot}
+                    />
+                ),
+            },
+            children: markdown,
+        });
+
+        return { rendered, headings };
+    }, [markdown, props.deviceName, props.filePath, props.repositoryRoot]);
+
+    const hasToc = headings.length > 0;
+    const tocToggleRef = useRef<HTMLButtonElement>(null);
+
+    // Just above the view tier, so Escape closes the drawer before the whole preview, while
+    // menus and dialogs opened over the drawer, which are modal, still close first.
+    useShortcut(
+        {
+            name: "close-markdown-toc",
+            phase: "bubble",
+            priority: shortcutPriority.view + 1,
+            skipTypingTargets: true,
+            // The toggle shows only while the contents are a drawer; once the preview widens
+            // into a column, Escape belongs to the preview again.
+            match: (event) =>
+                isPlainKey(event, "Escape") &&
+                tocToggleRef.current?.checkVisibility() === true,
+            run: () => {
+                setTocOpen(false);
+                // Focus inside the closing drawer would be lost, so it goes back to the opener.
+                tocToggleRef.current?.focus();
+            },
+        },
+        hasToc && isTocOpen && props.shown !== false,
+    );
 
     return (
-        <section
-            role="region"
-            aria-label="Markdown preview"
-            className="min-h-0 max-w-none flex-1 overflow-auto px-5 py-6 @xl:px-8 @xl:py-8"
-        >
-            {frontmatter !== null && frontmatter.headers.length > 0 ? (
-                <YamlFrontmatterTable
-                    headers={frontmatter.headers}
-                    values={frontmatter.values}
+        <div className="@container/markdown relative flex min-h-0 min-w-0 flex-1">
+            <section
+                role="region"
+                aria-label="Markdown preview"
+                className="min-h-0 min-w-0 max-w-none flex-1 overflow-auto px-5 py-6 @xl:px-8 @xl:py-8"
+            >
+                {frontmatter !== null && frontmatter.headers.length > 0 ? (
+                    <YamlFrontmatterTable
+                        headers={frontmatter.headers}
+                        values={frontmatter.values}
+                    />
+                ) : null}
+                <div className="syntax-highlight prose prose-invert @max-xl:prose-sm max-w-none prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
+                    {rendered}
+                </div>
+            </section>
+            <div className="absolute top-1 right-1 z-30 flex items-center gap-1">
+                {hasToc ? (
+                    // Wide previews show the contents as a column, so only narrow ones need it.
+                    <ToggleButton
+                        ref={tocToggleRef}
+                        pressed={isTocOpen}
+                        label="Table of contents"
+                        tooltip={
+                            isTocOpen
+                                ? "Hide the table of contents (Esc)"
+                                : "Show the table of contents"
+                        }
+                        variant="subtle"
+                        size="lg"
+                        onClick={() => setTocOpen((open) => !open)}
+                        className="bg-surface/90 @4xl/markdown:hidden"
+                    >
+                        <ListTree className="h-5 w-5" aria-hidden="true" />
+                    </ToggleButton>
+                ) : null}
+                {props.actions}
+            </div>
+            {/* After the buttons, so Tab from the toggle walks into the drawer it opened. */}
+            {hasToc ? (
+                <MarkdownTableOfContents
+                    headings={headings}
+                    open={isTocOpen}
+                    onNavigate={() => setTocOpen(false)}
                 />
             ) : null}
-            <div className="syntax-highlight prose prose-invert @max-xl:prose-sm max-w-none prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
-                <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeSlug]}
-                    components={{
-                        code: MarkdownCode,
-                        pre: MarkdownPre,
-                        h1: MarkdownHeading,
-                        h2: MarkdownHeading,
-                        h3: MarkdownHeading,
-                        h4: MarkdownHeading,
-                        h5: MarkdownHeading,
-                        h6: MarkdownHeading,
-                        a: (linkProps) => (
-                            <MarkdownLink
-                                {...linkProps}
-                                deviceName={props.deviceName}
-                                filePath={props.filePath}
-                                repositoryRoot={props.repositoryRoot}
-                            />
-                        ),
-                    }}
-                >
-                    {markdown}
-                </ReactMarkdown>
-            </div>
-        </section>
+        </div>
     );
 }

@@ -1,8 +1,29 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
+import {
+    cleanup,
+    fireEvent,
+    render as renderWithoutShortcuts,
+    waitFor,
+} from "@testing-library/react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
+import { ShortcutRegistry, ShortcutRegistryContext } from "#ui/shortcuts";
 import { MarkdownPreview, resolveMarkdownFileLink } from "./markdown-preview";
+
+/** The table of contents registers Escape, which needs the registry the app provides. */
+const shortcutRegistry = new ShortcutRegistry(window);
+
+/** Renders inside the shortcut registry, so the preview mounts as it does in the app. */
+function render(ui: ReactNode) {
+    return renderWithoutShortcuts(ui, {
+        wrapper: (props: { children: ReactNode }) => (
+            <ShortcutRegistryContext value={shortcutRegistry}>
+                {props.children}
+            </ShortcutRegistryContext>
+        ),
+    });
+}
 
 afterEach(() => {
     cleanup();
@@ -322,4 +343,59 @@ test("keeps absolute markdown links filesystem-rooted outside git", () => {
 
     // Outside a worktree there is no repository root to reinterpret the path against.
     expect(link).toEqual({ path: "/etc/hosts", hash: undefined });
+});
+
+test("lists headings in a table of contents linking to their ids", () => {
+    const view = render(
+        <MarkdownPreview
+            content={`## Install
+
+### From *source*
+
+> #### Quoted heading
+
+## Install
+`}
+            deviceName="agent"
+            filePath="/repo/README.md"
+            repositoryRoot="/repo"
+        />,
+    );
+
+    const toc = view.getByRole("navigation", { name: "Table of contents" });
+
+    const entries = Array.from(toc.querySelectorAll("a")).map((link) => [
+        link.textContent,
+        link.getAttribute("href"),
+    ]);
+
+    // Entries come from the rendered headings, so nested and duplicate headings link to the
+    // same unique ids the permalinks use.
+    expect(entries).toEqual([
+        ["Install", "#install"],
+        ["From source", "#from-source"],
+        ["Quoted heading", "#quoted-heading"],
+        ["Install", "#install-1"],
+    ]);
+});
+
+test("leaves out the table of contents when there is nothing to navigate", () => {
+    const view = render(
+        <MarkdownPreview
+            content={`Only prose
+
+Body`}
+            deviceName="agent"
+            filePath="/repo/README.md"
+            repositoryRoot="/repo"
+        />,
+    );
+
+    // Without headings there are no sections to jump between, so no contents or toggle show.
+    expect(
+        view.queryByRole("navigation", { name: "Table of contents" }),
+    ).toBeNull();
+    expect(
+        view.queryByRole("button", { name: "Table of contents" }),
+    ).toBeNull();
 });

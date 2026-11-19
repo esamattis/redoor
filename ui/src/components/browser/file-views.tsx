@@ -101,17 +101,14 @@ function FilePreview(props: {
 }) {
     if (props.kind === "markdown") {
         return (
-            <>
-                <MarkdownPreview
-                    content={props.content}
-                    deviceName={props.deviceName}
-                    filePath={props.filePath}
-                    repositoryRoot={props.repositoryRoot}
-                />
-                <div className="absolute top-0 right-1 z-10">
-                    <ClosePreviewButton onClose={props.onClose} />
-                </div>
-            </>
+            <MarkdownPreview
+                content={props.content}
+                deviceName={props.deviceName}
+                filePath={props.filePath}
+                repositoryRoot={props.repositoryRoot}
+                actions={<ClosePreviewButton onClose={props.onClose} />}
+                shown={props.shown}
+            />
         );
     }
 
