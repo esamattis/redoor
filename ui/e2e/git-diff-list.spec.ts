@@ -288,6 +288,21 @@ test.describe("Git diff list", () => {
         // Unfolding all brings back every file, including those in nested directories.
         await expect(fileRows).toHaveCount(3);
 
+        await changedFiles
+            .getByRole("button", { name: "Fold directories inside src" })
+            .click();
+
+        // Folding inside a directory hides only its subdirectories' files and keeps its own.
+        await expect(myTest).toHaveAttribute("aria-expanded", "false");
+        await expect(fileRows).toHaveCount(2);
+
+        await changedFiles
+            .getByRole("button", { name: "Unfold everything inside src" })
+            .click();
+
+        // Unfolding inside a directory brings back the files of its subdirectories.
+        await expect(fileRows).toHaveCount(3);
+
         const filter = changedFiles.getByRole("textbox", {
             name: "Filter changed files",
         });

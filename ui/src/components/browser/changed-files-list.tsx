@@ -33,6 +33,9 @@ const changedFilesFilters = new HistoryEntryStore<string>();
  */
 const changedFilesFolds = new HistoryEntryStore<ReadonlySet<string>>();
 
+/** A directory row of the changed files tree. */
+type DirectoryRow = Extract<ChangedFilesTreeRow, { kind: "directory" }>;
+
 /**
  * Lists the files of the diff on screen, so a long change set can be navigated by name
  * instead of scrolling past every patch. Picking one expands its diff and scrolls to it.
@@ -59,9 +62,7 @@ export function ChangedFiles(props: {
     });
 
     /** Unfolding clears the whole chain, since any folded directory in it folds the row. */
-    const toggleFolded = (
-        row: Extract<ChangedFilesTreeRow, { kind: "directory" }>,
-    ) => {
+    const toggleFolded = (row: DirectoryRow) => {
         setFoldedPaths((current) => {
             const next = new Set(current);
 
@@ -91,6 +92,57 @@ export function ChangedFiles(props: {
     const directoryRows = buildChangedFilesTree(files, new Set()).flatMap(
         (row) => (row.kind === "directory" ? [row] : []),
     );
+
+    /**
+     * The directories below a row, taken from the unfiltered tree like "Fold all", so the
+     * folds still cover the directories a filter currently hides.
+     */
+    const descendantRowsOf = (row: DirectoryRow) =>
+        directoryRows.filter((other) => other.path.startsWith(`${row.path}/`));
+
+    /** Tells whether a folded path belongs to the row or to a directory below it. */
+    const isInsideRow = (row: DirectoryRow, path: string) =>
+        row.chainPaths.includes(path) || path.startsWith(`${row.path}/`);
+
+    /**
+     * Folds every directory below the row but opens the row itself, so a big directory can be
+     * reduced to an overview of what it holds without folding its neighbours.
+     */
+    const foldInside = (row: DirectoryRow) => {
+        setFoldedPaths((current) => {
+            const next = new Set(current);
+
+            for (const chainPath of row.chainPaths) {
+                next.delete(chainPath);
+            }
+
+            for (const descendant of descendantRowsOf(row)) {
+                next.add(descendant.path);
+            }
+
+            return next;
+        });
+    };
+
+    /** Opens the row and everything below it, leaving folds elsewhere in the tree alone. */
+    const unfoldInside = (row: DirectoryRow) => {
+        setFoldedPaths(
+            (current) =>
+                new Set([...current].filter((path) => !isInsideRow(row, path))),
+        );
+    };
+
+    /**
+     * The fold-inside actions of a row, left out for directories without subdirectories,
+     * where they would only repeat what clicking the row does.
+     */
+    const directoryRowFolding = (row: DirectoryRow) => {
+        if (descendantRowsOf(row).length === 0) {
+            return {};
+        }
+
+        return { onFoldInside: foldInside, onUnfoldInside: unfoldInside };
+    };
 
     return (
         <section
@@ -184,6 +236,7 @@ export function ChangedFiles(props: {
                                 row={row}
                                 isCompact={props.isCompact}
                                 onToggle={toggleFolded}
+                                {...directoryRowFolding(row)}
                             />
                         ) : (
                             <ChangedFileRow
@@ -212,38 +265,77 @@ const TREE_INDENT_PX = 6;
 
 /**
  * A directory of the changed files tree, drawn as a slim bar in a smaller font so it reads as
- * a heading of the files below rather than as one more file. Clicking it folds them away.
+ * a heading of the files below rather than as one more file. Clicking it folds them away, and
+ * its own buttons fold or unfold everything below it at once.
  */
 function ChangedDirectoryRow(props: {
-    row: Extract<ChangedFilesTreeRow, { kind: "directory" }>;
+    row: DirectoryRow;
     /** Phones get taller rows, because a finger needs a bigger target than a pointer. */
     isCompact: boolean;
-    onToggle: (
-        row: Extract<ChangedFilesTreeRow, { kind: "directory" }>,
-    ) => void;
+    onToggle: (row: DirectoryRow) => void;
+    /** Left out when the directory has no subdirectories to fold. */
+    onFoldInside?: (row: DirectoryRow) => void;
+    onUnfoldInside?: (row: DirectoryRow) => void;
 }) {
     const Chevron = props.row.isFolded ? ChevronRight : ChevronDown;
+    const onFoldInside = props.onFoldInside;
+    const onUnfoldInside = props.onUnfoldInside;
 
     return (
         <li
             className="mt-0.5"
             style={{ paddingLeft: props.row.depth * TREE_INDENT_PX }}
         >
-            <Button
-                type="button"
-                variant="ghost"
-                aria-expanded={!props.row.isFolded}
-                tooltip={`${props.row.isFolded ? "Unfold" : "Fold"} ${props.row.path}`}
-                tooltipClassName="w-full min-w-0"
-                onClick={() => props.onToggle(props.row)}
-                className={cn(
-                    "w-full min-w-0 justify-start gap-1 rounded-sm bg-tint px-1 text-left text-[11px] leading-4 font-normal text-slate-400",
-                    props.isCompact ? "py-1.5" : "py-0",
+            <div className="group flex min-w-0 items-center rounded-sm bg-tint">
+                <Button
+                    type="button"
+                    variant="ghost"
+                    aria-expanded={!props.row.isFolded}
+                    tooltip={`${props.row.isFolded ? "Unfold" : "Fold"} ${props.row.path}`}
+                    tooltipClassName="min-w-0 flex-1"
+                    onClick={() => props.onToggle(props.row)}
+                    className={cn(
+                        "w-full min-w-0 justify-start gap-1 rounded-sm px-1 text-left text-[11px] leading-4 font-normal text-slate-400",
+                        props.isCompact ? "py-2" : "py-1",
+                    )}
+                >
+                    <Chevron aria-hidden className="size-3 shrink-0" />
+                    <span className="truncate">{props.row.label}</span>
+                </Button>
+                {onFoldInside === undefined ||
+                onUnfoldInside === undefined ? null : (
+                    // Revealed on hover where there is a pointer, so the bars stay calm, but
+                    // always shown on touch screens, which cannot hover.
+                    <span className="flex shrink-0 items-center pointer-fine:opacity-0 pointer-fine:group-focus-within:opacity-100 pointer-fine:group-hover:opacity-100">
+                        <IconButton
+                            type="button"
+                            label={`Fold directories inside ${props.row.path}`}
+                            variant="quiet"
+                            size={props.isCompact ? "sm" : "xs"}
+                            className={props.isCompact ? undefined : "p-0.5"}
+                            onClick={() => onFoldInside(props.row)}
+                        >
+                            <ChevronsDownUp
+                                className="size-3"
+                                aria-hidden="true"
+                            />
+                        </IconButton>
+                        <IconButton
+                            type="button"
+                            label={`Unfold everything inside ${props.row.path}`}
+                            variant="quiet"
+                            size={props.isCompact ? "sm" : "xs"}
+                            className={props.isCompact ? undefined : "p-0.5"}
+                            onClick={() => onUnfoldInside(props.row)}
+                        >
+                            <ChevronsUpDown
+                                className="size-3"
+                                aria-hidden="true"
+                            />
+                        </IconButton>
+                    </span>
                 )}
-            >
-                <Chevron aria-hidden className="size-3 shrink-0" />
-                <span className="truncate">{props.row.label}</span>
-            </Button>
+            </div>
         </li>
     );
 }
