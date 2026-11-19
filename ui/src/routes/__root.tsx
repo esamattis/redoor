@@ -8,6 +8,7 @@ import type { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import type { UploadQueue } from "#ui/upload-queue";
 import type { EditorWorkspace } from "#ui/editor/editor-workspace";
 import type { VaultSession } from "#ui/vault/vault-session";
+import type { MermaidRenderer } from "#ui/mermaid-renderer";
 
 interface AppRouterContext {
     api: ApiClient;
@@ -20,6 +21,8 @@ interface AppRouterContext {
     editor: EditorWorkspace;
     /** Holds the unlocked vault keys of this tab, shared with the other tabs. */
     vault: VaultSession;
+    /** Draws markdown previews' Mermaid diagrams in one sandboxed frame shared by every preview. */
+    mermaid: MermaidRenderer;
 }
 
 /**

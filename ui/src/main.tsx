@@ -17,6 +17,7 @@ import { UploadQueue } from "#ui/upload-queue";
 import { saveFilesInBackground } from "#ui/editor/save-in-background";
 import { EditorWorkspace } from "#ui/editor/editor-workspace";
 import { VaultSession } from "#ui/vault/vault-session";
+import { MermaidRenderer } from "#ui/mermaid-renderer";
 import { setOpenFileLine, updateUserState } from "#ui/user-state";
 
 // The API lives on the same origin as the page: the redoor binary
@@ -107,6 +108,7 @@ const router = createRouter({
         uploads,
         editor,
         vault,
+        mermaid: new MermaidRenderer(),
     },
     defaultPreload: "intent",
     scrollRestoration: true,

@@ -24,9 +24,10 @@ export type DialogProps = {
     role?: "dialog" | "alertdialog";
     /**
      * `medium` fits forms with side-by-side choices and long copyable values, which wrap
-     * awkwardly at the default width; `wide` is for tables and logs.
+     * awkwardly at the default width; `wide` is for tables and logs. `fullscreen` fills the
+     * window, for viewing a drawing larger than the page it sits in allows.
      */
-    size?: "default" | "medium" | "wide" | "search";
+    size?: "default" | "medium" | "wide" | "search" | "fullscreen";
     children: React.ReactNode;
     onClose: () => void;
     /**
@@ -334,9 +335,11 @@ export function Dialog(props: DialogProps) {
                           "absolute w-56 rounded-xl border border-slate-700 bg-surface p-3 shadow-2xl shadow-black/40",
                           props.anchoredPanelClassName,
                       )
-                    : props.size === "search"
-                      ? "min-h-dvh w-full bg-surface p-4 text-left shadow-2xl shadow-black/40 sm:min-h-0 sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
-                      : "w-full rounded-xl border border-slate-700 bg-surface p-6 text-left shadow-2xl shadow-black/40"
+                    : props.size === "fullscreen"
+                      ? "flex h-full w-full flex-col bg-surface p-4 text-left"
+                      : props.size === "search"
+                        ? "min-h-dvh w-full bg-surface p-4 text-left shadow-2xl shadow-black/40 sm:min-h-0 sm:rounded-xl sm:border sm:border-slate-700 sm:p-6"
+                        : "w-full rounded-xl border border-slate-700 bg-surface p-6 text-left shadow-2xl shadow-black/40"
             }
             style={
                 isAnchored && anchorPosition
@@ -432,7 +435,7 @@ export function Dialog(props: DialogProps) {
             aria-modal="true"
             aria-labelledby={titleId}
             aria-describedby={props.description ? descriptionId : undefined}
-            className={`m-auto touch-pan-y data-modality-suspended:fixed data-modality-suspended:inset-0 data-modality-suspended:z-[90] data-modality-suspended:shadow-[0_0_0_100vmax_rgb(0_0_0/0.6)] overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "search" ? "h-dvh max-h-dvh w-full max-w-none sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl" : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${props.size === "wide" ? "max-w-4xl" : props.size === "medium" ? "max-w-2xl" : "max-w-md"}`}`}
+            className={`m-auto touch-pan-y data-modality-suspended:fixed data-modality-suspended:inset-0 data-modality-suspended:z-[90] data-modality-suspended:shadow-[0_0_0_100vmax_rgb(0_0_0/0.6)] overflow-y-auto overscroll-y-contain border-0 bg-transparent p-0 text-slate-200 backdrop:bg-black/60 ${props.size === "fullscreen" ? "h-dvh max-h-dvh w-full max-w-none" : props.size === "search" ? "h-dvh max-h-dvh w-full max-w-none sm:h-auto sm:max-h-[calc(100dvh-2rem)] sm:w-[calc(100%-2rem)] sm:max-w-6xl" : `max-h-[calc(100dvh-2rem)] w-[calc(100%-2rem)] ${props.size === "wide" ? "max-w-4xl" : props.size === "medium" ? "max-w-2xl" : "max-w-md"}`}`}
             onCancel={(event) => {
                 event.preventDefault();
 

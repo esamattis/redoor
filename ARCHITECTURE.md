@@ -521,6 +521,13 @@ own endpoints:
 - **Markdown previews render on redoor's origin**, so HTML embedded in them is parsed into
   the markdown tree and cut down to GitHub's sanitizer allowlist before React renders it;
   nothing the file writes reaches the page as an HTML string.
+- **Mermaid diagrams render like GitHub's**: in one hidden sandboxed frame with an opaque
+  origin whose CSP blocks every resource load, which gets each diagram's source and returns
+  SVG text over a private `MessagePort`. The preview shows that as an image, so a sanitizer
+  bypass in Mermaid cannot run on redoor's origin. CSP covers neither the frame navigating
+  itself nor WebRTC, so such a bypass could still reach the network; a frame that navigates is
+  dropped before it gets another source, but over WebRTC it could leak later diagram sources.
+  The large Mermaid bundle loads only when the first diagram is shown.
 - **Previews never reach the network unasked.** Markdown images and HTML scripts and images
   stay blocked until the user approves them for that file. Approvals live in user state for a
   week, so they follow the user across browsers, lapse before a changed file is trusted for

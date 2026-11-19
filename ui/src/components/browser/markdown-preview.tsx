@@ -26,6 +26,7 @@ import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { FoldingSection } from "#ui/components/folding-section";
 import { HighlightedLines } from "#ui/components/highlighted-tokens";
 import { IconButton } from "#ui/components/icon-button";
+import { MermaidDiagram } from "#ui/components/browser/mermaid-diagram";
 import { ToggleButton } from "#ui/components/toggle-button";
 import { Tooltip } from "#ui/components/tooltip";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
@@ -214,25 +215,32 @@ function markdownNodeText(children: MarkdownNodeChild[]): string {
         .join("");
 }
 
+/** Whether a fence is labeled `mermaid`, the label GitHub draws as a diagram. */
+function isMermaidFence(children: MarkdownNodeChild[]): boolean {
+    return children.some(
+        (child) =>
+            child.type === "element" &&
+            child.tagName === "code" &&
+            Array.isArray(child.properties.className) &&
+            child.properties.className.includes("language-mermaid"),
+    );
+}
+
 /**
  * Wraps fenced code with a copy button, because selecting a multi-line command or snippet
  * by hand is fiddly, especially on phones. The button stays visible rather than appearing on
  * hover so touch screens can reach it.
  */
-function MarkdownPre(props: ComponentProps<"pre"> & ExtraProps) {
-    const source = markdownNodeText(props.node?.children ?? []).replace(
-        /\n$/,
-        "",
-    );
-
-    const { isCopied, copy } = useCopyFeedback(source);
+function CopyableCodeBlock(props: {
+    source: string;
+    /** The fence as rendered code. */
+    children: React.ReactNode;
+}) {
+    const { isCopied, copy } = useCopyFeedback(props.source);
 
     return (
         <div className="relative">
-            {/* Right padding keeps short lines clear of the button. */}
-            <pre id={props.id} className={cn("pr-12", props.className)}>
-                {props.children}
-            </pre>
+            {props.children}
             <div className="absolute right-1 top-1">
                 <IconButton
                     type="button"
@@ -256,6 +264,37 @@ function MarkdownPre(props: ComponentProps<"pre"> & ExtraProps) {
                 </IconButton>
             </div>
         </div>
+    );
+}
+
+/**
+ * Renders a fence: Mermaid fences show their diagram, which is read rather than copied, and
+ * every other fence gets a copy button.
+ */
+function MarkdownPre(props: ComponentProps<"pre"> & ExtraProps) {
+    const children = props.node?.children ?? [];
+    const source = markdownNodeText(children).replace(/\n$/, "");
+
+    if (isMermaidFence(children)) {
+        return (
+            <MermaidDiagram
+                source={source}
+                code={
+                    <pre id={props.id} className={props.className}>
+                        {props.children}
+                    </pre>
+                }
+            />
+        );
+    }
+
+    return (
+        <CopyableCodeBlock source={source}>
+            {/* Right padding keeps short lines clear of the button. */}
+            <pre id={props.id} className={cn("pr-12", props.className)}>
+                {props.children}
+            </pre>
+        </CopyableCodeBlock>
     );
 }
 
