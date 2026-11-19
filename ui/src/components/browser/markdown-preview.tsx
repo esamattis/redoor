@@ -975,7 +975,9 @@ export function MarkdownPreview(props: {
                     {rendered}
                 </div>
             </section>
-            <div className="absolute top-1 right-1 z-30 flex items-center gap-1">
+            {/* Inset past the scrollbars of the document and the contents column, so the
+                buttons never sit on top of them. */}
+            <div className="absolute top-2 right-4 z-30 flex items-center gap-1">
                 {hasToc ? (
                     // Wide previews show the contents as a column, so only narrow ones need it.
                     <ToggleButton
