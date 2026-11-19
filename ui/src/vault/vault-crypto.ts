@@ -17,7 +17,6 @@
  * Header serialization and the file MAC live on the server only; this module never touches
  * file content. It runs in browsers and in Node (the integration tests).
  */
-import { argon2id } from "hash-wasm";
 import type { VaultKdfParams } from "#bindings/VaultKdfParams";
 import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
 import type { VaultObjectKind } from "#bindings/VaultObjectKind";
@@ -230,11 +229,16 @@ export function newKdfParams(): VaultKdfParams {
     };
 }
 
-/** The passphrase slot's KEK. Runs Argon2id in WASM, which takes a moment on purpose. */
+/**
+ * The passphrase slot's KEK. Runs Argon2id in WASM, which takes a moment on purpose. The WASM
+ * module is imported here, on first use, because most pages never unlock the vault.
+ */
 export async function passphraseKek(
     passphrase: string,
     kdf: VaultKdfParams,
 ): Promise<CryptoKey> {
+    const { argon2id } = await import("hash-wasm");
+
     const output = await argon2id({
         password: passphrase.normalize("NFC"),
         salt: fromBase64Url(kdf.salt),
