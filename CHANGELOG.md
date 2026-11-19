@@ -1,5 +1,22 @@
 # Changelog
 
+## v2.17.0
+
+_2026-11-19_
+
+### Features
+
+- Markdown previews draw ` ```mermaid ` code blocks as diagrams, like GitHub. Mermaid runs in an isolated sandbox and only downloads once a diagram is shown. A diagram that does not parse shows Mermaid's error under its source.
+- Mermaid diagrams open in a full window view that zooms with the mouse wheel or a pinch, pans by dragging, and has zoom and reset buttons.
+- Markdown previews render embedded HTML such as `<details>`, `<kbd>` and sized images, limited to the same safe subset GitHub allows.
+- Images in markdown previews, and remote images and scripts in HTML previews, stay blocked until approved for that file, so opening a file does not tell other servers about it. Approvals follow the user across browsers, can be revoked with the same toggle and lapse after a week.
+- Markdown previews have a table of contents, as a side column on wide screens and as a drawer on narrow ones.
+- Each directory in the changed files tree has buttons to fold or unfold just its own subtree.
+
+### Fixes
+
+- The markdown preview's contents and close buttons no longer sit on top of the scrollbar.
+
 ## v2.16.0
 
 _2026-11-18_
