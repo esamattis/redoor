@@ -109,7 +109,11 @@ function parseMarkdownYamlFrontmatter(content: string): {
  * Frontmatter is metadata, not document prose, so it stays outside typography
  * styles that collapse YAML indentation and shrink tables to content width.
  */
-function YamlFrontmatterTable(props: { headers: string[]; values: string[] }) {
+function YamlFrontmatterTable(props: {
+    headers: string[];
+    values: string[];
+    className: string;
+}) {
     const [open, setOpen] = useState(true);
 
     return (
@@ -118,7 +122,7 @@ function YamlFrontmatterTable(props: { headers: string[]; values: string[] }) {
             open={open}
             onOpenChange={setOpen}
             tooltip="Hide or show the document's YAML frontmatter"
-            className="mb-6 w-full overflow-hidden"
+            className={cn("mb-6 overflow-hidden", props.className)}
             contentClassName="p-0"
         >
             <table
@@ -802,12 +806,17 @@ function MarkdownImagesBar(props: {
     count: number;
     approved: boolean;
     onApprovedChange: (approved: boolean) => void;
+    className: string;
 }) {
     const images = props.count === 1 ? "1 image" : `${props.count} images`;
 
     return (
-        // Right margin keeps the text clear of the preview's buttons in the top-right corner.
-        <div className="mb-6 mr-16 flex flex-wrap items-center gap-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-400 @xl:mr-12">
+        <div
+            className={cn(
+                "mb-6 flex flex-wrap items-center gap-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-400",
+                props.className,
+            )}
+        >
             <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
             <p className="min-w-0 flex-1">
                 {props.approved
@@ -949,6 +958,14 @@ export function MarkdownPreview(props: {
         hasToc && isTocOpen && props.shown !== false,
     );
 
+    // The bars above the document start where the corner buttons float, so they end short of
+    // them. Each step is the button row's width past the section padding: the contents toggle
+    // adds a second button until the preview is wide enough to show the contents as a column,
+    // and from then on the buttons sit over that column instead of the document.
+    const clearCornerButtons = hasToc
+        ? "mr-20 @xl:mr-18 @4xl/markdown:mr-0"
+        : "mr-10 @xl:mr-7";
+
     return (
         <div className="@container/markdown relative flex min-h-0 min-w-0 flex-1">
             <section
@@ -961,12 +978,14 @@ export function MarkdownPreview(props: {
                         count={imageCount}
                         approved={props.imagesApproved}
                         onApprovedChange={props.onImagesApprovedChange}
+                        className={clearCornerButtons}
                     />
                 ) : null}
                 {frontmatter !== null && frontmatter.headers.length > 0 ? (
                     <YamlFrontmatterTable
                         headers={frontmatter.headers}
                         values={frontmatter.values}
+                        className={clearCornerButtons}
                     />
                 ) : null}
                 {/* Images drop the typography margins and sit like their placeholders, so showing
