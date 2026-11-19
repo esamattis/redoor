@@ -638,6 +638,7 @@ export function VaultDialog() {
     // the flow would already have failed. A pending passkey prompt is aborted instead, so
     // cancelling stays possible while only the prompt is pending.
     const passkeyPrompt = usePasskeyPrompt();
+    const queryClient = useQueryClient();
 
     const isBusy =
         useIsMutating({ mutationKey: vaultDialogMutationKey }) > 0 &&
@@ -662,10 +663,23 @@ export function VaultDialog() {
     const summary = statusQuery.data?.vault;
 
     const cancel = () => {
+        // The busy render trails a just-submitted unlock by a task, because the mutation cache
+        // notifies observers in a batch. The cache itself is pending at once, so an Escape
+        // pressed right after Unlock reads it here instead of the stale `isBusy`.
+        const isDeriving =
+            queryClient.isMutating({ mutationKey: vaultDialogMutationKey }) >
+                0 && !passkeyPrompt.isWaiting;
+
         vaultDebug("vault dialog cancel", {
             promptWaiting: passkeyPrompt.isWaiting,
             isBusy,
+            isDeriving,
         });
+
+        if (isDeriving) {
+            return;
+        }
+
         passkeyPrompt.abort();
         session.cancelPending();
     };
