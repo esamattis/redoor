@@ -32,11 +32,8 @@ import { Tooltip } from "#ui/components/tooltip";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { cn } from "#ui/utils/cn";
 import { isPlainKey } from "#ui/utils/keyboard";
-import {
-    highlightLines,
-    languageForName,
-    useLoadedLanguage,
-} from "#ui/utils/code-highlight";
+import { highlightLines, languageForName } from "#ui/utils/code-highlight";
+import { useLoadedLanguage } from "#ui/utils/use-code-highlight";
 
 /** Opening `---` must be the first line so thematic breaks later in the file stay markdown. */
 const YAML_FRONTMATTER_OPENING = /^---[ \t]*\r?\n/;

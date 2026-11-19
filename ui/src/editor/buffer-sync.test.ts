@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { EditorState } from "@codemirror/state";
+import { EditorState, Text } from "@codemirror/state";
 
 import {
     baseFromText,
@@ -7,10 +7,12 @@ import {
     isDirtyAgainst,
     minimalChange,
     reconcileDeviceContent,
-    textFromString,
 } from "./buffer-sync";
 
-const text = textFromString;
+/** Builds a document from a string, splitting lines the way the editor does. */
+function text(content: string): Text {
+    return Text.of(content.split(/\r\n?|\n/));
+}
 
 test("device text equal to the base leaves any buffer alone", () => {
     const base = baseFromText(text("original"));

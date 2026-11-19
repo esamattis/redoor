@@ -5,13 +5,18 @@ import {
     languageForName,
     type HighlightToken,
 } from "#ui/utils/code-highlight";
-import { Language } from "@codemirror/language";
+import { loadHighlightLanguage } from "#ui/utils/use-code-highlight";
 
 /** Highlights code with a bundled grammar, failing loudly when none is found. */
-function highlight(fileName: string, code: string): HighlightToken[][] {
-    const language = languageForFileName(fileName, code);
+async function highlight(
+    fileName: string,
+    code: string,
+): Promise<HighlightToken[][]> {
+    const language = await loadHighlightLanguage(
+        languageForFileName(fileName, code),
+    );
 
-    if (!(language instanceof Language)) {
+    if (language === null) {
         throw new Error(`No bundled grammar for ${fileName}`);
     }
 
@@ -26,12 +31,12 @@ function tokensOfKind(lines: HighlightToken[][], kind: string): string[] {
         .map((token) => token.text);
 }
 
-test("splits highlighted code into lines that spell the source exactly", () => {
+test("splits highlighted code into lines that spell the source exactly", async () => {
     const code = `const a = 1;
 /* spans
 lines */ let b = "x";`;
 
-    const lines = highlight("app.ts", code);
+    const lines = await highlight("app.ts", code);
 
     // Diff rows cut tokens by character offset, so the tokens must rebuild each line.
     expect(
@@ -42,9 +47,9 @@ lines */ let b = "x";`;
     expect(tokensOfKind(lines, "keyword")).toEqual(["const", "let"]);
 });
 
-test("highlights legacy stream modes such as shell and TOML", () => {
-    const shell = highlight("deploy.sh", `echo "hi" # say hi`);
-    const toml = highlight("Cargo.toml", `name = "redoor" # crate`);
+test("highlights legacy stream modes such as shell and TOML", async () => {
+    const shell = await highlight("deploy.sh", `echo "hi" # say hi`);
+    const toml = await highlight("Cargo.toml", `name = "redoor" # crate`);
 
     // StreamLanguage grammars parse outside an editor, so their files keep colours too.
     expect(tokensOfKind(shell, "string")).toEqual(['"hi"']);
@@ -53,8 +58,8 @@ test("highlights legacy stream modes such as shell and TOML", () => {
     expect(tokensOfKind(toml, "comment")).toEqual(["# crate"]);
 });
 
-test("detects an extensionless script by its shebang", () => {
-    const lines = highlight(
+test("detects an extensionless script by its shebang", async () => {
+    const lines = await highlight(
         "deploy",
         `#!/usr/bin/env python3
 def main(): pass`,
@@ -64,22 +69,21 @@ def main(): pass`,
     expect(tokensOfKind(lines, "keyword")).toContain("def");
 });
 
-test("resolves fence labels to bundled or lazily loaded grammars", () => {
-    // Short labels and full names both reach the grammar the editor bundles.
-    expect(languageForName("ts")).toBeInstanceOf(Language);
-    expect(languageForName("bash")).toBeInstanceOf(Language);
-    expect(languageForName("Python")).toBeInstanceOf(Language);
-    // Other known languages are described for loading rather than bundled.
-    expect(languageForName("sql")).not.toBeInstanceOf(Language);
-    expect(languageForName("sql")).not.toBeNull();
+test("resolves fence labels to the editor's grammars or the language data", () => {
+    // Short labels and full names both reach the grammar the editor uses.
+    expect(languageForName("ts")).toBe(languageForFileName("a.ts", ""));
+    expect(languageForName("bash")).toBe(languageForFileName("a.sh", ""));
+    expect(languageForName("Python")).toBe(languageForFileName("a.py", ""));
+    // Other known languages come from the language data instead.
+    expect(languageForName("sql")?.name).toBe("SQL");
     // Unknown labels get no grammar, so the fence stays plain.
     expect(languageForName("unknown-language")).toBeNull();
 });
 
-test("parses JSX in .tsx and .jsx files but not in .ts files", () => {
+test("parses JSX in .tsx and .jsx files but not in .ts files", async () => {
     const element = `const el = <h3 className="flex min-w-0">{name}</h3>;`;
-    const tsx = highlight("view.tsx", element);
-    const jsx = highlight("view.jsx", element);
+    const tsx = await highlight("view.tsx", element);
+    const jsx = await highlight("view.jsx", element);
 
     // Without JSX parsing the attribute's class list is read as code, splitting it
     // into identifiers, operators and numbers instead of colouring it as one string.
@@ -88,18 +92,18 @@ test("parses JSX in .tsx and .jsx files but not in .ts files", () => {
     expect(tokensOfKind(jsx, "string")).toEqual(['"flex min-w-0"']);
 
     // Plain TypeScript must keep `<Type>value` as a type assertion, not an element.
-    const ts = highlight("cast.ts", `const n = <number>value;`);
+    const ts = await highlight("cast.ts", `const n = <number>value;`);
 
     expect(tokensOfKind(ts, "type")).toEqual(["number"]);
     expect(tokensOfKind(ts, "tag")).toEqual([]);
 });
 
-test("resolves tsx and jsx fence labels to JSX-aware grammars", () => {
+test("resolves tsx and jsx fence labels to JSX-aware grammars", async () => {
     const element = `<a href="x">y</a>`;
-    const tsx = languageForName("tsx");
+    const tsx = await loadHighlightLanguage(languageForName("tsx"));
 
-    if (!(tsx instanceof Language)) {
-        throw new Error("No bundled grammar for tsx");
+    if (tsx === null) {
+        throw new Error("No grammar for tsx");
     }
 
     // Markdown fences labelled tsx highlight JSX the same way .tsx files do.

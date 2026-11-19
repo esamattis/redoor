@@ -1,4 +1,4 @@
-import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
+import { syntaxLanguageFromFileName } from "#ui/utils/syntax-language";
 import { stripVaultSuffix } from "#ui/vault/vault-path";
 
 /**

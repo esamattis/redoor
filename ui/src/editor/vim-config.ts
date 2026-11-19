@@ -1,5 +1,3 @@
-import { Vim } from "@replit/codemirror-vim";
-
 /** A mapping keeps its mode explicit so plain map never captures insert-mode typing. */
 type VimMapping = {
     lhs: string;
@@ -98,31 +96,4 @@ export function parseVimConfig(source: string) {
     }
 
     return { mappings, errors };
-}
-
-let appliedSource: string | null = null;
-
-/**
- * The adapter owns a page-wide keymap, just like our user-wide preference. Clear only its
- * user mappings before rebuilding, so deleted overrides reveal defaults and :w stays intact.
- * Valid lines still work while an incomplete line is being edited in settings.
- */
-export function applyVimConfig(source: string): void {
-    if (source === appliedSource) {
-        return;
-    }
-
-    Vim.mapclear();
-
-    for (const mapping of parseVimConfig(source).mappings) {
-        for (const context of mapping.contexts) {
-            if (mapping.recursive) {
-                Vim.map(mapping.lhs, mapping.rhs, context);
-            } else {
-                Vim.noremap(mapping.lhs, mapping.rhs, context);
-            }
-        }
-    }
-
-    appliedSource = source;
 }

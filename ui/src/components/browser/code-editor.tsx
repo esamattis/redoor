@@ -9,7 +9,7 @@ import {
     type EditorSearchHandle,
 } from "#ui/components/browser/editor-search";
 import type { EditorHandlers, LineTargets } from "#ui/editor/editor-workspace";
-import type { GitGutterSource } from "#ui/editor/git-gutter";
+import type { GitGutterSource } from "#ui/editor/git-line-marks";
 import type { StoredBuffer } from "#ui/editor/stored-buffer";
 import { historyEntryKey } from "#ui/history-entry-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
@@ -155,6 +155,9 @@ type CodeEditorProps = {
  */
 export function CodeEditor(props: CodeEditorProps) {
     const { editor: workspace } = rootRouteApi.useRouteContext();
+    // Suspends the first editor of the page until CodeMirror has loaded, so the workspace can
+    // build the view and buffers synchronously in the effects below.
+    React.use(workspace.loadEngine());
     const resolvedTheme = useAtomValue(resolvedThemeAtom);
 
     // The resolved entry, not the live one: a navigation away changes the live location while

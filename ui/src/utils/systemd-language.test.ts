@@ -4,13 +4,15 @@ import {
     languageForFileName,
     type HighlightToken,
 } from "#ui/utils/code-highlight";
-import { Language } from "@codemirror/language";
+import { loadHighlightLanguage } from "#ui/utils/use-code-highlight";
 
 /** Highlights a unit file the way read-only views do, failing loudly without a grammar. */
-function highlightUnit(code: string): HighlightToken[][] {
-    const language = languageForFileName("app.service", code);
+async function highlightUnit(code: string): Promise<HighlightToken[][]> {
+    const language = await loadHighlightLanguage(
+        languageForFileName("app.service", code),
+    );
 
-    if (!(language instanceof Language)) {
+    if (language === null) {
         throw new Error("No bundled grammar for systemd units");
     }
 
@@ -26,13 +28,13 @@ function tokensOfKind(lines: HighlightToken[][], kind: string): string[] {
 }
 
 describe("systemd grammar", () => {
-    test("rebuilds every line exactly", () => {
+    test("rebuilds every line exactly", async () => {
         const code = `[Service]
 ExecStart=-/usr/bin/app --name "%n" \\
     --env $HOME
 Environment="A=1"`;
 
-        const lines = highlightUnit(code);
+        const lines = await highlightUnit(code);
 
         // Diff rows cut tokens by offset, so the tokens must spell the source.
         expect(
@@ -40,8 +42,8 @@ Environment="A=1"`;
         ).toEqual(code.split("\n"));
     });
 
-    test("highlights sections, directives and comments", () => {
-        const lines = highlightUnit(`# A comment
+    test("highlights sections, directives and comments", async () => {
+        const lines = await highlightUnit(`# A comment
 ; Another comment
 [Unit]
 Description=My app
@@ -63,8 +65,8 @@ After = network.target`);
         expect(tokensOfKind(lines, "keyword")).not.toContain("My");
     });
 
-    test("keeps a continued line a value", () => {
-        const lines = highlightUnit(`[Service]
+    test("keeps a continued line a value", async () => {
+        const lines = await highlightUnit(`[Service]
 ExecStart=/usr/bin/app \\
     Restart=always \\
 # interleaved comment
@@ -86,8 +88,8 @@ Restart=always`);
         expect(tokensOfKind(lines, "escape")).toEqual(["%i"]);
     });
 
-    test("highlights specifiers and variable references", () => {
-        const lines = highlightUnit(
+    test("highlights specifiers and variable references", async () => {
+        const lines = await highlightUnit(
             `ExecStart=/usr/bin/app %n "%i-%%" \${HOME} $USER $`,
         );
 
@@ -99,8 +101,8 @@ Restart=always`);
         expect(tokensOfKind(lines, "string")).toEqual(['"', "-", '"']);
     });
 
-    test("highlights command prefixes only at the start of Exec values", () => {
-        const lines = highlightUnit(`ExecStartPre=-+/usr/bin/prepare -v
+    test("highlights command prefixes only at the start of Exec values", async () => {
+        const lines = await highlightUnit(`ExecStartPre=-+/usr/bin/prepare -v
 ExecStart=@/usr/bin/app app
 Description=-not a prefix`);
 
@@ -108,8 +110,8 @@ Description=-not a prefix`);
         expect(tokensOfKind(lines, "modifier")).toEqual(["-+", "@"]);
     });
 
-    test("highlights booleans and time spans", () => {
-        const lines = highlightUnit(`RemainAfterExit=yes
+    test("highlights booleans and time spans", async () => {
+        const lines = await highlightUnit(`RemainAfterExit=yes
 PrivateTmp=false
 ExecStart=/bin/echo yes
 RestartSec=5s

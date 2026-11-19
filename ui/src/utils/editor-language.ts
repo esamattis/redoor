@@ -1,377 +1,136 @@
-import { cpp } from "@codemirror/lang-cpp";
-import { stripVaultSuffix } from "#ui/vault/vault-path";
-import { css } from "@codemirror/lang-css";
-import { go } from "@codemirror/lang-go";
-import { html } from "@codemirror/lang-html";
-import { java } from "@codemirror/lang-java";
-import { javascript } from "@codemirror/lang-javascript";
-import { jinja } from "@codemirror/lang-jinja";
-import { json } from "@codemirror/lang-json";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { python } from "@codemirror/lang-python";
-import { rust } from "@codemirror/lang-rust";
-import { xml } from "@codemirror/lang-xml";
-import { yaml } from "@codemirror/lang-yaml";
 import {
+    LanguageSupport,
     StreamLanguage,
     type Language,
-    type LanguageSupport,
 } from "@codemirror/language";
-import { languages } from "@codemirror/language-data";
-import { lua } from "@codemirror/legacy-modes/mode/lua";
-import { perl } from "@codemirror/legacy-modes/mode/perl";
-import { properties } from "@codemirror/legacy-modes/mode/properties";
-import { ruby } from "@codemirror/legacy-modes/mode/ruby";
-import { shell } from "@codemirror/legacy-modes/mode/shell";
-import { toml } from "@codemirror/legacy-modes/mode/toml";
-import { isSystemdUnitPath, systemd } from "#ui/utils/systemd-language";
-import { radconf } from "#ui/utils/radconf-language";
+import { systemd } from "#ui/utils/systemd-language";
+import type { SupportedSyntaxLanguage } from "#ui/utils/syntax-language";
 
-export type SupportedSyntaxLanguage =
-    | "cpp"
-    | "csharp"
-    | "css"
-    | "go"
-    | "html"
-    | "java"
-    | "javascript"
-    | "jinja"
-    | "json"
-    | "jsx"
-    | "lua"
-    | "markdown"
-    | "perl"
-    | "properties"
-    | "python"
-    | "radconf"
-    | "ruby"
-    | "rust"
-    | "shell"
-    | "systemd"
-    | "toml"
-    | "tsx"
-    | "typescript"
-    | "xml"
-    | "yaml";
+/** One load per language, shared by the editor and read-only highlighting. */
+const loads = new Map<SupportedSyntaxLanguage, Promise<LanguageSupport>>();
 
 /**
- * Dotfiles that should highlight as shell even when they have no `.sh` extension.
- * Agents usually report these as text/plain, so filename is the only reliable signal.
+ * Loads the CodeMirror grammar of a supported language. The grammars are a large part of
+ * CodeMirror, so each one is its own chunk that is only fetched once a file in that language
+ * is shown. The editor and read-only highlighting both use it, so code is parsed the same way
+ * wherever it is shown.
  */
-const SHELL_BASENAMES = new Set([
-    ".bashrc",
-    ".bash_profile",
-    ".bash_login",
-    ".bash_aliases",
-    ".zshrc",
-    ".zprofile",
-    ".zshenv",
-    ".zlogin",
-    ".profile",
-    ".env",
-    ".env.local",
-    ".env.development",
-    ".env.production",
-    ".env.test",
-    ".env.example",
-]);
+export function loadSyntaxLanguage(
+    language: SupportedSyntaxLanguage,
+): Promise<LanguageSupport> {
+    const existing = loads.get(language);
 
-/**
- * Chooses a CodeMirror language from basename + extension, not MIME.
- * Unknown names stay unhighlighted so every editable file remains writable.
- */
-export function languageFromFileName(
-    fileName: string,
-    content = "",
-): LanguageSupport | Language | undefined {
-    const language = syntaxLanguageFromFileName(fileName, content);
+    if (existing !== undefined) {
+        return existing;
+    }
 
-    return language === undefined ? undefined : syntaxLanguageSupport(language);
+    const load = importSyntaxLanguage(language).then((support) =>
+        support instanceof LanguageSupport
+            ? support
+            : new LanguageSupport(support),
+    );
+
+    // A failed chunk load is forgotten, so showing the file again retries it.
+    load.catch(() => {
+        if (loads.get(language) === load) {
+            loads.delete(language);
+        }
+    });
+
+    loads.set(language, load);
+
+    return load;
 }
 
-/**
- * Builds the CodeMirror grammar of a supported language. The editor and read-only
- * highlighting both use it, so code is parsed the same way wherever it is shown.
- */
-export function syntaxLanguageSupport(
+/** Imports the chunk of one grammar and builds it with the options the language needs. */
+async function importSyntaxLanguage(
     language: SupportedSyntaxLanguage,
-): LanguageSupport | Language {
+): Promise<LanguageSupport | Language> {
     switch (language) {
         case "rust":
-            return rust();
+            return (await import("@codemirror/lang-rust")).rust();
         case "javascript":
-            return javascript();
+            return (await import("@codemirror/lang-javascript")).javascript();
         case "jsx":
-            return javascript({ jsx: true });
+            return (await import("@codemirror/lang-javascript")).javascript({
+                jsx: true,
+            });
         case "typescript":
-            return javascript({ typescript: true });
+            return (await import("@codemirror/lang-javascript")).javascript({
+                typescript: true,
+            });
         case "tsx":
             // JSX stays off for plain TypeScript, where `<Type>value` is a type assertion.
-            return javascript({ typescript: true, jsx: true });
+            return (await import("@codemirror/lang-javascript")).javascript({
+                typescript: true,
+                jsx: true,
+            });
         case "go":
-            return go();
+            return (await import("@codemirror/lang-go")).go();
         case "jinja":
-            return jinja();
+            return (await import("@codemirror/lang-jinja")).jinja();
         case "html":
-            return html();
+            return (await import("@codemirror/lang-html")).html();
         case "yaml":
-            return yaml();
+            return (await import("@codemirror/lang-yaml")).yaml();
         case "toml":
-            return StreamLanguage.define(toml);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/toml")).toml,
+            );
         case "json":
-            return json();
+            return (await import("@codemirror/lang-json")).json();
         case "lua":
-            return StreamLanguage.define(lua);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/lua")).lua,
+            );
         case "xml":
-            return xml();
+            return (await import("@codemirror/lang-xml")).xml();
         case "css":
-            return css();
-        case "markdown":
+            return (await import("@codemirror/lang-css")).css();
+        case "markdown": {
+            const [{ markdown, markdownLanguage }, { languages }] =
+                await Promise.all([
+                    import("@codemirror/lang-markdown"),
+                    import("@codemirror/language-data"),
+                ]);
+
+            // Fenced code loads its own grammar through the language data on demand.
             return markdown({
                 base: markdownLanguage,
                 codeLanguages: languages,
             });
+        }
+
         case "java":
-            return java();
+            return (await import("@codemirror/lang-java")).java();
         case "shell":
-            return StreamLanguage.define(shell);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/shell")).shell,
+            );
         case "python":
-            return python();
+            return (await import("@codemirror/lang-python")).python();
         case "ruby":
-            return StreamLanguage.define(ruby);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/ruby")).ruby,
+            );
         case "perl":
-            return StreamLanguage.define(perl);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/perl")).perl,
+            );
         case "properties":
-            return StreamLanguage.define(properties);
+            return StreamLanguage.define(
+                (await import("@codemirror/legacy-modes/mode/properties"))
+                    .properties,
+            );
         case "systemd":
+            // Static, because the file name detection already needs this module.
             return StreamLanguage.define(systemd);
         case "radconf":
-            return StreamLanguage.define(radconf);
+            return StreamLanguage.define(
+                (await import("#ui/utils/radconf-language")).radconf,
+            );
         case "cpp":
         case "csharp":
-            return cpp();
+            return (await import("@codemirror/lang-cpp")).cpp();
     }
-}
-
-/** Full language names that are not also file extensions, for labels such as fences. */
-const SYNTAX_LANGUAGE_NAMES = new Map<string, SupportedSyntaxLanguage>([
-    ["csharp", "csharp"],
-    ["golang", "go"],
-    ["javascript", "javascript"],
-    ["jinja2", "jinja"],
-    ["perl", "perl"],
-    ["properties", "properties"],
-    ["python", "python"],
-    ["ruby", "ruby"],
-    ["rust", "rust"],
-    ["shell", "shell"],
-    ["systemd", "systemd"],
-    ["typescript", "typescript"],
-]);
-
-/**
- * Identifies a supported language from a label such as a Markdown fence (`ts`, `bash`,
- * `python`). Labels are usually a name or an extension, so both are tried.
- */
-export function syntaxLanguageFromName(
-    name: string,
-): SupportedSyntaxLanguage | undefined {
-    const lowerName = name.toLowerCase();
-
-    return (
-        SYNTAX_LANGUAGE_NAMES.get(lowerName) ??
-        syntaxLanguageFromFileName(`file.${lowerName}`)
-    );
-}
-
-/**
- * Identifies syntax once so editors and rendered diffs support the same files. Pass the full
- * path when it is known: systemd drop-ins are only recognisable by their parent directory.
- */
-export function syntaxLanguageFromFileName(
-    fileName: string,
-    content = "",
-): SupportedSyntaxLanguage | undefined {
-    // An encrypted `secrets.env.redoorencrypted` highlights as the file it holds.
-    const baseName = stripVaultSuffix(fileName.split("/").pop() ?? fileName);
-    const lowerName = baseName.toLowerCase();
-
-    if (SHELL_BASENAMES.has(lowerName) || lowerName.startsWith(".env.")) {
-        return "shell";
-    }
-
-    if (lowerName === "gemfile" || lowerName === "rakefile") {
-        return "ruby";
-    }
-
-    if (lowerName === ".editorconfig") {
-        return "properties";
-    }
-
-    // Checked before the extension switch, which would take a drop-in `.conf` as properties.
-    if (isSystemdUnitPath(lowerName, fileName.toLowerCase())) {
-        return "systemd";
-    }
-
-    const lastDot = lowerName.lastIndexOf(".");
-
-    if (lastDot <= 0) {
-        return languageFromHashBang(content);
-    }
-
-    switch (lowerName.slice(lastDot + 1)) {
-        case "rs":
-            return "rust";
-        case "js":
-        case "mjs":
-        case "cjs":
-            return "javascript";
-        case "jsx":
-            return "jsx";
-        case "ts":
-        case "mts":
-        case "cts":
-            return "typescript";
-        case "tsx":
-            return "tsx";
-        case "go":
-            return "go";
-        case "html":
-        case "htm":
-            return "html";
-        case "yml":
-        case "yaml":
-            return "yaml";
-        case "toml":
-            return "toml";
-        case "j2":
-        case "jinja":
-        case "jinja2":
-            return "jinja";
-        case "json":
-            return "json";
-        case "jsonc":
-        case "json5":
-            // Strict JSON highlighting rejects comments and JSON5 syntax.
-            return "javascript";
-        case "lua":
-            return "lua";
-        case "xml":
-        case "xsl":
-        case "xsd":
-        case "svg":
-        case "plist":
-            return "xml";
-        case "css":
-            return "css";
-        case "md":
-        case "markdown":
-            return "markdown";
-        case "java":
-            return "java";
-        case "sh":
-        case "bash":
-        case "zsh":
-        case "ksh":
-            return "shell";
-        case "py":
-        case "pyi":
-            return "python";
-        case "rb":
-        case "rake":
-            return "ruby";
-        case "pl":
-        case "pm":
-        case "t":
-            return "perl";
-        case "ini":
-        case "cfg":
-        case "conf":
-            return "properties";
-        case "radconf":
-            return "radconf";
-        case "c":
-        case "h":
-        case "cpp":
-        case "cc":
-        case "cxx":
-        case "hpp":
-        case "hh":
-        case "hxx":
-            return "cpp";
-        case "cs":
-            return "csharp";
-        default:
-            return undefined;
-    }
-}
-
-/** Uses an extensionless script's interpreter as the syntax-highlighting fallback. */
-function languageFromHashBang(
-    content: string,
-): SupportedSyntaxLanguage | undefined {
-    const firstLineEnd = content.indexOf("\n");
-
-    const firstLine = content.slice(
-        0,
-        firstLineEnd === -1 ? content.length : firstLineEnd,
-    );
-
-    const match = /^#!\s*(.+)$/.exec(firstLine);
-
-    if (match === null) {
-        return undefined;
-    }
-
-    const command = match[1];
-
-    if (command === undefined) {
-        return undefined;
-    }
-
-    const parts = command.trim().split(/\s+/);
-    let interpreter = parts[0]?.split("/").pop()?.toLowerCase();
-
-    if (interpreter === "env") {
-        interpreter = parts
-            .slice(1)
-            .find((part) => !part.startsWith("-") && !part.includes("="))
-            ?.split("/")
-            .pop()
-            ?.toLowerCase();
-    }
-
-    if (interpreter === undefined) {
-        return undefined;
-    }
-
-    if (["sh", "bash", "zsh", "ksh", "dash", "ash"].includes(interpreter)) {
-        return "shell";
-    }
-
-    if (interpreter.startsWith("python")) {
-        return "python";
-    }
-
-    if (interpreter === "ruby") {
-        return "ruby";
-    }
-
-    if (interpreter === "perl") {
-        return "perl";
-    }
-
-    if (interpreter === "lua") {
-        return "lua";
-    }
-
-    if (["ts-node", "tsx"].includes(interpreter)) {
-        return "typescript";
-    }
-
-    if (["node", "nodejs", "deno", "bun"].includes(interpreter)) {
-        return "javascript";
-    }
-
-    return undefined;
 }

@@ -1,4 +1,4 @@
-import { applyVimConfig } from "./vim-config";
+import { parseVimConfig } from "./vim-config";
 import {
     autocompletion,
     closeBrackets,
@@ -19,6 +19,7 @@ import {
     foldKeymap,
     indentOnInput,
     syntaxHighlighting,
+    type LanguageSupport,
 } from "@codemirror/language";
 import { lintKeymap } from "@codemirror/lint";
 import { highlightSelectionMatches, search } from "@codemirror/search";
@@ -52,9 +53,13 @@ import {
     gitGutter,
     gitGutterField,
     gitGutterSourceEffects,
-    type GitGutterSource,
 } from "./git-gutter";
-import { languageFromFileName } from "#ui/utils/editor-language";
+import type { GitGutterSource } from "./git-line-marks";
+import { loadSyntaxLanguage } from "#ui/utils/editor-language";
+import {
+    syntaxLanguageFromFileName,
+    type SupportedSyntaxLanguage,
+} from "#ui/utils/syntax-language";
 import { isUnmodifiedAltKey, type KeyChord } from "#ui/utils/keyboard";
 import { getBaseName } from "#ui/utils/path";
 
@@ -93,6 +98,45 @@ Vim.defineEx("wall", "wa", (cm) => {
     cm.cm6.state.facet(vimWriteAllHandler)?.();
 });
 
+/** The Vim configuration the adapter holds, so an unchanged one is not rebuilt. */
+let appliedSource: string | null = null;
+
+/**
+ * The adapter owns a page-wide keymap, just like our user-wide preference. Clear only its
+ * user mappings before rebuilding, so deleted overrides reveal defaults and :w stays intact.
+ * Valid lines still work while an incomplete line is being edited in settings.
+ */
+export function applyVimConfig(source: string): void {
+    if (source === appliedSource) {
+        return;
+    }
+
+    Vim.mapclear();
+
+    for (const mapping of parseVimConfig(source).mappings) {
+        for (const context of mapping.contexts) {
+            if (mapping.recursive) {
+                Vim.map(mapping.lhs, mapping.rhs, context);
+            } else {
+                Vim.noremap(mapping.lhs, mapping.rhs, context);
+            }
+        }
+    }
+
+    appliedSource = source;
+}
+
+/**
+ * The language a state was created for. The grammar loads after the state exists, so the
+ * state itself has to remember which grammar its language compartment is waiting for.
+ */
+const stateLanguage = Facet.define<
+    SupportedSyntaxLanguage | null,
+    SupportedSyntaxLanguage | null
+>({
+    combine: (languages) => languages[0] ?? null,
+});
+
 /**
  * How many undo events each buffer keeps at least (CodeMirror prunes beyond roughly this
  * depth). It bounds the memory and storage an open file's history can take.
@@ -127,6 +171,8 @@ export type EditorCallbacks = {
     onSave: () => void;
     /** `:wall`, which saves every open file with unsaved changes, not just the shown one. */
     onSaveAll: () => void;
+    /** A grammar finished loading, so the shown state can put it in its language compartment. */
+    onLanguageLoaded: () => void;
 };
 
 /**
@@ -140,6 +186,20 @@ export class EditorConfiguration {
     private readonly editableCompartment = new Compartment();
     /** Holds the Git gutter only for files in a repository, so other files keep the width. */
     private readonly gitGutterCompartment = new Compartment();
+    /**
+     * Holds the file's grammar, which is empty until the grammar's chunk has loaded, so a file
+     * opens at once as plain text and gains its highlighting a moment later.
+     */
+    private readonly languageCompartment = new Compartment();
+    private readonly noLanguage: Extension = [];
+    /** Grammars that have loaded, by language, so later states get them at once. */
+    private readonly loadedLanguages = new Map<
+        SupportedSyntaxLanguage,
+        LanguageSupport
+    >();
+    /** Grammars being loaded, so creating more states does not report the same load again. */
+    private readonly loadingLanguages = new Set<SupportedSyntaxLanguage>();
+    private readonly callbacks: EditorCallbacks;
     private readonly noGitGutter: Extension = [];
     private readonly vimOn: Extension;
     private readonly vimOff: Extension;
@@ -201,6 +261,8 @@ export class EditorConfiguration {
 
     /** Resolves callbacks at call time so one configuration serves every file. */
     constructor(callbacks: EditorCallbacks) {
+        this.callbacks = callbacks;
+
         this.vimOn = [
             // Vim must precede its observer so its adapter exists when the observer runs.
             vim({ status: true }),
@@ -246,7 +308,8 @@ export class EditorConfiguration {
 
     /**
      * Creates a file's extensions. The language comes from the name, or from a shebang when
-     * the name has no extension, and stays fixed for the buffer's lifetime.
+     * the name has no extension, and stays fixed for the buffer's lifetime. Its grammar starts
+     * loading here and joins the state through `languageEffects` once it is ready.
      */
     forFile(
         fileName: string,
@@ -266,7 +329,10 @@ export class EditorConfiguration {
                 ? firstLine
                 : "";
 
-        const language = languageFromFileName(fileName, languageContent);
+        const language =
+            syntaxLanguageFromFileName(fileName, languageContent) ?? null;
+
+        this.loadLanguage(language);
 
         return [
             // First, so the Git gutter is the leftmost one, before the line numbers.
@@ -276,8 +342,53 @@ export class EditorConfiguration {
             this.themeCompartment.of(this.themeContent(settings)),
             this.editableCompartment.of(this.editableContent(settings)),
             this.shared,
-            ...(language === undefined ? [] : [language]),
+            stateLanguage.of(language),
+            this.languageCompartment.of(this.languageContent(language)),
         ];
+    }
+
+    /**
+     * Lists the effect that puts a state's grammar in place once it has loaded. States made
+     * before the load keep plain text until they are shown, which is when this is asked.
+     */
+    languageEffects(state: EditorState): StateEffect<unknown>[] {
+        const content = this.languageContent(state.facet(stateLanguage));
+
+        return this.languageCompartment.get(state) === content
+            ? []
+            : [this.languageCompartment.reconfigure(content)];
+    }
+
+    /** Starts loading a grammar once; a failed load leaves the file plain rather than broken. */
+    private loadLanguage(language: SupportedSyntaxLanguage | null) {
+        if (
+            language === null ||
+            this.loadedLanguages.has(language) ||
+            this.loadingLanguages.has(language)
+        ) {
+            return;
+        }
+
+        this.loadingLanguages.add(language);
+
+        void loadSyntaxLanguage(language).then(
+            (support) => {
+                this.loadingLanguages.delete(language);
+                this.loadedLanguages.set(language, support);
+                this.callbacks.onLanguageLoaded();
+            },
+            () => {
+                // Forgotten, so the next state of this language tries again.
+                this.loadingLanguages.delete(language);
+            },
+        );
+    }
+
+    /** The grammar of a language if it has loaded, otherwise nothing. */
+    private languageContent(language: SupportedSyntaxLanguage | null) {
+        return language === null
+            ? this.noLanguage
+            : (this.loadedLanguages.get(language) ?? this.noLanguage);
     }
 
     /** Lists the reconfigurations a state needs to match the current preferences. */

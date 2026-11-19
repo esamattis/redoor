@@ -11,7 +11,6 @@ import { ViewCardHeader } from "#ui/components/view-card-header";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { useKeepFileOpen } from "#ui/components/browser/open-file-actions";
-import { CodeEditor } from "#ui/components/browser/code-editor";
 import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import type { EditorWorkspace } from "#ui/editor/editor-workspace";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
@@ -31,9 +30,9 @@ import {
     isEditorInputTarget,
     isPlainKey,
     isTerminalInputTarget,
+    type KeyChord,
 } from "#ui/utils/keyboard";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
-import { directorySearchChord } from "#ui/components/browser/editor-context-menu";
 import {
     getOpenFileKey,
     usePreviewApproval,
@@ -49,7 +48,7 @@ import {
     GIT_GUTTER_HIDDEN,
     gitGutterSource,
     type GitGutterSource,
-} from "#ui/editor/git-gutter";
+} from "#ui/editor/git-line-marks";
 import { SandboxedPreview } from "#ui/components/browser/sandboxed-preview";
 import {
     filePreviewKind,
@@ -66,6 +65,16 @@ import { isVaultPath } from "#ui/vault/vault-path";
 import { useSystemdReloadOffer } from "#ui/components/browser/systemd-reload-offer";
 
 const rootRouteApi = getRouteApi("__root__");
+
+/**
+ * Searches the selection in the file's directory. Shift+S because plain Mod+S saves, and the
+ * shortcut binding below matches this chord so the menu hint stays truthful.
+ */
+export const directorySearchChord: KeyChord = {
+    mod: true,
+    shift: true,
+    key: "s",
+};
 
 /** Puts the editor exit on the rendered page so it stays with the document, not the toolbar. */
 function ClosePreviewButton(props: { onClose: () => void }) {
@@ -91,6 +100,14 @@ function ClosePreviewButton(props: { onClose: () => void }) {
 const MarkdownPreview = React.lazy(async () => ({
     default: (await import("#ui/components/browser/markdown-preview"))
         .MarkdownPreview,
+}));
+
+/**
+ * Loaded the first time a file is shown in the editor, together with CodeMirror, Vim and the
+ * editor's menus, which pages that never edit a file do not need.
+ */
+const CodeEditor = React.lazy(async () => ({
+    default: (await import("#ui/components/browser/code-editor")).CodeEditor,
 }));
 
 /**
@@ -412,30 +429,38 @@ function FileEditorSurface(props: {
                 aria-hidden={props.preview}
                 className={props.preview ? "hidden" : "flex min-h-0 flex-1"}
             >
-                <CodeEditor
-                    bufferKey={props.bufferKey}
-                    deviceContent={props.deviceContent}
-                    stored={props.stored}
-                    filePath={props.filePath}
-                    repositoryRoot={props.repositoryRoot}
-                    editable={props.editable}
-                    vimMode={props.vimMode}
-                    vimConfig={props.vimConfig}
-                    wrapLines={props.wrapLines}
-                    scrollToLine={props.scrollToLine}
-                    reveal={props.reveal}
-                    onBecameDirty={props.onBecameDirty}
-                    onDoubleClick={props.onDoubleClick}
-                    onFocus={props.onFocus}
-                    onSave={props.onSave}
-                    searchHandleRef={props.searchHandleRef}
-                    isSearchOpen={props.isSearchOpen}
-                    onSearchOpenChange={props.onSearchOpenChange}
-                    isBehindPreview={props.preview}
-                    gitGutter={props.gitGutter}
-                    onSelectionChange={props.onSelectionChange}
-                    onSearchDirectory={props.onSearchDirectory}
-                />
+                <React.Suspense
+                    fallback={
+                        <p className="p-4 text-sm text-slate-400">
+                            Loading editor...
+                        </p>
+                    }
+                >
+                    <CodeEditor
+                        bufferKey={props.bufferKey}
+                        deviceContent={props.deviceContent}
+                        stored={props.stored}
+                        filePath={props.filePath}
+                        repositoryRoot={props.repositoryRoot}
+                        editable={props.editable}
+                        vimMode={props.vimMode}
+                        vimConfig={props.vimConfig}
+                        wrapLines={props.wrapLines}
+                        scrollToLine={props.scrollToLine}
+                        reveal={props.reveal}
+                        onBecameDirty={props.onBecameDirty}
+                        onDoubleClick={props.onDoubleClick}
+                        onFocus={props.onFocus}
+                        onSave={props.onSave}
+                        searchHandleRef={props.searchHandleRef}
+                        isSearchOpen={props.isSearchOpen}
+                        onSearchOpenChange={props.onSearchOpenChange}
+                        isBehindPreview={props.preview}
+                        gitGutter={props.gitGutter}
+                        onSelectionChange={props.onSelectionChange}
+                        onSearchDirectory={props.onSearchDirectory}
+                    />
+                </React.Suspense>
             </div>
             <div
                 aria-hidden={!props.preview}
@@ -929,6 +954,8 @@ export function FileEditView(props: FileEditViewProps) {
         [props.agent, props.revision],
     );
 
+    // The preview stays empty until the editor creates the buffer, because the device text
+    // may differ from a restored draft and must not run in an approved preview.
     const previewContent = React.useSyncExternalStore(
         buffer.editor.subscribeDocument,
         () => (isPreviewShown ? buffer.editor.text(buffer.bufferKey) : ""),

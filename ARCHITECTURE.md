@@ -431,6 +431,13 @@ The UI is a TanStack Router application embedded in the server binary.
   other edited buffers loaded in the page through a save hook `main.tsx` gives the
   workspace, since only the app knows each file's device. Encrypted and conflicting files
   are skipped, because saving them needs the user in that file's editor.
+- **CodeMirror loads only when it is needed.** Most pages never edit or highlight code, so
+  CodeMirror stays out of the startup bundle. The editor component, CodeMirror, Vim and the
+  workspace's CodeMirror half (`EditorEngine`) load when the first file is shown; the
+  page-lifetime `EditorWorkspace` keeps buffers and server sync but builds no CodeMirror state
+  before that. Read-only highlighting loads its highlighter on first use, and each grammar is
+  a chunk of its own, so code renders plain first and gains colours once its grammar arrives,
+  in the editor through a language compartment.
 - **Open files close themselves when left alone.** Each open file records when it was last
   opened, shown, left or edited, and the browser closes clean files untouched for longer than
   the user's delay (24 hours by default, set in Preferences). The sweep runs in the browser

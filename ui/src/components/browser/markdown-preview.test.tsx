@@ -242,7 +242,7 @@ Extra prose`}
     );
 });
 
-test("highlights a labeled TypeScript fence", () => {
+test("highlights a labeled TypeScript fence", async () => {
     const view = render(
         <MarkdownPreview
             {...imagesHidden}
@@ -259,10 +259,13 @@ const value = true;
 
     // Highlighting must preserve the complete source for readers and copying.
     expect(code?.textContent).toContain("const value = true;");
-    // A grammar token proves the editor's TypeScript grammar handled the fence.
-    expect(code?.querySelector('[data-token="keyword"]')?.textContent).toBe(
-        "const",
-    );
+    // A grammar token proves the editor's TypeScript grammar handled the fence. The grammar
+    // is loaded on first use, so the fence turns from plain text into tokens after a moment.
+    await waitFor(() => {
+        expect(code?.querySelector('[data-token="keyword"]')?.textContent).toBe(
+            "const",
+        );
+    });
 });
 
 test("copies a highlighted fence's source with its copy button", async () => {

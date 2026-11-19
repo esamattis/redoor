@@ -1,14 +1,6 @@
-import { historyField } from "@codemirror/commands";
 import { isVaultPath } from "#ui/vault/vault-path";
-import {
-    EditorSelection,
-    EditorState,
-    Text,
-    Transaction,
-    type StateEffect,
-} from "@codemirror/state";
-import { EditorView, type ViewUpdate } from "@codemirror/view";
-import { getCM } from "@replit/codemirror-vim";
+import type { EditorState, StateEffect, Text } from "@codemirror/state";
+import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { MutationObserver, type QueryClient } from "@tanstack/react-query";
 import type { DeleteEditorBufferResponse } from "#bindings/DeleteEditorBufferResponse";
 import type { PutEditorBufferRequest } from "#bindings/PutEditorBufferRequest";
@@ -20,11 +12,11 @@ import {
     isDirtyAgainst,
     minimalChange,
     reconcileDeviceContent,
-    textFromString,
     type BufferBase,
 } from "./buffer-sync";
-import { EditorConfiguration, type EditorSettings } from "./editor-extensions";
-import { GIT_GUTTER_HIDDEN, type GitGutterSource } from "./git-gutter";
+import type { EditorEngine } from "./editor-engine";
+import type { EditorCallbacks, EditorSettings } from "./editor-extensions";
+import { GIT_GUTTER_HIDDEN, type GitGutterSource } from "./git-line-marks";
 import {
     MAX_STORED_BUFFER_CHARS,
     type StoredBuffer,
@@ -154,6 +146,10 @@ type FileBuffer = {
 /**
  * Owns the single CodeMirror view of the page and the buffers of open files.
  *
+ * The workspace exists for the whole page, but CodeMirror is only loaded once an editor is
+ * about to show a file (`loadEngine`), because most pages never edit anything. Buffers and the
+ * view only exist after that, so every path that touches them can rely on the loaded engine.
+ *
  * Only one `EditorView` ever exists. Switching files saves the outgoing state and scroll
  * snapshot in its buffer and swaps the incoming buffer's state in with `setState`, so each
  * open file keeps its own caret, selection, scroll position and undo history without
@@ -170,7 +166,10 @@ export class EditorWorkspace extends ExternalStore<
     ReadonlyMap<string, BufferStatus>
 > {
     private readonly buffers = new Map<string, FileBuffer>();
-    private readonly configuration: EditorConfiguration;
+    /** CodeMirror's half of the workspace, null until the first editor loaded it. */
+    private engine: EditorEngine | null = null;
+    private engineLoad: Promise<void> | null = null;
+    private readonly callbacks: EditorCallbacks;
     private readonly timers = new Map<string, number>();
     /** The server request chain of each key, so its writes and its delete never overlap. */
     private readonly requests = new Map<string, Promise<void>>();
@@ -235,7 +234,7 @@ export class EditorWorkspace extends ExternalStore<
             mutationFn: (key: string) => api.deleteEditorBuffer(key),
         });
 
-        this.configuration = new EditorConfiguration({
+        this.callbacks = {
             onUpdate: (update) => this.onViewUpdate(update),
             onFocus: () => this.handlers?.current.onFocus(),
             onSave: () => {
@@ -248,7 +247,42 @@ export class EditorWorkspace extends ExternalStore<
                 this.view?.focus();
                 void this.saveOthers();
             },
+            onLanguageLoaded: () => this.reconfigure(),
+        };
+    }
+
+    /**
+     * Loads CodeMirror for the first editor of the page. The editor component suspends on the
+     * returned promise, which is the same one for every caller, so that `activate` can stay
+     * synchronous. A failed load is forgotten, so the next editor tries again.
+     */
+    loadEngine(): Promise<void> {
+        if (this.engineLoad !== null) {
+            return this.engineLoad;
+        }
+
+        const load = import("./editor-engine").then((module) => {
+            this.engine ??= new module.EditorEngine(this.callbacks);
         });
+
+        load.catch(() => {
+            if (this.engineLoad === load) {
+                this.engineLoad = null;
+            }
+        });
+
+        this.engineLoad = load;
+
+        return load;
+    }
+
+    /** The engine is loaded before any buffer or view exists, which precedes every use. */
+    private requireEngine(): EditorEngine {
+        if (this.engine === null) {
+            throw new Error("The editor is used before CodeMirror loaded");
+        }
+
+        return this.engine;
     }
 
     /**
@@ -465,7 +499,7 @@ export class EditorWorkspace extends ExternalStore<
             return;
         }
 
-        const device = textFromString(content);
+        const device = this.requireEngine().text(content);
         buffer.device = device;
 
         const action = reconcileDeviceContent(
@@ -494,10 +528,7 @@ export class EditorWorkspace extends ExternalStore<
         this.setConflict(buffer, null);
 
         if (action.kind === "apply") {
-            const spec = {
-                changes: action.changes,
-                annotations: Transaction.addToHistory.of(false),
-            };
+            const spec = this.requireEngine().outsideHistory(action.changes);
 
             if (this.isShown(key) && this.view !== null) {
                 this.view.dispatch(spec);
@@ -567,7 +598,7 @@ export class EditorWorkspace extends ExternalStore<
             return;
         }
 
-        buffer.device = textFromString(content);
+        buffer.device = this.requireEngine().text(content);
         buffer.base = baseFromText(buffer.device);
         this.setConflict(buffer, null);
         this.refreshDirty(buffer);
@@ -706,7 +737,7 @@ export class EditorWorkspace extends ExternalStore<
     private ensureView(settings: EditorSettings) {
         if (this.view === null) {
             this.settings = settings;
-            this.view = new EditorView({ state: this.createState("", "", 0) });
+            this.view = this.requireEngine().createView(settings);
         }
 
         return this.view;
@@ -714,15 +745,10 @@ export class EditorWorkspace extends ExternalStore<
 
     /** Builds a fresh state for a file with the shared extensions. */
     private createState(fileName: string, content: string, head: number) {
-        return EditorState.create({
-            doc: content,
-            selection: EditorSelection.cursor(Math.min(head, content.length)),
-            extensions: this.configuration.forFile(
-                fileName,
-                content,
-                this.requireSettings(),
-            ),
-        });
+        return this.requireEngine().createState(
+            { fileName, content, head },
+            this.requireSettings(),
+        );
     }
 
     /** The settings are known once anything was activated, which precedes every use. */
@@ -736,26 +762,16 @@ export class EditorWorkspace extends ExternalStore<
 
     /** Restores CodeMirror JSON, or null if it does not fit the current editor. */
     private stateFromStored(data: StoredBufferData, fileName: string) {
-        try {
-            return EditorState.fromJSON(
-                data.state,
-                {
-                    extensions: this.configuration.forFile(
-                        fileName,
-                        "",
-                        this.requireSettings(),
-                    ),
-                },
-                { history: historyField },
-            );
-        } catch {
-            return null;
-        }
+        return this.requireEngine().stateFromStored(
+            data,
+            fileName,
+            this.requireSettings(),
+        );
     }
 
     /** Creates the buffer of a file shown for the first time in this tab. */
     private createBuffer(request: ActivateRequest): FileBuffer {
-        const device = textFromString(request.deviceContent);
+        const device = this.requireEngine().text(request.deviceContent);
 
         const restored =
             request.stored === null
@@ -866,16 +882,15 @@ export class EditorWorkspace extends ExternalStore<
                 buffer.revealEntry = lineTargets.reveal.entry;
             }
 
-            effect = moveCaretToLine(view, target.line);
+            effect = this.requireEngine().moveCaretToLine(view, target.line);
         } else if (buffer.scroll !== null) {
             effect = buffer.scroll;
             view.dispatch({ effects: effect });
         } else if (buffer.storedScroll !== null) {
-            effect = EditorView.scrollIntoView(
-                Math.min(buffer.storedScroll.anchor, view.state.doc.length),
-                { y: "start", yMargin: buffer.storedScroll.yMargin },
+            effect = this.requireEngine().scrollToStored(
+                view,
+                buffer.storedScroll,
             );
-            view.dispatch({ effects: effect });
         }
 
         this.pendingScroll = effect;
@@ -905,9 +920,15 @@ export class EditorWorkspace extends ExternalStore<
      * gutter, which every state swapped into the view passes through.
      */
     private reconfigure() {
-        if (this.view === null || this.settings === null) {
+        if (
+            this.engine === null ||
+            this.view === null ||
+            this.settings === null
+        ) {
             return;
         }
+
+        const configuration = this.engine.configuration;
 
         const shown =
             this.activeKey === null
@@ -915,13 +936,11 @@ export class EditorWorkspace extends ExternalStore<
                 : this.buffers.get(this.activeKey);
 
         const effects = [
-            ...this.configuration.settingsEffects(
-                this.view.state,
-                this.settings,
-            ),
+            ...configuration.settingsEffects(this.view.state, this.settings),
+            ...configuration.languageEffects(this.view.state),
             ...(shown === undefined
                 ? []
-                : this.configuration.gitGutterEffects(
+                : configuration.gitGutterEffects(
                       this.view.state,
                       shown.gitGutter,
                   )),
@@ -1008,16 +1027,10 @@ export class EditorWorkspace extends ExternalStore<
         }
 
         const message = await this.saveInBackground(keys);
-        const cm = this.view === null ? null : getCM(this.view);
 
-        if (message === null || cm === null) {
-            return;
+        if (message !== null && this.view !== null) {
+            this.requireEngine().showVimMessage(this.view, message);
         }
-
-        const element = document.createElement("span");
-        element.className = "cm-vim-message";
-        element.textContent = message;
-        cm.openNotification(element, { bottom: true, duration: 10_000 });
     }
 
     /** Whether a buffer is the one in the view right now. */
@@ -1133,7 +1146,7 @@ export class EditorWorkspace extends ExternalStore<
 
         const data: StoredBufferData = {
             version: 1,
-            state: state.toJSON({ history: historyField }),
+            state: this.requireEngine().storedState(state, true),
             baseHash: buffer.base.hash,
             scroll: buffer.storedScroll,
             lineEntry: buffer.lineEntry,
@@ -1145,7 +1158,10 @@ export class EditorWorkspace extends ExternalStore<
             return data;
         }
 
-        const withoutHistory = { ...data, state: state.toJSON() };
+        const withoutHistory = {
+            ...data,
+            state: this.requireEngine().storedState(state, false),
+        };
 
         return JSON.stringify(withoutHistory).length <= MAX_STORED_BUFFER_CHARS
             ? withoutHistory
@@ -1212,31 +1228,4 @@ function storedScrollOf(view: EditorView): StoredScroll {
 /** Whether two stored scroll positions are the same place. */
 function sameScroll(a: StoredScroll | null, b: StoredScroll | null) {
     return a?.anchor === b?.anchor && a?.yMargin === b?.yMargin;
-}
-
-/**
- * Selects the inbound `?line=` target and centers it so the opened location is obvious in a
- * tall buffer. Returns the scroll effect so a later stash can keep it if it is not applied.
- */
-function moveCaretToLine(
-    view: EditorView,
-    line: number,
-): StateEffect<unknown> | null {
-    const lineCount = view.state.doc.lines;
-
-    // Empty documents have no real line to reveal.
-    if (view.state.doc.length === 0 || lineCount < 1) {
-        return null;
-    }
-
-    const clamped = Math.min(Math.max(line, 1), lineCount);
-    const docLine = view.state.doc.line(clamped);
-    const effect = EditorView.scrollIntoView(docLine.from, { y: "center" });
-
-    view.dispatch({
-        selection: { anchor: docLine.from, head: docLine.to },
-        effects: effect,
-    });
-
-    return effect;
 }

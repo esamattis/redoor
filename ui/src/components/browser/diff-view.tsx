@@ -6,7 +6,6 @@
  * registry/ui/diff/index.tsx), with the app's highlighter, theme colours and editor links.
  */
 import React from "react";
-import type { Language } from "@codemirror/language";
 import {
     ArrowDownFromLine,
     ArrowUpFromLine,
@@ -30,13 +29,11 @@ import {
     type LineSegment,
     type SkipBlock,
 } from "#ui/utils/diff-parse";
+import type { HighlightToken } from "#ui/utils/code-highlight";
 import {
-    highlightLines,
-    languageForFileName,
+    useCodeHighlight,
     useLoadedLanguage,
-    type HighlightLanguageSource,
-    type HighlightToken,
-} from "#ui/utils/code-highlight";
+} from "#ui/utils/use-code-highlight";
 import { cn } from "#ui/utils/cn";
 import { diffRowKey, type FoldReveal } from "#ui/utils/diff-search";
 import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
@@ -83,10 +80,8 @@ function firstFileLine(file: DiffFile): string {
     return "";
 }
 
-/** Picks the file's grammar the same way the editor does. */
-function diffFileLanguage(file: DiffFile): HighlightLanguageSource {
-    return languageForFileName(diffFileName(file), firstFileLine(file));
-}
+/** Highlights a block of code with the file's grammar, returning the tokens of each line. */
+type HighlightCode = (code: string) => HighlightToken[][];
 
 /**
  * Highlights consecutive lines of one side as a block, so strings and comments spanning
@@ -95,16 +90,13 @@ function diffFileLanguage(file: DiffFile): HighlightLanguageSource {
 function highlightBlock(
     texts: Array<string | undefined>,
     start: number,
-    language: Language,
+    highlight: HighlightCode,
 ): Array<[number, HighlightToken[]]> {
     if (texts.length === 0) {
         return [];
     }
 
-    const lines = highlightLines(
-        texts.map((text) => text ?? "").join("\n"),
-        language,
-    );
+    const lines = highlight(texts.map((text) => text ?? "").join("\n"));
 
     const entries: Array<[number, HighlightToken[]]> = [];
 
@@ -133,7 +125,7 @@ function highlightBlock(
  */
 function highlightSide(
     texts: Map<number, string>,
-    language: Language,
+    highlight: HighlightCode,
 ): Map<number, HighlightToken[]> {
     const numbers = [...texts.keys()].sort((a, b) => a - b);
     const highlighted = new Map<number, HighlightToken[]>();
@@ -151,7 +143,7 @@ function highlightSide(
         for (const [line, tokens] of highlightBlock(
             run.map((number) => texts.get(number)),
             run[0] ?? 0,
-            language,
+            highlight,
         )) {
             highlighted.set(line, tokens);
         }
@@ -165,9 +157,9 @@ function highlightSide(
 /** Highlights both sides of every row the patch carries for a file, folded or not. */
 function highlightFile(
     file: DiffFile,
-    language: Language | null,
+    highlight: HighlightCode | null,
 ): FileHighlight | null {
-    if (language === null) {
+    if (highlight === null) {
         return null;
     }
 
@@ -194,8 +186,8 @@ function highlightFile(
     }
 
     return {
-        old: highlightSide(oldTexts, language),
-        new: highlightSide(newTexts, language),
+        old: highlightSide(oldTexts, highlight),
+        new: highlightSide(newTexts, highlight),
     };
 }
 
@@ -1213,8 +1205,19 @@ export function Diff(props: {
 }) {
     const file = props.file;
     const viewportRef = React.useRef<HTMLDivElement>(null);
-    // A grammar that loads lazily renders plain rows first and colours them once loaded.
-    const languageSource = React.useMemo(() => diffFileLanguage(file), [file]);
+    // The highlighter and the grammar load lazily, so rows render plain first and are
+    // coloured once both have loaded. The grammar is picked the same way the editor does.
+    const codeHighlight = useCodeHighlight();
+
+    const languageSource = React.useMemo(
+        () =>
+            codeHighlight?.languageForFileName(
+                diffFileName(file),
+                firstFileLine(file),
+            ) ?? null,
+        [codeHighlight, file],
+    );
+
     const language = useLoadedLanguage(languageSource);
 
     // Rows render plain until the diff first comes near the screen, so expanding a long list
@@ -1227,8 +1230,13 @@ export function Diff(props: {
     );
 
     const highlight = React.useMemo(
-        () => (nearScreen ? highlightFile(file, language) : null),
-        [nearScreen, file, language],
+        () =>
+            nearScreen && codeHighlight !== null && language !== null
+                ? highlightFile(file, (code) =>
+                      codeHighlight.highlightLines(code, language),
+                  )
+                : null,
+        [nearScreen, file, codeHighlight, language],
     );
 
     const slots = React.useMemo(() => gutterSlots(file), [file]);

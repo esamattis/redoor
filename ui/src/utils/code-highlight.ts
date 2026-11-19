@@ -1,17 +1,13 @@
-import * as React from "react";
-import {
-    Language,
-    LanguageDescription,
-    LanguageSupport,
-} from "@codemirror/language";
+import { LanguageDescription, type Language } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { highlightCode, tagHighlighter, tags } from "@lezer/highlight";
+import { loadSyntaxLanguage } from "#ui/utils/editor-language";
+import type { HighlightLanguageSource } from "#ui/utils/use-code-highlight";
 import {
     syntaxLanguageFromFileName,
     syntaxLanguageFromName,
-    syntaxLanguageSupport,
     type SupportedSyntaxLanguage,
-} from "#ui/utils/editor-language";
+} from "#ui/utils/syntax-language";
 
 /**
  * A run of highlighted text. Tokens are flat rather than a tree so a caller can cut them at
@@ -89,28 +85,33 @@ const tokenHighlighter = tagHighlighter([
     { tag: [tags.invalid, tags.deleted], class: "tok-invalid" },
 ]);
 
-/** What to highlight with: a ready grammar, one that still has to load, or none. */
-export type HighlightLanguageSource = Language | LanguageDescription | null;
+/**
+ * The editor's languages as descriptions, one per language, so they load on first use like
+ * the language data's grammars and a description's identity stays stable across renders.
+ */
+const supportedLanguages = new Map<
+    SupportedSyntaxLanguage,
+    LanguageDescription
+>();
 
-/** Grammars are built once per language, because the editor's setup recreates them per call. */
-const supportedLanguages = new Map<SupportedSyntaxLanguage, Language>();
-
-/** The grammar of a language the editor bundles, ready without loading. */
-function supportedLanguage(language: SupportedSyntaxLanguage): Language {
+/** The description of a language the editor supports, which loads the editor's grammar. */
+function supportedLanguage(
+    language: SupportedSyntaxLanguage,
+): LanguageDescription {
     const cached = supportedLanguages.get(language);
 
     if (cached !== undefined) {
         return cached;
     }
 
-    const support = syntaxLanguageSupport(language);
+    const description = LanguageDescription.of({
+        name: language,
+        load: () => loadSyntaxLanguage(language),
+    });
 
-    const grammar =
-        support instanceof LanguageSupport ? support.language : support;
+    supportedLanguages.set(language, description);
 
-    supportedLanguages.set(language, grammar);
-
-    return grammar;
+    return description;
 }
 
 /**
@@ -139,72 +140,6 @@ export function languageForName(name: string): HighlightLanguageSource {
     }
 
     return LanguageDescription.matchLanguageName(languages, name, false);
-}
-
-/** One load per grammar, shared by every component waiting for it. */
-const loads = new Map<LanguageDescription, Promise<void>>();
-
-/** Starts loading a grammar once; a failed load leaves the code plain rather than broken. */
-function loadDescription(description: LanguageDescription): Promise<void> {
-    const existing = loads.get(description);
-
-    if (existing !== undefined) {
-        return existing;
-    }
-
-    const load = description.load().then(
-        () => undefined,
-        () => undefined,
-    );
-
-    loads.set(description, load);
-
-    return load;
-}
-
-/** The grammar of a source if it is ready, otherwise null. */
-function readyLanguage(source: HighlightLanguageSource): Language | null {
-    if (source instanceof LanguageDescription) {
-        return source.support?.language ?? null;
-    }
-
-    return source;
-}
-
-/**
- * Resolves a grammar for rendering. A grammar that has to load renders as plain text first
- * and re-renders once loaded, without suspending, so the code is readable immediately.
- */
-export function useLoadedLanguage(
-    source: HighlightLanguageSource,
-): Language | null {
-    const subscribe = React.useCallback(
-        (onLoaded: () => void) => {
-            if (
-                !(source instanceof LanguageDescription) ||
-                source.support !== undefined
-            ) {
-                return () => {};
-            }
-
-            let active = true;
-
-            void loadDescription(source).then(() => {
-                if (active) {
-                    onLoaded();
-                }
-            });
-
-            return () => {
-                active = false;
-            };
-        },
-        [source],
-    );
-
-    const snapshot = () => readyLanguage(source);
-
-    return React.useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 
 /**

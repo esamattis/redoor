@@ -9,6 +9,7 @@ import {
     vi,
 } from "vitest";
 import { redo, undo, undoDepth } from "@codemirror/commands";
+import { language } from "@codemirror/language";
 import type { EditorState } from "@codemirror/state";
 import type { EditorView } from "@codemirror/view";
 import { QueryClient } from "@tanstack/react-query";
@@ -23,12 +24,10 @@ import {
     type CaretReport,
     type EditorBufferApi,
 } from "./editor-workspace";
-import {
-    GIT_GUTTER_HIDDEN,
-    gitGutterField,
-    gitGutterSource,
-} from "./git-gutter";
+import { gitGutterField } from "./git-gutter";
+import { GIT_GUTTER_HIDDEN, gitGutterSource } from "./git-line-marks";
 import { parseStoredBuffer, type StoredBuffer } from "./stored-buffer";
+import { loadSyntaxLanguage } from "#ui/utils/editor-language";
 
 // JSDOM does not measure text ranges, while CodeMirror only needs stable stubs here.
 Range.prototype.getClientRects = () => document.body.getClientRects();
@@ -112,8 +111,11 @@ afterEach(() => {
     container.remove();
 });
 
-/** Creates a workspace over a fake server, dropped with its view after the test. */
-function createWorkspace(api = new FakeBufferApi()) {
+/**
+ * Creates a workspace over a fake server, dropped with its view after the test. CodeMirror is
+ * loaded first, as the editor component does before it shows a file.
+ */
+async function createWorkspace(api = new FakeBufferApi()) {
     const caretLines: CaretReport[] = [];
 
     const workspace = new EditorWorkspace(api, new QueryClient(), {
@@ -121,6 +123,7 @@ function createWorkspace(api = new FakeBufferApi()) {
     });
 
     onTestFinished(() => workspace.deactivate(container));
+    await workspace.loadEngine();
 
     return { workspace, api, caretLines };
 }
@@ -143,7 +146,7 @@ function show(
 
 /** Opens one file whose buffer has been written once, as after editing on this computer. */
 async function syncedFile(api: FakeBufferApi) {
-    const { workspace } = createWorkspace(api);
+    const { workspace } = await createWorkspace(api);
     workspace.setOpenKeys(["a"]);
     const view = show(workspace, { key: "a", deviceContent: "base text" });
     view.dispatch({ selection: { anchor: 2 } });
@@ -152,8 +155,8 @@ async function syncedFile(api: FakeBufferApi) {
     return { workspace, view };
 }
 
-test("switching files keeps each file's text, selection and undo history in one view", () => {
-    const { workspace } = createWorkspace();
+test("switching files keeps each file's text, selection and undo history in one view", async () => {
+    const { workspace } = await createWorkspace();
     // Only open files keep their buffers when another file is shown.
     workspace.setOpenKeys(["a", "b"]);
     const view = show(workspace, { key: "a", deviceContent: "alpha" });
@@ -181,8 +184,8 @@ test("switching files keeps each file's text, selection and undo history in one 
     expect(view.state.doc.toString()).toBe("alpha one");
 });
 
-test("the first edit of a clean buffer reports it once, and dirtiness follows the text", () => {
-    const { workspace } = createWorkspace();
+test("the first edit of a clean buffer reports it once, and dirtiness follows the text", async () => {
+    const { workspace } = await createWorkspace();
     const onBecameDirty = vi.fn();
 
     const view = show(workspace, {
@@ -203,8 +206,8 @@ test("the first edit of a clean buffer reports it once, and dirtiness follows th
     expect(workspace.getSnapshot().get("a")?.isDirty).toBe(false);
 });
 
-test("device changes reach clean buffers outside history and only warn for dirty ones", () => {
-    const { workspace } = createWorkspace();
+test("device changes reach clean buffers outside history and only warn for dirty ones", async () => {
+    const { workspace } = await createWorkspace();
 
     const view = show(workspace, {
         key: "a",
@@ -244,7 +247,7 @@ test("device changes reach clean buffers outside history and only warn for dirty
 
 test("open buffers are written debounced and restored with their history on another computer", async () => {
     const api = new FakeBufferApi();
-    const first = createWorkspace(api).workspace;
+    const first = (await createWorkspace(api)).workspace;
     first.setOpenKeys(["a"]);
     const view = show(first, { key: "a", deviceContent: "saved" });
 
@@ -265,7 +268,7 @@ test("open buffers are written debounced and restored with their history on anot
     expect(api.writes).toHaveLength(2);
 
     first.deactivate(container);
-    const second = createWorkspace(api).workspace;
+    const second = (await createWorkspace(api)).workspace;
     second.setOpenKeys(["a"]);
 
     const restored = show(second, {
@@ -284,7 +287,7 @@ test("open buffers are written debounced and restored with their history on anot
 });
 
 test("each buffer write reports the caret line for the open files list", async () => {
-    const { workspace, caretLines } = createWorkspace();
+    const { workspace, caretLines } = await createWorkspace();
     workspace.setOpenKeys(["a"]);
 
     const view = show(workspace, {
@@ -330,14 +333,14 @@ test("scrolling alone never writes, and hiding the page only writes what changed
 
 test("a restored dirty buffer warns when the device changed while the page was closed", async () => {
     const api = new FakeBufferApi();
-    const first = createWorkspace(api).workspace;
+    const first = (await createWorkspace(api)).workspace;
     first.setOpenKeys(["a"]);
     const view = show(first, { key: "a", deviceContent: "base" });
     view.dispatch({ changes: { from: 4, insert: " edit" } });
     await vi.advanceTimersByTimeAsync(1000);
     first.deactivate(container);
 
-    const reloaded = createWorkspace(api).workspace;
+    const reloaded = (await createWorkspace(api)).workspace;
     reloaded.setOpenKeys(["a"]);
 
     const restored = show(reloaded, {
@@ -449,8 +452,8 @@ test("discarding changes reverts to the device text and writes the clean copy at
     expect(workspace.isDirty("a")).toBe(true);
 });
 
-test("discarding tells the chrome about the replaced state, since setState emits no update", () => {
-    const { workspace } = createWorkspace();
+test("discarding tells the chrome about the replaced state, since setState emits no update", async () => {
+    const { workspace } = await createWorkspace();
     const replaced: EditorState[] = [];
 
     const view = show(workspace, {
@@ -476,7 +479,7 @@ test("discarding tells the chrome about the replaced state, since setState emits
 
 test("a line request of the open files list is shown once, also after moving to another computer", async () => {
     const api = new FakeBufferApi();
-    const first = createWorkspace(api).workspace;
+    const first = (await createWorkspace(api)).workspace;
     first.setOpenKeys(["a"]);
     const content = "one\ntwo\nthree\nfour";
     const reveal = { line: 3, entry: "r1" };
@@ -502,7 +505,7 @@ test("a line request of the open files list is shown once, also after moving to 
 
     await vi.advanceTimersByTimeAsync(1000);
     first.deactivate(container);
-    const second = createWorkspace(api).workspace;
+    const second = (await createWorkspace(api)).workspace;
     second.setOpenKeys(["a"]);
 
     const restored = show(second, {
@@ -525,8 +528,8 @@ test("a line request of the open files list is shown once, also after moving to 
     ).toBe("two");
 });
 
-test("following a link to a file supersedes its pending line request", () => {
-    const { workspace } = createWorkspace();
+test("following a link to a file supersedes its pending line request", async () => {
+    const { workspace } = await createWorkspace();
     workspace.setOpenKeys(["a"]);
     const content = "one\ntwo\nthree\nfour";
     const reveal = { line: 3, entry: "r1" };
@@ -574,7 +577,7 @@ function gitMarks(view: EditorView) {
 }
 
 test("the Git gutter follows typing after a pause and survives a discard", async () => {
-    const { workspace } = createWorkspace();
+    const { workspace } = await createWorkspace();
     const view = show(workspace, { key: "a", deviceContent: "one\ntwo\n" });
     // Outside a repository the gutter is not part of the editor at all.
     expect(view.dom.querySelector(".cm-gitGutter")).toBeNull();
@@ -604,4 +607,20 @@ test("the Git gutter follows typing after a pause and survives a discard", async
     workspace.setGitGutter("a", GIT_GUTTER_HIDDEN);
     // Leaving the repository removes the gutter again.
     expect(view.dom.querySelector(".cm-gitGutter")).toBeNull();
+});
+
+test("a file opens at once as plain text and gains its grammar once it has loaded", async () => {
+    const { workspace } = await createWorkspace();
+
+    const view = show(workspace, {
+        key: "a",
+        fileName: "main.rs",
+        deviceContent: "fn main() {}",
+    });
+
+    // The grammar is a chunk of its own, so the file must not wait for it to show.
+    expect(view.state.facet(language)).toBeNull();
+    await loadSyntaxLanguage("rust");
+    // The shown state is reconfigured with the grammar as soon as the load resolves.
+    expect(view.state.facet(language)?.name).toBe("rust");
 });

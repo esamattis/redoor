@@ -19,20 +19,11 @@ import {
 import { repositoryRelativePath } from "#ui/components/copy-path-menu";
 import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
+import { directorySearchChord } from "#ui/components/browser/file-views";
 import { toggleCommentChord } from "#ui/editor/editor-extensions";
 import { getErrorMessage } from "#ui/utils/error";
 import { formatFileReference } from "#ui/utils/file-reference";
-import { formatKeyChord, type KeyChord } from "#ui/utils/keyboard";
-
-/**
- * Searches the selection in the file's directory. Shift+S because plain Mod+S saves, and the
- * code editor's shortcut binding matches this chord so the menu hint stays truthful.
- */
-export const directorySearchChord: KeyChord = {
-    mod: true,
-    shift: true,
-    key: "s",
-};
+import { formatKeyChord } from "#ui/utils/keyboard";
 
 /** The clipboard work behind each menu action, so one mutation reports all their failures. */
 type EditorClipboardAction =

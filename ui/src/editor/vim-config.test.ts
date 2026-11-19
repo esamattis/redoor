@@ -3,7 +3,8 @@ import { afterEach, expect, test } from "vitest";
 import { EditorState } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { getCM, vim, Vim } from "@replit/codemirror-vim";
-import { applyVimConfig, parseVimConfig } from "./vim-config";
+import { applyVimConfig } from "./editor-extensions";
+import { parseVimConfig } from "./vim-config";
 
 const views: EditorView[] = [];
 

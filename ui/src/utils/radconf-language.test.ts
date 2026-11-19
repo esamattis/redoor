@@ -4,14 +4,16 @@ import {
     languageForFileName,
     type HighlightToken,
 } from "#ui/utils/code-highlight";
-import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
-import { Language } from "@codemirror/language";
+import { loadHighlightLanguage } from "#ui/utils/use-code-highlight";
+import { syntaxLanguageFromFileName } from "#ui/utils/syntax-language";
 
 /** Highlights RadConf the way read-only views do, failing loudly without a grammar. */
-function highlightRadconf(code: string): HighlightToken[][] {
-    const language = languageForFileName("radiator.radconf", code);
+async function highlightRadconf(code: string): Promise<HighlightToken[][]> {
+    const language = await loadHighlightLanguage(
+        languageForFileName("radiator.radconf", code),
+    );
 
-    if (!(language instanceof Language)) {
+    if (language === null) {
         throw new Error("No bundled grammar for RadConf");
     }
 
@@ -34,7 +36,7 @@ describe("RadConf grammar", () => {
         );
     });
 
-    test("rebuilds every line exactly", () => {
+    test("rebuilds every line exactly", async () => {
         const code = `servers {
     radius "RADIUS" { # comment
         port 1812;
@@ -44,7 +46,7 @@ vars.text = """
     Welcome, "%{aaa.identity | default("x")}"
 """;`;
 
-        const lines = highlightRadconf(code);
+        const lines = await highlightRadconf(code);
 
         // Diff rows cut tokens by offset, so the tokens must spell the source.
         expect(
@@ -52,8 +54,8 @@ vars.text = """
         ).toEqual(code.split("\n"));
     });
 
-    test("tells statement names from accessors by position", () => {
-        const lines = highlightRadconf(`# Radiator configuration
+    test("tells statement names from accessors by position", async () => {
+        const lines = await highlightRadconf(`# Radiator configuration
 include "shared.radconf";
 handler "AUTH" {
     @execute {
@@ -98,8 +100,8 @@ handler "AUTH" {
         expect(tokensOfKind(lines, "operator")).toEqual(["=", "gt", "="]);
     });
 
-    test("highlights control flow and its conditions", () => {
-        const lines = highlightRadconf(`if any {
+    test("highlights control flow and its conditions", async () => {
+        const lines = await highlightRadconf(`if any {
     map["display name"] starts "A";
 } then {
     try backend "X" when accept { pap; }
@@ -146,8 +148,8 @@ match vars.realm {
         ]);
     });
 
-    test("highlights strings, escapes and placeholders", () => {
-        const lines = highlightRadconf(
+    test("highlights strings, escapes and placeholders", async () => {
+        const lines = await highlightRadconf(
             `reject "Hi %{aaa.identity | default("x")} \\x01 \\q";`,
         );
 
@@ -161,8 +163,8 @@ match vars.realm {
         expect(tokensOfKind(lines, "invalid")).toEqual(["\\q"]);
     });
 
-    test("highlights number-like literals and regexes", () => {
-        const lines = highlightRadconf(`ip 0.0.0.0;
+    test("highlights number-like literals and regexes", async () => {
+        const lines = await highlightRadconf(`ip 0.0.0.0;
 ip ::;
 vars.list = [5s, 1m30s, 80MiB, 2.5%, 1/5, 5XX, 10..20, ..5, 60.., -1.5..-0.5];
 vars.net = [10.0.0.0/8, 127.0.0.1:1812, 2001:db8::/32, [2001:db8::1]:1812];
@@ -191,8 +193,8 @@ vars.name == /^host\\//i;`);
         expect(tokensOfKind(lines, "escape")).toEqual(["/^host\\//i"]);
     });
 
-    test("highlights filters and named arguments", () => {
-        const lines = highlightRadconf(
+    test("highlights filters and named arguments", async () => {
+        const lines = await highlightRadconf(
             `vars.hash = vars.password | trim | password_hash("argon2", memory=19456, time = 2);`,
         );
 
@@ -205,8 +207,8 @@ vars.name == /^host\\//i;`);
         expect(tokensOfKind(lines, "property")).toEqual(["memory", "time"]);
     });
 
-    test("leaves a license key body opaque", () => {
-        const lines = highlightRadconf(`license {
+    test("leaves a license key body opaque", async () => {
+        const lines = await highlightRadconf(`license {
     key "inline" {
 opaque if "text
     }

@@ -16,7 +16,7 @@ import {
     systemdPathStatusQueryOptions,
     systemdScopeKeyUser,
 } from "#ui/systemd-queries";
-import { syntaxLanguageFromFileName } from "#ui/utils/editor-language";
+import { syntaxLanguageFromFileName } from "#ui/utils/syntax-language";
 import { opensInEditor } from "#ui/vault/vault-path";
 
 /** The route's own parameters, which every redirect needs to stay on the same entry. */

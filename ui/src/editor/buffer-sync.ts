@@ -1,4 +1,4 @@
-import { Text, type ChangeSpec } from "@codemirror/state";
+import type { ChangeSpec, Text } from "@codemirror/state";
 
 /**
  * What the editor must do with a buffer once the device reports its current content. The
@@ -24,11 +24,6 @@ export type BufferBase = {
     text: Text | null;
     hash: string;
 };
-
-/** Turns device text into a CodeMirror document once, so comparisons can stay structural. */
-export function textFromString(content: string): Text {
-    return Text.of(content.split(/\r\n?|\n/));
-}
 
 /**
  * A fast 53-bit string hash (cyrb53). It only has to tell whether a document equals the one
