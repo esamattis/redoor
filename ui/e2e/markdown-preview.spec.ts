@@ -290,13 +290,17 @@ completions:
             preview.getByRole("heading", { name: "Backend docs" }),
         ).toBeVisible();
 
-        const previewBox = await preview.boundingBox();
+        const bodyBox = await preview
+            .getByRole("heading", { name: "Backend docs" })
+            .boundingBox();
+
         const frontmatterBox = await frontmatter.boundingBox();
-        // The metadata block should use the preview width instead of shrinking to the key name.
-        expect(previewBox).not.toBeNull();
+        // The metadata block should span the document column instead of shrinking to the key
+        // name. It only ends short of the corner buttons, so it is compared to the body's width.
+        expect(bodyBox).not.toBeNull();
         expect(frontmatterBox).not.toBeNull();
         expect(frontmatterBox?.width ?? 0).toBeGreaterThan(
-            (previewBox?.width ?? 0) * 0.9,
+            (bodyBox?.width ?? 0) * 0.8,
         );
 
         await page.getByRole("button", { name: "YAML frontmatter" }).click();
