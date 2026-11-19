@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.17.1
+
+_2026-11-19_
+
+### Fixes
+
+- The contents and close buttons of markdown previews no longer cover the YAML frontmatter box or the images bar.
+
 ## v2.17.0
 
 _2026-11-19_
