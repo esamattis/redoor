@@ -1,10 +1,7 @@
 import React from "react";
-import { Braces, ShieldCheck } from "lucide-react";
+import { Braces, Image as ImageIcon, ShieldCheck } from "lucide-react";
 import { ToggleButton } from "#ui/components/toggle-button";
-import {
-    HistoryEntryStore,
-    useHistoryEntryState,
-} from "#ui/history-entry-state";
+import { usePreviewApproval } from "#ui/user-state";
 import {
     buildPreviewDocument,
     previewSandboxTokens,
@@ -17,34 +14,52 @@ const kindLabels = {
     svg: "SVG",
 } satisfies Record<SandboxedPreviewKind, string>;
 
-/**
- * Whether the reader let the previewed file's scripts run. It is kept per history entry and
- * file, so Back returns to the preview as it was left, while every other file and every new
- * visit starts with scripts off.
- */
-const scriptsEnabledStore = new HistoryEntryStore<boolean>();
+/** Says what the frame may reach, so the reader sees the effect of the approvals given. */
+function networkAccessLabel(scripts: boolean, images: boolean) {
+    if (scripts) {
+        return "Sandboxed, scripts may reach the network";
+    }
+
+    if (images) {
+        return "Sandboxed, images load from the network";
+    }
+
+    return "Sandboxed, no network access";
+}
 
 /**
  * Renders an untrusted HTML page or SVG drawing from the editor buffer. The browser has to
  * render these itself, so the document goes into a sandboxed frame with an opaque origin and
  * a policy that blocks every network load; see `sandboxed-preview-document.ts` for what is
- * allowed. Scripts are off until the reader turns them on. Turning them on still keeps the
- * document away from redoor, but not fully off the network: CSP does not cover WebRTC, so the
- * labels say so instead of promising isolation the browser cannot enforce.
+ * allowed. Scripts and remote images are off until the reader approves them for the file;
+ * the approvals are remembered for a while and can be revoked with the same toggles. Scripts
+ * still keep the document away from redoor, but not fully off the network: CSP does not
+ * cover WebRTC, so the labels say so instead of promising isolation the browser cannot enforce.
  */
 export function SandboxedPreview(props: {
     kind: SandboxedPreviewKind;
     content: string;
-    /** Identifies the file, so the scripts choice of one file never carries over to another. */
-    scope: string;
+    /** With `filePath`, names the file the approvals belong to, so they never carry over. */
+    agentId: string;
+    filePath: string;
     /** Controls placed at the end of the preview's bar, such as the way back to the editor. */
     actions: React.ReactNode;
 }) {
-    const [scripts, updateScripts] = useHistoryEntryState<boolean>({
-        store: scriptsEnabledStore,
-        scope: props.scope,
-        initial: () => false,
+    const [scripts, setScripts] = usePreviewApproval({
+        agentId: props.agentId,
+        path: props.filePath,
+        kind: "scripts",
     });
+
+    const [approvedImages, setImages] = usePreviewApproval({
+        agentId: props.agentId,
+        path: props.filePath,
+        kind: "images",
+    });
+
+    // An SVG without scripts is shown as an image, which never loads anything it references.
+    const offersImages = props.kind === "html";
+    const images = offersImages && approvedImages;
 
     const label = kindLabels[props.kind];
 
@@ -53,9 +68,9 @@ export function SandboxedPreview(props: {
             buildPreviewDocument({
                 kind: props.kind,
                 content: props.content,
-                scripts,
+                permissions: { scripts, images },
             }),
-        [props.kind, props.content, scripts],
+        [props.kind, props.content, scripts, images],
     );
 
     return (
@@ -71,11 +86,27 @@ export function SandboxedPreview(props: {
                         aria-hidden="true"
                     />
                     <span className="truncate">
-                        {scripts
-                            ? "Sandboxed, scripts may reach the network"
-                            : "Sandboxed, no network access"}
+                        {networkAccessLabel(scripts, images)}
                     </span>
                 </p>
+                {offersImages ? (
+                    <ToggleButton
+                        pressed={images}
+                        label="Show images"
+                        variant="subtle"
+                        size="sm"
+                        className="shrink-0 aria-pressed:bg-blue-500/20 aria-pressed:text-blue-300"
+                        tooltip={
+                            images
+                                ? "Stop loading this file's images from the network and forget the approval"
+                                : "Load this file's images from the network, which lets their servers see that the file was opened. Remembered for 7 days."
+                        }
+                        onClick={() => setImages(!images)}
+                    >
+                        <ImageIcon className="h-4 w-4" aria-hidden="true" />
+                        Images
+                    </ToggleButton>
+                ) : null}
                 <ToggleButton
                     pressed={scripts}
                     label="Enable JavaScript"
@@ -84,10 +115,10 @@ export function SandboxedPreview(props: {
                     className="shrink-0 aria-pressed:bg-blue-500/20 aria-pressed:text-blue-300"
                     tooltip={
                         scripts
-                            ? "Stop running the file's scripts"
-                            : "Run the file's scripts. They stay isolated from redoor, but can still send data out, for example over WebRTC."
+                            ? "Stop running the file's scripts and forget the approval"
+                            : "Run the file's scripts. They stay isolated from redoor, but can still send data out, for example over WebRTC. Remembered for 7 days."
                     }
-                    onClick={() => updateScripts((previous) => !previous)}
+                    onClick={() => setScripts(!scripts)}
                 >
                     <Braces className="h-4 w-4" aria-hidden="true" />
                     JavaScript

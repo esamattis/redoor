@@ -36,6 +36,7 @@ import { useAgentSearchNavigation } from "#ui/search-navigation";
 import { directorySearchChord } from "#ui/components/browser/editor-context-menu";
 import {
     getOpenFileKey,
+    usePreviewApproval,
     useUserState,
     type OpenFileReveal,
 } from "#ui/user-state";
@@ -49,7 +50,6 @@ import {
     gitGutterSource,
     type GitGutterSource,
 } from "#ui/editor/git-gutter";
-import { MarkdownPreview } from "#ui/components/browser/markdown-preview";
 import { SandboxedPreview } from "#ui/components/browser/sandboxed-preview";
 import {
     filePreviewKind,
@@ -85,6 +85,15 @@ function ClosePreviewButton(props: { onClose: () => void }) {
 }
 
 /**
+ * Loaded the first time a markdown file is previewed, so the markdown and HTML parsers stay
+ * out of the bundle every page has to download.
+ */
+const MarkdownPreview = React.lazy(async () => ({
+    default: (await import("#ui/components/browser/markdown-preview"))
+        .MarkdownPreview,
+}));
+
+/**
  * Shows the rendered form of the editor's text. Markdown is rendered by React and can stay
  * mounted while hidden; an HTML or SVG document only exists while it is shown, so a page
  * whose scripts were enabled does not keep running behind the editor.
@@ -93,22 +102,40 @@ function FilePreview(props: {
     kind: FilePreviewKind;
     shown: boolean;
     content: string;
+    agentId: string;
     deviceName: string;
     filePath: string;
     repositoryRoot: string | null;
-    scope: string;
+    imageUrl: (path: string) => string;
     onClose: () => void;
 }) {
+    const [imagesApproved, setImagesApproved] = usePreviewApproval({
+        agentId: props.agentId,
+        path: props.filePath,
+        kind: "images",
+    });
+
     if (props.kind === "markdown") {
         return (
-            <MarkdownPreview
-                content={props.content}
-                deviceName={props.deviceName}
-                filePath={props.filePath}
-                repositoryRoot={props.repositoryRoot}
-                actions={<ClosePreviewButton onClose={props.onClose} />}
-                shown={props.shown}
-            />
+            <React.Suspense
+                fallback={
+                    <p className="p-4 text-sm text-slate-400">
+                        Loading preview...
+                    </p>
+                }
+            >
+                <MarkdownPreview
+                    content={props.content}
+                    deviceName={props.deviceName}
+                    filePath={props.filePath}
+                    repositoryRoot={props.repositoryRoot}
+                    imagesApproved={imagesApproved}
+                    onImagesApprovedChange={setImagesApproved}
+                    imageUrl={props.imageUrl}
+                    actions={<ClosePreviewButton onClose={props.onClose} />}
+                    shown={props.shown}
+                />
+            </React.Suspense>
         );
     }
 
@@ -120,7 +147,8 @@ function FilePreview(props: {
         <SandboxedPreview
             kind={props.kind}
             content={props.content}
-            scope={props.scope}
+            agentId={props.agentId}
+            filePath={props.filePath}
             actions={<ClosePreviewButton onClose={props.onClose} />}
         />
     );
@@ -333,7 +361,10 @@ function DeviceChangedBanner(props: {
 
 /** Selects the editor body without coupling its loading states to buffer ownership. */
 function FileEditorSurface(props: {
+    agentId: string;
     deviceName: string;
+    /** The address of a device file, for images a markdown preview shows. */
+    imageUrl: (path: string) => string;
     filePath: string;
     repositoryRoot: string | null;
     isPending: boolean;
@@ -417,10 +448,11 @@ function FileEditorSurface(props: {
                         kind={props.previewKind}
                         shown={props.preview}
                         content={props.previewContent}
+                        agentId={props.agentId}
                         deviceName={props.deviceName}
                         filePath={props.filePath}
                         repositoryRoot={props.repositoryRoot}
-                        scope={props.bufferKey}
+                        imageUrl={props.imageUrl}
                         onClose={props.onClosePreview}
                     />
                 )}
@@ -888,6 +920,15 @@ export function FileEditView(props: FileEditViewProps) {
 
     const { kind: previewKind, isShown: isPreviewShown } = previewControls;
 
+    // A revision's images come from the same commit, so the preview matches what was committed.
+    const imageUrl = React.useCallback(
+        (path: string) =>
+            props.revision === undefined
+                ? props.agent.getRawUrl(path)
+                : props.agent.getGitDownloadUrl(path, props.revision),
+        [props.agent, props.revision],
+    );
+
     const previewContent = React.useSyncExternalStore(
         buffer.editor.subscribeDocument,
         () => (isPreviewShown ? buffer.editor.text(buffer.bufferKey) : ""),
@@ -981,7 +1022,9 @@ export function FileEditView(props: FileEditViewProps) {
                         />
                     ) : (
                         <FileEditorSurface
+                            agentId={props.agent.id}
                             deviceName={props.agent.name}
+                            imageUrl={imageUrl}
                             filePath={props.filePath}
                             repositoryRoot={props.repositoryRoot}
                             isPending={

@@ -25,8 +25,159 @@ function render(ui: ReactNode) {
     });
 }
 
+/** The preview's image props with no approval, which is how every file starts. */
+const imagesHidden = {
+    imagesApproved: false,
+    onImagesApprovedChange: () => {},
+    imageUrl: (path: string) => `/raw${path}`,
+};
+
 afterEach(() => {
     cleanup();
+});
+
+test("renders allowlisted HTML and drops anything that could run", () => {
+    const view = render(
+        <MarkdownPreview
+            {...imagesHidden}
+            deviceName="agent"
+            filePath="/repo/README.md"
+            repositoryRoot="/repo"
+            content={`<details><summary>More</summary>Hidden <kbd>Ctrl</kbd></details>
+
+<script>window.ranScript = true</script>
+<style>body { display: none }</style>
+<iframe src="https://example.com"></iframe>
+<p style="position: fixed" onclick="alert(1)">Styled</p>
+<a href="javascript:alert(1)">Bad link</a>
+`}
+        />,
+    );
+
+    const preview = view.getByRole("region", { name: "Markdown preview" });
+
+    // Harmless formatting HTML renders as elements, not escaped text.
+    expect(preview.querySelector("details summary")?.textContent).toBe("More");
+    expect(preview.querySelector("kbd")?.textContent).toBe("Ctrl");
+    // Anything that could run code, restyle redoor or embed pages must be gone entirely.
+    expect(preview.querySelector("script, style, iframe")).toBeNull();
+    expect(preview.textContent).not.toContain("ranScript");
+    // Attributes that run code or position content over redoor's own controls are stripped.
+    const styled = view.getByText("Styled");
+    expect(styled.getAttribute("style")).toBeNull();
+    expect(styled.getAttribute("onclick")).toBeNull();
+    // A script URL must never become a clickable link.
+    expect(
+        view.getByText("Bad link").closest("a")?.getAttribute("href") ?? "",
+    ).not.toContain("javascript:");
+});
+
+test("prefixes authored ids and keeps fragment links pointing at them", () => {
+    const view = render(
+        <MarkdownPreview
+            {...imagesHidden}
+            deviceName="agent"
+            filePath="/repo/README.md"
+            repositoryRoot="/repo"
+            content={`<img name="getElementById" alt="Clobber">
+
+# fn-1
+
+# user-content-fn-1
+
+# user-content-target
+
+# target-1
+
+[Jump](#target) and a note[^1]. [Second](#target-1)
+
+<a name="target"></a>Target
+
+[^1]: The note.
+`}
+        />,
+    );
+
+    // A name like this would replace document.getElementById for all of redoor if kept as is.
+    expect(document.getElementsByName("getElementById")).toHaveLength(0);
+    // The rewritten fragment must land on an anchor that is actually rendered.
+    expect(document.getElementsByName("user-content-target")).toHaveLength(1);
+    // A heading named like the prefixed anchor gets its own id instead of taking the anchor's.
+    expect(view.getByRole("heading", { name: "user-content-target" }).id).toBe(
+        "user-content-target-1",
+    );
+    // That renamed heading must not take a link written for another heading.
+    expect(
+        view.getByRole("link", { name: "Second" }).getAttribute("href"),
+    ).toBe("#target-1");
+    // Links written for an authored anchor or a footnote follow the prefix the sanitizer added.
+    expect(view.getByRole("link", { name: "Jump" }).getAttribute("href")).toBe(
+        "#user-content-target",
+    );
+
+    const noteLink = view.getByRole("link", { name: "1" });
+    // Headings named like the footnote, plain or prefixed, must not take its link or its id.
+    const noteId = noteLink.getAttribute("href")?.slice(1) ?? "";
+    expect(document.getElementById(noteId)?.textContent).toContain("The note.");
+});
+
+test("hides images until approved and loads relative ones from the device", () => {
+    const onImagesApprovedChange = vi.fn();
+    const imageUrl = (path: string) => `/raw${path}`;
+
+    const content = `![Logo](../assets/logo.png)
+
+<img src="https://example.com/tracker.png" alt="Remote">
+`;
+
+    const view = render(
+        <MarkdownPreview
+            deviceName="agent"
+            filePath="/repo/docs/README.md"
+            repositoryRoot="/repo"
+            content={content}
+            imagesApproved={false}
+            onImagesApprovedChange={onImagesApprovedChange}
+            imageUrl={imageUrl}
+        />,
+    );
+
+    // Nothing may be fetched before approval, so no image element exists at all.
+    expect(view.container.querySelector("img")).toBeNull();
+    expect(view.getByRole("img", { name: "Hidden image: Logo" })).toBeTruthy();
+    expect(view.getByText("2 images hidden")).toBeTruthy();
+
+    const toggle = view.getByRole("button", { name: "Show images" });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(toggle);
+    // The preview asks its owner to store the approval rather than keeping it itself.
+    expect(onImagesApprovedChange).toHaveBeenCalledWith(true);
+
+    view.rerender(
+        <MarkdownPreview
+            deviceName="agent"
+            filePath="/repo/docs/README.md"
+            repositoryRoot="/repo"
+            content={content}
+            imagesApproved
+            onImagesApprovedChange={onImagesApprovedChange}
+            imageUrl={imageUrl}
+        />,
+    );
+
+    // A relative source names a file next to the document, served by the device.
+    expect(view.getByRole("img", { name: "Logo" }).getAttribute("src")).toBe(
+        "/raw/repo/assets/logo.png",
+    );
+
+    const remote = view.getByRole("img", { name: "Remote" });
+    expect(remote.getAttribute("src")).toBe("https://example.com/tracker.png");
+    // Remote servers must not learn which redoor page showed the image.
+    expect(remote.getAttribute("referrerpolicy")).toBe("no-referrer");
+
+    fireEvent.click(view.getByRole("button", { name: "Show images" }));
+    // The same toggle revokes the approval once it was given.
+    expect(onImagesApprovedChange).toHaveBeenLastCalledWith(false);
 });
 
 test("gives headings GitHub-style unique permalinks on every render", () => {
@@ -40,6 +191,7 @@ test("gives headings GitHub-style unique permalinks on every render", () => {
 
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             content={content}
             deviceName="agent"
             filePath="/repo/docs/README.md"
@@ -75,6 +227,7 @@ test("gives headings GitHub-style unique permalinks on every render", () => {
 
     view.rerender(
         <MarkdownPreview
+            {...imagesHidden}
             content={`${content}
 Extra prose`}
             deviceName="agent"
@@ -92,6 +245,7 @@ Extra prose`}
 test("highlights a labeled TypeScript fence", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -139,6 +293,7 @@ test("copies a highlighted fence's source with its copy button", async () => {
 
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -168,6 +323,7 @@ console.log(value);`);
 test("leaves inline code unhighlighted", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             content="Use `const` inline."
             deviceName="agent"
             filePath="/README.md"
@@ -186,6 +342,7 @@ test("leaves inline code unhighlighted", () => {
 test("highlights a fence in a language the editor does not bundle once it loads", async () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -211,6 +368,7 @@ SELECT name FROM users;
 test("leaves an unknown language fence readable", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -231,6 +389,7 @@ some readable source
 test("escapes HTML-like source in a recognized fence", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -275,6 +434,7 @@ test("resolves absolute markdown links from the repository root", () => {
 test("renders nested YAML frontmatter with indentation preserved", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -308,6 +468,7 @@ completions:
 test("collapses YAML frontmatter without hiding the document body", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             deviceName="agent"
             filePath="/README.md"
             repositoryRoot={null}
@@ -348,6 +509,7 @@ test("keeps absolute markdown links filesystem-rooted outside git", () => {
 test("lists headings in a table of contents linking to their ids", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             content={`## Install
 
 ### From *source*
@@ -382,6 +544,7 @@ test("lists headings in a table of contents linking to their ids", () => {
 test("leaves out the table of contents when there is nothing to navigate", () => {
     const view = render(
         <MarkdownPreview
+            {...imagesHidden}
             content={`Only prose
 
 Body`}

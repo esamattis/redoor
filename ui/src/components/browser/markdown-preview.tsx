@@ -9,8 +9,17 @@ import {
 import { Link } from "@tanstack/react-router";
 import Markdown, { type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeRaw from "rehype-raw";
+import rehypeSanitize from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
-import { Check, Copy, LinkIcon, ListTree } from "lucide-react";
+import {
+    Check,
+    Copy,
+    Image as ImageIcon,
+    ImageOff,
+    LinkIcon,
+    ListTree,
+} from "lucide-react";
 import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
 import { browserRoute } from "#ui/browser-route";
 import { useCopyFeedback } from "#ui/components/copyable-code-row";
@@ -168,11 +177,15 @@ function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
     );
 
     if (lines === null) {
-        return <code className={props.className}>{props.children}</code>;
+        return (
+            <code id={props.id} className={props.className}>
+                {props.children}
+            </code>
+        );
     }
 
     return (
-        <code className={props.className}>
+        <code id={props.id} className={props.className}>
             <HighlightedLines lines={lines} />
         </code>
     );
@@ -217,7 +230,9 @@ function MarkdownPre(props: ComponentProps<"pre"> & ExtraProps) {
     return (
         <div className="relative">
             {/* Right padding keeps short lines clear of the button. */}
-            <pre className={cn("pr-12", props.className)}>{props.children}</pre>
+            <pre id={props.id} className={cn("pr-12", props.className)}>
+                {props.children}
+            </pre>
             <div className="absolute right-1 top-1">
                 <IconButton
                     type="button"
@@ -338,11 +353,26 @@ function MarkdownLink(
             repositoryRoot: string | null;
         },
 ) {
-    const href = props.href ?? "";
+    const href = props.href;
 
-    if (href.startsWith("#") || /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(href)) {
+    // An anchor without a destination is a fragment target, such as `<a name>` or one whose
+    // unsafe href the sanitizer removed, so it must not become a link to the file's directory.
+    if (
+        href === undefined ||
+        href.startsWith("#") ||
+        /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(href)
+    ) {
         return (
-            <a href={href} title={props.title} className={props.className}>
+            <a
+                href={href}
+                // Footnote back-references and authored anchors are found by these.
+                id={props.id}
+                // @ts-expect-error `name` is obsolete on anchors but still a fragment target.
+                name={props.name}
+                aria-describedby={props["aria-describedby"]}
+                title={props.title}
+                className={props.className}
+            >
                 {props.children}
             </a>
         );
@@ -359,12 +389,276 @@ function MarkdownLink(
             {...browserRoute({ name: props.deviceName }, link.path)}
             search={{}}
             hash={link.hash}
+            // An authored anchor may also be a fragment target.
+            id={props.id}
+            // @ts-expect-error `name` is obsolete on anchors but still a fragment target.
+            name={props.name}
             title={props.title}
             className={props.className}
         >
             {props.children}
         </Link>
     );
+}
+
+/** Web addresses an image may load from as written; any other `src` is a path of the device. */
+const WEB_IMAGE_SOURCE = /^(?:https?:)?\/\//i;
+
+/** An image dimension attribute in pixels, or null when it is missing or not a size. */
+function imageDimension(value: string | number | undefined) {
+    const pixels = Number(value);
+
+    return Number.isFinite(pixels) && pixels > 0 ? pixels : null;
+}
+
+/**
+ * Sizes an image, and the placeholder standing in for it, from the size the file gives it,
+ * so approving the images does not reflow the document. The typography styles force
+ * `height: auto` on images, which would drop the authored height for the picture's own
+ * proportions, so the size is set as styles instead. With both dimensions the box keeps the
+ * authored proportions when the column is narrower than the image.
+ */
+function imageBoxSize(
+    width: string | number | undefined,
+    height: string | number | undefined,
+): React.CSSProperties {
+    const w = imageDimension(width);
+    const h = imageDimension(height);
+
+    if (w !== null && h !== null) {
+        return { width: `${w}px`, aspectRatio: `${w} / ${h}` };
+    }
+
+    return {
+        width: w === null ? undefined : `${w}px`,
+        height: h === null ? undefined : `${h}px`,
+    };
+}
+
+/**
+ * Shows an image only once the reader approved the file's images. Until then nothing is
+ * fetched, because a remote image tells its server when and from where the file was read.
+ * A relative source names a file on the device, so it is loaded through `imageUrl`.
+ */
+function MarkdownImage(
+    props: ComponentProps<"img"> &
+        ExtraProps & {
+            approved: boolean;
+            filePath: string;
+            repositoryRoot: string | null;
+            imageUrl: (path: string) => string;
+        },
+) {
+    // Markdown only ever gives a text source; React's type also allows a Blob.
+    const src = props.src === undefined ? "" : String(props.src);
+
+    const description =
+        props.alt === undefined || props.alt === "" ? "Image" : props.alt;
+
+    if (!props.approved || src === "") {
+        const box = imageBoxSize(props.width, props.height);
+
+        return (
+            <span
+                role="img"
+                id={props.id}
+                aria-label={`Hidden image: ${description}`}
+                style={box}
+                className={cn(
+                    "inline-flex max-w-full items-center justify-center gap-1.5 overflow-hidden rounded border border-dashed border-slate-600 align-middle text-xs text-slate-400",
+                    // Padding would make a small authored box larger than the image it holds.
+                    box.width === undefined && box.height === undefined
+                        ? "px-2 py-1"
+                        : null,
+                )}
+            >
+                <ImageOff className="size-4 shrink-0" aria-hidden="true" />
+                <span className="truncate">{description}</span>
+            </span>
+        );
+    }
+
+    const source = WEB_IMAGE_SOURCE.test(src)
+        ? src
+        : props.imageUrl(
+              resolveMarkdownFileLink({
+                  href: src,
+                  filePath: props.filePath,
+                  repositoryRoot: props.repositoryRoot,
+              }).path,
+          );
+
+    return (
+        <img
+            src={source}
+            id={props.id}
+            alt={props.alt}
+            title={props.title}
+            width={props.width}
+            height={props.height}
+            // A picture whose proportions differ from its authored size is fitted inside the
+            // box rather than stretched.
+            style={{
+                ...imageBoxSize(props.width, props.height),
+                objectFit: "contain",
+            }}
+            // Remote servers learn nothing about which redoor page or file showed the image.
+            referrerPolicy="no-referrer"
+            loading="lazy"
+            className={props.className}
+        />
+    );
+}
+
+/**
+ * Counts the images left after sanitizing, so the preview only offers to show images when
+ * the document has some.
+ */
+function countMarkdownImages(result: { count: number }) {
+    const visit = (children: MarkdownNodeChild[]) => {
+        for (const child of children) {
+            if (child.type !== "element") continue;
+
+            if (child.tagName === "img") {
+                result.count += 1;
+            }
+
+            visit(child.children);
+        }
+    };
+
+    return () => (tree: MarkdownRoot) => {
+        visit(tree.children);
+    };
+}
+
+/** The prefix `rehype-sanitize` puts on authored ids and names, as GitHub does. */
+const USER_CONTENT_PREFIX = "user-content-";
+
+/** An element of the rendered tree, whose attributes a plugin can read and change. */
+type MarkdownElement = Extract<MarkdownNodeChild, { type: "element" }>;
+
+/** An attribute of a tree element as text, or null when the element does not have it. */
+function elementAttribute(element: MarkdownElement, name: string) {
+    const value = element.properties[name];
+
+    return value === undefined || value === null ? null : String(value);
+}
+
+/**
+ * Keeps generated heading slugs off the ids the sanitizer left, so a heading titled like a
+ * prefixed id, such as `user-content-fn-1`, cannot take that target's links. `reserve` runs
+ * before `rehype-slug` to note the ids already in the tree; `separate` runs after it and
+ * renames a colliding slug with the next free numeric suffix, as GitHub suffixes repeats.
+ */
+function separateHeadingSlugs() {
+    const reserved = new Set<string>();
+    const withIds = new WeakSet<MarkdownElement>();
+
+    const visit = (
+        children: MarkdownNodeChild[],
+        onElement: (element: MarkdownElement) => void,
+    ) => {
+        for (const child of children) {
+            if (child.type !== "element") continue;
+
+            onElement(child);
+            visit(child.children, onElement);
+        }
+    };
+
+    const reserve = () => (tree: MarkdownRoot) => {
+        visit(tree.children, (element) => {
+            const id = elementAttribute(element, "id");
+            const name = elementAttribute(element, "name");
+
+            if (id !== null) {
+                reserved.add(id);
+                withIds.add(element);
+            }
+
+            // A named anchor is a fragment target as much as an id is.
+            if (element.tagName === "a" && name !== null) {
+                reserved.add(name);
+            }
+        });
+    };
+
+    const separate = () => (tree: MarkdownRoot) => {
+        const taken = new Set<string>();
+        const slugged: MarkdownElement[] = [];
+
+        visit(tree.children, (element) => {
+            const id = elementAttribute(element, "id");
+
+            if (id === null) return;
+
+            taken.add(id);
+
+            if (!withIds.has(element) && reserved.has(id)) {
+                slugged.push(element);
+            }
+        });
+
+        for (const heading of slugged) {
+            const id = elementAttribute(heading, "id") ?? "";
+            let suffix = 1;
+
+            while (
+                taken.has(`${id}-${suffix}`) ||
+                reserved.has(`${id}-${suffix}`)
+            ) {
+                suffix += 1;
+            }
+
+            heading.properties.id = `${id}-${suffix}`;
+            taken.add(`${id}-${suffix}`);
+        }
+    };
+
+    // The targets the file itself wrote, which fragment links may be pointed at.
+    return { reserve, separate, reserved };
+}
+
+/**
+ * Points fragment links at the prefixed ids the sanitizer leaves. Authored ids and names are
+ * prefixed so markup like `<img name="getElementById">` cannot shadow DOM APIs of redoor's
+ * page, which also moves footnotes and `<a name>` anchors away from the links written for
+ * them. GitHub resolves those links the same way. Only `targets`, the ids and names in the
+ * tree before heading slugs were made, are considered, and they win over a heading slug, so a
+ * heading named like a footnote or anchor cannot take its links.
+ */
+function resolveUserContentFragments(targets: ReadonlySet<string>) {
+    return () => (tree: MarkdownRoot) => {
+        const links: { element: MarkdownElement; target: string }[] = [];
+
+        const visit = (children: MarkdownNodeChild[]) => {
+            for (const child of children) {
+                if (child.type !== "element") continue;
+
+                const href = elementAttribute(child, "href");
+
+                if (child.tagName === "a" && href?.startsWith("#") === true) {
+                    links.push({
+                        element: child,
+                        target: decodeMarkdownPath(href.slice(1)),
+                    });
+                }
+
+                visit(child.children);
+            }
+        };
+
+        visit(tree.children);
+
+        for (const link of links) {
+            const prefixed = `${USER_CONTENT_PREFIX}${link.target}`;
+
+            if (targets.has(prefixed)) {
+                link.element.properties.href = `#${prefixed}`;
+            }
+        }
+    };
 }
 
 /** A heading of the rendered document, as the table of contents lists it. */
@@ -461,13 +755,61 @@ function MarkdownTableOfContents(props: {
     );
 }
 
-/** Renders an untrusted markdown draft without enabling raw HTML execution. */
+/**
+ * Offers to show the document's images, and to hide them again, since images are blocked
+ * until the reader approves them for the file.
+ */
+function MarkdownImagesBar(props: {
+    count: number;
+    approved: boolean;
+    onApprovedChange: (approved: boolean) => void;
+}) {
+    const images = props.count === 1 ? "1 image" : `${props.count} images`;
+
+    return (
+        // Right margin keeps the text clear of the preview's buttons in the top-right corner.
+        <div className="mb-6 mr-16 flex flex-wrap items-center gap-2 rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2 text-sm text-slate-400 @xl:mr-12">
+            <ImageIcon className="size-4 shrink-0" aria-hidden="true" />
+            <p className="min-w-0 flex-1">
+                {props.approved
+                    ? `Showing ${images} from the network`
+                    : `${images} hidden`}
+            </p>
+            <ToggleButton
+                pressed={props.approved}
+                label="Show images"
+                variant="subtle"
+                size="sm"
+                className="shrink-0 aria-pressed:bg-blue-500/20 aria-pressed:text-blue-300"
+                tooltip={
+                    props.approved
+                        ? "Hide this file's images and forget the approval"
+                        : "Load this file's images, which lets their servers see that the file was opened. Remembered for 7 days."
+                }
+                onClick={() => props.onApprovedChange(!props.approved)}
+            >
+                Show images
+            </ToggleButton>
+        </div>
+    );
+}
+
+/**
+ * Renders an untrusted markdown draft. Embedded HTML is parsed into the same tree as the
+ * markdown and cut down to GitHub's allowlist before React renders it, so scripts, styles,
+ * frames, forms and event handlers never reach the page, which shares redoor's origin.
+ */
 export function MarkdownPreview(props: {
     content: string;
     /** The current name of the file's device, which in-app links carry in their URL. */
     deviceName: string;
     filePath: string;
     repositoryRoot: string | null;
+    /** Whether the reader approved loading this file's images. */
+    imagesApproved: boolean;
+    onImagesApprovedChange: (approved: boolean) => void;
+    /** The address that serves a file of the device, for images with a relative source. */
+    imageUrl: (path: string) => string;
     /** Controls placed in the preview's top-right corner, such as the way back to the editor. */
     actions?: React.ReactNode;
     /**
@@ -482,12 +824,27 @@ export function MarkdownPreview(props: {
 
     // `Markdown` is a plain synchronous function, so calling it here renders the document and
     // fills `headings` in one pass, and a re-render that keeps the text skips both.
-    const { rendered, headings } = useMemo(() => {
+    const { rendered, headings, imageCount } = useMemo(() => {
         const headings: MarkdownTocHeading[] = [];
+        const images = { count: 0 };
+        const headingSlugs = separateHeadingSlugs();
 
         const rendered = Markdown({
             remarkPlugins: [remarkGfm],
-            rehypePlugins: [rehypeSlug, collectMarkdownHeadings(headings)],
+            // The sanitizer prefixes footnote ids itself, so they are not prefixed twice.
+            remarkRehypeOptions: { clobberPrefix: "" },
+            rehypePlugins: [
+                rehypeRaw,
+                // Straight after parsing the HTML, so nothing the file wrote skips the allowlist.
+                rehypeSanitize,
+                // After sanitizing, so heading ids are not prefixed and match their slugs.
+                headingSlugs.reserve,
+                rehypeSlug,
+                headingSlugs.separate,
+                resolveUserContentFragments(headingSlugs.reserved),
+                collectMarkdownHeadings(headings),
+                countMarkdownImages(images),
+            ],
             components: {
                 code: MarkdownCode,
                 pre: MarkdownPre,
@@ -505,12 +862,28 @@ export function MarkdownPreview(props: {
                         repositoryRoot={props.repositoryRoot}
                     />
                 ),
+                img: (imageProps) => (
+                    <MarkdownImage
+                        {...imageProps}
+                        approved={props.imagesApproved}
+                        filePath={props.filePath}
+                        repositoryRoot={props.repositoryRoot}
+                        imageUrl={props.imageUrl}
+                    />
+                ),
             },
             children: markdown,
         });
 
-        return { rendered, headings };
-    }, [markdown, props.deviceName, props.filePath, props.repositoryRoot]);
+        return { rendered, headings, imageCount: images.count };
+    }, [
+        markdown,
+        props.deviceName,
+        props.filePath,
+        props.repositoryRoot,
+        props.imagesApproved,
+        props.imageUrl,
+    ]);
 
     const hasToc = headings.length > 0;
     const tocToggleRef = useRef<HTMLButtonElement>(null);
@@ -544,13 +917,22 @@ export function MarkdownPreview(props: {
                 aria-label="Markdown preview"
                 className="min-h-0 min-w-0 max-w-none flex-1 overflow-auto px-5 py-6 @xl:px-8 @xl:py-8"
             >
+                {imageCount > 0 ? (
+                    <MarkdownImagesBar
+                        count={imageCount}
+                        approved={props.imagesApproved}
+                        onApprovedChange={props.onImagesApprovedChange}
+                    />
+                ) : null}
                 {frontmatter !== null && frontmatter.headers.length > 0 ? (
                     <YamlFrontmatterTable
                         headers={frontmatter.headers}
                         values={frontmatter.values}
                     />
                 ) : null}
-                <div className="syntax-highlight prose prose-invert @max-xl:prose-sm max-w-none prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
+                {/* Images drop the typography margins and sit like their placeholders, so showing
+                    them takes exactly the space the placeholders held. */}
+                <div className="syntax-highlight prose prose-invert @max-xl:prose-sm max-w-none prose-img:my-0 prose-img:inline-block prose-img:align-middle prose-a:text-blue-400 prose-blockquote:border-slate-700 prose-code:rounded prose-code:bg-slate-800 prose-code:px-1 prose-code:py-0.5 prose-headings:tracking-tight prose-hr:border-slate-700 prose-pre:border prose-pre:border-slate-700 prose-pre:bg-slate-900 prose-table:block prose-table:overflow-x-auto">
                     {rendered}
                 </div>
             </section>

@@ -71,9 +71,12 @@ describe("previewSandboxTokens", () => {
 });
 
 describe("previewContentSecurityPolicy", () => {
-    test("blocks the network in every mode", () => {
+    test("blocks the network unless images are approved", () => {
         for (const scripts of [false, true]) {
-            const policy = previewContentSecurityPolicy(scripts);
+            const policy = previewContentSecurityPolicy({
+                scripts,
+                images: false,
+            });
 
             // Everything not listed falls back to none, which covers fetches, frames and workers.
             expect(policy).toContain("default-src 'none'");
@@ -83,14 +86,32 @@ describe("previewContentSecurityPolicy", () => {
         }
     });
 
+    test("lets approved images load from web addresses only", () => {
+        const policy = previewContentSecurityPolicy({
+            scripts: false,
+            images: true,
+        });
+
+        // The approval opens images to any web server, which is what reading remote images needs.
+        expect(policy).toContain("img-src data: blob: http: https:");
+        // Nothing else gains network access through the image approval.
+        expect(policy).toContain("default-src 'none'");
+        expect(policy).not.toContain("connect-src");
+        expect(policy).not.toContain("'self'");
+    });
+
     test("allows inline scripts only when enabled", () => {
         // Without the opt-in the default policy also refuses scripts.
-        expect(previewContentSecurityPolicy(false)).not.toContain("script-src");
-        expect(previewContentSecurityPolicy(true)).toContain(
-            "script-src 'unsafe-inline'",
-        );
+        expect(
+            previewContentSecurityPolicy({ scripts: false, images: false }),
+        ).not.toContain("script-src");
+        expect(
+            previewContentSecurityPolicy({ scripts: true, images: false }),
+        ).toContain("script-src 'unsafe-inline'");
         // Evaluating strings is never needed for a preview.
-        expect(previewContentSecurityPolicy(true)).not.toContain("unsafe-eval");
+        expect(
+            previewContentSecurityPolicy({ scripts: true, images: false }),
+        ).not.toContain("unsafe-eval");
     });
 });
 
@@ -99,7 +120,7 @@ describe("buildPreviewDocument", () => {
         const srcdoc = buildPreviewDocument({
             kind: "html",
             content: `<script>document.title = "ran"</script><p>Hello</p>`,
-            scripts: false,
+            permissions: { scripts: false, images: false },
         });
 
         // A meta policy only applies to what follows it, so nothing of the file may precede it.
@@ -113,7 +134,7 @@ describe("buildPreviewDocument", () => {
         // The parser has to place the policy first in the head, where browsers honour it.
         expect(document.head.firstElementChild).toBe(metas[0]);
         expect(metas[0]?.getAttribute("content")).toBe(
-            previewContentSecurityPolicy(false),
+            previewContentSecurityPolicy({ scripts: false, images: false }),
         );
     });
 
@@ -126,7 +147,7 @@ describe("buildPreviewDocument", () => {
 <head><meta http-equiv="Content-Security-Policy" content="script-src *"><title>Page</title></head>
 <body><p>Hello</p></body>
 </html>`,
-                scripts: true,
+                permissions: { scripts: true, images: false },
             }),
         );
 
@@ -138,7 +159,7 @@ describe("buildPreviewDocument", () => {
         // A policy of the page itself can only add restrictions after ours, never come before it.
         expect(document.head.firstElementChild).toBe(policyMetas(document)[0]);
         expect(policyMetas(document)[0]?.getAttribute("content")).toBe(
-            previewContentSecurityPolicy(true),
+            previewContentSecurityPolicy({ scripts: true, images: false }),
         );
     });
 
@@ -146,7 +167,7 @@ describe("buildPreviewDocument", () => {
         const srcdoc = buildPreviewDocument({
             kind: "html",
             content: `<!DOCTYPE html "><script>alert(1)</script>"><p>Hi</p>`,
-            scripts: false,
+            permissions: { scripts: false, images: false },
         });
 
         // The doctype ends at its first angle bracket, as the browser's tokenizer ends it.
@@ -159,7 +180,11 @@ describe("buildPreviewDocument", () => {
         const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><script>alert("x")</script><text>"&<></text></svg>`;
 
         const document = parse(
-            buildPreviewDocument({ kind: "svg", content: svg, scripts: false }),
+            buildPreviewDocument({
+                kind: "svg",
+                content: svg,
+                permissions: { scripts: false, images: false },
+            }),
         );
 
         // An image never runs SVG scripts, so the drawing must not be in the page as markup.
@@ -175,7 +200,9 @@ describe("buildPreviewDocument", () => {
         expect(decodeURIComponent(source.slice(prefix.length))).toBe(svg);
         // The policy still comes first and allows the data URL the image loads.
         expect(document.head.firstElementChild).toBe(policyMetas(document)[0]);
-        expect(previewContentSecurityPolicy(false)).toContain("img-src data:");
+        expect(
+            previewContentSecurityPolicy({ scripts: false, images: false }),
+        ).toContain("img-src data:");
     });
 
     test("inlines SVG so its scripts can run when enabled", () => {
@@ -183,7 +210,11 @@ describe("buildPreviewDocument", () => {
 <svg xmlns="http://www.w3.org/2000/svg"><script>document.title = "ran"</script></svg>`;
 
         const document = parse(
-            buildPreviewDocument({ kind: "svg", content: svg, scripts: true }),
+            buildPreviewDocument({
+                kind: "svg",
+                content: svg,
+                permissions: { scripts: true, images: false },
+            }),
         );
 
         // Scripts in an SVG only run when its markup is part of the page.
@@ -192,7 +223,7 @@ describe("buildPreviewDocument", () => {
         // The policy precedes the drawing and allows exactly the inline scripts.
         expect(document.head.firstElementChild).toBe(policyMetas(document)[0]);
         expect(policyMetas(document)[0]?.getAttribute("content")).toBe(
-            previewContentSecurityPolicy(true),
+            previewContentSecurityPolicy({ scripts: true, images: false }),
         );
     });
 });

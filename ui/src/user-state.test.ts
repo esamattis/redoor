@@ -5,11 +5,14 @@ import {
     defaultUserState,
     getOpenFileParentLabels,
     getStaleOpenFiles,
+    isPreviewApproved,
     openFileAtLine,
+    PREVIEW_APPROVAL_TTL_MS,
     reorderBookmarks,
     reorderOpenFiles,
     resolveDeviceOrder,
     setOpenFileLine,
+    setPreviewApproval,
     stampUntouchedOpenFiles,
     TOUCH_REFRESH_MS,
     touchOpenFiles,
@@ -442,4 +445,62 @@ test("a caret report refreshes an old touch time even on the same line", () => {
     );
 
     expect(refreshed[0]?.touchedAt).toBe(TOUCH_REFRESH_MS);
+});
+
+test("keeps a preview approval for its lifetime and per file and kind", () => {
+    const now = 1_000_000_000_000;
+    const images = { agentId: "a", path: "/doc.md", kind: "images" as const };
+
+    const approvals = setPreviewApproval(
+        [],
+        { ...images, approved: true },
+        now,
+    );
+
+    // The approval covers exactly the file and permission it was given for.
+    expect(isPreviewApproved(approvals, images, now)).toBe(true);
+    expect(
+        isPreviewApproved(approvals, { ...images, kind: "scripts" }, now),
+    ).toBe(false);
+    expect(
+        isPreviewApproved(approvals, { ...images, path: "/other.md" }, now),
+    ).toBe(false);
+    // It still holds just before the lifetime ends and lapses at its end.
+    expect(
+        isPreviewApproved(approvals, images, now + PREVIEW_APPROVAL_TTL_MS - 1),
+    ).toBe(true);
+    expect(
+        isPreviewApproved(approvals, images, now + PREVIEW_APPROVAL_TTL_MS),
+    ).toBe(false);
+});
+
+test("revoking and approving drop lapsed approvals so the list stays bounded", () => {
+    const now = 1_000_000_000_000;
+
+    const stale = {
+        agentId: "a",
+        path: "/old.md",
+        kind: "images" as const,
+        approvedAt: now - PREVIEW_APPROVAL_TTL_MS - 1,
+    };
+
+    const fresh = { ...stale, path: "/fresh.md", approvedAt: now - 1 };
+    const target = { agentId: "a", path: "/new.md", kind: "scripts" as const };
+
+    const approved = setPreviewApproval(
+        [stale, fresh],
+        { ...target, approved: true },
+        now,
+    );
+
+    // The lapsed entry goes with the write, while current ones survive.
+    expect(approved).toEqual([fresh, { ...target, approvedAt: now }]);
+    // Approving again replaces the entry rather than piling up duplicates.
+    expect(
+        setPreviewApproval(approved, { ...target, approved: true }, now + 5),
+    ).toEqual([fresh, { ...target, approvedAt: now + 5 }]);
+    // Revoking removes the approval entirely.
+    expect(
+        setPreviewApproval(approved, { ...target, approved: false }, now),
+    ).toEqual([fresh]);
 });

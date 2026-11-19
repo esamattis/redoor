@@ -39,24 +39,40 @@ export function previewSandboxTokens(scripts: boolean): string {
 }
 
 /**
+ * What the reader let a previewed document do. Both are off until the reader approves them,
+ * because each lets the file reach the network.
+ */
+export type PreviewPermissions = {
+    scripts: boolean;
+    /** Only HTML pages load images; an SVG is shown as an image, which never loads any. */
+    images: boolean;
+};
+
+/**
  * The policy injected into every previewed document. Everything defaults to `'none'`, so
  * nothing in the file can load from the network or the redoor server (no fetches, frames,
  * workers, external styles, images or fonts), while inline styles and embedded `data:`
  * resources still render. Inline scripts are only allowed when the reader enabled them, and
- * `eval` never is.
+ * `eval` never is. Approved images may come from any web address, including redoor's own,
+ * but the frame's opaque origin is cross-site to redoor, so the `SameSite=Lax` session
+ * cookie is not sent and such a request is unauthenticated.
  */
-export function previewContentSecurityPolicy(scripts: boolean): string {
+export function previewContentSecurityPolicy(
+    permissions: PreviewPermissions,
+): string {
     const directives = [
         "default-src 'none'",
         "style-src 'unsafe-inline'",
-        "img-src data: blob:",
+        permissions.images
+            ? "img-src data: blob: http: https:"
+            : "img-src data: blob:",
         "font-src data:",
         "media-src data:",
         "form-action 'none'",
         "base-uri 'none'",
     ];
 
-    if (scripts) {
+    if (permissions.scripts) {
         directives.push("script-src 'unsafe-inline'");
     }
 
@@ -68,8 +84,8 @@ export function previewContentSecurityPolicy(scripts: boolean): string {
  * element of the document. The policy text contains no double quotes, so it cannot end the
  * attribute early.
  */
-function contentSecurityPolicyMeta(scripts: boolean) {
-    return `<meta http-equiv="Content-Security-Policy" content="${previewContentSecurityPolicy(scripts)}">`;
+function contentSecurityPolicyMeta(permissions: PreviewPermissions) {
+    return `<meta http-equiv="Content-Security-Policy" content="${previewContentSecurityPolicy(permissions)}">`;
 }
 
 /**
@@ -92,9 +108,9 @@ body > img { object-fit: contain; }
 </style>`;
 
 /** Puts the policy in front of an HTML page while keeping its doctype first. */
-function htmlPreviewDocument(content: string, scripts: boolean) {
+function htmlPreviewDocument(content: string, permissions: PreviewPermissions) {
     const doctype = LEADING_DOCTYPE.exec(content);
-    const meta = contentSecurityPolicyMeta(scripts);
+    const meta = contentSecurityPolicyMeta(permissions);
 
     if (doctype === null) {
         return `${meta}${content}`;
@@ -109,10 +125,10 @@ function htmlPreviewDocument(content: string, scripts: boolean) {
  * scripts the markup is inlined into the page instead, because that is the only way its
  * scripts can run; the sandbox and the policy then are what contain it.
  */
-function svgPreviewDocument(content: string, scripts: boolean) {
-    const head = `<!DOCTYPE html>${contentSecurityPolicyMeta(scripts)}${SVG_FRAME_STYLE}`;
+function svgPreviewDocument(content: string, permissions: PreviewPermissions) {
+    const head = `<!DOCTYPE html>${contentSecurityPolicyMeta(permissions)}${SVG_FRAME_STYLE}`;
 
-    if (scripts) {
+    if (permissions.scripts) {
         return `${head}${content}`;
     }
 
@@ -127,9 +143,9 @@ function svgPreviewDocument(content: string, scripts: boolean) {
 export function buildPreviewDocument(options: {
     kind: SandboxedPreviewKind;
     content: string;
-    scripts: boolean;
+    permissions: PreviewPermissions;
 }): string {
     return options.kind === "svg"
-        ? svgPreviewDocument(options.content, options.scripts)
-        : htmlPreviewDocument(options.content, options.scripts);
+        ? svgPreviewDocument(options.content, options.permissions)
+        : htmlPreviewDocument(options.content, options.permissions);
 }

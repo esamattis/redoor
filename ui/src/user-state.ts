@@ -86,6 +86,38 @@ export const terminalTabsSchema = z.object({
 
 export type TerminalTabs = z.infer<typeof terminalTabsSchema>;
 
+/**
+ * What a file's preview may do beyond showing its own text. Both are off by default because
+ * they let the file reach the network: images can tell a remote server when and from where
+ * the file was opened, and scripts can send out whatever the page holds.
+ */
+export const previewApprovalKindSchema = z.enum(["images", "scripts"]);
+
+export type PreviewApprovalKind = z.infer<typeof previewApprovalKindSchema>;
+
+/**
+ * One file the user let load images or run scripts in its preview. It is kept in the user
+ * state, so the choice follows the user to other computers instead of being asked again.
+ */
+export const previewApprovalSchema = z.object({
+    agentId: z.string(),
+    path: z.string(),
+    kind: previewApprovalKindSchema,
+    /** Epoch milliseconds, so the approval can lapse after `PREVIEW_APPROVAL_TTL_MS`. */
+    approvedAt: z.number(),
+});
+
+export type PreviewApproval = z.infer<typeof previewApprovalSchema>;
+
+/** Names the file and the permission an approval is about. */
+export type PreviewApprovalTarget = Omit<PreviewApproval, "approvedAt">;
+
+/**
+ * How long an approval lasts. A file can change after it was approved, for example by a
+ * pull, so the approval is asked again after a while instead of trusting the path forever.
+ */
+export const PREVIEW_APPROVAL_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Shortest auto-close delay, so a file is never closed while the user steps away briefly. */
 export const MIN_AUTO_CLOSE_HOURS = 1;
 
@@ -126,6 +158,7 @@ export const userStateSchema = z.object({
     deviceOrder: z.array(z.string()).catch([]),
     showOnlyConnectedDevices: z.boolean().catch(false),
     terminalTabs: terminalTabsSchema.catch({ order: [], active: null }),
+    previewApprovals: z.array(previewApprovalSchema).catch([]),
 });
 
 export type UserState = z.infer<typeof userStateSchema>;
@@ -139,6 +172,62 @@ export const defaultUserState: UserState = userStateSchema.parse({});
 /** Identifies one bookmarked path so the same file cannot be stored twice. */
 export function getBookmarkKey(bookmark: Pick<Bookmark, "agentId" | "path">) {
     return `${bookmark.agentId}:${bookmark.path}`;
+}
+
+/** Whether an approval is still in force, so a lapsed one counts as never given. */
+function isPreviewApprovalCurrent(approval: PreviewApproval, now: number) {
+    return now - approval.approvedAt < PREVIEW_APPROVAL_TTL_MS;
+}
+
+/** Whether two approvals are about the same file and permission. */
+function isSamePreviewApproval(
+    a: PreviewApprovalTarget,
+    b: PreviewApprovalTarget,
+) {
+    return a.agentId === b.agentId && a.path === b.path && a.kind === b.kind;
+}
+
+/** Whether the file's preview may currently use the permission. */
+export function isPreviewApproved(
+    approvals: PreviewApproval[],
+    target: PreviewApprovalTarget,
+    now = Date.now(),
+) {
+    return approvals.some(
+        (approval) =>
+            isSamePreviewApproval(approval, target) &&
+            isPreviewApprovalCurrent(approval, now),
+    );
+}
+
+/**
+ * Gives or revokes an approval. Lapsed approvals are dropped in the same write, so the list
+ * never holds more than the last week's approvals without a separate cleanup sweep.
+ */
+export function setPreviewApproval(
+    approvals: PreviewApproval[],
+    change: PreviewApprovalTarget & { approved: boolean },
+    now = Date.now(),
+): PreviewApproval[] {
+    const kept = approvals.filter(
+        (approval) =>
+            !isSamePreviewApproval(approval, change) &&
+            isPreviewApprovalCurrent(approval, now),
+    );
+
+    if (!change.approved) {
+        return kept;
+    }
+
+    return [
+        ...kept,
+        {
+            agentId: change.agentId,
+            path: change.path,
+            kind: change.kind,
+            approvedAt: now,
+        },
+    ];
 }
 
 /** Lets menus and the agent list share one membership check. */
@@ -595,6 +684,39 @@ export function useUserState(): [
     );
 
     return [userState, setUserState];
+}
+
+/**
+ * Reads and changes whether one file's preview may use a permission, like `useState`, so a
+ * preview's toggle paints at once while the approval is saved in the background.
+ */
+export function usePreviewApproval(
+    target: PreviewApprovalTarget,
+): [boolean, (approved: boolean) => void] {
+    const [userState, setUserState] = useUserState();
+    const { agentId, path, kind } = target;
+
+    const approved = isPreviewApproved(userState.previewApprovals, {
+        agentId,
+        path,
+        kind,
+    });
+
+    const setApproved = React.useCallback(
+        (next: boolean) =>
+            setUserState((state) => ({
+                ...state,
+                previewApprovals: setPreviewApproval(state.previewApprovals, {
+                    agentId,
+                    path,
+                    kind,
+                    approved: next,
+                }),
+            })),
+        [setUserState, agentId, path, kind],
+    );
+
+    return [approved, setApproved];
 }
 
 /**

@@ -518,6 +518,13 @@ own endpoints:
 - **Browser protections**: `HttpOnly`/`SameSite=Lax` cookies, JSON content-type checks,
   `Origin` checks on websockets and sensitive routes, sandboxed raw file responses, and
   previews of HTML and SVG files in sandboxed iframes with an opaque origin.
+- **Markdown previews render on redoor's origin**, so HTML embedded in them is parsed into
+  the markdown tree and cut down to GitHub's sanitizer allowlist before React renders it;
+  nothing the file writes reaches the page as an HTML string.
+- **Previews never reach the network unasked.** Markdown images and HTML scripts and images
+  stay blocked until the user approves them for that file. Approvals live in user state for a
+  week, so they follow the user across browsers, lapse before a changed file is trusted for
+  long, and are pruned on every approval change instead of by a sweep.
 
 ### Access control
 
