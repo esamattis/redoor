@@ -29,9 +29,12 @@ export function useTouchChromeVisibility() {
         );
 
         // Keep endpoint space synchronized with overlay chrome as panels and responsive content resize.
+        // All reads happen before the style writes below, because a read after a write forces
+        // the browser into an extra synchronous layout.
         const updateScrollInsets = () => {
             const topHeight = topChrome.offsetHeight;
             const bottomHeight = (bottomPanel ?? bottomChrome).offsetHeight;
+            const viewportHeight = scrollArea.clientHeight;
             scrollArea.style.setProperty(
                 "--top-chrome-height",
                 `${topHeight}px`,
@@ -46,7 +49,6 @@ export function useTouchChromeVisibility() {
                 `${bottomHeight}px`,
             );
             // Auto-hide is only useful when overlays already leave less than half the viewport.
-            const viewportHeight = scrollArea.clientHeight;
             canHideChromeOnScrollRef.current =
                 viewportHeight > 0 &&
                 viewportHeight - topHeight - bottomHeight <

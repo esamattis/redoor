@@ -1,4 +1,5 @@
 import * as React from "react";
+import { flushSync } from "react-dom";
 
 type TailwindBreakpoint = "sm" | "md" | "lg" | "xl" | "2xl";
 
@@ -51,17 +52,32 @@ export const ContentContainerContext = React.createContext<HTMLElement | null>(
     null,
 );
 
+/** Pixel thresholds already read from the theme, keyed by container size token. */
+const containerSizeCache = new Map<TailwindContainerSize, number>();
+
 /**
  * Converts a Tailwind container size token to pixels. The theme stores rems, and the root
  * font size follows the reader's browser setting, so the conversion cannot be a constant.
+ * The result is cached because every `useIsContentBelow` mount would otherwise force a style
+ * recalculation; a changed browser font size is picked up on the next page load.
  */
 function containerSizeInPixels(size: TailwindContainerSize): number {
+    const cached = containerSizeCache.get(size);
+
+    if (cached !== undefined) {
+        return cached;
+    }
+
     const root = getComputedStyle(document.documentElement);
     const value = root.getPropertyValue(`--container-${size}`).trim();
 
-    return value.endsWith("rem")
+    const pixels = value.endsWith("rem")
         ? parseFloat(value) * parseFloat(root.fontSize)
         : parseFloat(value);
+
+    containerSizeCache.set(size, pixels);
+
+    return pixels;
 }
 
 /**
@@ -73,8 +89,7 @@ export function useIsContentBelow(size: TailwindContainerSize): boolean {
     const container = React.useContext(ContentContainerContext);
     const [isBelow, setIsBelow] = React.useState(false);
 
-    // A layout effect settles the first measurement before paint, so wide controls never
-    // flash in a narrow column.
+    // A layout effect registers the observer before the first frame is painted.
     React.useLayoutEffect(() => {
         if (!container) {
             return;
@@ -82,12 +97,18 @@ export function useIsContentBelow(size: TailwindContainerSize): boolean {
 
         const threshold = containerSizeInPixels(size);
 
-        const update = () => {
-            setIsBelow(container.getBoundingClientRect().width < threshold);
-        };
+        // The width comes from the observer entry instead of measuring the element, because
+        // measuring during React's commit forces a synchronous layout for every mounted hook.
+        // The first observation is delivered after layout but before paint, and flushSync
+        // renders the result in that same frame, so wide controls never flash in a narrow column.
+        const observer = new ResizeObserver((entries) => {
+            const width = entries.at(-1)?.borderBoxSize[0]?.inlineSize;
 
-        update();
-        const observer = new ResizeObserver(update);
+            if (width !== undefined) {
+                flushSync(() => setIsBelow(width < threshold));
+            }
+        });
+
         observer.observe(container);
 
         return () => observer.disconnect();
