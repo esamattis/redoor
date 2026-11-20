@@ -3,17 +3,19 @@ import { useQuery } from "@tanstack/react-query";
 import type { ApiClient } from "#ui/api-client";
 import type { ResumeMode } from "#bindings/ResumeMode";
 import { formatSize } from "#ui/utils/path";
-import { useSetAtom } from "jotai";
+import { useAtom, useSetAtom } from "jotai";
 import { Copy, FolderInput } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import { Button } from "#ui/components/button";
+import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { RadioCardGroup, RadioCardOption } from "#ui/components/radio-card";
 import { joinBrowserPath } from "#ui/components/browser/utils";
 import {
     getSelectedFileKey,
+    keepSelectionAfterCopyAtom,
     type SelectedPath,
     unselectFileAtom,
 } from "#ui/selected-files";
@@ -174,7 +176,15 @@ export function SelectedFilesTransferTrigger(props: {
     /** The destination listing, whose entry types decide whether Merge is offered. */
     destinationEntries: LsEntry[];
     canTransfer: boolean;
-    onConfirm: (items: PlannedTransferItem[], resume: ResumeMode) => void;
+    /**
+     * `keepSelection` leaves finished sources selected. Only a copy offers it, since a moved
+     * source no longer exists where it was selected.
+     */
+    onConfirm: (
+        items: PlannedTransferItem[],
+        resume: ResumeMode,
+        keepSelection: boolean,
+    ) => void;
     children: (trigger: SelectedFilesTransferTriggerApi) => React.ReactNode;
 }) {
     const [isOpen, setIsOpen] = React.useState(false);
@@ -219,6 +229,11 @@ export function SelectedFilesTransferTrigger(props: {
     )?.resume_candidate;
 
     const unselectFile = useSetAtom(unselectFileAtom);
+
+    const [keepSelectionAfterCopy, setKeepSelectionAfterCopy] = useAtom(
+        keepSelectionAfterCopyAtom,
+    );
+
     const copy = props.operation === "copy";
     const labels = copy ? transferTriggerCopy : transferTriggerMove;
     const operationLabel = copy ? "Copy" : "Move";
@@ -304,6 +319,7 @@ export function SelectedFilesTransferTrigger(props: {
                                 existingMode: row.onExisting,
                             })),
                             resumeMode,
+                            copy && keepSelectionAfterCopy,
                         );
                     }}
                 >
@@ -344,6 +360,17 @@ export function SelectedFilesTransferTrigger(props: {
                         }
                         onDeselect={(file) => unselectFile(file)}
                     />
+                    {copy ? (
+                        <Checkbox
+                            role="checkbox"
+                            checked={keepSelectionAfterCopy}
+                            onCheckedChange={setKeepSelectionAfterCopy}
+                            title="Leave the copied files selected so the same copy can be run again"
+                            className="mt-4 min-h-11 px-2"
+                        >
+                            Keep selected files after copying
+                        </Checkbox>
+                    ) : null}
                     <DialogActions>
                         <Button
                             type="button"

@@ -350,6 +350,7 @@ function TransferSelectedFilesAction(props: {
     const transferSelectedFiles = async (
         itemsToTransfer: PlannedTransferItem[],
         resume: ResumeMode,
+        keepSelection: boolean,
     ) => {
         if (itemsToTransfer.length === 0) {
             return;
@@ -409,9 +410,18 @@ function TransferSelectedFilesAction(props: {
             if (!stillActive) return;
             activeTransferRef.current = null;
 
-            completedFiles.forEach((file) => {
-                unselectFile(file);
-            });
+            if (keepSelection) {
+                // Copy reappears for the kept selection when this run ends, so the listing must
+                // already show the new copies for the next dialog to offer their conflicts.
+                await invalidateAgentData(
+                    queryClient,
+                    props.destinationAgent.id,
+                );
+            } else {
+                completedFiles.forEach((file) => {
+                    unselectFile(file);
+                });
+            }
 
             if (failures.length > 0) {
                 const failureMessage = getErrorMessage(
@@ -461,8 +471,8 @@ function TransferSelectedFilesAction(props: {
                 directoryPath={props.directoryPath}
                 destinationEntries={props.destinationEntries}
                 canTransfer={canTransfer}
-                onConfirm={(items, resume) =>
-                    void transferSelectedFiles(items, resume)
+                onConfirm={(items, resume, keepSelection) =>
+                    void transferSelectedFiles(items, resume, keepSelection)
                 }
             >
                 {props.children}

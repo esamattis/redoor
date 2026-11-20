@@ -45,6 +45,16 @@ export const selectedFilesAtom = atomWithLocalStorage<SelectedPath[]>(
 );
 
 /**
+ * Whether a finished copy leaves its sources selected. Remembered across reloads so the user
+ * can repeat the same copy, for example after the source changed, without reselecting or
+ * rechecking the box every time.
+ */
+export const keepSelectionAfterCopyAtom = atomWithLocalStorage(
+    "redoor.keep-selection-after-copy",
+    false,
+);
+
+/**
  * Fast lookup set for checking whether a path is selected.
  */
 export const selectedFileKeysAtom = atom((get) => {

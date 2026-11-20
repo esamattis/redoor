@@ -465,6 +465,79 @@ test.describe.serial("Copy Operations", () => {
         );
     });
 
+    test("should keep the selection after copying so the same copy can run again", async ({
+        page,
+    }) => {
+        test.setTimeout(60_000);
+        const sourceName = `repeat-copy-${Date.now()}.txt`;
+        const sourcePath = path.join(ctx.testDirPath, sourceName);
+
+        const destinationPath = path.join(
+            ctx.testDirPath,
+            "subdir1",
+            sourceName,
+        );
+
+        await fs.writeFile(sourcePath, "first version");
+
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${ctx.testDirUrlPath}`,
+        );
+        await page
+            .getByRole("checkbox", { name: `Select file ${sourceName}` })
+            .click();
+        await page.getByRole("link", { name: "subdir1", exact: true }).click();
+
+        const copyButton = page.getByRole("button", {
+            name: "Copy selected items to this directory",
+        });
+
+        await copyButton.click();
+
+        const dialog = page.getByRole("dialog", {
+            name: "Copy selected item?",
+        });
+
+        const keepSelection = dialog.getByRole("checkbox", {
+            name: "Keep selected files after copying",
+        });
+
+        // Clearing the selection is the default, so repeating must be opted into.
+        await expect(keepSelection).toHaveAttribute("aria-checked", "false");
+        await keepSelection.click();
+        await dialog
+            .getByRole("button", { name: "Copy selected item", exact: true })
+            .click();
+        await expect
+            .poll(() => fs.readFile(destinationPath, "utf8").catch(() => null))
+            .toBe("first version");
+        await expect(page.getByText(`Copied ${sourceName}`)).toBeVisible();
+        // The finished copy must leave its source selected for the next run.
+        await expect(
+            page.getByRole("button", { name: "Clear selection" }),
+        ).toBeVisible();
+
+        await fs.writeFile(sourcePath, "second version");
+        await copyButton.click();
+        // The choice is remembered so repeated copies need no extra click.
+        await expect(keepSelection).toHaveAttribute("aria-checked", "true");
+        await dialog
+            .getByRole("combobox", { name: `If ${sourceName} exists` })
+            .selectOption("override");
+        await dialog
+            .getByRole("button", { name: "Copy selected item", exact: true })
+            .click();
+        // The repeated copy must replace the earlier one with the changed source.
+        await expect
+            .poll(() => fs.readFile(destinationPath, "utf8").catch(() => null))
+            .toBe("second version");
+
+        await page.reload();
+        await copyButton.click();
+        // The choice must survive a reload, not just live in this page's memory.
+        await expect(keepSelection).toHaveAttribute("aria-checked", "true");
+    });
+
     test("should send the chosen directory conflict policy with the copy", async ({
         page,
     }) => {
