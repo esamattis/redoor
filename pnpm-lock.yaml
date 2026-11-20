@@ -176,7 +176,7 @@ overrides:
 
 patchedDependencies:
   '@replit/codemirror-vim-core@0.1.0': 6a8c2a0354c917476b2daaa57a46571e24aeebcee36189522fe56fe35f59f23e
-  '@wterm/dom@0.5.10': 8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563
+  '@wterm/dom@0.6.0': 8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563
   picomatch@4.0.7: a9dbcf37f6944d49611c39e409ebf3465101a6a41bdf8c96823ee718ca438c27
 
 importers:
@@ -298,11 +298,11 @@ importers:
         specifier: ^4.25.12
         version: 4.25.12(@codemirror/language@6.13.1)(@codemirror/state@6.7.6)(@codemirror/view@6.43.15)
       '@wterm/dom':
-        specifier: 0.5.10
-        version: 0.5.10(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)
+        specifier: 0.6.0
+        version: 0.6.0(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)
       '@wterm/ghostty':
-        specifier: 0.5.10
-        version: 0.5.10
+        specifier: 0.6.0
+        version: 0.6.0
       cn:
         specifier: ^0.5.0
         version: 0.5.0
@@ -1827,14 +1827,14 @@ packages:
   '@vitest/utils@4.1.12':
     resolution: {integrity: sha512-Q3awXrwOfEV+qc3WmO5ONyE0yO7Q1gQ9/oyHxGLZ/pl7N3NO/ZztqQwKLuwMkV+CA1JYSIeO3gkHnRDIo4AVaA==}
 
-  '@wterm/core@0.5.10':
-    resolution: {integrity: sha512-kVzgs094y/9z/w2IVaYUd75F+bUFa14cn7uhec0g9QDI1kalh8W7Ft6ckOER478gncsPrf7a9oRf1bAOe3ERgQ==}
+  '@wterm/core@0.6.0':
+    resolution: {integrity: sha512-5sKuBbMAILn1PyC5AJvTfVo+80nEAoPY+YyN0SYg3KkCV/DyUqdDzFIZQYuJN1ijTWZ/XQLh7hsmZRQtb59IYw==}
 
-  '@wterm/dom@0.5.10':
-    resolution: {integrity: sha512-Tcdig0gqVgqpoWB/i9pp4z3+ZI2Rf5MOeCy3geOuRvGSSXMGgeF6xcA/PD667tCe8Te47ldVeKYsM92uUgijCg==}
+  '@wterm/dom@0.6.0':
+    resolution: {integrity: sha512-c638pHIx3nN0fXP8B/nERAEjBc3GsSbJmW1TN+/WaDLOU97Y/IYw35bargP6e8y8Paq0sF1AnWB9HgKIZR4QBw==}
 
-  '@wterm/ghostty@0.5.10':
-    resolution: {integrity: sha512-CQMlo/y/9nghQQdvQMigzjurN9j0jpszVZecehL1zEBEQ3T5QYBzcpEtEGfrZlvw/IRYSGZsUadzviNCJRcUiQ==}
+  '@wterm/ghostty@0.6.0':
+    resolution: {integrity: sha512-BmRMvea3/qYJY5C+CsjrGtd0dOYy3gyT26Bajiy/xOqyv6WILTKxPSEniLWz/mPBPoMWZpmzOS0QIQK15zHhUA==}
 
   ansi-regex@5.0.1:
     resolution: {integrity: sha512-quJQXlTSUGL2LH9SUXo8VwsY4soanhgo6LNSm84E1LBcE8s3O0wpdiRzyR9z/ZZJMlMWv37qOOb9pdJlMUEKFQ==}
@@ -4830,15 +4830,15 @@ snapshots:
       convert-source-map: 2.0.0
       tinyrainbow: 3.2.0
 
-  '@wterm/core@0.5.10': {}
+  '@wterm/core@0.6.0': {}
 
-  '@wterm/dom@0.5.10(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)':
+  '@wterm/dom@0.6.0(patch_hash=8bae4674e03e0a5e138408037583d3cd7275d566e40d0c68e30cdad059099563)':
     dependencies:
-      '@wterm/core': 0.5.10
+      '@wterm/core': 0.6.0
 
-  '@wterm/ghostty@0.5.10':
+  '@wterm/ghostty@0.6.0':
     dependencies:
-      '@wterm/core': 0.5.10
+      '@wterm/core': 0.6.0
 
   ansi-regex@5.0.1: {}
 
