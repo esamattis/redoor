@@ -1,5 +1,18 @@
 # Changelog
 
+## v2.18.0
+
+_2026-11-20_
+
+### Features
+
+- Truncated diffs of commits, ranges and the Changes tab have a "Show all" option that lists every file. The choice is kept in the URL so it survives reload and Back. Very long path lists still stop at a size limit with the truncation warning. Older agents keep the default limit.
+- The copy dialog has an opt-in checkbox to keep the sources selected after a copy finishes, so repeated copies need no reselecting. The choice is remembered.
+
+### Fixes
+
+- Markdown previews opened from a `#fragment` link no longer jump back to the fragment when the window regains focus or when returning with Back; they keep the reader's place.
+
 ## v2.17.2
 
 _2026-11-20_
