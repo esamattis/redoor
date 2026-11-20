@@ -1,5 +1,16 @@
 # Changelog
 
+## v2.17.2
+
+_2026-11-20_
+
+### Fixes
+
+- YAML frontmatter in markdown previews lays out nested mappings and lists as nested tables, like GitHub, instead of one very tall column of raw YAML.
+- Pressing Escape while a vault unlock is already running no longer cancels the flow waiting on it, such as SSH key setup.
+- Pages load faster, especially on phones: the code editor, syntax grammars and the vault's Argon2id code now download only when first needed, roughly halving the JavaScript loaded at startup, and the shell no longer forces extra layouts while it mounts.
+- The terminal is upgraded to wterm 0.6.0.
+
 ## v2.17.1
 
 _2026-11-19_
