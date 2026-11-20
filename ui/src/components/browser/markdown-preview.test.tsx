@@ -6,6 +6,7 @@ import {
     fireEvent,
     render as renderWithoutShortcuts,
     waitFor,
+    within,
 } from "@testing-library/react";
 import { afterEach, expect, onTestFinished, test, vi } from "vitest";
 import { ShortcutRegistry, ShortcutRegistryContext } from "#ui/shortcuts";
@@ -434,7 +435,7 @@ test("resolves absolute markdown links from the repository root", () => {
     expect(link).toEqual({ path: "/repo/source/main.ts", hash: undefined });
 });
 
-test("renders nested YAML frontmatter with indentation preserved", () => {
+test("renders nested YAML frontmatter as nested tables like GitHub", () => {
     const view = render(
         <MarkdownPreview
             {...imagesHidden}
@@ -445,6 +446,7 @@ test("renders nested YAML frontmatter with indentation preserved", () => {
 completions:
   - contextPath:
       - backends
+      - documents
     id: radiatordb
     type: block
 ---
@@ -455,13 +457,35 @@ completions:
     );
 
     const table = view.getByRole("table", { name: "YAML frontmatter" });
-    const valueCell = table.querySelector("td");
 
-    // Nested mappings must keep YAML indent so list items stay distinct from their fields.
-    expect(table.querySelector("th")?.textContent).toBe("completions");
-    expect(valueCell?.textContent).toMatch(/- contextPath:/);
-    expect(valueCell?.textContent).toMatch(/\n  id: radiatordb/);
-    expect(valueCell?.textContent).toMatch(/\n  type: block/);
+    // Top-level keys label the rows, the way GitHub lays out frontmatter.
+    expect(
+        within(table)
+            .getAllByRole("rowheader")
+            .map((header) => header.textContent),
+    ).toEqual(["completions"]);
+    // A nested mapping becomes its own table with its keys as column headers, so its
+    // fields read as data instead of a flattened list or raw YAML.
+    expect(
+        within(table)
+            .getAllByRole("columnheader")
+            .map((header) => header.textContent),
+    ).toEqual(["contextPath", "id", "type"]);
+
+    // Scalars, including list items, each get their own cell.
+    const cellTexts = within(table)
+        .getAllByRole("cell")
+        .map((cell) => cell.textContent);
+
+    for (const value of ["backends", "radiatordb", "block"]) {
+        expect(cellTexts).toContain(value);
+    }
+
+    // A list is one row of cells, so its items sit side by side instead of stacking.
+    expect(within(table).getByText("backends").closest("tr")?.textContent).toBe(
+        "backendsdocuments",
+    );
+
     // Document body stays markdown after the folded metadata block.
     expect(
         view.getByRole("heading", { name: "Body heading" }).textContent,

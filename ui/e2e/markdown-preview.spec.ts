@@ -283,9 +283,16 @@ completions:
             name: "YAML frontmatter",
         });
 
-        // Nested fields must remain YAML, not a flattened markdown list.
-        await expect(table.getByRole("columnheader")).toHaveText("completions");
-        await expect(table).toContainText("id: radiatordb");
+        // Like GitHub, top-level keys label the rows of the table.
+        await expect(table.getByRole("rowheader")).toHaveText("completions");
+        // Nested mappings become their own tables with the keys as column headers, so the
+        // value is shown as data rather than a flattened markdown list or raw YAML.
+        await expect(
+            table.getByRole("columnheader", { name: "id", exact: true }),
+        ).toBeVisible();
+        await expect(
+            table.getByRole("cell", { name: "radiatordb", exact: true }),
+        ).toBeVisible();
         await expect(
             preview.getByRole("heading", { name: "Backend docs" }),
         ).toBeVisible();

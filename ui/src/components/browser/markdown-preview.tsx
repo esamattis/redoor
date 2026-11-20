@@ -20,7 +20,16 @@ import {
     LinkIcon,
     ListTree,
 } from "lucide-react";
-import { isMap, isNode, parseDocument, stringify, type Node } from "yaml";
+import {
+    isMap,
+    isNode,
+    isScalar,
+    isSeq,
+    parseDocument,
+    stringify,
+    type Node,
+    type YAMLMap,
+} from "yaml";
 import { browserRoute } from "#ui/browser-route";
 import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { FoldingSection } from "#ui/components/folding-section";
@@ -41,22 +50,18 @@ const YAML_FRONTMATTER_OPENING = /^---[ \t]*\r?\n/;
 /** The next fence-only line ends the YAML document the same way GitHub and Jekyll do. */
 const YAML_FRONTMATTER_CLOSING = /(?:^|\r?\n)---[ \t]*(?:\r?\n|$)/;
 
-/** Keeps table cells as authored YAML instead of re-parsing values as markdown. */
-function formatYamlFrontmatterCell(value: Node | null): string {
-    if (value === null) {
-        return "";
-    }
-
-    return stringify(value, { lineWidth: 0 }).trimEnd();
+/** One top-level frontmatter field, kept as a YAML node so nested values render as tables. */
+interface YamlFrontmatterEntry {
+    key: string;
+    value: Node | null;
 }
 
 /**
- * GitHub turns a leading YAML mapping into a header-row table, so invalid or
+ * GitHub turns a leading YAML mapping into a key/value table, so invalid or
  * non-mapping fences are left in the markdown rather than guessed at.
  */
 function parseMarkdownYamlFrontmatter(content: string): {
-    headers: string[];
-    values: string[];
+    entries: YamlFrontmatterEntry[];
     body: string;
 } | null {
     const opening = YAML_FRONTMATTER_OPENING.exec(content);
@@ -80,35 +85,122 @@ function parseMarkdownYamlFrontmatter(content: string): {
     }
 
     if (document.contents === null) {
-        return { headers: [], values: [], body };
+        return { entries: [], body };
     }
 
     if (!isMap(document.contents)) {
         return null;
     }
 
-    const headers: string[] = [];
-    const values: string[] = [];
+    return { entries: yamlMapEntries(document.contents), body };
+}
 
-    for (const item of document.contents.items) {
-        headers.push(
-            formatYamlFrontmatterCell(isNode(item.key) ? item.key : null),
+/** Pairs a mapping's keys with their value nodes, because both table shapes need them. */
+function yamlMapEntries(map: YAMLMap): YamlFrontmatterEntry[] {
+    return map.items.map((pair) => ({
+        key: yamlScalarText(isNode(pair.key) ? pair.key : null),
+        value: isNode(pair.value) ? pair.value : null,
+    }));
+}
+
+/**
+ * Shows a leaf as plain text like GitHub, where a YAML null is an empty cell. Other
+ * nodes, such as complex keys, fall back to their YAML source so nothing is lost.
+ */
+function yamlScalarText(node: Node | null): string {
+    if (node === null) {
+        return "";
+    }
+
+    if (isScalar(node)) {
+        return node.value === null ? "" : node.toString();
+    }
+
+    // An alias serialized on its own cannot see its anchor, so its order is not verified.
+    return stringify(node, { lineWidth: 0, verifyAliasOrder: false }).trimEnd();
+}
+
+/** Shared cell look so nested tables line up with the outer one like GitHub's. */
+const YAML_FRONTMATTER_CELL =
+    "whitespace-nowrap border border-slate-700 px-3 py-1.5";
+
+/**
+ * Renders a nested value the way GitHub does: a mapping becomes a header row of its keys
+ * over one row of values and a list becomes one row of cells, so the table grows sideways
+ * and stays short. Cells do not wrap and collapse newlines like GitHub's HTML text.
+ */
+function YamlFrontmatterValue(props: { node: Node | null }) {
+    if (isSeq(props.node)) {
+        const items = props.node.items.map((item) =>
+            isNode(item) ? item : null,
         );
-        values.push(
-            formatYamlFrontmatterCell(isNode(item.value) ? item.value : null),
+
+        if (items.length === 0) {
+            return null;
+        }
+
+        return (
+            <table className="border-collapse">
+                <tbody>
+                    <tr>
+                        {items.map((item, index) => (
+                            <td key={index} className={YAML_FRONTMATTER_CELL}>
+                                <YamlFrontmatterValue node={item} />
+                            </td>
+                        ))}
+                    </tr>
+                </tbody>
+            </table>
         );
     }
 
-    return { headers, values, body };
+    if (isMap(props.node)) {
+        const entries = yamlMapEntries(props.node);
+
+        if (entries.length === 0) {
+            return null;
+        }
+
+        return (
+            <table className="border-collapse">
+                <thead>
+                    <tr>
+                        {entries.map((entry, index) => (
+                            <th
+                                key={index}
+                                className={cn(
+                                    YAML_FRONTMATTER_CELL,
+                                    "text-center font-semibold",
+                                )}
+                            >
+                                {entry.key}
+                            </th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        {entries.map((entry, index) => (
+                            <td key={index} className={YAML_FRONTMATTER_CELL}>
+                                <YamlFrontmatterValue node={entry.value} />
+                            </td>
+                        ))}
+                    </tr>
+                </tbody>
+            </table>
+        );
+    }
+
+    return yamlScalarText(props.node);
 }
 
 /**
  * Frontmatter is metadata, not document prose, so it stays outside typography
- * styles that collapse YAML indentation and shrink tables to content width.
+ * styles. Like GitHub, the table keeps its natural width and scrolls sideways
+ * instead of wrapping long values into tall columns.
  */
 function YamlFrontmatterTable(props: {
-    headers: string[];
-    values: string[];
+    entries: YamlFrontmatterEntry[];
     className: string;
 }) {
     const [open, setOpen] = useState(true);
@@ -120,35 +212,29 @@ function YamlFrontmatterTable(props: {
             onOpenChange={setOpen}
             tooltip="Hide or show the document's YAML frontmatter"
             className={cn("mb-6 overflow-hidden", props.className)}
-            contentClassName="p-0"
+            contentClassName="overflow-x-auto p-0"
         >
             <table
                 aria-label="YAML frontmatter"
-                className="w-full table-fixed border-collapse text-xs"
+                className="border-collapse text-sm"
             >
-                <thead>
-                    <tr>
-                        {props.headers.map((header, index) => (
-                            <th
-                                key={index}
-                                className="border border-slate-700 bg-slate-900 px-2 py-1 text-left font-medium"
-                            >
-                                {header}
-                            </th>
-                        ))}
-                    </tr>
-                </thead>
                 <tbody>
-                    <tr>
-                        {props.values.map((value, index) => (
-                            <td
-                                key={index}
-                                className="whitespace-pre-wrap break-words border border-slate-700 px-2 py-1 align-top font-mono"
+                    {props.entries.map((entry, index) => (
+                        <tr key={index}>
+                            <th
+                                scope="row"
+                                className={cn(
+                                    YAML_FRONTMATTER_CELL,
+                                    "bg-slate-900 text-center font-semibold",
+                                )}
                             >
-                                {value}
+                                {entry.key}
+                            </th>
+                            <td className={YAML_FRONTMATTER_CELL}>
+                                <YamlFrontmatterValue node={entry.value} />
                             </td>
-                        ))}
-                    </tr>
+                        </tr>
+                    ))}
                 </tbody>
             </table>
         </FoldingSection>
@@ -978,10 +1064,9 @@ export function MarkdownPreview(props: {
                         className={clearCornerButtons}
                     />
                 ) : null}
-                {frontmatter !== null && frontmatter.headers.length > 0 ? (
+                {frontmatter !== null && frontmatter.entries.length > 0 ? (
                     <YamlFrontmatterTable
-                        headers={frontmatter.headers}
-                        values={frontmatter.values}
+                        entries={frontmatter.entries}
                         className={clearCornerButtons}
                     />
                 ) : null}
