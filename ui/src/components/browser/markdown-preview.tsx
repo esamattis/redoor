@@ -1,10 +1,12 @@
 import {
     createElement,
     useId,
+    useLayoutEffect,
     useMemo,
     useRef,
     useState,
     type ComponentProps,
+    type ReactNode,
 } from "react";
 import { Link } from "@tanstack/react-router";
 import Markdown, { type ExtraProps } from "react-markdown";
@@ -31,6 +33,7 @@ import {
     type YAMLMap,
 } from "yaml";
 import { browserRoute } from "#ui/browser-route";
+import { HistoryEntryStore } from "#ui/history-entry-state";
 import { useCopyFeedback } from "#ui/components/copyable-code-row";
 import { FoldingSection } from "#ui/components/folding-section";
 import { HighlightedLines } from "#ui/components/highlighted-tokens";
@@ -925,6 +928,110 @@ function MarkdownImagesBar(props: {
     );
 }
 
+/** Where a newly shown history entry starts the preview, read from the router by the caller. */
+type MarkdownInitialScroll = {
+    /** Tells a new entry apart from a reload of the current one, which keeps the scroll. */
+    entryKey: string;
+    /** The URL fragment to scroll to, without the `#`. */
+    hash: string;
+};
+
+/**
+ * Where the reader left the preview of each history entry, so Back and Forward return there.
+ * The preview records it on every scroll instead of relying on the router's snapshot, which
+ * misses scrolling done while a refresh is pending.
+ */
+const scrollPositions = new HistoryEntryStore<number>();
+
+/** Finds the fragment's target inside the preview, so an app element with the same id cannot win. */
+function findFragmentTarget(container: HTMLElement, hash: string) {
+    let id = hash;
+
+    // Direct links may still carry percent escapes the router left in, such as `%25`.
+    try {
+        id = decodeURIComponent(hash);
+    } catch {
+        // A lone `%` is already decoded text.
+    }
+
+    return container.querySelector(`#${CSS.escape(id)}`);
+}
+
+/**
+ * Sets the preview's scroll once per history entry, after the document has rendered: Back
+ * and Forward return to where the reader left, and a new entry scrolls to its fragment. The
+ * router cannot do this itself, because the preview is loaded lazily and mounts after the
+ * router's attempt, and a reload of the same entry (the refresh on window focus) must leave
+ * the reader's scroll position alone.
+ */
+function useInitialScroll(options: {
+    sectionRef: React.RefObject<HTMLElement | null>;
+    initialScroll: MarkdownInitialScroll | undefined;
+    rendered: ReactNode;
+    /** False until the editor has loaded the text, so a restored position is not clamped to 0. */
+    hasContent: boolean;
+    shown: boolean;
+}) {
+    const sectionRef = options.sectionRef;
+    const hasContent = options.hasContent;
+    const rendered = options.rendered;
+    const shown = options.shown;
+    const entryKey = options.initialScroll?.entryKey;
+    const hash = options.initialScroll?.hash ?? "";
+    const handledEntryKeyRef = useRef<string | undefined>(undefined);
+
+    useLayoutEffect(() => {
+        const section = sectionRef.current;
+
+        if (
+            section === null ||
+            !shown ||
+            !hasContent ||
+            entryKey === undefined ||
+            handledEntryKeyRef.current === entryKey
+        ) {
+            return;
+        }
+
+        const scrollTop = scrollPositions.get(entryKey);
+
+        if (scrollTop !== undefined) {
+            handledEntryKeyRef.current = entryKey;
+            section.scrollTop = scrollTop;
+
+            return;
+        }
+
+        if (hash === "") {
+            handledEntryKeyRef.current = entryKey;
+
+            return;
+        }
+
+        const target = findFragmentTarget(section, hash);
+
+        // The text may not hold the fragment yet, so a later render with new text tries again.
+        if (target === null) {
+            return;
+        }
+
+        handledEntryKeyRef.current = entryKey;
+        target.scrollIntoView();
+    }, [sectionRef, entryKey, hash, rendered, hasContent, shown]);
+
+    /**
+     * Records the position for the entry the preview was set up for, which is still the one
+     * on screen while a navigation away is pending.
+     */
+    return (event: React.UIEvent<HTMLElement>) => {
+        const handledEntryKey = handledEntryKeyRef.current;
+
+        if (handledEntryKey !== undefined) {
+            scrollPositions.set(handledEntryKey, event.currentTarget.scrollTop);
+        }
+    };
+}
+
 /**
  * Renders an untrusted markdown draft. Embedded HTML is parsed into the same tree as the
  * markdown and cut down to GitHub's allowlist before React renders it, so scripts, styles,
@@ -948,6 +1055,8 @@ export function MarkdownPreview(props: {
      * does not take Escape from the editor. Defaults to shown.
      */
     shown?: boolean;
+    /** Where a newly shown history entry starts; tests without a router leave it out. */
+    initialScroll?: MarkdownInitialScroll;
 }) {
     const frontmatter = parseMarkdownYamlFrontmatter(props.content);
     const markdown = frontmatter === null ? props.content : frontmatter.body;
@@ -1019,6 +1128,16 @@ export function MarkdownPreview(props: {
     const hasToc = headings.length > 0;
     const tocToggleRef = useRef<HTMLButtonElement>(null);
 
+    const sectionRef = useRef<HTMLElement>(null);
+
+    const recordScroll = useInitialScroll({
+        sectionRef,
+        initialScroll: props.initialScroll,
+        rendered,
+        hasContent: props.content !== "",
+        shown: props.shown !== false,
+    });
+
     // Just above the view tier, so Escape closes the drawer before the whole preview, while
     // menus and dialogs opened over the drawer, which are modal, still close first.
     useShortcut(
@@ -1052,8 +1171,10 @@ export function MarkdownPreview(props: {
     return (
         <div className="@container/markdown relative flex min-h-0 min-w-0 flex-1">
             <section
+                ref={sectionRef}
                 role="region"
                 aria-label="Markdown preview"
+                onScroll={recordScroll}
                 className="min-h-0 min-w-0 max-w-none flex-1 overflow-auto px-5 py-6 @xl:px-8 @xl:py-8"
             >
                 {imageCount > 0 ? (

@@ -111,7 +111,14 @@ const router = createRouter({
         mermaid: new MermaidRenderer(),
     },
     defaultPreload: "intent",
-    scrollRestoration: true,
+    // A markdown preview with a fragment scrolls to it, or back to where the reader left,
+    // itself and once per history entry. The router would scroll to the fragment on every
+    // render, so the refresh on window focus and Back jumped to it.
+    scrollRestoration: (options) =>
+        options.location.hash === "" ||
+        // The router's search type is not known yet while it is being created.
+        new URLSearchParams(options.location.searchStr).get("preview") !==
+            "true",
     defaultStructuralSharing: true,
     defaultPreloadStaleTime: 0,
     // Replaces TanStack's bare "Something went wrong!" panel with themed details.

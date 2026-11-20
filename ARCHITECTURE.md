@@ -421,7 +421,10 @@ The UI is a TanStack Router application embedded in the server binary.
 - **URL-only defaults are filled in before loaders** (such as the markdown preview), so a URL
   shows its final, linkable form even while the device is offline.
 - **Back and forward restore the view.** View state that changes page height is kept per
-  history entry (`useHistoryEntryState`), so restored scroll positions land correctly.
+  history entry (`useHistoryEntryState`), so restored scroll positions land correctly. A
+  markdown preview with a `#fragment` owns its scroll instead of the router: it mounts lazily
+  after the router's attempt, and the router would jump back to the fragment on every
+  reload, such as the refresh on window focus.
 - **Long-lived resources are classes created once in `main.tsx`** (`TerminalSessions`,
   `UploadQueue`, `EditorWorkspace`, `ShortcutRegistry`, `VaultSession`) and exposed through
   the router context, instead of work run from component effects.

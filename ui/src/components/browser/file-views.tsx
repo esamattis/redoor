@@ -1,6 +1,6 @@
 import React from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { getRouteApi } from "@tanstack/react-router";
+import { getRouteApi, useRouterState } from "@tanstack/react-router";
 import { useAtom } from "jotai";
 import { Image as ImageIcon, X } from "lucide-react";
 import type { Agent } from "#ui/api-client";
@@ -16,6 +16,7 @@ import type { EditorWorkspace } from "#ui/editor/editor-workspace";
 import { PersistentPathActions } from "#ui/components/browser/path-actions";
 import { getErrorMessage } from "#ui/utils/error";
 import { cn } from "#ui/utils/cn";
+import { historyEntryKey } from "#ui/history-entry-state";
 import { DeletePathDialog } from "#ui/components/browser/delete-path-dialog";
 import { useEditorFullWindow } from "#ui/components/browser/editor-full-window";
 import { IconButton } from "#ui/components/icon-button";
@@ -132,6 +133,18 @@ function FilePreview(props: {
         kind: "images",
     });
 
+    // The resolved location, because the live one moves to the next entry as soon as a
+    // navigation starts, while this preview is still on screen. Selected apart, so each stays
+    // a primitive and an unrelated location change keeps them.
+    const hash = useRouterState({
+        select: (state) => (state.resolvedLocation ?? state.location).hash,
+    });
+
+    const entryKey = useRouterState({
+        select: (state) =>
+            historyEntryKey(state.resolvedLocation ?? state.location),
+    });
+
     if (props.kind === "markdown") {
         return (
             <React.Suspense
@@ -151,6 +164,7 @@ function FilePreview(props: {
                     imageUrl={props.imageUrl}
                     actions={<ClosePreviewButton onClose={props.onClose} />}
                     shown={props.shown}
+                    initialScroll={{ entryKey, hash }}
                 />
             </React.Suspense>
         );

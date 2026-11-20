@@ -4,7 +4,9 @@ import path from "node:path";
 import { $ } from "zx";
 import {
     encodeFilesystemPath,
+    ignoreServerEvents,
     setupTestDir,
+    simulateTabRefocus,
     teardownTestDir,
     WEB_BASE_URL,
     type TestContext,
@@ -153,6 +155,76 @@ ${"```"}
         await expect(page).toHaveURL(
             `${markdownUrl}?preview=true#getting-started`,
         );
+    });
+
+    test("keeps the scroll position of a hash link across refocus and Back", async ({
+        page,
+    }) => {
+        // Refreshes broadcast by parallel specs would otherwise stand in for the refocus below.
+        await ignoreServerEvents(page);
+        const longPath = path.join(repositoryPath, "long.md");
+
+        const filler = Array.from(
+            { length: 60 },
+            (_, index) => `Filler paragraph ${index}`,
+        ).join(`
+
+`);
+
+        await fs.writeFile(
+            longPath,
+            `# Long document
+
+${filler}
+
+## Linked section
+
+${filler}
+
+## Last section
+
+[Root target](/root-target.txt)
+`,
+        );
+        await page.goto(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(longPath)}?preview=true#linked-section`,
+        );
+        const preview = page.getByRole("region", { name: "Markdown preview" });
+        const linked = preview.getByRole("heading", { name: "Linked section" });
+        const last = preview.getByRole("heading", { name: "Last section" });
+        // The fragment must still scroll its heading into view on the first load.
+        await expect(linked).toBeInViewport();
+
+        await preview.evaluate((element) => {
+            element.scrollTop = element.scrollHeight;
+        });
+        await expect(last).toBeInViewport();
+        await expect(linked).not.toBeInViewport();
+
+        // A paragraph added on disk proves the refocus refresh has rendered the document again.
+        await fs.appendFile(
+            longPath,
+            `
+Refreshed paragraph
+`,
+        );
+        await simulateTabRefocus(page);
+        await expect(preview.getByText("Refreshed paragraph")).toBeVisible();
+        // The reload must not jump back to the fragment the user has already scrolled past.
+        await expect(last).toBeInViewport();
+        await expect(linked).not.toBeInViewport();
+
+        const leftAt = await preview.evaluate((element) => element.scrollTop);
+        await preview.getByRole("link", { name: "Root target" }).click();
+        await expect(page).toHaveURL(
+            `${WEB_BASE_URL}/agents/${ctx.agentName}/browser/${encodeFilesystemPath(path.join(repositoryPath, "root-target.txt"))}`,
+        );
+        await page.goBack();
+        await expect(page).toHaveURL(/#linked-section$/);
+        // Back must return exactly to where the reader left the document, not to its fragment.
+        await expect
+            .poll(() => preview.evaluate((element) => element.scrollTop))
+            .toBe(leftAt);
     });
 
     test("shows a table of contents beside or over the document", async ({
