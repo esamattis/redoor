@@ -39,7 +39,6 @@ import {
 } from "#ui/utils/diff-search-highlighter";
 import {
     DiffSearch,
-    DiffSearchCardContext,
     DiffSearchStore,
     DiffSearchStoreContext,
     useDiffSearchMatchCount,
@@ -580,11 +579,9 @@ const GitDiffSection = React.memo(function GitDiffSection(props: {
                     id={bodyId}
                     className="w-full min-w-0 overflow-x-hidden [&>p]:p-3"
                 >
-                    <DiffSearchCardContext.Provider value={file.path}>
-                        <DiffSummarySlotContext.Provider value={summarySlot}>
-                            {file.renderBody(view)}
-                        </DiffSummarySlotContext.Provider>
-                    </DiffSearchCardContext.Provider>
+                    <DiffSummarySlotContext.Provider value={summarySlot}>
+                        {file.renderBody(view)}
+                    </DiffSummarySlotContext.Provider>
                 </div>
             ) : null}
         </section>

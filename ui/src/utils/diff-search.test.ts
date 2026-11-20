@@ -3,7 +3,6 @@ import { parseDiff } from "#ui/utils/diff-parse";
 import {
     diffLineText,
     findDiffMatches,
-    foldRevealFor,
     MAX_DIFF_SEARCH_MATCHES,
 } from "#ui/utils/diff-search";
 
@@ -24,23 +23,19 @@ ${body}
 `;
 }
 
-test("finds matches in folded lines the page does not show", () => {
+test("never searches the folded lines between hunks", () => {
     const diffFiles = parseDiff(wholeFilePatch(), { fullContext: true });
 
-    const result = findDiffMatches(
-        [{ path: "/notes.txt", diffFiles }],
-        "line 2",
-    );
+    const result = findDiffMatches([{ path: "/notes.txt", diffFiles }], "line");
 
-    // Line 2 sits in the fold above the edit and line 20 in the fold below it, both
-    // folded away, and the search must still reach them so it can reveal them.
+    // Lines 2 and 20 sit in the folds around the edit. Folds are unchanged context, so only
+    // the rows of the changed hunk may match, even though the patch carries every line.
     expect(
-        result.matches.map((match) => {
-            const hunk = diffFiles[0]?.hunks[match.hunkIndex];
-
-            return hunk?.type === "skip" ? "fold" : "hunk";
-        }),
-    ).toEqual(["fold", "fold"]);
+        result.matches.every(
+            (match) => diffFiles[0]?.hunks[match.hunkIndex]?.type === "hunk",
+        ),
+    ).toBe(true);
+    expect(result.matches.length).toBeGreaterThan(0);
 });
 
 test("matches case-insensitively and reports offsets in the row's text", () => {
@@ -76,6 +71,7 @@ test("searches a modified row as the text it shows", () => {
 `);
 
     const line = diffFiles[0]?.hunks[0]?.lines?.[0];
+
     const result = findDiffMatches([{ path: "/app.ts", diffFiles }], "Vvalue");
 
     // The row shows the removed and added characters side by side, so the search finds
@@ -118,20 +114,4 @@ test("stops at the match limit and says so", () => {
     // Collecting unbounded matches would build an unbounded number of highlight ranges.
     expect(result.matches).toHaveLength(MAX_DIFF_SEARCH_MATCHES);
     expect(result.truncated).toBe(true);
-});
-
-test("reveals a folded line from the nearer end with a little context", () => {
-    const shown = { fromTop: 0, fromBottom: 0 };
-
-    // Near the top, the fold opens downwards past the line.
-    expect(foldRevealFor(100, shown, 5)).toEqual({ fromTop: 9, fromBottom: 0 });
-
-    // Near the bottom, it opens upwards instead of revealing the ninety lines above.
-    expect(foldRevealFor(100, shown, 95)).toEqual({
-        fromTop: 0,
-        fromBottom: 8,
-    });
-
-    // A line already revealed needs no change.
-    expect(foldRevealFor(100, { fromTop: 10, fromBottom: 0 }, 4)).toBeNull();
 });

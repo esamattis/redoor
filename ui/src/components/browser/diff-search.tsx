@@ -2,7 +2,8 @@
  * Search across every diff of a list. It replaces find in page for diffs because find in page
  * only sees text that is loaded and rendered, while a diff list keeps files collapsed, folds
  * unchanged lines and fetches worktree patches only when they are opened. The search reads
- * the parsed patches instead, expands the file and fold of the match it steps to, and marks
+ * the parsed patches instead, only their changed hunks, expands the file of
+ * the match it steps to, and marks
  * matches with the CSS Custom Highlight API, which colours text without changing the DOM, so
  * the rows React renders are never touched.
  */
@@ -97,12 +98,11 @@ function resultPatch(result: GitDiffResult): SearchablePatch {
 }
 
 /**
- * The current match and every card's match count, shared by the search, the cards and the
- * diffs inside them. It lives outside React state so a change re-renders only the cards and
- * diffs whose own part changed, not the whole list of expanded patches.
+ * Every card's match count, shared by the search and the cards. It lives outside React state
+ * so a change re-renders only the cards whose count changed, not the whole list of expanded
+ * patches.
  */
 export class DiffSearchStore {
-    private target: DiffSearchMatch | null = null;
     private counts: ReadonlyMap<string, number> = new Map();
     private readonly listeners = new Set<() => void>();
     private readonly searchRequestListeners = new Set<
@@ -118,16 +118,8 @@ export class DiffSearchStore {
         };
     };
 
-    /** The match the search stepped to, whose file and fold must be shown. */
-    getTarget = () => this.target;
-
     /** How many matches a card holds, so a collapsed card shows it has some. */
     getCount = (path: string) => this.counts.get(path) ?? 0;
-
-    setTarget(target: DiffSearchMatch | null) {
-        this.target = target;
-        this.notify();
-    }
 
     setCounts(counts: ReadonlyMap<string, number>) {
         this.counts = counts;
@@ -165,33 +157,8 @@ export class DiffSearchStore {
 export const DiffSearchStoreContext =
     React.createContext<DiffSearchStore | null>(null);
 
-/** The path of the card around a diff, which the search names its matches by. */
-export const DiffSearchCardContext = React.createContext<string | null>(null);
-
-/** A subscription for diffs outside any list, which never change. */
+/** A subscription for cards outside any list, whose counts never change. */
 const noSubscription = () => () => {};
-
-/**
- * The current match when it is in this file of the card's patch, else null, so a diff
- * re-renders only when the search steps into or out of it.
- */
-export function useDiffSearchTarget(diffIndex: number): DiffSearchMatch | null {
-    const store = React.useContext(DiffSearchStoreContext);
-    const path = React.useContext(DiffSearchCardContext);
-
-    return React.useSyncExternalStore(
-        store?.subscribe ?? noSubscription,
-        () => {
-            const target = store?.getTarget() ?? null;
-
-            return target !== null &&
-                target.path === path &&
-                target.diffIndex === diffIndex
-                ? target
-                : null;
-        },
-    );
-}
 
 /** How many matches the search found in a card. */
 export function useDiffSearchMatchCount(path: string): number {
@@ -440,7 +407,7 @@ function useDiffSearchResult(files: DiffSearchListFile[], query: string) {
 /**
  * Steps through the matches: keeps the current one, marks every match on the page through
  * the highlighter, and shares the counts and the current match with the cards through the
- * store. Stepping to a match expands its file, which reveals its fold, and scrolls to it once
+ * store. Stepping to a match expands its file and scrolls to it once
  * its row renders, unless the reader selected that very match on screen.
  */
 function useDiffSearchNavigation(options: {
@@ -481,7 +448,6 @@ function useDiffSearchNavigation(options: {
 
         return () => {
             created.dispose();
-            store.setTarget(null);
             store.setCounts(new Map());
         };
     }, [listRef, store]);
@@ -495,10 +461,9 @@ function useDiffSearchNavigation(options: {
         (match: DiffSearchMatch, scroll: boolean) => {
             setCurrentKey(diffMatchKey(match));
             expand(match.path);
-            store.setTarget(match);
             highlighter?.setCurrent(match, scroll);
         },
-        [expand, highlighter, store],
+        [expand, highlighter],
     );
 
     // A match that a newer result no longer has is no longer current. It runs before the jump
@@ -506,10 +471,9 @@ function useDiffSearchNavigation(options: {
     React.useEffect(() => {
         if (currentKey !== null && currentIndex === -1) {
             setCurrentKey(null);
-            store.setTarget(null);
             highlighter?.setCurrent(null, false);
         }
-    }, [currentKey, currentIndex, highlighter, store]);
+    }, [currentKey, currentIndex, highlighter]);
 
     // A query typed in this bar jumps to its first match on screen once it has one, which may
     // only be after the patches load. A query searched from selected text makes the selected

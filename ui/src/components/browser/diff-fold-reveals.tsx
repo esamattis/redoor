@@ -1,15 +1,18 @@
 /*
- * Which folded lines of a diff are revealed, by the reader or by the diff search stepping to a
- * match inside a fold.
+ * Which folded lines of a diff the reader revealed.
  */
 import React from "react";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
 } from "#ui/history-entry-state";
-import { useDiffSearchTarget } from "#ui/components/browser/diff-search";
 import type { DiffFile } from "#ui/utils/diff-parse";
-import { foldRevealFor, type FoldReveal } from "#ui/utils/diff-search";
+
+/** How much of one fold is revealed from its top and from its bottom. */
+export interface FoldReveal {
+    fromTop: number;
+    fromBottom: number;
+}
 
 const NOTHING_REVEALED: FoldReveal = { fromTop: 0, fromBottom: 0 };
 
@@ -49,7 +52,7 @@ export function useFoldReveals(file: DiffFile) {
 
     const reveals = revealsByFile.get(fileKey);
 
-    // Stable while nothing changes, so the search's reveal effect runs only when it must.
+    // Stable while nothing changes, so the rows estimate is recomputed only when it must.
     const get = React.useCallback(
         (index: number) => reveals?.get(index) ?? NOTHING_REVEALED,
         [reveals],
@@ -67,44 +70,4 @@ export function useFoldReveals(file: DiffFile) {
     );
 
     return { get, set };
-}
-
-/**
- * Reveals the fold line the diff search's current match is on, so stepping to a match in a
- * folded stretch shows it. The reveal is stored like one the reader made, so the fold stays
- * open after the search moves on and the page does not jump back.
- */
-export function useRevealSearchTarget(options: {
-    file: DiffFile;
-    diffIndex: number;
-    wholeFile: boolean;
-    reveals: ReturnType<typeof useFoldReveals>;
-}) {
-    const target = useDiffSearchTarget(options.diffIndex);
-    const hunks = options.file.hunks;
-    const wholeFile = options.wholeFile;
-    const getReveal = options.reveals.get;
-    const setReveal = options.reveals.set;
-
-    React.useEffect(() => {
-        if (target === null || wholeFile) {
-            return;
-        }
-
-        const hunk = hunks[target.hunkIndex];
-
-        if (hunk?.type !== "skip" || hunk.lines === null) {
-            return;
-        }
-
-        const reveal = foldRevealFor(
-            hunk.lines.length,
-            getReveal(target.hunkIndex),
-            target.lineIndex,
-        );
-
-        if (reveal !== null) {
-            setReveal(target.hunkIndex, reveal);
-        }
-    }, [target, hunks, wholeFile, getReveal, setReveal]);
 }

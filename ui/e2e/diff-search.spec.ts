@@ -12,7 +12,7 @@ import {
 
 /**
  * 60 numbered lines with line 30 edited and `needle` written on one unchanged line, so the
- * needle sits in a fold the patch carries but the page does not show.
+ * needle sits in a fold the patch carries, which the search never covers.
  */
 function fileWithNeedle(needleLine: number, edited: boolean) {
     return Array.from({ length: 60 }, (_, index) => {
@@ -57,7 +57,7 @@ test.describe("Diff search", () => {
         await teardownTestDir(testDirPath);
     });
 
-    test("finds text in folds of collapsed files and steps between them", async ({
+    test("finds text in collapsed files, skipping folded lines, and steps between them", async ({
         page,
     }) => {
         const ctx = await setupTestDir("diff-search");
@@ -65,8 +65,7 @@ test.describe("Diff search", () => {
         const repositoryPath = path.join(ctx.testDirPath, "repository");
         await fs.mkdir(repositoryPath);
 
-        // The needle is above the edit in one file and below it in the other, so both
-        // directions of revealing a fold are used.
+        // Each needle sits on an unchanged line far from the edit, so it is folded away.
         const needles = { "alpha.txt": 10, "beta.txt": 50 };
 
         for (const [name, line] of Object.entries(needles)) {
@@ -112,14 +111,14 @@ test.describe("Diff search", () => {
         // Ctrl+F opens the diff search instead of the browser's find in page.
         await expect(input).toBeFocused();
 
-        await input.fill("needle");
+        await input.fill("edited");
 
         // Both collapsed files were loaded and searched, and the first match became current.
         await expect(status).toHaveText("1 of 2");
 
-        // Stepping to the match expands its file and reveals the folded line it is on.
+        // Stepping to the match expands its file and shows the row it is on.
         await expect(
-            region("alpha.txt").locator('tr[data-line-new="10"]'),
+            region("alpha.txt").locator('tr[data-line-new="30"]'),
         ).toBeVisible();
         await expect(
             page.getByRole("button", { name: "Collapse diff for alpha.txt" }),
@@ -133,29 +132,43 @@ test.describe("Diff search", () => {
 
         // The match is marked on the page as the current one.
         await expect
-            .poll(() => highlightSize(page, "diff-search-current"))
-            .toBe(1);
+            .poll(() => highlightTexts(page, "diff-search-current"))
+            .toEqual(["edited"]);
 
         await input.press("Enter");
 
-        // Enter steps to the next file's match, opening the fold below its edit.
+        // Enter steps to the next file's match.
         await expect(status).toHaveText("2 of 2");
         await expect(
-            region("beta.txt").locator('tr[data-line-new="50"]'),
+            region("beta.txt").locator('tr[data-line-new="30"]'),
         ).toBeVisible();
 
         // Both matches are rendered now, so both are marked.
         await expect.poll(() => highlightSize(page, "diff-search")).toBe(2);
 
+        await input.fill("needle");
+
+        // The needles are only on folded unchanged lines, which are not changes, so they are
+        // not matches and no fold opens for them.
+        await expect(status).toHaveText("No matches");
+        await expect(
+            region("alpha.txt").locator('tr[data-line-new="10"]'),
+        ).toHaveCount(0);
+
+        await region("alpha.txt")
+            .getByRole("button", { name: "Show whole file alpha.txt" })
+            .click();
+
+        // Even with every line of the file shown, the search covers only the changed hunks.
+        await expect(
+            region("alpha.txt").locator('tr[data-line-new="10"]'),
+        ).toBeVisible();
+        await expect(status).toHaveText("No matches");
+
         await input.fill("edited");
 
-        // A new query whose matches exclude the current one moves to its own first match
-        // instead of leaving nothing current.
-        await expect
-            .poll(() => highlightTexts(page, "diff-search-current"))
-            .toEqual(["edited"]);
+        // The query is searched before the bar closes, so reopening does not jump to it.
         await expect(status).toHaveText(/^[12] of 2$/);
-
         await input.press("Escape");
 
         // Closing removes the marks, so no stale highlight outlives the search.

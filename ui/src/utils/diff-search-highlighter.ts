@@ -53,8 +53,8 @@ function textRange(cell: Element, start: number, end: number): Range | null {
  * Keeps the highlight ranges in step with the rows on the page. Ranges point at text nodes,
  * and the rows change under them whenever a file expands, a fold opens or a plain file gains
  * its colours, so a mutation observer marks the cards whose rows changed and their ranges are
- * built again in the next frame. Only rendered rows get ranges; a match in a collapsed file or
- * a closed fold has nothing to mark until the search steps to it.
+ * built again in the next frame. Only rendered rows get ranges; a match in a collapsed file
+ * has nothing to mark until the search steps to it.
  */
 export class DiffSearchHighlighter {
     private readonly all: Highlight | null;
@@ -212,7 +212,7 @@ export class DiffSearchHighlighter {
         );
     }
 
-    /** The rendered row of a match, or null while its file or fold is closed. */
+    /** The rendered row of a match, or null while its file is collapsed. */
     private row(match: DiffSearchMatch): HTMLTableRowElement | null {
         return (
             this.section(match.path)?.querySelector<HTMLTableRowElement>(

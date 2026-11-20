@@ -1,7 +1,9 @@
 /*
  * Finding text in parsed diffs. The search reads the parsed rows instead of the page, so it
- * also finds text in collapsed files, folded lines and patches that have never been rendered,
- * which the browser's own find in page cannot see.
+ * also finds text in collapsed files and patches that have never been rendered, which the
+ * browser's own find in page cannot see. It searches only the changed hunks, never the folded
+ * unchanged lines between them, because a reader searches the changes they review, and
+ * matches in surrounding context would bury them.
  */
 import type { DiffFile, DiffLine } from "#ui/utils/diff-parse";
 
@@ -21,9 +23,8 @@ export interface DiffSearchFile {
 }
 
 /**
- * Where a match sits: the card, the file of its patch, the hunk or fold, the row in it and
- * the characters of the row's text. Rows are the parser's, so a fold's row is found by its
- * position among the fold's lines whether or not it is revealed.
+ * Where a match sits: the card, the file of its patch, the hunk, the row in it and the
+ * characters of the row's text.
  */
 export interface DiffSearchMatch {
     path: string;
@@ -40,15 +41,6 @@ export interface DiffSearchResult {
     /** Whether matches beyond `MAX_DIFF_SEARCH_MATCHES` were left out. */
     truncated: boolean;
 }
-
-/** How much of one fold is revealed from its top and from its bottom. */
-export interface FoldReveal {
-    fromTop: number;
-    fromBottom: number;
-}
-
-/** Unchanged lines revealed around a match in a fold, so it is not shown out of context. */
-const REVEAL_CONTEXT_LINES = 3;
 
 /**
  * The text a row shows. A modified row shows its deleted and inserted words side by side, so
@@ -87,8 +79,8 @@ function literalPattern(query: string): RegExp {
 }
 
 /**
- * Finds every case-insensitive occurrence of `query` in the rows of the files, including the
- * folded rows a patch carries. Matches never span rows, since a diff row is the unit a reader
+ * Finds every case-insensitive occurrence of `query` in the rows of the files' changed hunks.
+ * Matches never span rows, since a diff row is the unit a reader
  * scans. A regular expression finds them, rather than comparing lowercased text, because
  * lowercasing can change a string's length and would shift the offsets.
  */
@@ -107,8 +99,8 @@ export function findDiffMatches(
     for (const file of files) {
         for (const [diffIndex, diffFile] of file.diffFiles.entries()) {
             for (const [hunkIndex, hunk] of diffFile.hunks.entries()) {
-                // A fold the patch left without its lines has nothing to search.
-                if (hunk.lines === null) {
+                // Folds hold unchanged context, not the changes being searched.
+                if (hunk.type === "skip") {
                     continue;
                 }
 
@@ -133,36 +125,4 @@ export function findDiffMatches(
     }
 
     return { matches, truncated: false };
-}
-
-/**
- * How far a fold must be revealed to show one of its lines, or null when the line already
- * shows. It reveals from whichever end is closer, so a match deep in a long fold does not
- * open every line above it, and keeps a few lines of context past the match.
- */
-export function foldRevealFor(
-    lineCount: number,
-    reveal: FoldReveal,
-    lineIndex: number,
-): FoldReveal | null {
-    const hiddenEnd = lineCount - reveal.fromBottom;
-
-    if (lineIndex < reveal.fromTop || lineIndex >= hiddenEnd) {
-        return null;
-    }
-
-    if (lineIndex - reveal.fromTop <= hiddenEnd - 1 - lineIndex) {
-        return {
-            fromTop: Math.min(hiddenEnd, lineIndex + 1 + REVEAL_CONTEXT_LINES),
-            fromBottom: reveal.fromBottom,
-        };
-    }
-
-    return {
-        fromTop: reveal.fromTop,
-        fromBottom: Math.min(
-            lineCount - reveal.fromTop,
-            lineCount - lineIndex + REVEAL_CONTEXT_LINES,
-        ),
-    };
 }

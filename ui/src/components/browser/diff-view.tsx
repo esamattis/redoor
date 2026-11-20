@@ -35,11 +35,11 @@ import {
     useLoadedLanguage,
 } from "#ui/utils/use-code-highlight";
 import { cn } from "#ui/utils/cn";
-import { diffRowKey, type FoldReveal } from "#ui/utils/diff-search";
+import { diffRowKey } from "#ui/utils/diff-search";
 import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
 import {
     useFoldReveals,
-    useRevealSearchTarget,
+    type FoldReveal,
 } from "#ui/components/browser/diff-fold-reveals";
 
 /** Where the editor opens the diffed file, as built by `browserRoute`. */
@@ -1242,13 +1242,6 @@ export function Diff(props: {
     const slots = React.useMemo(() => gutterSlots(file), [file]);
     const reveals = useFoldReveals(file);
     const editorRoute = props.editorRoute;
-
-    useRevealSearchTarget({
-        file,
-        diffIndex: props.diffIndex,
-        wholeFile: props.wholeFile,
-        reveals,
-    });
 
     const actions =
         editorRoute === null
