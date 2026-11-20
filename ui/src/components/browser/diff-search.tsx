@@ -27,7 +27,7 @@ import {
     type DiffSearchMatch,
     type DiffSearchResult,
 } from "#ui/utils/diff-search";
-import { isTerminalInputTarget } from "#ui/utils/keyboard";
+import { formatKeyChord, isTerminalInputTarget } from "#ui/utils/keyboard";
 import {
     DiffSearchHighlighter,
     firstMatchOnScreen,
@@ -615,7 +615,7 @@ function DiffSearchBar(props: {
         <div
             role="search"
             aria-label="Search in diffs"
-            className="pointer-events-auto flex w-full max-w-lg flex-col gap-1 rounded-lg border border-slate-700 bg-surface-raised p-2 shadow-lg shadow-black/40"
+            className="group pointer-events-auto flex w-full max-w-lg flex-col gap-1 rounded-lg border border-slate-700 bg-surface-raised p-2 shadow-lg shadow-black/40"
         >
             <div className="flex items-center gap-1">
                 <InputControl
@@ -688,6 +688,15 @@ function DiffSearchBar(props: {
                     <X className="h-5 w-5" aria-hidden="true" />
                 </IconButton>
             </div>
+            {/*
+              The bar takes the find shortcut, so readers who want the browser's own find in page
+              are told the key still reaches it. It shows only while typing in the bar, where a
+              second press goes to the browser, and only with a keyboard at hand.
+            */}
+            <p className="hidden px-1 text-xs text-slate-400 pointer-fine:group-has-[input:focus]:block">
+                Press {formatKeyChord({ key: "f", mod: true })} again to search
+                the page
+            </p>
             {/* Files that cannot be searched are named, so no match never means "not looked at". */}
             {unsearchable === 0 ? null : (
                 <p className="px-1 text-xs text-slate-500">
