@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.18.1
+
+_2026-11-20_
+
+### Fixes
+
+- The diff search finds text only in the changed lines, no longer in the folded "unchanged lines hidden" sections, so matches in surrounding context no longer bury the changes. It no longer opens folds either.
+- The diff search box says that pressing Ctrl+F (⌘F on Mac) again opens the browser's own find in page.
+
 ## v2.18.0
 
 _2026-11-20_
