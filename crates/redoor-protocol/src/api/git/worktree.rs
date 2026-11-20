@@ -128,6 +128,14 @@ pub struct GitStatusEntry {
     pub line_changes: Option<GitLineChanges>,
 }
 
+/// The query of the status endpoint: whether the user opted into seeing more entries than the
+/// default limit lets through.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitStatusQuery {
+    #[serde(default)]
+    pub all: bool,
+}
+
 /// Returns bounded, deterministic status for one literal directory prefix.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

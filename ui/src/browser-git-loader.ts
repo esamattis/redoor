@@ -27,7 +27,7 @@ export async function prefetchWorktreeGitView(options: {
     deps: Pick<
         BrowserSearch,
         "gitTab" | "diffMode" | "refSort" | "branchScope"
-    >;
+    > & { allFiles: boolean };
 }) {
     const { context, agent, path, deps } = options;
 
@@ -44,7 +44,7 @@ export async function prefetchWorktreeGitView(options: {
         });
     } else if (options.isDirectory) {
         const status = await fetchQueryUncancelled(context.queryClient, {
-            ...gitStatusQueryOptions(agent, path),
+            ...gitStatusQueryOptions(agent, path, deps.allFiles),
             staleTime: 0,
         });
 

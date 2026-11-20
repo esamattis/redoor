@@ -106,9 +106,10 @@ const fileSortDirectionSchema = z
  * The file browser's own URL state: which representation of the path is open, an editor
  * line to reveal, the rendered preview of Markdown, HTML or SVG, the full-window editor, the
  * Git comparison, the browsed Git revision, the Git view's list, the order of its branch and
- * tag lists, whether the branch list shows local or remote-tracking branches, the listing
- * order, and the unit and manager of the Systemd view. Keeping these in the URL makes each of them survive a reload, work with Back, and be
- * shareable. Every field falls back to undefined, so a stale or hand-edited URL degrades to
+ * tag lists, whether the branch list shows local or remote-tracking branches, whether a
+ * truncated diff was opted into showing all its files, the listing order, and the unit and
+ * manager of the Systemd view. Keeping these in the URL makes each of them survive a reload,
+ * work with Back, and be shareable. Every field falls back to undefined, so a stale or hand-edited URL degrades to
  * the defaults.
  */
 export const browserSearchSchema = z.object({
@@ -121,6 +122,9 @@ export const browserSearchSchema = z.object({
     gitTab: gitTabSchema,
     refSort: gitRefSortSchema,
     branchScope: gitBranchScopeSchema,
+    // Raises the agent's file limit for the Git view's diff. It is never retained across
+    // links, so every other path opens with the quick default limit again.
+    allFiles: optionalBooleanSchema,
     sort: fileSortColumnSchema,
     order: fileSortDirectionSchema,
     unit: systemdUnitSchema,

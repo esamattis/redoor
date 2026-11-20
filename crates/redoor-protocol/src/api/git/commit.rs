@@ -5,6 +5,15 @@ use crate::ids::UnixTimestampSeconds;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+/// The query of the commit diff endpoint: the revision, and whether the user opted into
+/// seeing more files than the default limit lets through.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitCommitDiffQuery {
+    pub rev: String,
+    #[serde(default)]
+    pub all: bool,
+}
+
 /// The facts a revision banner (and later history rows) show about one commit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]

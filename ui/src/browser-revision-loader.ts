@@ -72,6 +72,8 @@ export async function loadRevision(options: {
     gitTab: BrowserSearch["gitTab"];
     refSort: BrowserSearch["refSort"];
     branchScope: BrowserSearch["branchScope"];
+    /** Whether the user opted into the larger file limit of a truncated diff. */
+    allFiles: boolean;
 }) {
     const {
         context,
@@ -83,6 +85,7 @@ export async function loadRevision(options: {
         gitTab,
         refSort,
         branchScope,
+        allFiles,
     } = options;
 
     if (view === "sync") {
@@ -204,11 +207,10 @@ export async function loadRevision(options: {
         });
     } else if (view === "git") {
         await fetchQueryUncancelled(context.queryClient, {
-            ...gitCommitDiffQueryOptions(
-                agent,
-                path,
-                commitDiffRevision(rev, tree.commit.id),
-            ),
+            ...gitCommitDiffQueryOptions(agent, path, {
+                rev: commitDiffRevision(rev, tree.commit.id),
+                all: allFiles,
+            }),
             // A symmetric range keeps its base as typed, usually a branch such as main that
             // moves while HEAD stays put, so its merge base and diff are fetched again on
             // every navigation instead of served from a cache pinned only by HEAD. A range
@@ -234,12 +236,14 @@ async function loadDeletion(options: {
     agent: Agent;
     path: string;
     rev: string;
+    allFiles: boolean;
 }) {
     try {
         // The revision must be resolved by the agent here because no tree named its commit.
         const diff = await options.agent.gitCommitDiff(
             options.path,
             options.rev,
+            { all: options.allFiles },
         );
 
         if (
@@ -251,11 +255,10 @@ async function loadDeletion(options: {
 
         // The view reads the diff by the pinned revision, like every other commit diff.
         options.context.queryClient.setQueryData(
-            gitCommitDiffQueryOptions(
-                options.agent,
-                options.path,
-                commitDiffRevision(options.rev, diff.commit.id),
-            ).queryKey,
+            gitCommitDiffQueryOptions(options.agent, options.path, {
+                rev: commitDiffRevision(options.rev, diff.commit.id),
+                all: options.allFiles,
+            }).queryKey,
             diff,
         );
 

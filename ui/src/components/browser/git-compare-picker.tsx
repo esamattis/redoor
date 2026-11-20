@@ -78,6 +78,8 @@ export function GitComparePicker(props: {
                 ...previous,
                 view: "git",
                 rev: `${nextBase}...${nextCompare}`,
+                // A new comparison starts at the quick default limit until opted in again.
+                allFiles: undefined,
             }),
         });
     }
@@ -108,6 +110,7 @@ export function GitComparePicker(props: {
                             ...previous,
                             view: "git",
                             rev: `${compare}...${base}`,
+                            allFiles: undefined,
                         })}
                         label="Swap compared branches"
                         tooltip={`Show what ${displayRevision(base)} adds to ${displayRevision(compare)} instead`}

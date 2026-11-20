@@ -661,5 +661,21 @@ describe("Git browser REST API", () => {
 
         // BTree ordering makes truncation stable across filesystem enumeration order.
         expect(paths).toEqual([...paths].sort());
+
+        // A second walk would block on the FIFO gate again, so it goes back to a missing file.
+        await rm(excludeGate, { force: true });
+
+        const allStatus = await testAgent.gitStatus(many, { all: true });
+
+        // Opting into all entries lifts the default limit so every changed file is listed.
+        expect(allStatus.truncated).toBe(false);
+        // All 5,001 created files are there, beyond the default limit of 5,000.
+        expect(
+            allStatus.entries.filter((entry) =>
+                String(entry.repository_relative_path).startsWith(
+                    "many/entry-",
+                ),
+            ),
+        ).toHaveLength(5_001);
     });
 });

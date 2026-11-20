@@ -394,8 +394,8 @@ impl RunCommand for Command {
             Command::GitContext(request::GitContext { path }) => {
                 Reply::of::<request::GitContext>(git::status::context(path).await)
             }
-            Command::GitStatus(request::GitStatus { path }) => {
-                Reply::of::<request::GitStatus>(git::status::status(path, &ctx.cancel).await)
+            Command::GitStatus(request::GitStatus { path, all }) => {
+                Reply::of::<request::GitStatus>(git::status::status(path, all, &ctx.cancel).await)
             }
             Command::GitDirectoryEntries(request::GitDirectoryEntries { path }) => {
                 Reply::of::<request::GitDirectoryEntries>(
@@ -414,8 +414,10 @@ impl RunCommand for Command {
             Command::GitRevisionContent(request::GitRevisionContent { path, rev }) => {
                 Reply::of::<request::GitRevisionContent>(git::tree::content(path, rev).await)
             }
-            Command::GitCommitDiff(request::GitCommitDiff { path, rev }) => {
-                Reply::of::<request::GitCommitDiff>(git::commit_diff::commit_diff(path, rev).await)
+            Command::GitCommitDiff(request::GitCommitDiff { path, rev, all }) => {
+                Reply::of::<request::GitCommitDiff>(
+                    git::commit_diff::commit_diff(path, rev, all).await,
+                )
             }
             Command::GitLog(request::GitLog { path, rev, page }) => {
                 Reply::of::<request::GitLog>(git::history::log(path, rev, page).await)

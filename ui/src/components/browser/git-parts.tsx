@@ -1,5 +1,10 @@
+import { AlertTriangle } from "lucide-react";
+
 import type { GitChangeState } from "#bindings/GitChangeState";
 import type { GitLineChanges } from "#bindings/GitLineChanges";
+import type { Agent } from "#ui/api-client";
+import { browserRoute } from "#ui/browser-route";
+import { LinkButton } from "#ui/components/link-button";
 import { Tooltip } from "#ui/components/tooltip";
 import type { GitRefKind } from "#ui/components/copyable-git-ref";
 import { formatModifiedAge } from "#ui/components/browser/utils";
@@ -323,6 +328,49 @@ export function LineChangeTotals(props: { changes: GitLineChanges }) {
                 <span className="text-red-400">−{removed}</span>
             </span>
         </Tooltip>
+    );
+}
+
+/**
+ * Warns that the agent cut a Git view's file list short. The agent's default limit keeps an
+ * accidental look at a huge change set from taking long to load, so until the user has opted
+ * into the larger limit this offers a "Show all" that raises it through the URL, where it
+ * survives a reload and Back but is dropped when another path opens.
+ */
+export function TruncatedDiffNotice(props: {
+    agent: Agent;
+    path: string;
+    /** Whether the larger limit is already in use, so there is nothing more to opt into. */
+    allFiles: boolean;
+    children: React.ReactNode;
+}) {
+    return (
+        <div
+            role="status"
+            className="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-300"
+        >
+            <p className="flex min-w-0 flex-1 basis-60 items-center gap-2">
+                <AlertTriangle
+                    className="h-4 w-4 shrink-0"
+                    aria-hidden="true"
+                />
+                <span className="min-w-0">{props.children}</span>
+            </p>
+            {props.allFiles ? null : (
+                <Tooltip content="Load every changed file. A large change set can take a while to load.">
+                    <LinkButton
+                        {...browserRoute(props.agent, props.path)}
+                        search={(previous) => ({ ...previous, allFiles: true })}
+                        // Hovering must not start the large request the user has not opted into.
+                        preload={false}
+                        variant="warning"
+                        size="sm"
+                    >
+                        Show all
+                    </LinkButton>
+                </Tooltip>
+            )}
+        </div>
     );
 }
 

@@ -37,6 +37,7 @@ import {
     revisionRange,
     revisionRefKind,
     shortCommitId,
+    TruncatedDiffNotice,
     WORKTREE_REVISION,
 } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
@@ -170,7 +171,12 @@ export function RevisionBanner(props: {
                         the Git changes, instead of falling back to the file list. */}
                     <Link
                         {...browserRoute(props.agent, props.path)}
-                        search={(previous) => ({ ...previous, rev: undefined })}
+                        // The working tree is a new diff, so it starts at the quick default limit.
+                        search={(previous) => ({
+                            ...previous,
+                            rev: undefined,
+                            allFiles: undefined,
+                        })}
                         className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-medium text-amber-100 hover:bg-amber-900/50 @max-xl:p-2"
                     >
                         <Undo2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -536,11 +542,16 @@ export function GitCommitView(props: {
     rev: string;
     /** The commit `rev` resolved to, which the diff is fetched and cached by. */
     commitId: string;
+    /** Whether the user opted into the agent's larger file limit for a truncated diff. */
+    allFiles: boolean;
 }) {
     const diffRevision = commitDiffRevision(props.rev, props.commitId);
 
     const diffQuery = useQuery(
-        gitCommitDiffQueryOptions(props.agent, props.path, diffRevision),
+        gitCommitDiffQueryOptions(props.agent, props.path, {
+            rev: diffRevision,
+            all: props.allFiles,
+        }),
     );
 
     const scope = `${props.agent.id}:${props.path}:${diffRevision}`;
@@ -685,14 +696,15 @@ export function GitCommitView(props: {
                     </p>
                 ) : null}
                 {diff.truncated ? (
-                    <p
-                        role="status"
-                        className="flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-300"
+                    <TruncatedDiffNotice
+                        agent={props.agent}
+                        path={props.path}
+                        allFiles={props.allFiles}
                     >
-                        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                        {subject} changed more files than can be shown. Open a
-                        subdirectory to see the rest.
-                    </p>
+                        {props.allFiles
+                            ? `${subject} changed more files than can be shown. Open a subdirectory to see the rest.`
+                            : `${subject} changed more files than are shown by default.`}
+                    </TruncatedDiffNotice>
                 ) : null}
                 {files.length === 0 ? null : (
                     <GitDiffFilterField

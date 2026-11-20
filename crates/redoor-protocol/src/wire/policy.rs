@@ -428,7 +428,10 @@ mod tests {
                 timeout_seconds: 1,
             }),
             Command::GitContext(request::GitContext { path: path() }),
-            Command::GitStatus(request::GitStatus { path: path() }),
+            Command::GitStatus(request::GitStatus {
+                path: path(),
+                all: false,
+            }),
             Command::GitDirectoryEntries(request::GitDirectoryEntries { path: path() }),
             Command::GitFileBases(request::GitFileBases { path: path() }),
             Command::GitDiff(request::GitDiff {
@@ -446,6 +449,7 @@ mod tests {
             Command::GitCommitDiff(request::GitCommitDiff {
                 path: path(),
                 rev: "HEAD".to_string(),
+                all: false,
             }),
             Command::GitLog(request::GitLog {
                 path: path(),

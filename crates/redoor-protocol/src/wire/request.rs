@@ -412,6 +412,11 @@ pub struct GitContext {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitStatus {
     pub path: String,
+    /// Raises the entry limit to the larger ceiling the user opted into after seeing a
+    /// truncated list. Defaults to the small limit so opening a huge change set by accident
+    /// stays quick, and for servers that predate it.
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// Reads the Git state of each direct child of one browser directory for the file list's
@@ -454,6 +459,11 @@ pub struct GitRevisionContent {
 pub struct GitCommitDiff {
     pub path: String,
     pub rev: String,
+    /// Raises the file limit to the larger ceiling the user opted into after seeing a
+    /// truncated diff. Defaults to the small limit so opening a huge commit by accident stays
+    /// quick, and for servers that predate it.
+    #[serde(default)]
+    pub all: bool,
 }
 
 /// Describes what a path is at a revision and the commit the revision resolved to, so a copy

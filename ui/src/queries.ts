@@ -134,8 +134,8 @@ export const queryKeys = {
     git: (agentId: string) => [...queryKeys.agent(agentId), "git"] as const,
     gitContext: (agentId: string, path: string) =>
         [...queryKeys.git(agentId), "context", path] as const,
-    gitStatus: (agentId: string, path: string) =>
-        [...queryKeys.git(agentId), "status", path] as const,
+    gitStatus: (agentId: string, path: string, all = false) =>
+        [...queryKeys.git(agentId), "status", path, { all }] as const,
     /** The file list's Git column; under `git` so focus refreshes and mutations reach it. */
     gitDirectoryEntries: (agentId: string, path: string) =>
         [...queryKeys.git(agentId), "directory-entries", path] as const,
@@ -148,8 +148,19 @@ export const queryKeys = {
         [...queryKeys.git(agentId), "revision-tree", rev, path] as const,
     gitRevisionContent: (agentId: string, path: string, rev: string) =>
         [...queryKeys.git(agentId), "revision-content", rev, path] as const,
-    gitCommitDiff: (agentId: string, path: string, rev: string) =>
-        [...queryKeys.git(agentId), "commit-diff", rev, path] as const,
+    /** Keyed by the opt-in too, so the default and the larger file limit never share data. */
+    gitCommitDiff: (
+        agentId: string,
+        path: string,
+        diff: { rev: string; all: boolean },
+    ) =>
+        [
+            ...queryKeys.git(agentId),
+            "commit-diff",
+            diff.rev,
+            path,
+            { all: diff.all },
+        ] as const,
     gitCommitNeighbors: (agentId: string, path: string, rev: string) =>
         [...queryKeys.git(agentId), "commit-neighbors", rev, path] as const,
     gitLog: (agentId: string, path: string, rev: string | null) =>
@@ -703,10 +714,11 @@ export function gitContextQueryOptions(agent: Agent, path: string) {
  * Shares one bounded directory status result with route preloading. The signal lets leaving
  * the Git view stop the agent's walk.
  */
-export function gitStatusQueryOptions(agent: Agent, path: string) {
+export function gitStatusQueryOptions(agent: Agent, path: string, all = false) {
     return queryOptions({
-        queryKey: queryKeys.gitStatus(agent.id, path),
-        queryFn: (context) => agent.gitStatus(path, { signal: context.signal }),
+        queryKey: queryKeys.gitStatus(agent.id, path, all),
+        queryFn: (context) =>
+            agent.gitStatus(path, { signal: context.signal, all }),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }
@@ -879,11 +891,16 @@ export function gitRevisionContentQueryOptions(
 export function gitCommitDiffQueryOptions(
     agent: Agent,
     path: string,
-    diffRevision: string,
+    diff: {
+        /** The revision as `commitDiffRevision` pinned it. */
+        rev: string;
+        /** Whether the user opted into the agent's larger file limit. */
+        all: boolean;
+    },
 ) {
     return queryOptions({
-        queryKey: queryKeys.gitCommitDiff(agent.id, path, diffRevision),
-        queryFn: () => agent.gitCommitDiff(path, diffRevision),
+        queryKey: queryKeys.gitCommitDiff(agent.id, path, diff),
+        queryFn: () => agent.gitCommitDiff(path, diff.rev, { all: diff.all }),
         staleTime: Number.POSITIVE_INFINITY,
     });
 }

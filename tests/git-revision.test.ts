@@ -742,6 +742,13 @@ describe("Git revision REST API", () => {
         const paths = diff.files.map((file) => file.repository_relative_path);
         // The kept files are still shown in path order.
         expect(paths).toEqual([...paths].sort());
+
+        const all = await testAgent.gitCommitDiff(many, commit, { all: true });
+
+        // Opting into all files lifts the default limit, so nothing is cut off.
+        expect(all.truncated).toBe(false);
+        // Every changed file is listed, beyond the default limit of 128.
+        expect(all.files).toHaveLength(140);
     });
 
     it("resolves a superproject revision on a checked-out submodule path", async () => {

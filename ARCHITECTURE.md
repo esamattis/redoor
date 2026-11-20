@@ -373,6 +373,9 @@ All Git work runs on the agent with gix in blocking tasks, and every response is
 worktree status) are request-cancellable, so leaving a view stops the walk on the agent.
 Worktree status also counts each file's added and removed lines against HEAD, under its own
 byte budget, so the Changes tab can show the size of the change set without fetching patches.
+Status and commit diffs list a small number of files by default, so opening a huge change
+set by accident stays quick. "Show all" sets `allFiles` in the URL, which asks the agent for
+a larger file limit that still fits one control frame.
 
 The browser can browse a revision or range (`rev` search key) read-only with the same
 components as the worktree, list history, branches, tags and worktrees with offset paging,

@@ -180,7 +180,9 @@ impl Command {
                 request.path, request.timeout_seconds
             ),
             Self::GitContext(request) => format!("GitContext path={}", request.path),
-            Self::GitStatus(request) => format!("GitStatus path={}", request.path),
+            Self::GitStatus(request) => {
+                format!("GitStatus path={} all={}", request.path, request.all)
+            }
             Self::GitDirectoryEntries(request) => {
                 format!("GitDirectoryEntries path={}", request.path)
             }
@@ -200,7 +202,10 @@ impl Command {
                 )
             }
             Self::GitCommitDiff(request) => {
-                format!("GitCommitDiff path={} rev={}", request.path, request.rev)
+                format!(
+                    "GitCommitDiff path={} rev={} all={}",
+                    request.path, request.rev, request.all
+                )
             }
             Self::GitLog(request) => format!(
                 "GitLog path={} rev={} skip={} limit={}",

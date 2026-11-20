@@ -674,10 +674,13 @@ export class Agent {
      */
     async gitStatus(
         path: string,
-        options: { signal?: AbortSignal } = {},
+        options: { signal?: AbortSignal; all?: boolean } = {},
     ): Promise<GitStatusResponse> {
+        // `all` raises the entry limit once the user has opted into a large change set.
+        const query = options.all === true ? "?all=true" : "";
+
         return apiRequest<GitStatusResponse>(
-            this.filesystemUrl("git/status", path),
+            `${this.filesystemUrl("git/status", path)}${query}`,
             { signal: options.signal },
             this.requestContext,
         );
@@ -833,13 +836,19 @@ export class Agent {
         );
     }
 
-    /** Shows what the commit a revision names changed below a path. */
+    /**
+     * Shows what the commit a revision names changed below a path. `all` raises the file limit
+     * once the user has opted into a large diff.
+     */
     async gitCommitDiff(
         path: string,
         rev: string,
+        options: { all?: boolean } = {},
     ): Promise<GitCommitDiffResponse> {
+        const query = options.all === true ? "&all=true" : "";
+
         return apiRequest<GitCommitDiffResponse>(
-            this.revisionUrl("git/commit-diff", path, rev),
+            `${this.revisionUrl("git/commit-diff", path, rev)}${query}`,
             undefined,
             this.requestContext,
         );

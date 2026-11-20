@@ -140,6 +140,7 @@ export const Route = createFileRoute("/_app/agents/$deviceName/browser/$")({
         gitTab: search.gitTab,
         refSort: search.refSort,
         branchScope: search.branchScope,
+        allFiles: search.allFiles === true,
     }),
     loader: async ({ context, deps, params, location, parentMatchPromise }) => {
         const agent = await loadDeviceRouteAgent(context, parentMatchPromise);
@@ -450,6 +451,7 @@ function RevisionFileBrowser(props: {
                             path={data.path}
                             rev={data.rev}
                             commitId={data.deletion.commit.id}
+                            allFiles={search.allFiles === true}
                         />
                     }
                 />
@@ -526,6 +528,7 @@ function RevisionFileBrowser(props: {
                         path={data.path}
                         rev={data.rev}
                         commitId={tree.commit.id}
+                        allFiles={search.allFiles === true}
                     />
                 }
             />
@@ -929,6 +932,7 @@ function DirectoryBrowserPage(props: {
                         <GitDirectoryView
                             agent={props.agent}
                             path={lsResult.path}
+                            allFiles={search.allFiles === true}
                         />
                     }
                 />

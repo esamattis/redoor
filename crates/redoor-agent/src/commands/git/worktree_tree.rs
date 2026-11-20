@@ -21,7 +21,7 @@ use super::{
     GitFailure, check_interrupt,
     diff::{DiffSource, worktree_blob},
     internal_failure, io_failure,
-    status::{MAX_GIT_STATUS_ENTRIES, StatusCollection, collect_status},
+    status::{StatusCollection, collect_status, status_entry_limit},
 };
 
 /// A file of the working tree that a built tree refers to by id, although no object database
@@ -58,11 +58,12 @@ impl WorktreeTree {
     /// files changed, without reading any file into memory as a whole.
     ///
     /// `repo` must keep written objects in memory, since the tree and its subtrees are written
-    /// through it.
+    /// through it. `all` raises the status limit to the ceiling the user opted into.
     pub(super) fn build(
         repo: &gix::Repository,
         root: &Path,
         head_tree: gix::ObjectId,
+        all: bool,
         interrupt: &Arc<AtomicBool>,
     ) -> Result<Self, GitFailure> {
         // The merge needs the whole working tree even when a subdirectory is browsed, so the
@@ -76,7 +77,7 @@ impl WorktreeTree {
             repo,
             |_| true,
             true,
-            MAX_GIT_STATUS_ENTRIES,
+            status_entry_limit(all),
             Vec::new(),
             interrupt.clone(),
         )?;

@@ -3,10 +3,10 @@
 use crate::http::access::ResolvedDevice;
 use axum::{
     Json,
-    extract::{Path, State as AxumState},
+    extract::{Path, Query, State as AxumState},
 };
 use redoor_protocol::api::git::worktree::{
-    GitContextResponse, GitDiffRequest, GitDiffResponse, GitStatusResponse,
+    GitContextResponse, GitDiffRequest, GitDiffResponse, GitStatusQuery, GitStatusResponse,
 };
 
 use super::route_path;
@@ -29,14 +29,16 @@ pub(crate) async fn git_context_handler(
     Ok(Json(state.agents.call(&agent_id, call).await?))
 }
 
-/// Route: `GET /api/v1/agents/{agent}/git/status[/{*path}]`.
+/// Route: `GET /api/v1/agents/{agent}/git/status[/{*path}]?all=`.
 pub(crate) async fn git_status_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     Path(params): Path<AgentFilePath>,
+    Query(query): Query<GitStatusQuery>,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<GitStatusResponse>, ApiError> {
     let call = GitStatus {
         path: route_path(params.path)?,
+        all: query.all,
     };
     Ok(Json(state.agents.call(&agent_id, call).await?))
 }

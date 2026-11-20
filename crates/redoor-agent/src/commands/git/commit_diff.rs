@@ -33,6 +33,7 @@ use super::{
     internal_failure,
     revision::{RangeSides, RevisionBase, RevisionPath, commit_summary, tree_entry},
     run_blocking,
+    status::ListingBudget,
     worktree_tree::WorktreeTree,
 };
 
@@ -40,6 +41,21 @@ use super::{
 /// base. Merges of huge or wildly diverged histories can take long, and a diff that never
 /// arrives is worse than the slightly noisier merge-base diff.
 const MERGE_PREVIEW_BUDGET: Duration = Duration::from_secs(10);
+/// How many changed files a commit diff lists once the user has asked to see them all. The
+/// default limit, `GitDiffRequest::MAX_FILES`, keeps an accidental look at a huge commit quick;
+/// this one still bounds agent memory, and `ListingBudget` with the patch budgets keeps long
+/// paths from growing the reply past one agent message.
+const MAX_ALL_FILES: usize = 20_000;
+
+/// Picks the most files a commit diff lists: the larger ceiling only when the user opted in.
+fn file_limit(all: bool) -> usize {
+    if all {
+        MAX_ALL_FILES
+    } else {
+        GitDiffRequest::MAX_FILES
+    }
+}
+
 /// Object cache for the merge, which reads the same trees on both sides of it. Small, because
 /// agents may run with little memory, but enough to keep the trees of a typical change.
 const MERGE_OBJECT_CACHE_BYTES: usize = 4 * 1024 * 1024;
@@ -119,23 +135,26 @@ struct Comparison<'repo> {
 }
 
 /// Diffs the commit a revision names against its first parent, or a range's newer end
-/// against its start, below one path.
+/// against its start, below one path. `all` raises the file limit to the ceiling the user
+/// opted into.
 pub(crate) async fn commit_diff(
     path: String,
     rev: String,
+    all: bool,
 ) -> Result<GitCommitDiffResponse, CommandError> {
     run_blocking(move |interrupt| {
-        commit_diff_blocking(&path, &rev, &interrupt, MergeLimits::starting_now())
+        commit_diff_blocking(&path, &rev, all, &interrupt, MergeLimits::starting_now())
     })
     .await
 }
 
 /// Collects the changed files, then formats each within the shared batch budget.
 ///
-/// `merge_limits` bound a symmetric range's merge.
+/// `all` raises the file limit, and `merge_limits` bound a symmetric range's merge.
 fn commit_diff_blocking(
     path: &str,
     rev: &str,
+    all: bool,
     interrupt: &Arc<AtomicBool>,
     merge_limits: MergeLimits,
 ) -> Result<GitCommitDiffResponse, GitFailure> {
@@ -158,6 +177,7 @@ fn commit_diff_blocking(
             repo,
             &target.repository.root,
             head_tree.detach(),
+            all,
             interrupt,
         )?)
     } else {
@@ -176,20 +196,23 @@ fn commit_diff_blocking(
         merge_limits,
     )?;
 
+    let limit = file_limit(all);
     let mut changes = collect_changes(
         repo,
         &target.relative,
         comparison.old_root.as_ref(),
         &comparison.new_root,
+        limit,
         interrupt,
     )?;
     // Collection stops one change past the limit, so this keeps the files the traversal met
     // first and orders only those.
-    let truncated = changes.len() > GitDiffRequest::MAX_FILES;
-    changes.truncate(GitDiffRequest::MAX_FILES);
+    let mut truncated = changes.len() > limit;
+    changes.truncate(limit);
     changes.sort_by(|left, right| left.relative.cmp(&right.relative));
 
     let mut budget = DiffBudget::new();
+    let mut listing = ListingBudget::new();
     let mut files = Vec::with_capacity(changes.len());
     for change in changes {
         if interrupt.load(Ordering::Acquire) {
@@ -197,6 +220,16 @@ fn commit_diff_blocking(
                 CommandErrorKind::Canceled,
                 "Git commit diff was canceled",
             ));
+        }
+        let path = target.worktree_path(&change.relative).display().to_string();
+        let conflict_reason = comparison.conflicted.get(&change.relative).cloned();
+        if !listing.charge(&[
+            &path,
+            &change.relative,
+            conflict_reason.as_deref().unwrap_or_default(),
+        ]) {
+            truncated = true;
+            break;
         }
         let result = if change.relative.chars().any(char::is_control) {
             GitDiffResult::UnsupportedEntry
@@ -208,17 +241,25 @@ fn commit_diff_blocking(
             )?
         };
         files.push(GitCommitFileChange {
-            path: target.worktree_path(&change.relative).display().to_string(),
+            path,
             change: change_state(change.old, change.new),
-            conflicted: comparison.conflicted.contains_key(&change.relative),
-            conflict_reason: comparison.conflicted.get(&change.relative).cloned(),
+            conflicted: conflict_reason.is_some(),
+            conflict_reason,
             repository_relative_path: change.relative,
             result,
         });
     }
-    // Uncommitted changes left out of the working tree's tree are missing from the list too.
-    let truncated = add_unlisted_conflicts(&target, &comparison.conflicted, &mut files)
-        || truncated
+    // A list already cut short has no room left, and its missing changed files would otherwise
+    // come back as unmodified conflict rows. Uncommitted changes left out of the working
+    // tree's tree are missing from the list too.
+    let truncated = truncated
+        || add_unlisted_conflicts(
+            &target,
+            &comparison.conflicted,
+            limit,
+            &mut listing,
+            &mut files,
+        )
         || worktree.is_some_and(|worktree| worktree.truncated);
 
     let range = match target.base {
@@ -346,6 +387,8 @@ fn compare<'repo>(
 fn add_unlisted_conflicts(
     target: &RevisionPath,
     conflicted: &HashMap<String, String>,
+    limit: usize,
+    listing: &mut ListingBudget,
     files: &mut Vec<GitCommitFileChange>,
 ) -> bool {
     let listed: HashSet<String> = files
@@ -362,12 +405,13 @@ fn add_unlisted_conflicts(
     unlisted.sort();
     let mut truncated = false;
     for (path, reason) in unlisted {
-        if files.len() >= GitDiffRequest::MAX_FILES {
+        let worktree_path = target.worktree_path(path).display().to_string();
+        if files.len() >= limit || !listing.charge(&[&worktree_path, path, reason]) {
             truncated = true;
             break;
         }
         files.push(GitCommitFileChange {
-            path: target.worktree_path(path).display().to_string(),
+            path: worktree_path,
             repository_relative_path: path.clone(),
             change: GitChangeState::Unmodified,
             result: GitDiffResult::NoChanges,
@@ -788,6 +832,7 @@ fn collect_changes<'repo>(
     relative: &str,
     old_root: Option<&gix::Tree<'repo>>,
     new_root: &gix::Tree<'repo>,
+    limit: usize,
     interrupt: &AtomicBool,
 ) -> Result<Vec<FileChange>, GitFailure> {
     let old_entry = match old_root {
@@ -879,7 +924,7 @@ fn collect_changes<'repo>(
                 new,
             });
             // One change past the limit is enough to report the response as truncated.
-            reached_limit = files.len() > GitDiffRequest::MAX_FILES;
+            reached_limit = files.len() > limit;
             Ok(if reached_limit {
                 std::ops::ControlFlow::Break(())
             } else {
@@ -1012,6 +1057,7 @@ mod tests {
         commit_diff_blocking(
             &root.display().to_string(),
             rev,
+            false,
             &Arc::new(AtomicBool::new(false)),
             limits,
         )
@@ -1590,7 +1636,8 @@ three
             WORKTREE_REVISION.to_string(),
             format!("{WORKTREE_REVISION}...main"),
         ] {
-            let result = commit_diff_blocking(&root, &rev, &interrupt, MergeLimits::starting_now());
+            let result =
+                commit_diff_blocking(&root, &rev, false, &interrupt, MergeLimits::starting_now());
             // A clear input error rather than resolving `:worktree` as an index path.
             assert!(
                 matches!(&result, Err(failure) if failure.kind == CommandErrorKind::InvalidInput),

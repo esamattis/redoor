@@ -24,13 +24,70 @@ use redoor_protocol::{
 };
 
 use super::{
-    GitFailure, RepositoryPath, check_interrupt, diff::LineCounter, discover_repository, head_tree,
-    internal_failure, io_failure, not_git_repository, refs::RemoteDefaultBranch, run_blocking,
-    utf8_relative, validate_absolute_path,
+    GitFailure, RepositoryPath, check_interrupt,
+    diff::{LineCounter, json_encoded_len},
+    discover_repository, head_tree, internal_failure, io_failure, not_git_repository,
+    refs::RemoteDefaultBranch,
+    run_blocking, utf8_relative, validate_absolute_path,
 };
 
 /// Bounds status memory and the size of its WebSocket response.
 pub(crate) const MAX_GIT_STATUS_ENTRIES: usize = 5_000;
+/// The status limit once the user has asked to see every change. The default limit keeps an
+/// accidental look at a huge change set quick; this one still bounds agent memory, and
+/// `ListingBudget` keeps long paths from growing the reply past one agent message.
+pub(crate) const MAX_GIT_STATUS_ENTRIES_ALL: usize = 20_000;
+
+/// Bytes of listed entries one reply may carry. An entry count alone does not bound the reply,
+/// because paths can be long, and a reply past the server's 32 MiB message limit fails the
+/// read and closes the agent's whole session. This leaves room for a commit diff's patch
+/// budgets (12 MiB) beside it.
+const MAX_LISTING_BYTES: usize = 16 * 1024 * 1024;
+/// A generous estimate of one entry's JSON field names, states and punctuation, which the
+/// budget charges besides its texts.
+const LISTING_ENTRY_OVERHEAD_BYTES: usize = 256;
+
+/// Counts the bytes of a reply's listed entries, so a list of long paths is cut short with
+/// `truncated` set instead of growing past the message limit.
+pub(crate) struct ListingBudget {
+    left: usize,
+}
+
+impl ListingBudget {
+    /// Starts a reply with the whole budget left.
+    pub(crate) fn new() -> Self {
+        Self {
+            left: MAX_LISTING_BYTES,
+        }
+    }
+
+    /// Charges one entry with these texts as JSON encodes them, since escaping can grow a path
+    /// of control characters sixfold, or returns false and charges nothing when it does not
+    /// fit.
+    pub(crate) fn charge(&mut self, texts: &[&str]) -> bool {
+        let bytes = texts
+            .iter()
+            .map(|text| json_encoded_len(text.as_bytes()))
+            .sum::<usize>()
+            .saturating_add(LISTING_ENTRY_OVERHEAD_BYTES);
+        match self.left.checked_sub(bytes) {
+            Some(left) => {
+                self.left = left;
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+/// Picks the status entry limit: the larger ceiling only when the user opted into it.
+pub(crate) fn status_entry_limit(all: bool) -> usize {
+    if all {
+        MAX_GIT_STATUS_ENTRIES_ALL
+    } else {
+        MAX_GIT_STATUS_ENTRIES
+    }
+}
 
 /// Accumulates the two independent status comparisons for one path.
 pub(super) struct StatusAccumulator {
@@ -73,14 +130,17 @@ pub(crate) async fn context(path: String) -> Result<GitContextResponse, CommandE
 /// When `cancel` fires (the browser left the Git view or the connection ended) the walk is
 /// dropped at once, which interrupts gix instead of letting a large checkout keep the disk
 /// and a command slot busy for an answer nobody reads.
+///
+/// `all` raises the entry limit to the ceiling the user opted into.
 pub(crate) async fn status(
     path: String,
+    all: bool,
     cancel: &CancellationToken,
 ) -> Result<GitStatusResponse, CommandError> {
     let started_at = Instant::now();
     let walk = run_blocking({
         let path = path.clone();
-        move |interrupt| status_blocking(path, interrupt)
+        move |interrupt| status_blocking(path, status_entry_limit(all), interrupt)
     });
     let Some(result) = cancel.run_until_cancelled(walk).await else {
         // Lets an operator confirm that leaving the Git view stops the walk on the agent.
@@ -139,6 +199,7 @@ fn context_blocking(
 /// Produces deterministic merged status while retaining non-UTF-8 omission accounting.
 fn status_blocking(
     path: String,
+    limit: usize,
     interrupt: Arc<AtomicBool>,
 ) -> Result<GitStatusResponse, GitFailure> {
     let requested = validate_absolute_path(&path)?;
@@ -167,7 +228,7 @@ fn status_blocking(
                     .is_some_and(|suffix| suffix.starts_with(b"/"))
         },
         false,
-        MAX_GIT_STATUS_ENTRIES + 1,
+        limit + 1,
         // Limiting gix to the directory keeps a status of a small subdirectory from walking
         // the whole checkout; the prefix filter above stays as a guard on what is reported.
         directory_pathspec(&selected_relative),
@@ -182,6 +243,7 @@ fn status_blocking(
     let mut entries = Vec::new();
     let mut truncated = overflowed;
     let mut line_counter = LineCounter::new(&repository.repo)?;
+    let mut listing = ListingBudget::new();
     for (relative_bytes, status) in &mut changes {
         let Some(relative) = relative_bytes.as_bstr().to_str().ok() else {
             continue;
@@ -194,20 +256,26 @@ fn status_blocking(
         if !selected || status.ignored {
             continue;
         }
-        if entries.len() == MAX_GIT_STATUS_ENTRIES {
+        if entries.len() == limit {
             truncated = true;
             break;
         }
         check_interrupt(&interrupt, "count Git status lines")?;
-        let path = repository.root.join(Path::new(relative));
+        let disk_path = repository.root.join(Path::new(relative));
+        let path = disk_path.display().to_string();
+        let original = status.original_path.as_deref().unwrap_or_default();
+        if !listing.charge(&[&path, relative, original]) {
+            truncated = true;
+            break;
+        }
         // A conflicted file's worktree holds conflict markers, not a change to count.
         let line_changes = if status.conflict_state.is_some() {
             None
         } else {
-            line_counter.count(Path::new(relative), &path, status.is_untracked())?
+            line_counter.count(Path::new(relative), &disk_path, status.is_untracked())?
         };
         entries.push(GitStatusEntry {
-            path: path.display().to_string(),
+            path,
             repository_relative_path: relative.to_string(),
             original_path: status.original_path.take(),
             index_state: status.index_state,
@@ -543,5 +611,34 @@ fn tree_mode_kind(mode: gix::index::entry::Mode) -> GitStatusEntryKind {
         Some(mode) if mode.is_link() => GitStatusEntryKind::Symlink,
         Some(mode) if mode.is_blob() => GitStatusEntryKind::File,
         _ => GitStatusEntryKind::Other,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listing_budget_refuses_entries_past_the_reply_limit() {
+        let mut budget = ListingBudget::new();
+        let long_path = "p".repeat(1024 * 1024);
+        let mut charged = 0;
+        while budget.charge(&[&long_path]) {
+            charged += 1;
+        }
+        // Megabyte paths fill the 16 MiB budget after 15 entries, so the reply stays bounded
+        // by bytes even though the entry count is far below the limit.
+        assert_eq!(charged, 15);
+        // A refused entry charges nothing, so a short one after it still fits.
+        assert!(budget.charge(&["short"]));
+
+        let mut escaped = ListingBudget::new();
+        let control_path = "\u{1}".repeat(1024 * 1024);
+        let mut charged = 0;
+        while escaped.charge(&[&control_path]) {
+            charged += 1;
+        }
+        // Each control character is sent as a six-byte `\u0001`, so far fewer such paths fit.
+        assert_eq!(charged, 2);
     }
 }

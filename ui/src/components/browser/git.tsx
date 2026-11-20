@@ -1,11 +1,6 @@
 import React from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import {
-    AlertTriangle,
-    CheckCircle2,
-    FileDiff,
-    ListChecks,
-} from "lucide-react";
+import { CheckCircle2, FileDiff, ListChecks } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { SegmentedControl } from "#ui/components/segmented-control";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
@@ -22,6 +17,7 @@ import {
     ChangeBadge,
     GitPanelBar,
     LineChangeTotals,
+    TruncatedDiffNotice,
     type GitChangeKind,
 } from "#ui/components/browser/git-parts";
 import {
@@ -226,9 +222,14 @@ function worktreeDiffFiles(
  * The worktree changes below a directory: a summary of what is pending and every changed
  * file under a header naming it, collapsed until its diff is wanted.
  */
-export function GitDirectoryView(props: { agent: Agent; path: string }) {
+export function GitDirectoryView(props: {
+    agent: Agent;
+    path: string;
+    /** Whether the user opted into the agent's larger entry limit for a truncated status. */
+    allFiles: boolean;
+}) {
     const statusQuery = useQuery(
-        gitStatusQueryOptions(props.agent, props.path),
+        gitStatusQueryOptions(props.agent, props.path, props.allFiles),
     );
 
     const queryClient = useQueryClient();
@@ -365,14 +366,15 @@ export function GitDirectoryView(props: { agent: Agent; path: string }) {
             </GitPanelBar>
             <div className="grid grid-cols-[minmax(0,1fr)] gap-4 px-4 py-4 @xl:px-5">
                 {status.truncated ? (
-                    <p
-                        role="status"
-                        className="flex items-center gap-2 rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-300"
+                    <TruncatedDiffNotice
+                        agent={props.agent}
+                        path={props.path}
+                        allFiles={props.allFiles}
                     >
-                        <AlertTriangle className="h-4 w-4" aria-hidden="true" />
-                        Status is truncated. Narrow the directory to inspect
-                        more entries.
-                    </p>
+                        {props.allFiles
+                            ? "Status is truncated. Narrow the directory to inspect more entries."
+                            : "More files changed than are shown by default."}
+                    </TruncatedDiffNotice>
                 ) : null}
                 {status.omitted_non_utf8_entries > 0 ? (
                     <p
