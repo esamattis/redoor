@@ -161,7 +161,7 @@ password = "bob-password"
 }
 
 describe("Per-user workspaces", () => {
-    it("isolates devices, tokens, MCP, terminals, managed agents, UI events, protocol mismatches, and sessions", async () => {
+    it("isolates devices, tokens, terminals, managed agents, UI events, protocol mismatches, and sessions", async () => {
         const server = await startTwoUserServer({ seedWorkspaces: true });
         const alice = new ApiClient(server.baseUrl);
         const bob = new ApiClient(server.baseUrl);
