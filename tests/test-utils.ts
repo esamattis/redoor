@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import { spawn } from "node:child_process";
 import {
+    existsSync,
     mkdtempSync,
     writeFileSync,
     rmSync,
@@ -133,6 +134,21 @@ export class TempFileManager {
     private dirs: string[] = [];
     private tempDir: string | null = null;
 
+    /** Picks a temp root short enough for Unix domain sockets under deep TMPDIR values. */
+    private static tempRoot(): string {
+        const base = tmpdir();
+
+        if (
+            process.platform !== "win32" &&
+            base.length > 50 &&
+            existsSync("/tmp")
+        ) {
+            return "/tmp";
+        }
+
+        return base;
+    }
+
     /**
      * Get a temporary file path. The file will be tracked for automatic cleanup.
      * If create is true, the file will be created with the given content.
@@ -144,7 +160,7 @@ export class TempFileManager {
     }): string {
         if (!this.tempDir) {
             this.tempDir = realpathSync(
-                mkdtempSync(join(tmpdir(), "redoor-test-")),
+                mkdtempSync(join(TempFileManager.tempRoot(), "rd-")),
             );
         }
 
@@ -181,7 +197,7 @@ export class TempFileManager {
     tempDirectory(options?: { suffix?: string }): string {
         if (!this.tempDir) {
             this.tempDir = realpathSync(
-                mkdtempSync(join(tmpdir(), "redoor-test-")),
+                mkdtempSync(join(TempFileManager.tempRoot(), "rd-")),
             );
         }
 

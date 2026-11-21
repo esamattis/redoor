@@ -10,13 +10,26 @@ pub struct TempDir {
 impl TempDir {
     /// Creates the directory synchronously so ownership begins before a test can create fixtures.
     pub fn create() -> Self {
-        let path = std::env::temp_dir().join(format!(
-            "redoor-test-{}-{}",
-            std::process::id(),
-            uuid::Uuid::new_v4()
-        ));
+        let base = Self::base_dir();
+        let suffix = uuid::Uuid::new_v4().as_u128() as u64;
+        let path = base.join(format!("rd-{suffix:016x}"));
         std::fs::create_dir(&path).expect("temporary test directory should be created");
         Self { path }
+    }
+
+    /// Chooses a base directory short enough that Unix domain sockets created inside the fixture
+    /// stay under the platform `SUN_LEN` limit (104 bytes on macOS, 108 on Linux), even when the
+    /// outer environment sets a deep `TMPDIR`.
+    fn base_dir() -> PathBuf {
+        let temp_dir = std::env::temp_dir();
+        #[cfg(unix)]
+        if temp_dir.as_os_str().len() > 50 {
+            let short_tmp = Path::new("/tmp");
+            if short_tmp.is_dir() {
+                return short_tmp.to_path_buf();
+            }
+        }
+        temp_dir
     }
 
     /// Returns the owned root without allowing callers to replace its cleanup target.
