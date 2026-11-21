@@ -58,7 +58,9 @@ export function PathNameDialog(props: {
 
     const trimmedName = name.trim();
     const isPending = props.mutation.isPending;
-    const isUnavailable = props.unavailableMessage != null;
+    const isUnavailable =
+        props.unavailableMessage !== null &&
+        props.unavailableMessage !== undefined;
 
     const isUnchanged =
         props.requireChange === true &&
@@ -73,7 +75,10 @@ export function PathNameDialog(props: {
     const submit = (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
 
-        if (props.unavailableMessage != null) {
+        if (
+            props.unavailableMessage !== null &&
+            props.unavailableMessage !== undefined
+        ) {
             setValidationError(props.unavailableMessage);
 
             return;

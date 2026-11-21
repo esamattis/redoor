@@ -78,8 +78,16 @@ const vimWriteHandler = Facet.define<() => void, (() => void) | null>({
     combine: (handlers) => handlers[0] ?? null,
 });
 
+/** Reads a registered Vim command handler from the CodeMirror 6 view backing the Vim adapter. */
+function vimFacetHandler(
+    cm: { cm6: unknown },
+    facet: Facet<() => void, (() => void) | null>,
+): (() => void) | null {
+    return cm.cm6 instanceof EditorView ? cm.cm6.state.facet(facet) : null;
+}
+
 Vim.defineEx("write", "w", (cm) => {
-    cm.cm6.state.facet(vimWriteHandler)?.();
+    vimFacetHandler(cm, vimWriteHandler)?.();
 });
 
 /** Carries the `:wall` handler the same way, since that command is page-wide too. */
@@ -88,7 +96,7 @@ const vimWriteAllHandler = Facet.define<() => void, (() => void) | null>({
 });
 
 Vim.defineEx("wall", "wa", (cm) => {
-    cm.cm6.state.facet(vimWriteAllHandler)?.();
+    vimFacetHandler(cm, vimWriteAllHandler)?.();
 });
 
 /** The Vim configuration the adapter holds, so an unchanged one is not rebuilt. */

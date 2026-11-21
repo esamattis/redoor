@@ -52,7 +52,7 @@ beforeAll(async () => {
     baseUrl = `http://127.0.0.1:${setup.serverPort}`;
     apiClient = setup.apiClient;
     testAgent = setup.testAgent;
-}, 30000);
+}, 30_000);
 
 afterAll(async () => {
     await processManager.killAll();
@@ -115,16 +115,24 @@ function readSession(session: BrowserSession): {
     expires_at: number;
     length: string;
 } {
-    return JSON.parse(readFileSync(session.file, "utf8"));
+    const stored: {
+        authenticated_at: number;
+        created_at: number;
+        expires_at: number;
+        length: string;
+    } = JSON.parse(readFileSync(session.file, "utf8"));
+
+    return stored;
 }
 
 /** Ages the stored expiry, standing in for time passing without real waiting. */
 function setExpiresIn(session: BrowserSession, seconds: number): number {
     const stored = JSON.parse(readFileSync(session.file, "utf8"));
-    stored.expires_at = Math.floor(Date.now() / 1000) + seconds;
+    const expiresAt = Math.floor(Date.now() / 1000) + seconds;
+    stored.expires_at = expiresAt;
     writeFileSync(session.file, JSON.stringify(stored));
 
-    return stored.expires_at;
+    return expiresAt;
 }
 
 /** Makes the session's secret a minute old, so the next activity report rotates it. */
@@ -148,10 +156,10 @@ describe("Session lifetimes", () => {
             // A client that does not choose gets the shortest session.
             [undefined, 3600],
             ["hour", 3600],
-            ["day", 86400],
-            ["week", 604800],
-            ["month", 2592000],
-            ["year", 31536000],
+            ["day", 86_400],
+            ["week", 604_800],
+            ["month", 2_592_000],
+            ["year", 31_536_000],
         ];
 
         for (const [length, seconds] of expected) {
@@ -277,9 +285,9 @@ describe("Session lifetimes", () => {
             socket.once("error", reject);
         });
 
-        const closed = new Promise<number>((resolve) =>
-            socket.once("close", (code) => resolve(code)),
-        );
+        const closed = new Promise<number>((resolve) => {
+            socket.once("close", (code) => resolve(code));
+        });
 
         const logout = await fetch(`${baseUrl}/api/v1/logout`, {
             method: "POST",
@@ -290,5 +298,5 @@ describe("Session lifetimes", () => {
         // The socket checks its session every 30 seconds and then closes with the code the
         // UI turns into a trip to the login page instead of a reconnect.
         expect(await closed).toBe(SESSION_ENDED_CLOSE_CODE);
-    }, 60000);
+    }, 60_000);
 });

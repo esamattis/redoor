@@ -512,8 +512,11 @@ describe("stateless authenticated MCP", () => {
             managedConnected =
                 device.result.structuredContent?.device.status === "connected";
 
-            if (!managedConnected)
-                await new Promise<void>((resolve) => setTimeout(resolve, 20));
+            if (!managedConnected) {
+                await new Promise<void>((resolve) => {
+                    setTimeout(resolve, 20);
+                });
+            }
         }
 
         expect(managedConnected).toBe(true);
@@ -957,7 +960,7 @@ describe("stateless authenticated MCP", () => {
 
         // Stateless processing requires capabilities/version on this exact request.
         expect(metadataResponse.status).toBe(400);
-        expect((await metadataResponse.json()).error.code).toBe(-32602);
+        expect((await metadataResponse.json()).error.code).toBe(-32_602);
 
         const missingHeader = await rawMcp({
             token: activeToken,
@@ -967,7 +970,7 @@ describe("stateless authenticated MCP", () => {
 
         // Missing mirrored metadata uses the reserved HeaderMismatch error.
         expect(missingHeader.status).toBe(400);
-        expect((await missingHeader.json()).error.code).toBe(-32020);
+        expect((await missingHeader.json()).error.code).toBe(-32_020);
 
         const mismatchedName = await rawMcp({
             token: activeToken,
@@ -984,7 +987,7 @@ describe("stateless authenticated MCP", () => {
 
         // The proxy-visible tool name cannot disagree with the operation the server executes.
         expect(mismatchedName.status).toBe(400);
-        expect((await mismatchedName.json()).error.code).toBe(-32020);
+        expect((await mismatchedName.json()).error.code).toBe(-32_020);
 
         const unsupportedBody = requestBody("tools/list", {}, "1900-01-01");
 
@@ -1001,7 +1004,7 @@ describe("stateless authenticated MCP", () => {
         expect(unsupported.status).toBe(400);
         expect(await unsupported.json()).toMatchObject({
             error: {
-                code: -32022,
+                code: -32_022,
                 data: { supported: [MCP_PROTOCOL_VERSION] },
             },
         });
@@ -1019,7 +1022,7 @@ describe("stateless authenticated MCP", () => {
 
         // A JSON-RPC 404 identifies a modern endpoint with no resources method.
         expect(unknownMethod.status).toBe(404);
-        expect((await unknownMethod.json()).error.code).toBe(-32601);
+        expect((await unknownMethod.json()).error.code).toBe(-32_601);
 
         const client = createMcpTestClient({ endpoint, token: activeToken });
         await expect(client.callTool("missing")).rejects.toThrow("-32602");

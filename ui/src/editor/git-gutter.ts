@@ -90,7 +90,7 @@ function markersFor(
     source: GitGutterSource,
 ): RangeSet<GutterMarker> {
     if (source.kind !== "bases") {
-        return RangeSet.empty;
+        return RangeSet.of<GutterMarker>([]);
     }
 
     const marks = gitLineMarks(doc.toJSON(), source.bases);
@@ -124,7 +124,7 @@ const refreshGitMarkers = StateEffect.define<null>();
 export const gitGutterField = StateField.define<GitGutterState>({
     create: () => ({
         source: GIT_GUTTER_HIDDEN,
-        markers: RangeSet.empty,
+        markers: RangeSet.of<GutterMarker>([]),
         stale: false,
     }),
     update(value, transaction) {

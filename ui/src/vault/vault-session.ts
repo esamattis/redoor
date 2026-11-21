@@ -320,7 +320,7 @@ export class VaultSession extends ExternalStore<VaultLockState> {
 
         const device = await this.api
             .createVaultDevice({ lock_after: lockAfter })
-            .catch((error: Error) => {
+            .catch((error: unknown) => {
                 throw new Error(
                     "The server could not keep the vault unlocked for this browser. Try again.",
                     { cause: error },
@@ -442,7 +442,11 @@ export class VaultSession extends ExternalStore<VaultLockState> {
                     expiresInSeconds: status.expires_in_seconds,
                 });
             },
-            (error: Error) => this.serverCheckFailed(deviceId, error),
+            (error: unknown) =>
+                this.serverCheckFailed(
+                    deviceId,
+                    error instanceof Error ? error : new Error(String(error)),
+                ),
         );
     }
 

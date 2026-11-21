@@ -67,7 +67,9 @@ export function SshKeySection(props: {
     });
 
     const vaultStatus = useQuery(vaultStatusQueryOptions(api));
-    const hasVault = vaultStatus.data?.vault != null;
+    const hasVault =
+        vaultStatus.data?.vault !== null &&
+        vaultStatus.data?.vault !== undefined;
 
     // An account with a vault keeps keys encrypted, so a plaintext key is rotated into one.
     const rotatesToEncrypted =

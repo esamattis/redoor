@@ -494,7 +494,7 @@ describe.skipIf(!hasUserManager).sequential("systemd units", () => {
             Math.abs(
                 (listedTimer?.timer?.next_elapse_ms ?? 0) - (nextElapse ?? 0),
             ),
-        ).toBeLessThan(5_000);
+        ).toBeLessThan(5000);
         // Other unit types carry no timer summary.
         expect(
             list.units.find((unit) => unit.name === timers.service)?.timer,
@@ -519,10 +519,10 @@ describe.skipIf(!hasUserManager).sequential("systemd units", () => {
 
         // systemd records when the timer really elapsed; show prints whole seconds.
         expect(elapsed.timer?.last_trigger_ms).toBeGreaterThanOrEqual(
-            soonStartedAt - 2_000,
+            soonStartedAt - 2000,
         );
         expect(elapsed.timer?.last_trigger_ms).toBeLessThanOrEqual(
-            Date.now() + 1_000,
+            Date.now() + 1000,
         );
         // A one-shot OnActiveSec timer has nothing left to run after it elapsed.
         expect(elapsed.timer?.next_elapse_ms).toBeNull();

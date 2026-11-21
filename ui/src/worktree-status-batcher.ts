@@ -158,7 +158,11 @@ export class WorktreeStatusBatcher {
 
     /** Drops a cancelled row, and its request too once no other row waits for it. */
     #abandon(path: string, waiter: Waiter) {
-        waiter.reject(waiter.signal.reason);
+        waiter.reject(
+            waiter.signal.reason instanceof Error
+                ? waiter.signal.reason
+                : new Error("Worktree status request aborted"),
+        );
         this.#queued.remove(path, waiter);
 
         const inFlight = this.#inFlight;

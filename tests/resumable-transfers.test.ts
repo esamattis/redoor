@@ -159,7 +159,7 @@ describe("resumable transfers", () => {
                 REDOOR_APP_NAME: "redoor-resume-dest",
             },
         });
-        await api.waitForConnectedAgentNames(["resume-dest"], 30000);
+        await api.waitForConnectedAgentNames(["resume-dest"], 30_000);
     }
 
     /** Each test owns its paths and discards unfinished output before fixture teardown. */
@@ -314,7 +314,7 @@ describe("resumable transfers", () => {
     async function completed(id: number, sourcePath: string, destPath: string) {
         const transfer = await waitForValue({
             description: "resumed publication",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () =>
                 (await api.getTransferProgress()).transfers.find(
                     (entry) =>
@@ -397,7 +397,7 @@ describe("resumable transfers", () => {
             transfer.resumed_bytes,
             "whole matching segments are reused",
         ).toBeGreaterThanOrEqual(64 * 1024 * 1024);
-    }, 30000);
+    }, 30_000);
 
     it("resumes after toxiproxy interrupts the destination connection", async () => {
         const proxy = destinationProxy;
@@ -450,7 +450,7 @@ describe("resumable transfers", () => {
 
         // Re-initiating uses the same automatic resume negotiation as the inventory button.
         expect(transfer.resumed_bytes).toBeGreaterThanOrEqual(64 * 1024 * 1024);
-    }, 30000);
+    }, 30_000);
 
     it("pausing during verification persists the saved partial before acknowledgement", async () => {
         const run = await paused();
@@ -571,7 +571,7 @@ describe("resumable transfers", () => {
 
         // A crash runs no stop handler, so rediscovery must rely on creation-time metadata.
         expect(transfer.resumed_bytes).toBeGreaterThanOrEqual(64 * 1024 * 1024);
-    }, 30000);
+    }, 30_000);
 
     it("user cancellation while appending discards the partial and manifest", async () => {
         const run = await paused();
@@ -768,7 +768,7 @@ describe("resumable transfers", () => {
                 (partial) => partial.key === run.partial.key,
             ),
         ).toBe(false);
-    }, 30000);
+    }, 30_000);
 
     it("rediscovers a partial after both destination and server restarts", async () => {
         const run = await paused();
@@ -789,7 +789,7 @@ describe("resumable transfers", () => {
         // Inventory can appear before the source reconnects; resume requires both endpoints.
         await api.waitForConnectedAgentNames(
             ["resume-source", "resume-dest"],
-            30000,
+            30_000,
         );
 
         const partial = await waitForValue({
@@ -804,7 +804,7 @@ describe("resumable transfers", () => {
         expect(partial.partial_bytes).toBe(run.partial.partial_bytes);
         const resumed = await api.resumePartial(partial);
         await completed(resumed.transfer_id, run.sourcePath, run.destPath);
-    }, 30000);
+    }, 30_000);
 
     it("repairs a corrupted cross-agent prefix and rejects a manifest on another agent", async () => {
         const run = await paused();

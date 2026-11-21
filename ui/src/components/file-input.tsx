@@ -18,11 +18,12 @@ export function FileInput(props: {
     directory?: boolean;
     onSelect: (files: File[]) => void;
 }) {
+    const { ref } = props;
     const inputId = React.useId();
     const inputRef = React.useRef<HTMLInputElement | null>(null);
 
     React.useImperativeHandle(
-        props.ref,
+        ref,
         () => ({ open: () => inputRef.current?.click() }),
         [],
     );

@@ -103,7 +103,9 @@ test("an awaited loader fetch survives successive query invalidations", async ()
     const waitForRequest = (count: number) =>
         requests.length >= count
             ? Promise.resolve()
-            : new Promise<void>((resolve) => started.push(resolve));
+            : new Promise<void>((resolve) => {
+                  started.push(resolve);
+              });
 
     const loader = fetchQueryUncancelled(queryClient, options);
     await waitForRequest(1);

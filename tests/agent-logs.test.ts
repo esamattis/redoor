@@ -123,7 +123,9 @@ async function waitForClose(socket: WebSocket): Promise<void> {
         return;
     }
 
-    await new Promise<void>((resolve) => socket.once("close", () => resolve()));
+    await new Promise<void>((resolve) => {
+        socket.once("close", () => resolve());
+    });
 }
 
 /** Resolves on the server-originated control frame without adding application traffic. */
@@ -133,7 +135,7 @@ async function waitForPing(socket: WebSocket): Promise<void> {
             () =>
                 reject(new Error("idle log websocket did not receive a ping")),
             // The suite sets REDOOR_WEBSOCKET_KEEPALIVE=200ms, so a live ping arrives far sooner than production's 10s.
-            2_000,
+            2000,
         );
 
         socket.once("ping", () => {
@@ -404,7 +406,7 @@ log_format = "line"
 
         // Receiving a later keepalive without a close proves the idle browser leg stayed active.
         expect(opened.socket.readyState).toBe(WebSocket.OPEN);
-    }, 5_000);
+    }, 5000);
 
     it("keeps idle UI refresh and server log sockets active", async () => {
         const uiSocket = new WebSocket(apiClient.getUiWebSocketUrl(), {
@@ -438,7 +440,7 @@ log_format = "line"
         expect(uiSocket.readyState).toBe(WebSocket.OPEN);
         // The log socket must keep writing even when no new log entry is available.
         expect(serverLogsSocket.readyState).toBe(WebSocket.OPEN);
-    }, 5_000);
+    }, 5000);
 
     it("releases agent and server resources when the browser disconnects", async () => {
         const opened = await openLogSocket();
@@ -538,7 +540,7 @@ log_format = "line"
 
         const unavailable = await testAgent
             .getLoggingLevel()
-            .catch((error) => error);
+            .catch((error: unknown) => error);
 
         // A disconnected update/read must fail rather than displaying a value from server state.
         expect(unavailable).toBeInstanceOf(ApiError);

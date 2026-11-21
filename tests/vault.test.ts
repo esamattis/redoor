@@ -105,7 +105,7 @@ describe("Vault", () => {
         apiClient = setup.apiClient;
         agent = setup.testAgent;
         serverPid = setup.serverPid;
-    }, 30000);
+    }, 30_000);
 
     beforeEach(() => {
         // The vault is per account and the account is shared by every test.
@@ -823,7 +823,7 @@ describe("Vault", () => {
         for (const [name, attempt] of attempts) {
             const status = await attempt().then(
                 () => 200,
-                (error: Error) =>
+                (error: unknown) =>
                     error instanceof ApiError ? error.status : 0,
             );
 

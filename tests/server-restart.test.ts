@@ -27,7 +27,7 @@ describe("server restart", () => {
         api = setup.apiClient;
         agent = setup.testAgent;
         serverPort = setup.serverPort;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -55,16 +55,16 @@ describe("server restart", () => {
 
         await api.restartServer();
 
-        const after = await waitForNewBootId(before, 15000);
+        const after = await waitForNewBootId(before, 15_000);
 
         // The re-exec keeps the PID, so only the boot id proves a new process answers.
         expect(after).not.toBe(before);
-    }, 30000);
+    }, 30_000);
 
     it("restarts without waiting for a request that stays open", async () => {
         // A restarted server only knows the agent again once it reconnected.
         await waitForValue({
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             description: "agent connected to the current server",
             predicate: async () =>
                 (await api.listAgents()).find(
@@ -106,8 +106,8 @@ describe("server restart", () => {
 
         // The grace period is 5 seconds; without it the server would stay unreachable
         // until the command ended.
-        const after = await waitForNewBootId(before, 20000);
+        const after = await waitForNewBootId(before, 20_000);
 
         expect(after).not.toBe(before);
-    }, 70000);
+    }, 70_000);
 });

@@ -257,7 +257,7 @@ describe.skipIf(
         const userBefore = await waitForValue({
             description: `${SSH_PASSWORD_USER}'s user manager to stop on its own`,
             timeoutMs: 45_000,
-            intervalMs: 1_000,
+            intervalMs: 1000,
             predicate: async () => {
                 const user = await remoteSystemdUser(SSH_PASSWORD_USER);
 

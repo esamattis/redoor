@@ -647,7 +647,9 @@ function OpenSearchDialog(props: { agent: Agent }) {
                     isContentSearch={isContentSearch}
                     pathResults={pathSearch.data?.results}
                     contentResults={contentSearch.data?.results}
-                    onOpen={openSelectedResult}
+                    onOpen={(target, index) => {
+                        void openSelectedResult(target, index);
+                    }}
                     onSearchInFolder={searchContentsOfFolder}
                 />
             </div>

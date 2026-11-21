@@ -24,7 +24,7 @@ import type { CliLoginResponse } from "#bindings/CliLoginResponse";
 import type { CliTokenDefaults } from "#bindings/CliTokenDefaults";
 import type { DeviceScope } from "#bindings/DeviceScope";
 import type { Permission } from "#bindings/Permission";
-import { ApiError } from "#ui/api-transport";
+import { ApiError, decodeJsonResponse } from "#ui/api-transport";
 import { onTestFinished } from "vitest";
 import { Toxiproxy } from "toxiproxy-node-client";
 import type Proxy from "toxiproxy-node-client/dist/Proxy";
@@ -665,7 +665,7 @@ password = "${TEST_PASSWORD}"
 
     async waitForExit(
         pid: number,
-        timeoutMs: number = 10000,
+        timeoutMs: number = 10_000,
     ): Promise<number | null> {
         const process = this.processes.get(pid);
 
@@ -680,7 +680,7 @@ password = "${TEST_PASSWORD}"
     private async waitForChildExit(
         pid: number,
         child: ChildProcess,
-        timeoutMs: number = 10000,
+        timeoutMs: number = 10_000,
     ): Promise<number | null> {
         if (child.exitCode !== null || child.signalCode !== null) {
             return child.exitCode;
@@ -806,7 +806,7 @@ export function agentRegisteredPattern(agentName: string): RegExp {
 export async function waitForAgentReady(
     serverProcess: ChildProcess,
     agentName: string,
-    timeoutMs = 10000,
+    timeoutMs = 10_000,
 ): Promise<void> {
     await waitForLogMessage(
         serverProcess,
@@ -922,7 +922,7 @@ class OutputBuffer {
 export async function waitForLogMessage(
     process: ChildProcess,
     pattern: RegExp,
-    timeoutMs: number = 10000,
+    timeoutMs: number = 10_000,
 ): Promise<void> {
     const stdout = process.stdout;
 
@@ -983,7 +983,7 @@ export async function waitForValue<T>(options: {
     intervalMs?: number;
     description: string;
 }): Promise<T> {
-    const timeoutMs = options.timeoutMs ?? 10000;
+    const timeoutMs = options.timeoutMs ?? 10_000;
     const intervalMs = options.intervalMs ?? 50;
     const start = Date.now();
     let lastError: Error | undefined;
@@ -1002,7 +1002,9 @@ export async function waitForValue<T>(options: {
                 error instanceof Error ? error : new Error(String(error));
         }
 
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+        await new Promise((resolve) => {
+            setTimeout(resolve, intervalMs);
+        });
     }
 
     const errorSuffix = lastError ? `: ${lastError.message}` : "";
@@ -1228,7 +1230,9 @@ export function browserFetch(
  * passing without real waiting, so the fresh sign-in window can be tested at its edge.
  */
 export function ageFreshLogin(session: BrowserSession, seconds: number): void {
-    const stored = JSON.parse(readFileSync(session.file, "utf8"));
+    const stored = z
+        .record(z.string(), z.unknown())
+        .parse(JSON.parse(readFileSync(session.file, "utf8")));
     stored.authenticated_at = Math.floor(Date.now() / 1000) - seconds;
     writeFileSync(session.file, JSON.stringify(stored));
 }
@@ -1308,9 +1312,9 @@ export async function approveCliLogin(
         "Content-Type": "application/json",
     };
 
-    const request: CliLoginResponse = await (
-        await fetch(`${baseUrl}/api/v1/cli-logins/${cli.id}`, { headers })
-    ).json();
+    const request = await decodeJsonResponse<CliLoginResponse>(
+        await fetch(`${baseUrl}/api/v1/cli-logins/${cli.id}`, { headers }),
+    );
 
     const approved = await fetch(
         `${baseUrl}/api/v1/cli-logins/${cli.id}/approve`,
@@ -1325,7 +1329,7 @@ export async function approveCliLogin(
         throw new Error(`Approval failed with status ${approved.status}`);
     }
 
-    const body: ApproveCliLoginResponse = await approved.json();
+    const body = await decodeJsonResponse<ApproveCliLoginResponse>(approved);
 
     return body.metadata;
 }

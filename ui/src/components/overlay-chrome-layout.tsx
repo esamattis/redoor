@@ -10,6 +10,7 @@ export function OverlayChromeLayout(props: {
     children: React.ReactNode;
 }) {
     const touchChrome = useTouchChromeVisibility();
+    const { topChromeRef, scrollAreaRef, bottomChromeRef } = touchChrome;
 
     // State rather than a ref, so hooks measuring the column subscribe once it mounts.
     const [contentContainer, setContentContainer] =
@@ -25,7 +26,7 @@ export function OverlayChromeLayout(props: {
                 className="@container/main group/editor-layout relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
             >
                 <div
-                    ref={touchChrome.topChromeRef}
+                    ref={topChromeRef}
                     className="touch-hide-top-shell absolute inset-x-0 top-0 z-20 translate-y-0 transition-transform duration-200 ease-out motion-reduce:transition-none"
                 >
                     {props.topChrome}
@@ -33,7 +34,7 @@ export function OverlayChromeLayout(props: {
                 {/* The router restores this scroll position on back and forward. The id names it
                 stably; otherwise the router finds it by its position among its siblings. */}
                 <main
-                    ref={touchChrome.scrollAreaRef}
+                    ref={scrollAreaRef}
                     data-scroll-restoration-id="app-main"
                     onTouchStart={touchChrome.onTouchStart}
                     onTouchMove={touchChrome.onTouchMove}
@@ -46,7 +47,7 @@ export function OverlayChromeLayout(props: {
                 </main>
                 {/* Keep tools above the full-window editor, but below modal dialogs. */}
                 <div
-                    ref={touchChrome.bottomChromeRef}
+                    ref={bottomChromeRef}
                     className={`touch-hide-bottom-stack z-[65] flex flex-col transition-transform duration-200 ease-out motion-reduce:transition-none ${props.isBottomChromeFullWindow ? "fixed inset-0" : "absolute inset-x-0 bottom-0 translate-y-0 group-has-[[data-editor-full-window=true]]/editor-layout:fixed"}`}
                 >
                     {props.bottomChrome}

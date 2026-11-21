@@ -93,10 +93,14 @@ function useSystemdJournal(props: {
     unit: string;
     attempt: number;
 }): JournalState {
-    const [state, setState] = React.useState<JournalState>(INITIAL_STATE);
     const agentId = props.agent.id;
     const scopeKey = systemdScopeKey(props.scope);
     const unit = props.unit;
+    const streamKey = `${agentId}\0${scopeKey}\0${unit}\0${String(props.attempt)}`;
+    const [entry, setEntry] = React.useState<{
+        key: string;
+        state: JournalState;
+    }>(() => ({ key: streamKey, state: INITIAL_STATE }));
 
     // The device and scope objects are rebuilt whenever unrelated device data changes, so the
     // stream is opened through an effect event and restarted only for another unit or retry.
@@ -112,19 +116,28 @@ function useSystemdJournal(props: {
         let counter = 0;
         const nextId = () => ++counter;
 
-        setState(INITIAL_STATE);
+        const updateStreamState = (
+            updater: (current: JournalState) => JournalState,
+        ) => {
+            setEntry((previous) => ({
+                key: streamKey,
+                state: updater(
+                    previous.key === streamKey ? previous.state : INITIAL_STATE,
+                ),
+            }));
+        };
 
         /** Reads batches until the stream ends, fails or the view goes away. */
         const follow = async () => {
             try {
                 for await (const batch of openStream(controller.signal)) {
-                    setState((current) =>
+                    updateStreamState((current) =>
                         applyJournalBatch(current, batch, nextId),
                     );
                 }
 
                 // The stream normally never ends; say so when it did without an `end` event.
-                setState((current) =>
+                updateStreamState((current) =>
                     current.status.kind === "ended"
                         ? current
                         : {
@@ -137,7 +150,7 @@ function useSystemdJournal(props: {
                     return;
                 }
 
-                setState((current) => ({
+                updateStreamState((current) => ({
                     ...current,
                     status: {
                         kind: "failed",
@@ -153,9 +166,9 @@ function useSystemdJournal(props: {
         void follow();
 
         return () => controller.abort();
-    }, [agentId, scopeKey, unit, props.attempt]);
+    }, [streamKey]);
 
-    return state;
+    return entry.key === streamKey ? entry.state : INITIAL_STATE;
 }
 
 /** Colours a line by its syslog priority, so errors and warnings stand out in a long log. */

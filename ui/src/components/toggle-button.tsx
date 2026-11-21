@@ -48,23 +48,30 @@ export function ToggleButton(props: ToggleButtonProps) {
     delete buttonProps.variant;
     delete buttonProps.size;
 
+    const nativeProps = {
+        ...buttonProps,
+        "aria-label": props.label,
+        "aria-pressed": props.pressed,
+        className: cn(
+            "inline-flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+            variantClasses[props.variant ?? "outline"],
+            sizeClasses[props.size ?? "icon"],
+            props.className,
+        ),
+    };
+
     return (
         <OptionalTooltip
             tooltip={props.tooltip}
             tooltipClassName={props.tooltipClassName}
         >
-            <button
-                {...buttonProps}
-                type={props.type ?? "button"}
-                aria-label={props.label}
-                aria-pressed={props.pressed}
-                className={cn(
-                    "inline-flex items-center justify-center transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                    variantClasses[props.variant ?? "outline"],
-                    sizeClasses[props.size ?? "icon"],
-                    props.className,
-                )}
-            />
+            {props.type === "submit" ? (
+                <button {...nativeProps} type="submit" />
+            ) : props.type === "reset" ? (
+                <button {...nativeProps} type="reset" />
+            ) : (
+                <button {...nativeProps} type="button" />
+            )}
         </OptionalTooltip>
     );
 }

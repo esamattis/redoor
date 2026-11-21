@@ -50,7 +50,9 @@ async function waitForPort(port: number): Promise<void> {
             // Server has not bound yet.
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => {
+            setTimeout(resolve, 100);
+        });
     }
 
     throw new Error(`Demo server on port ${port} did not become ready`);
@@ -104,7 +106,7 @@ async function stopServer(child: ChildProcess | undefined): Promise<void> {
             }
 
             resolve();
-        }, 5_000);
+        }, 5000);
 
         child.once("exit", () => {
             clearTimeout(timer);

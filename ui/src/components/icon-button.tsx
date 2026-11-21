@@ -83,16 +83,24 @@ export function IconButton(props: IconButtonProps) {
     const nativeButtonProps: React.ComponentPropsWithRef<"button"> =
         buttonProps;
 
+    const nativeProps = {
+        ...nativeButtonProps,
+        "aria-label": props.label,
+        className: getIconButtonClassName(props),
+    };
+
     return (
         <OptionalTooltip
             tooltip={props.tooltip === undefined ? props.label : props.tooltip}
             tooltipClassName={props.tooltipClassName}
         >
-            <button
-                {...nativeButtonProps}
-                aria-label={props.label}
-                className={getIconButtonClassName(props)}
-            />
+            {props.type === "button" ? (
+                <button {...nativeProps} type="button" />
+            ) : props.type === "reset" ? (
+                <button {...nativeProps} type="reset" />
+            ) : (
+                <button {...nativeProps} type="submit" />
+            )}
         </OptionalTooltip>
     );
 }

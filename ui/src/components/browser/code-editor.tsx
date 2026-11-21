@@ -167,7 +167,6 @@ export function CodeEditor(props: CodeEditorProps) {
 
     const containerRef = React.useRef<HTMLDivElement>(null);
     const propsRef = React.useRef(props);
-    propsRef.current = props;
     const hasReceivedFocusRef = React.useRef(false);
     const [view, setView] = React.useState<EditorView | null>(null);
     const [documentRevision, setDocumentRevision] = React.useState(0);
@@ -188,7 +187,6 @@ export function CodeEditor(props: CodeEditorProps) {
     };
 
     const settingsRef = React.useRef(settings);
-    settingsRef.current = settings;
 
     const revealLine = props.reveal?.line;
     const revealId = props.reveal?.id;
@@ -205,7 +203,12 @@ export function CodeEditor(props: CodeEditorProps) {
     };
 
     const lineTargetsRef = React.useRef(lineTargets);
-    lineTargetsRef.current = lineTargets;
+
+    React.useLayoutEffect(() => {
+        propsRef.current = props;
+        settingsRef.current = settings;
+        lineTargetsRef.current = lineTargets;
+    });
 
     /** Mirrors the editor's caret and selection into the chrome and the accessible spans. */
     const syncFromState = React.useCallback((state: EditorState) => {

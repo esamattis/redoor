@@ -47,7 +47,7 @@ describe("Per-stream transfer isolation", () => {
 
         apiClient = setup.apiClient;
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();
@@ -74,7 +74,11 @@ describe("Per-stream transfer isolation", () => {
         return (await response.text())
             .trim()
             .split("\n")
-            .map((line): ExecEvent => JSON.parse(line));
+            .map((line): ExecEvent => {
+                const parsed: ExecEvent = JSON.parse(line);
+
+                return parsed;
+            });
     }
 
     /** Starts a download whose body is never read, and waits until it is mid-stream. */
@@ -164,7 +168,7 @@ describe("Per-stream transfer isolation", () => {
 
         // Terminal frames use the interactive lane, so they never queue behind stalled bulk data.
         expect(latency).toBeLessThan(INTERACTIVE_LATENCY_MS);
-    }, 60000);
+    }, 60_000);
 
     it("keeps control commands fast while a bulk upload streams", async () => {
         const uploadPath = tempFiles.tempFile({ suffix: "-bulk.bin" });
@@ -224,7 +228,7 @@ describe("Per-stream transfer isolation", () => {
         expect(Math.max(...latencies)).toBeLessThan(INTERACTIVE_LATENCY_MS);
         // The upload itself still completes on the shared connection.
         expect((await upload).ok).toBe(true);
-    }, 120000);
+    }, 120_000);
 
     it("keeps other downloads and exec output flowing while one download consumer is stalled", async () => {
         const stalledPath = tempFiles.create(
@@ -301,5 +305,5 @@ describe("Per-stream transfer isolation", () => {
 
         // Dropping the stalled body still cancels its agent worker through the router.
         expect(settled.error).toBe("Download canceled by client");
-    }, 60000);
+    }, 60_000);
 });

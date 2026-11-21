@@ -20,7 +20,7 @@ test.describe.serial("Transfer cancellation", () => {
         let canceled = false;
 
         const transfer = {
-            request_id: 987654,
+            request_id: 987_654,
             agent_id: ctx.agentId,
             path: `${ctx.testDirPath}/large-upload.bin`,
             source: null,

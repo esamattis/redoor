@@ -6,6 +6,45 @@ import * as React from "react";
  */
 const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
+/** Subscribes to the system clock until `time` passes, stepping around 32-bit timer caps. */
+function subscribeUntil(
+    time: number | null,
+    onStoreChange: () => void,
+): () => void {
+    if (time === null) {
+        return () => undefined;
+    }
+
+    let timer: number | undefined;
+
+    const schedule = () => {
+        const delay = time - Date.now();
+
+        if (delay <= 0) {
+            onStoreChange();
+
+            return;
+        }
+
+        timer = window.setTimeout(schedule, Math.min(delay, MAX_TIMEOUT_MS));
+    };
+
+    const initialDelay = time - Date.now();
+
+    if (initialDelay > 0) {
+        timer = window.setTimeout(
+            schedule,
+            Math.min(initialDelay, MAX_TIMEOUT_MS),
+        );
+    }
+
+    return () => {
+        if (timer !== undefined) {
+            window.clearTimeout(timer);
+        }
+    };
+}
+
 /**
  * Whether `time` (milliseconds since the epoch) has passed, re-rendering when it does.
  *
@@ -14,29 +53,13 @@ const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
  * until the new time.
  */
 export function useIsPast(time: number | null): boolean {
-    const [now, setNow] = React.useState(() => Date.now());
+    const subscribe = React.useCallback(
+        (onStoreChange: () => void) => subscribeUntil(time, onStoreChange),
+        [time],
+    );
 
-    React.useEffect(() => {
-        if (time === null || now >= time) {
-            return;
-        }
-
-        const delay = time - Date.now();
-
-        if (delay <= 0) {
-            // Guarded by `now < time` above, so this runs once and cannot loop.
-            setNow(Date.now());
-
-            return;
-        }
-
-        const timer = window.setTimeout(
-            () => setNow(Date.now()),
-            Math.min(delay, MAX_TIMEOUT_MS),
-        );
-
-        return () => window.clearTimeout(timer);
-    }, [time, now]);
-
-    return time !== null && now >= time;
+    return React.useSyncExternalStore(
+        subscribe,
+        () => time !== null && Date.now() >= time,
+    );
 }

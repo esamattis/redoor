@@ -42,7 +42,7 @@ describe("Raw Upload API with toxiproxy", () => {
         apiClient = setup.apiClient;
         serverPort = setup.serverPort;
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();
@@ -83,7 +83,7 @@ describe("Raw Upload API with toxiproxy", () => {
 
         const activeTransfer = await waitForValue({
             description: "partially transferred upload progress row",
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -143,7 +143,7 @@ describe("Raw Upload API with toxiproxy", () => {
 
         // Reading the file back verifies the bandwidth toxic did not corrupt the uploaded binary payload.
         expect(Buffer.compare(downloadedContent, uploadContent)).toBe(0);
-    }, 20000);
+    }, 20_000);
 
     it("should keep command requests responsive during a throttled upload", async () => {
         const chunkSizeBytes = 64 * 1024;
@@ -180,7 +180,7 @@ describe("Raw Upload API with toxiproxy", () => {
 
         const activeTransfer = await waitForValue({
             description: "active upload before issuing concurrent command",
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -234,7 +234,7 @@ describe("Raw Upload API with toxiproxy", () => {
             path: uploadedFilePath,
             bytes_written: totalBytes,
         });
-    }, 20000);
+    }, 20_000);
 
     it("cancels a throttled upload over the control path and removes partial output", async () => {
         const totalBytes = 8 * 1024 * 1024;
@@ -269,12 +269,12 @@ describe("Raw Upload API with toxiproxy", () => {
             )
             .then(
                 () => ({ completed: true as const }),
-                (error: Error) => ({ completed: false as const, error }),
+                (error: unknown) => ({ completed: false as const, error }),
             );
 
         const active = await waitForValue({
             description: "partially uploaded row before explicit cancellation",
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             predicate: async () =>
                 (await apiClient.getTransferProgress()).transfers.find(
                     (transfer) =>
@@ -313,7 +313,7 @@ describe("Raw Upload API with toxiproxy", () => {
         expect(remainingEntries).toEqual([]);
         // A responsive command after cleanup proves cancellation did not block the control lane.
         expect((await testAgent.getDetails()).name).toBe(testAgent.name);
-    }, 25000);
+    }, 25_000);
 
     it("should report interrupted uploads and recover after removing the toxic", async () => {
         const chunkSizeBytes = 64 * 1024;
@@ -351,13 +351,13 @@ describe("Raw Upload API with toxiproxy", () => {
             )
             .then(
                 (response) => ({ ok: true as const, response }),
-                (error: Error) => ({ ok: false as const, error }),
+                (error: unknown) => ({ ok: false as const, error }),
             );
 
         const erroredTransfer = await waitForValue({
             description:
                 "errored upload progress row after connection interruption",
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -395,9 +395,11 @@ describe("Raw Upload API with toxiproxy", () => {
         }
 
         // Keeping the fetch error confirms the failure propagated back to the HTTP client as a broken connection.
-        expect(interruptedUploadResult.error.message).toMatch(
-            /fetch failed|socket|closed/i,
-        );
+        expect(
+            interruptedUploadResult.error instanceof Error
+                ? interruptedUploadResult.error.message
+                : String(interruptedUploadResult.error),
+        ).toMatch(/fetch failed|socket|closed/i);
 
         await interruptionToxic.remove();
 
@@ -419,7 +421,7 @@ describe("Raw Upload API with toxiproxy", () => {
 
         const recoveredTransfer = await waitForValue({
             description: "completed upload progress row after toxic removal",
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -449,5 +451,5 @@ describe("Raw Upload API with toxiproxy", () => {
         expect(
             Buffer.compare(downloadedRecoveredContent, recoveredContent),
         ).toBe(0);
-    }, 20000);
+    }, 20_000);
 });

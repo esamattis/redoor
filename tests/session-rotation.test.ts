@@ -59,7 +59,7 @@ beforeAll(async () => {
     apiClient = setup.apiClient;
     serverPid = setup.serverPid;
     testAgent = setup.testAgent;
-}, 30000);
+}, 30_000);
 
 afterAll(async () => {
     await processManager.killAll();
@@ -130,7 +130,11 @@ function send(cookie: string, path: string, method = "GET"): Promise<Response> {
 
 /** The stored session, as the server reads it on every request. */
 function readSession(session: BrowserSession): StoredSession {
-    return JSON.parse(readFileSync(session.file, "utf8"));
+    const stored: StoredSession = JSON.parse(
+        readFileSync(session.file, "utf8"),
+    );
+
+    return stored;
 }
 
 /** Rewrites the stored session, standing in for time passing without real waiting. */

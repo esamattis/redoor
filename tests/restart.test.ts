@@ -82,8 +82,8 @@ beforeAll(async () => {
 
     await waitForPort(serverPort);
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
-    await apiClient.waitForAgentNames([AGENT_NAME], 15000);
-}, 30000);
+    await apiClient.waitForAgentNames([AGENT_NAME], 15_000);
+}, 30_000);
 
 afterAll(async () => {
     await processManager.killAll();
@@ -139,7 +139,7 @@ describe("process restart APIs", () => {
 
         if (agent.status !== "connected") {
             await agent.start();
-            await apiClient.waitForConnectedAgentNames([AGENT_NAME], 15000);
+            await apiClient.waitForConnectedAgentNames([AGENT_NAME], 15_000);
             agent = (await apiClient.listAgents()).find(
                 (entry) => entry.name === AGENT_NAME,
             );
@@ -156,7 +156,7 @@ describe("process restart APIs", () => {
         expect(response.restarting).toBe(true);
 
         const detailsAfter = await waitForValue({
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             description: "managed agent to reconnect with a new daemon",
             predicate: async () => {
                 const restarted = (await apiClient.listAgents()).find(
@@ -175,7 +175,7 @@ describe("process restart APIs", () => {
 
         // A managed daemon cannot re-exec itself, so the server replaces it instead.
         expect(detailsAfter.pid).not.toBe(detailsBefore.pid);
-    }, 60000);
+    }, 60_000);
 
     it("restarts the server in place and applies a mutated config.toml", async () => {
         // Appended rather than rewritten, so the running device keeps the id the server
@@ -197,7 +197,7 @@ home = "${secondAgentDir}"
         // Poll until the restarted process is healthy and the new agent is supervised.
         // Never sleep fixed time as the only wait — poll the API.
         await waitForValue({
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             description: "server to come back with both agents after restart",
             predicate: async () => {
                 try {
@@ -219,7 +219,7 @@ home = "${secondAgentDir}"
         // Both inventory records prove the mutated config was applied via full startup.
         expect(names).toEqual([AGENT_NAME, SECOND_AGENT_NAME].sort());
         // The device that was running before the restart is started again on its own ...
-        await apiClient.waitForConnectedAgentNames([AGENT_NAME], 30000);
+        await apiClient.waitForConnectedAgentNames([AGENT_NAME], 30_000);
         // ... while the newly added one stays stopped until someone starts it.
         expect(
             (await apiClient.listAgents()).find(
@@ -235,5 +235,5 @@ home = "${secondAgentDir}"
         const loadedMatches = log.match(/Loaded server config/g) ?? [];
         // First startup plus post-restart startup.
         expect(loadedMatches.length).toBeGreaterThanOrEqual(2);
-    }, 60000);
+    }, 60_000);
 });

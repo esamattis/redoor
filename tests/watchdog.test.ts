@@ -82,7 +82,7 @@ home = "${agentDir}/does-not-exist"
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
     const configuredAgent = await waitForValue({
-        timeoutMs: 15000,
+        timeoutMs: 15_000,
         description: `watchdog agent ${AGENT_NAME} inventory registration`,
         predicate: async () => {
             const agents = await apiClient.listAgents();
@@ -97,7 +97,7 @@ home = "${agentDir}/does-not-exist"
 
     await configuredAgent.start();
     await waitForValue({
-        timeoutMs: 15000,
+        timeoutMs: 15_000,
         description: `watchdog agent ${AGENT_NAME} to connect after explicit start`,
         predicate: async () => {
             const agents = await apiClient.listAgents();
@@ -108,7 +108,7 @@ home = "${agentDir}/does-not-exist"
             );
         },
     });
-}, 30000);
+}, 30_000);
 
 afterAll(async () => {
     await processManager.killAll();
@@ -140,7 +140,7 @@ describe("Watchdog supervisor", () => {
         }
 
         const firstDetails = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "watchdog agent to be responsive after startup",
             predicate: async () => firstAgent.getDetails(),
         });
@@ -158,7 +158,7 @@ describe("Watchdog supervisor", () => {
         // The supervisor's first backoff is 1s, so the new agent
         // should appear within a few seconds.
         const replacement = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "watchdog agent to be re-registered with a new PID",
             predicate: async () => {
                 const agents = await apiClient.listAgents();
@@ -192,7 +192,7 @@ describe("Watchdog supervisor", () => {
         const replacementAgent = await getWatchdogAgent();
         const replacementDetails = await replacementAgent.getDetails();
         expect(replacementDetails.pid).toBe(replacement.pid);
-    }, 30000);
+    }, 30_000);
 
     it("keeps the daemon when its WebSocket goes stale and reconnects it", async () => {
         // Stale detection uses the suite's shortened REDOOR_WEBSOCKET_* timers, so the
@@ -218,7 +218,7 @@ describe("Watchdog supervisor", () => {
         });
 
         await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "stale daemon connection to be dropped",
             predicate: async () => {
                 const agent = (await apiClient.listAgents()).find(
@@ -231,7 +231,7 @@ describe("Watchdog supervisor", () => {
         process.kill(firstPid, "SIGCONT");
 
         const replacement = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "the same daemon to reconnect after its connection went stale",
             predicate: async () => {
                 const agent = (await apiClient.listAgents()).find(
@@ -250,7 +250,7 @@ describe("Watchdog supervisor", () => {
         const echo = await (await getWatchdogAgent()).echo("alive");
         // The new connection carries commands.
         expect(echo.message).toBe("alive");
-    }, 30000);
+    }, 30_000);
 
     it("intentionally shuts down and can restart a managed agent", async () => {
         const agent = await getWatchdogAgent();
@@ -262,7 +262,7 @@ describe("Watchdog supervisor", () => {
         expect(["stopping", "stopped"]).toContain(response.agent.status);
 
         const stopped = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "managed agent to settle stopped",
             predicate: async () =>
                 (await apiClient.listAgents()).find(
@@ -278,7 +278,7 @@ describe("Watchdog supervisor", () => {
         if (!stopped) throw new Error("Stopped managed agent disappeared");
         await stopped.start();
         await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "managed agent to reconnect after restart",
             predicate: async () =>
                 (await apiClient.listAgents()).find(
@@ -290,7 +290,7 @@ describe("Watchdog supervisor", () => {
         const restartedDetails = await (await getWatchdogAgent()).getDetails();
         // Stop ended the daemon, so the start runs a new one.
         expect(restartedDetails.pid).not.toBe(oldPid);
-    }, 30000);
+    }, 30_000);
 
     it("atomically retries a managed attempt and replaces its connected child", async () => {
         const agent = await getWatchdogAgent();
@@ -308,7 +308,7 @@ describe("Watchdog supervisor", () => {
         expect(response.agent.connection_issue).toBeNull();
 
         const replacement = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "retried managed agent to connect with a fresh generation",
             predicate: async () => {
                 const candidate = (await apiClient.listAgents()).find(
@@ -331,7 +331,7 @@ describe("Watchdog supervisor", () => {
         expect(inventory.some((entry) => entry.name === FAILING_AGENT_NAME)).toBe(
             true,
         );
-    }, 30000);
+    }, 30_000);
 
     it("surfaces managed startup issues without blocking control APIs", async () => {
         const failingAgent = (await apiClient.listAgents()).find(
@@ -347,7 +347,7 @@ describe("Watchdog supervisor", () => {
         await failingAgent.start();
 
         const issue = await waitForValue({
-            timeoutMs: 15000,
+            timeoutMs: 15_000,
             description: "failing managed agent connection issue",
             predicate: async () =>
                 (await apiClient.listAgents()).find(
@@ -366,5 +366,5 @@ describe("Watchdog supervisor", () => {
         const inventory = await apiClient.listAgents();
         // An unrelated list control remains responsive while the broken supervisor retries.
         expect(inventory.some((entry) => entry.name === AGENT_NAME)).toBe(true);
-    }, 30000);
+    }, 30_000);
 });

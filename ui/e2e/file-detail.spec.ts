@@ -902,7 +902,12 @@ test.describe.serial("File Detail View", () => {
             links.map((link) => link.getAttribute("href")),
         );
 
-        if (firstUrl == null || secondUrl == null) {
+        if (
+            firstUrl === null ||
+            firstUrl === undefined ||
+            secondUrl === null ||
+            secondUrl === undefined
+        ) {
             throw new Error("Shareable links did not expose their URLs");
         }
 

@@ -224,6 +224,7 @@ export function SearchResultList(props: {
     onOpen: (target: SearchResultTarget, index: number) => void;
     onSearchInFolder: (path: string) => void;
 }) {
+    const { resultsRef } = props;
     const results = props.isContentSearch
         ? props.contentResults
         : props.pathResults;
@@ -232,7 +233,7 @@ export function SearchResultList(props: {
 
     return (
         <div
-            ref={props.resultsRef}
+            ref={resultsRef}
             aria-label="Search results"
             // Without results the list is empty, and a border would draw a stray line under the status.
             className={cn(

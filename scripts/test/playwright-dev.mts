@@ -161,7 +161,7 @@ async function stopChildren(children: Child[]): Promise<void> {
     const outcome = await Promise.race([
         gracefulExit.then(() => "exited" as const),
         new Promise<"timeout">((resolve) => {
-            timeout = setTimeout(() => resolve("timeout"), 2_000);
+            timeout = setTimeout(() => resolve("timeout"), 2000);
         }),
     ]);
 

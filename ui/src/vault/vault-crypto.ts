@@ -22,7 +22,7 @@ import type { VaultKeyWrap } from "#bindings/VaultKeyWrap";
 import type { VaultObjectKind } from "#bindings/VaultObjectKind";
 
 /** Argon2id defaults: 64 MiB and 3 passes still finish in a few seconds on phones. */
-export const DEFAULT_KDF = { m_kib: 65536, t: 3, p: 1 } as const;
+export const DEFAULT_KDF = { m_kib: 65_536, t: 3, p: 1 } as const;
 
 const encoder = new TextEncoder();
 

@@ -31,7 +31,7 @@ describe("Remote CLI with a token from the environment", () => {
             agentCwd: files.tempDirectory(),
         });
         home = files.tempDirectory();
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();

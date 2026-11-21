@@ -469,6 +469,7 @@ export function resolveMarkdownFileLink(options: {
 function MarkdownLink(
     props: ComponentProps<"a"> &
         ExtraProps & {
+            name?: string;
             deviceName: string;
             filePath: string;
             repositoryRoot: string | null;
@@ -964,7 +965,7 @@ function useInitialScroll(options: {
     hasContent: boolean;
     shown: boolean;
 }) {
-    const sectionRef = options.sectionRef;
+    const { sectionRef } = options;
     const hasContent = options.hasContent;
     const rendered = options.rendered;
     const shown = options.shown;

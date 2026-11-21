@@ -159,8 +159,8 @@ export function formatRemainingTime(seconds: number | null): string | null {
 
     const totalSeconds = Math.round(seconds);
     const days = Math.floor(totalSeconds / 86_400);
-    const hours = Math.floor((totalSeconds % 86_400) / 3_600);
-    const minutes = Math.floor((totalSeconds % 3_600) / 60);
+    const hours = Math.floor((totalSeconds % 86_400) / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
     const restSeconds = totalSeconds % 60;
 
     if (days > 0) {

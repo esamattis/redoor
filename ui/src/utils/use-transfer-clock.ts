@@ -52,7 +52,7 @@ export function useTransferClock<Snapshot>(
     if (frame.snapshot !== snapshot) {
         return {
             snapshot,
-            refreshedAtMilliseconds: Date.now(),
+            refreshedAtMilliseconds: frame.refreshedAtMilliseconds,
             elapsedSeconds: 0,
         };
     }

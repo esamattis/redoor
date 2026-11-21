@@ -1124,7 +1124,7 @@ test.describe.serial("Open files", () => {
         await keepOpen(page);
 
         await editor.hover();
-        await page.mouse.wheel(0, 10000);
+        await page.mouse.wheel(0, 10_000);
         // Scrolling alone moves the view but writes nothing yet.
         await expect(
             editor.getByText("delta line 300", { exact: true }),

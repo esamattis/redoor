@@ -182,6 +182,7 @@ import {
     ApiError,
     apiRequest,
     authenticationHeaders,
+    decodeJsonResponse,
     requireSuccessfulResponse,
     streamNdjson,
     withAuthentication,
@@ -1234,7 +1235,7 @@ export class Agent {
     ): Promise<VaultFileWriteResponse> {
         const url = new URL(this.filesystemUrl("vault/raw", path));
 
-        if (upload.on_existing != null) {
+        if (upload.on_existing !== undefined) {
             url.searchParams.set("on_existing", upload.on_existing);
         }
 
@@ -1338,7 +1339,7 @@ export class Agent {
             options,
         );
 
-        if (options?.on_existing != null) {
+        if (options?.on_existing !== undefined) {
             url.searchParams.set("on_existing", options.on_existing);
         }
 
@@ -1381,7 +1382,7 @@ export class Agent {
 
         await requireSuccessfulResponse(response, this.requestContext);
 
-        return response.json();
+        return decodeJsonResponse<RawDeleteResponse>(response);
     }
 
     /** Lists trash locations and items discovered by the agent at request time. */
@@ -1433,7 +1434,7 @@ export class Agent {
 
         await requireSuccessfulResponse(response, this.requestContext);
 
-        return response.json();
+        return decodeJsonResponse<CreateDirectoryResponse>(response);
     }
 
     /** Atomically changes one entry's name without allowing a directory move. */
@@ -1651,7 +1652,7 @@ export class ApiClient {
             this.sessionCookie = setCookie.split(";", 1)[0] ?? null;
         }
 
-        return response.json();
+        return decodeJsonResponse(response);
     }
 
     /**
@@ -1689,7 +1690,7 @@ export class ApiClient {
             this.sessionCookie = setCookie.split(";", 1)[0] ?? null;
         }
 
-        return response.json();
+        return decodeJsonResponse<ChangePasswordResponse>(response);
     }
 
     /** Says who is signed in and how, for the application menu and the password form. */
@@ -2704,7 +2705,9 @@ export class ApiClient {
                 return;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            await new Promise((resolve) => {
+                setTimeout(resolve, 50);
+            });
         }
 
         throw new Error(`Timed out waiting for agents: ${names.join(", ")}`);
@@ -2726,7 +2729,9 @@ export class ApiClient {
                 return;
             }
 
-            await new Promise((resolve) => setTimeout(resolve, 50));
+            await new Promise((resolve) => {
+                setTimeout(resolve, 50);
+            });
         }
 
         throw new Error(

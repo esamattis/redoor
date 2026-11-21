@@ -54,7 +54,7 @@ describe("Raw Download API", () => {
         serverPid = setup.serverPid;
         testAgent = setup.testAgent;
         expect(testAgent).toBeDefined();
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();
@@ -89,7 +89,7 @@ describe("Raw Download API", () => {
         const connected = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(proxiedAgentName),
-            10000,
+            10_000,
         );
 
         const proxiedAgentPid = processManager.spawnAgent({
@@ -182,7 +182,7 @@ describe("Raw Download API", () => {
         expect(response.body?.locked).toBe(false);
         // Control work remains responsive while the agent releases its file handle.
         expect((await testAgent.getDetails()).name).toBe(testAgent.name);
-    }, 25000);
+    }, 25_000);
 
     it("should authorize an exact raw path with a one-time token", async () => {
         const testContent = "one-time download";
@@ -297,7 +297,7 @@ describe("Raw Download API", () => {
 
         await waitForValue({
             description: "canceled one-time download progress row",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -333,7 +333,7 @@ describe("Raw Download API", () => {
 
         await waitForValue({
             description: "one-time token removal after resumed download",
-            timeoutMs: 10000,
+            timeoutMs: 10_000,
             predicate: async () => {
                 const metadata = await testAgent.metadata(sourcePath);
 
@@ -345,7 +345,7 @@ describe("Raw Download API", () => {
         const reusedResponse = await fetch(tokenUrl);
         // Covering the complete file across both requests consumes the token permanently.
         expect(reusedResponse.status).toBe(401);
-    }, 40000);
+    }, 40_000);
 
     it("should download large file via raw endpoint", async () => {
         const largeContent = "x".repeat(100 * 1024);
@@ -424,7 +424,7 @@ describe("Raw Download API", () => {
         const waitForEphemeralAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(ephemeralAgentName),
-            10000,
+            10_000,
         );
 
         const ephemeralAgentPid = processManager.spawnAgent({
@@ -462,7 +462,7 @@ describe("Raw Download API", () => {
 
         const observedTransfer = await waitForValue({
             description: "active or finished download progress row",
-            timeoutMs: 20000,
+            timeoutMs: 20_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -500,8 +500,11 @@ describe("Raw Download API", () => {
                     status: response.status,
                     body: await response.text(),
                 }))
-                .catch((e: Error) => ({ ok: false, error: e.message })),
-            new Promise((_, reject) =>
+                .catch((e: unknown) => ({
+                    ok: false,
+                    error: e instanceof Error ? e.message : String(e),
+                })),
+            new Promise((_, reject) => {
                 setTimeout(
                     () =>
                         reject(
@@ -509,9 +512,9 @@ describe("Raw Download API", () => {
                                 "Download hung for 10s after agent disconnect",
                             ),
                         ),
-                    10000,
-                ),
-            ),
+                    10_000,
+                );
+            }),
         ]);
 
         const finishedTransfer = await waitForValue({
@@ -550,7 +553,7 @@ describe("Raw Download API", () => {
             // A null error confirms the late disconnect did not overwrite a successful completion.
             expect(finishedTransfer.error).toBeNull();
         }
-    }, 30000);
+    }, 30_000);
 
     it("should keep command requests responsive during a throttled download", async () => {
         const chunkSizeBytes = 1024 * 1024;
@@ -581,7 +584,7 @@ describe("Raw Download API", () => {
         const waitForProxiedAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(proxiedAgentName),
-            10000,
+            10_000,
         );
 
         const proxiedAgentPid = processManager.spawnAgent({
@@ -623,7 +626,7 @@ describe("Raw Download API", () => {
 
         const activeTransfer = await waitForValue({
             description: "active download before issuing concurrent command",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -675,7 +678,7 @@ describe("Raw Download API", () => {
 
         // Matching bytes prove the throttled download still completes successfully after the concurrent command.
         expect(Buffer.compare(downloadedContent, downloadContent)).toBe(0);
-    }, 40000);
+    }, 40_000);
 
     it("should cancel throttled download cleanly when client aborts", async () => {
         const totalBytes = 8 * 1024 * 1024;
@@ -716,7 +719,7 @@ describe("Raw Download API", () => {
         const waitForProxiedAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(proxiedAgentName),
-            10000,
+            10_000,
         );
 
         const proxiedAgentPid = processManager.spawnAgent({
@@ -756,7 +759,7 @@ describe("Raw Download API", () => {
 
         const activeTransfer = await waitForValue({
             description: "active throttled download before cancellation",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -784,7 +787,7 @@ describe("Raw Download API", () => {
         const waitForAgentCancel = waitForLogMessage(
             proxiedAgentProcess,
             /Received transfer cancel from server: request_id=/,
-            30000,
+            30_000,
         );
 
         controller.abort();
@@ -794,7 +797,7 @@ describe("Raw Download API", () => {
 
         const finishedTransfer = await waitForValue({
             description: "errored download progress row after client abort",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -838,7 +841,7 @@ describe("Raw Download API", () => {
 
         const completedTransfer = await waitForValue({
             description: "completed download progress row after full retry",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const response = await apiClient.getTransferProgress();
 
@@ -878,7 +881,7 @@ describe("Raw Download API", () => {
 
         // One row proves the retry was folded into the original logical download instead of reported separately.
         expect(matchingTransfers).toHaveLength(1);
-    }, 50000);
+    }, 50_000);
 
     it("should return proper error for permission denied", async () => {
         const testFilePath = tempFiles.create("secret", { suffix: ".txt" });

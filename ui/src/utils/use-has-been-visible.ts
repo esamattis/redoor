@@ -1,4 +1,5 @@
-import { type RefObject, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
+import type { RefObject } from "react";
 
 /**
  * The app's scroll area around an element, or null for the window. Content scrolls inside that

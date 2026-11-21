@@ -41,7 +41,9 @@ function AnchoredDialog(props: {
 
     return (
         <>
-            <button ref={setAnchor}>Open</button>
+            <button type="button" ref={setAnchor}>
+                Open
+            </button>
             <Dialog
                 isOpen
                 title="Options"
@@ -64,7 +66,7 @@ function renderAnchoredDialog(anchor: {
 }) {
     vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(224);
     vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(200);
-    vi.stubGlobal("innerWidth", 1_000);
+    vi.stubGlobal("innerWidth", 1000);
     vi.stubGlobal("innerHeight", 800);
     render(
         <ShortcutRegistryContext value={new ShortcutRegistry(window)}>

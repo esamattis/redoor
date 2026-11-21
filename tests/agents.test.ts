@@ -102,7 +102,7 @@ beforeAll(async () => {
     apiClient = started.apiClient;
     wsUrl = started.wsUrl;
     serverPort = started.serverPort;
-}, 30000);
+}, 30_000);
 
 afterEach(() => {
     tempFiles.emptyDirs();

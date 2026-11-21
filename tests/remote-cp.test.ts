@@ -66,7 +66,7 @@ describe("Remote cp and streaming archive upload", () => {
         });
 
         tokenEnv = remoteEnv(setup.apiClient.baseUrl, created.token);
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -615,7 +615,7 @@ describe("Remote cp and streaming archive upload", () => {
             tar,
             tar.subarray(0, 2048),
             Buffer.alloc(1024),
-            Buffer.alloc(10240),
+            Buffer.alloc(10_240),
         ]) {
             const parent = files.tempDirectory();
             const destination = path.join(parent, "result");

@@ -378,14 +378,18 @@ function LockCard(props: { summary: VaultSummary; onRename: () => void }) {
                             setError(null);
                             session
                                 .requestUnlock("Unlock the vault")
-                                .catch((failure: Error) => {
+                                .catch((failure: unknown) => {
                                     if (
                                         !(
                                             failure instanceof
                                             VaultUnlockCancelled
                                         )
                                     ) {
-                                        setError(failure.message);
+                                        setError(
+                                            failure instanceof Error
+                                                ? failure.message
+                                                : String(failure),
+                                        );
                                     }
                                 });
                         }}

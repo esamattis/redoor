@@ -234,6 +234,22 @@ export function Tooltip(props: TooltipProps) {
         }
     };
 
+    const [portalTarget, setPortalTarget] = React.useState<HTMLElement | null>(
+        null,
+    );
+
+    React.useLayoutEffect(() => {
+        if (!isOpen) {
+            return;
+        }
+
+        setPortalTarget(
+            triggerRef.current?.closest<HTMLElement>(
+                "[role='dialog'], [role='alertdialog']",
+            ) ?? globalThis.document.body,
+        );
+    }, [isOpen]);
+
     return (
         <span
             ref={triggerRef}
@@ -269,13 +285,8 @@ export function Tooltip(props: TooltipProps) {
         >
             {child}
 
-            {tooltip && globalThis.document
-                ? createPortal(
-                      tooltip,
-                      triggerRef.current?.closest<HTMLElement>(
-                          "[role='dialog'], [role='alertdialog']",
-                      ) ?? globalThis.document.body,
-                  )
+            {tooltip && portalTarget !== null
+                ? createPortal(tooltip, portalTarget)
                 : null}
         </span>
     );

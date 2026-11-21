@@ -30,7 +30,7 @@ describe("per-stream credit on the multiplexed connection", () => {
 
         api = setup.apiClient;
         serverPort = setup.serverPort;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();

@@ -131,8 +131,10 @@ async function readDirectoryEntries(entry: FileSystemDirectoryEntry) {
     const entries: FileSystemEntry[] = [];
 
     while (true) {
-        const chunk = await new Promise<FileSystemEntry[]>((resolve, reject) =>
-            reader.readEntries(resolve, reject),
+        const chunk = await new Promise<FileSystemEntry[]>(
+            (resolve, reject) => {
+                reader.readEntries(resolve, reject);
+            },
         );
 
         if (chunk.length === 0) {
@@ -173,9 +175,9 @@ async function traverseDroppedEntry(
         : entry.name;
 
     if (isDroppedFileEntry(entry)) {
-        const file = await new Promise<File>((resolve, reject) =>
-            entry.file(resolve, reject),
-        );
+        const file = await new Promise<File>((resolve, reject) => {
+            entry.file(resolve, reject);
+        });
 
         manifest.files.push({ file, relativePath });
 
@@ -395,6 +397,10 @@ function useClipboardImporter(props: {
     addToUpload: AddToUpload;
     setImportState: React.Dispatch<React.SetStateAction<ImportState>>;
 }) {
+    const destination = props.destination;
+    const addToUpload = props.addToUpload;
+    const setImportState = props.setImportState;
+
     return React.useCallback(async () => {
         try {
             if (!navigator.clipboard) {
@@ -410,7 +416,7 @@ function useClipboardImporter(props: {
                 if (files.length > 0) {
                     // The Clipboard API gives blobs without names, so every name is made up.
                     for (const source of pastedFileSources(files, true)) {
-                        props.addToUpload(props.destination, source);
+                        addToUpload(destination, source);
                     }
 
                     return;
@@ -420,17 +426,17 @@ function useClipboardImporter(props: {
             const text = await navigator.clipboard.readText();
 
             if (text) {
-                props.addToUpload(props.destination, pastedTextSource(text));
+                addToUpload(destination, pastedTextSource(text));
 
                 return;
             }
 
-            props.setImportState({
+            setImportState({
                 type: "error",
                 message: "The clipboard does not contain files or text.",
             });
         } catch (error) {
-            props.setImportState({
+            setImportState({
                 type: "error",
                 message: getErrorMessage(
                     error,
@@ -438,7 +444,7 @@ function useClipboardImporter(props: {
                 ),
             });
         }
-    }, [props.destination, props.addToUpload, props.setImportState]);
+    }, [destination, addToUpload, setImportState]);
 }
 
 /**
@@ -452,9 +458,13 @@ function useGlobalImportEvents(props: {
     addToUpload: AddToUpload;
     showMissingDirectoryError: () => void;
 }) {
+    const destination = props.destination;
+    const isDialogOpen = props.isDialogOpen;
+    const addToUpload = props.addToUpload;
+    const showMissingDirectoryError = props.showMissingDirectoryError;
     const dragDepthRef = React.useRef(0);
     const [isDraggingFiles, setIsDraggingFiles] = React.useState(false);
-    const canAccept = props.destination !== null || props.isDialogOpen;
+    const canAccept = destination !== null || isDialogOpen;
 
     React.useEffect(() => {
         /** Keeps dragged files from being opened by the browser itself. */
@@ -508,7 +518,7 @@ function useGlobalImportEvents(props: {
             setIsDraggingFiles(false);
 
             if (!canAccept) {
-                props.showMissingDirectoryError();
+                showMissingDirectoryError();
 
                 return;
             }
@@ -521,13 +531,13 @@ function useGlobalImportEvents(props: {
 
             void readDroppedFiles(dataTransfer)
                 .then((manifest) =>
-                    props.addToUpload(props.destination, {
+                    addToUpload(destination, {
                         origin: "dropped",
                         files: manifest.files,
                         directories: manifest.directories,
                     }),
                 )
-                .catch(() => props.showMissingDirectoryError());
+                .catch(() => showMissingDirectoryError());
         };
 
         /** Adds pasted files or text to the upload dialog, where they are named. */
@@ -539,7 +549,7 @@ function useGlobalImportEvents(props: {
             // fields, which take focus after every paste, so they still join the upload.
             if (
                 isEditableTarget(event.target) &&
-                !(props.isDialogOpen && files.length > 0)
+                !(isDialogOpen && files.length > 0)
             ) {
                 return;
             }
@@ -556,7 +566,7 @@ function useGlobalImportEvents(props: {
                     : [pastedTextSource(text)];
 
             for (const source of sources) {
-                props.addToUpload(props.destination, source);
+                addToUpload(destination, source);
             }
         };
 
@@ -575,22 +585,19 @@ function useGlobalImportEvents(props: {
         };
     }, [
         canAccept,
-        props.isDialogOpen,
-        props.destination,
-        props.addToUpload,
-        props.showMissingDirectoryError,
+        isDialogOpen,
+        destination,
+        addToUpload,
+        showMissingDirectoryError,
     ]);
 
     React.useEffect(() => {
-        if (canAccept) {
-            return;
+        if (!canAccept) {
+            dragDepthRef.current = 0;
         }
-
-        setIsDraggingFiles(false);
-        dragDepthRef.current = 0;
     }, [canAccept]);
 
-    return isDraggingFiles;
+    return canAccept && isDraggingFiles;
 }
 
 /** Displays the active target while files are being dragged across the page. */

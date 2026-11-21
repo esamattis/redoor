@@ -1038,7 +1038,9 @@ export function FileEditView(props: FileEditViewProps) {
                     onFindInFile={search.findInFile}
                     onSearchDirectory={search.searchSelection}
                     onPreviewChange={previewControls.setPreview}
-                    onToggleFullWindow={fullWindow.toggle}
+                    onToggleFullWindow={() => {
+                        void fullWindow.toggle();
+                    }}
                     onReload={reloadFile}
                     onDelete={() => setDeleteConfirmationOpen(true)}
                 />

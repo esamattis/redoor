@@ -305,7 +305,8 @@ export function Dialog(props: DialogProps) {
     const descriptionId = React.useId();
     const dialogRef = React.useRef<HTMLDialogElement>(null);
     const panelRef = React.useRef<HTMLDivElement>(null);
-    const isAnchored = props.anchorRef != null || props.anchorPoint != null;
+    const isAnchored =
+        props.anchorRef !== undefined || props.anchorPoint !== undefined;
 
     const anchorPosition = useDialogBehavior({
         isOpen: props.isOpen,
@@ -537,10 +538,12 @@ function useDialogBehavior(props: {
         return undefined;
     }, [props.initialFocus, props.isAnchored, props.isOpen, props.panelRef]);
 
-    React.useLayoutEffect(() => {
-        if (!props.isOpen || (!props.anchorRef && !props.anchorPoint)) {
-            setAnchorPosition(null);
+    const shouldAnchor =
+        props.isOpen &&
+        (props.anchorRef !== undefined || props.anchorPoint !== undefined);
 
+    React.useLayoutEffect(() => {
+        if (!shouldAnchor) {
             return;
         }
 
@@ -570,11 +573,11 @@ function useDialogBehavior(props: {
         props.anchorRef,
         props.children,
         props.errorMessage,
-        props.isOpen,
         props.panelRef,
+        shouldAnchor,
     ]);
 
-    return anchorPosition;
+    return shouldAnchor ? anchorPosition : null;
 }
 
 /** Extends toward the roomier sides while keeping menus within viewport edges. */

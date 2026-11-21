@@ -75,7 +75,7 @@ test.describe.serial("Resumable transfer workflow", () => {
         };
 
         const transfer = {
-            request_id: 981234,
+            request_id: 981_234,
             agent_id: ctx.agent2Id,
             path: dest.path,
             source,

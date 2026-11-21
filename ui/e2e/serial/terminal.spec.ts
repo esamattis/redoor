@@ -268,11 +268,11 @@ test.describe.serial("Terminal panel lifecycle", () => {
         // Let the browser finish any caret scroll-into-view from the native text insertion.
         await terminalHost.evaluate(
             () =>
-                new Promise<void>((resolve) =>
-                    requestAnimationFrame(() =>
-                        requestAnimationFrame(() => resolve()),
-                    ),
-                ),
+                new Promise<void>((resolve) => {
+                    requestAnimationFrame(() => {
+                        requestAnimationFrame(() => resolve());
+                    });
+                }),
         );
         // Typing must not jump the viewport back into scrollback away from the prompt.
         expect(await distanceFromBottom()).toBeLessThan(5);

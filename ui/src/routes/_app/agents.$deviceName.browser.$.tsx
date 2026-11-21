@@ -393,7 +393,7 @@ const revisionGitHead: GitTabHead = { type: "revision" };
  * no file operations, the editor cannot save, and the Git view shows the commit's changes.
  */
 function RevisionFileBrowser(props: {
-    data: Extract<ReturnType<typeof Route.useLoaderData>, { kind: "revision" }>;
+    data: Awaited<ReturnType<typeof loadRevision>>;
     agent: Agent;
 }) {
     const data = props.data;
@@ -554,11 +554,11 @@ function RevisionFileBrowser(props: {
                 downloadUrl={agent.getGitDownloadUrl(data.path, tree.commit.id)}
                 scrollToLine={search.line}
                 preview={search.preview === true}
-                onPreviewChange={(preview) =>
-                    navigate({
+                onPreviewChange={(preview) => {
+                    void navigate({
                         search: (previous) => ({ ...previous, preview }),
-                    })
-                }
+                    });
+                }}
             />
         ) : (
             <RevisionDetailView agent={agent} tree={tree} />
@@ -584,10 +584,7 @@ function RevisionFileBrowser(props: {
 
 /** Mounts filesystem subscriptions only after the agent can serve the requested path. */
 function ConnectedFileBrowser(props: {
-    data: Extract<
-        ReturnType<typeof Route.useLoaderData>,
-        { kind: "connected" }
-    >;
+    data: ReturnType<typeof resolvedData> | ReturnType<typeof unresolvedData>;
     agent: Agent;
 }) {
     const data = props.data;
@@ -722,14 +719,15 @@ function useGitDiffMode() {
 
     return {
         mode: search.diffMode ?? "full",
-        setMode: (mode: GitDiffMode) =>
-            navigate({
+        setMode: (mode: GitDiffMode) => {
+            void navigate({
                 search: (previous) => ({
                     ...previous,
                     diffMode: mode === "full" ? undefined : mode,
                 }),
                 replace: true,
-            }),
+            });
+        },
     };
 }
 
@@ -844,14 +842,14 @@ function FileBrowserPage(props: {
                 })}
                 scrollToLine={search.line}
                 preview={search.preview === true}
-                onPreviewChange={(preview) =>
-                    navigate({
+                onPreviewChange={(preview) => {
+                    void navigate({
                         search: (previous) => ({
                             ...previous,
                             preview,
                         }),
-                    })
-                }
+                    });
+                }}
             />
         ) : activeView === "view" && viewableImage ? (
             <FileImageView

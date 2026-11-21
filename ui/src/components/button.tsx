@@ -94,17 +94,25 @@ export function Button(props: NativeButtonProps | AnchorButtonProps) {
     delete buttonProps.tooltip;
     delete buttonProps.tooltipClassName;
 
+    const nativeProps = {
+        ...buttonProps,
+        disabled: props.disabled || props.isLoading,
+        "aria-busy": props.isLoading || props["aria-busy"],
+        className,
+    };
+
     return (
         <OptionalTooltip
             tooltip={props.tooltip}
             tooltipClassName={props.tooltipClassName}
         >
-            <button
-                {...buttonProps}
-                disabled={props.disabled || props.isLoading}
-                aria-busy={props.isLoading || props["aria-busy"]}
-                className={className}
-            />
+            {props.type === "button" ? (
+                <button {...nativeProps} type="button" />
+            ) : props.type === "reset" ? (
+                <button {...nativeProps} type="reset" />
+            ) : (
+                <button {...nativeProps} type="submit" />
+            )}
         </OptionalTooltip>
     );
 }

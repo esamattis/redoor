@@ -10,23 +10,24 @@ export function RouteLoadingIndicator() {
         select: (state) => state.status === "pending",
     });
 
-    const [isVisible, setIsVisible] = React.useState(false);
+    const [delayedVisible, setDelayedVisible] = React.useState(false);
 
     React.useEffect(() => {
         if (!isLoading) {
-            setIsVisible(false);
-
             return;
         }
 
         const showTimer = window.setTimeout(() => {
-            setIsVisible(true);
+            setDelayedVisible(true);
         }, 250);
 
         return () => {
             window.clearTimeout(showTimer);
+            setDelayedVisible(false);
         };
     }, [isLoading]);
+
+    const isVisible = isLoading && delayedVisible;
 
     return (
         <div

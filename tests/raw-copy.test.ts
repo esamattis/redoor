@@ -45,7 +45,7 @@ describe("Raw Copy API", () => {
         apiClient = setup.apiClient;
         serverPid = setup.serverPid;
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();
@@ -125,7 +125,7 @@ describe("Raw Copy API", () => {
         const waitForSecondAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(secondAgentName),
-            10000,
+            10_000,
         );
 
         const secondAgentPid = processManager.spawnAgent({
@@ -311,7 +311,7 @@ describe("Raw Copy API", () => {
         const waitForSecondAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(secondAgentName),
-            10000,
+            10_000,
         );
 
         const secondAgentPid = processManager.spawnAgent({
@@ -509,7 +509,7 @@ describe("Raw Copy API", () => {
             const waitForSecondAgent = waitForLogMessage(
                 serverProcess,
                 agentRegisteredPattern(secondAgentName),
-                10000,
+                10_000,
             );
 
             secondAgentPid = processManager.spawnAgent({
@@ -534,7 +534,7 @@ describe("Raw Copy API", () => {
             });
 
             destAgentId = secondAgent.id;
-        }, 30000);
+        }, 30_000);
 
         afterAll(() => {
             if (secondAgentPid !== undefined) {
@@ -907,7 +907,7 @@ describe("Raw Copy API", () => {
 
         const observedTransfer = await waitForValue({
             description: "large copy transfer progress or completion",
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             predicate: async () => {
                 const progress = await apiClient.getTransferProgress();
 
@@ -929,7 +929,7 @@ describe("Raw Copy API", () => {
                 ? observedTransfer
                 : await waitForValue({
                       description: "completed large copy transfer",
-                      timeoutMs: 30000,
+                      timeoutMs: 30_000,
                       predicate: async () => {
                           const progress =
                               await apiClient.getTransferProgress();
@@ -945,5 +945,5 @@ describe("Raw Copy API", () => {
 
         // The same logical row should represent the copy until completion, even if local copies finish very quickly.
         expect(completedTransfer.request_id).toBe(response.copy_request_id);
-    }, 40000);
+    }, 40_000);
 });

@@ -668,7 +668,10 @@ test.describe.serial("Vault", () => {
             .poll(async () =>
                 fs.stat(filePath).then(
                     () => "exists",
-                    (error: NodeJS.ErrnoException) => error.code,
+                    (error: unknown) =>
+                        error instanceof Error && "code" in error
+                            ? error.code
+                            : undefined,
                 ),
             )
             .toBe("ENOENT");

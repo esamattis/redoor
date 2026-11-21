@@ -1156,11 +1156,11 @@ test.describe.serial("Agent management", () => {
                 async () => {
                     const agent = await getAgent(page.request, FAILING_AGENT);
 
-                    return Date.now() - retryWindowStartedAt >= 2_000
+                    return Date.now() - retryWindowStartedAt >= 2000
                         ? agent.status
                         : "observing";
                 },
-                { timeout: 5_000 },
+                { timeout: 5000 },
             )
             // Remaining stopped beyond the first backoff proves shutdown canceled reconnecting.
             .toBe("stopped");

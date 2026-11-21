@@ -42,7 +42,7 @@ describe("Smart Move API", () => {
         const connected = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(destinationName),
-            10000,
+            10_000,
         );
 
         processManager.spawnAgent({
@@ -58,7 +58,7 @@ describe("Smart Move API", () => {
                     (agent) => agent.name === destinationName,
                 ),
         });
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

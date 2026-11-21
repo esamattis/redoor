@@ -283,7 +283,7 @@ const AGENTS_STALE_MS = 30_000;
 const AGENT_DETAILS_STALE_MS = 10_000;
 
 /** Trash changes only through user actions or other tools, so a short window is enough. */
-const TRASH_STALE_MS = 5_000;
+const TRASH_STALE_MS = 5000;
 
 /** How often the inventory refreshes while a managed agent starts or stops, which pushes no event. */
 const MANAGED_STARTUP_POLL_MS = 1000;

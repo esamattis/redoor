@@ -36,9 +36,11 @@ export function TabbedBottomDrawer(props: {
         onExpandedHeightChange: props.onExpandedHeightChange,
     });
 
+    const { panelRef, headerRef } = resize;
+
     const isContentVisible = useDrawerSlideContentVisibility({
         isCollapsed: props.isCollapsed,
-        panelRef: resize.panelRef,
+        panelRef,
     });
 
     const toggleLabel = props.isCollapsed
@@ -65,7 +67,7 @@ export function TabbedBottomDrawer(props: {
             }
         >
             <section
-                ref={resize.panelRef}
+                ref={panelRef}
                 style={
                     props.isFullWindow
                         ? { height: "100%" }
@@ -105,7 +107,7 @@ export function TabbedBottomDrawer(props: {
                     className={`flex min-h-0 max-w-full flex-col ${props.isFullWindow ? "h-full" : "px-2 @xl:px-4"} ${isContentVisible ? (props.isFullWindow ? "flex-1" : "flex-1 py-2") : "py-1.5"}`}
                 >
                     <div
-                        ref={resize.headerRef}
+                        ref={headerRef}
                         hidden={props.isFullWindow}
                         className="flex min-w-0 shrink-0 items-center gap-1"
                     >
@@ -177,9 +179,18 @@ function useDrawerSlideContentVisibility(props: {
     isCollapsed: boolean;
     panelRef: React.RefObject<HTMLElement | null>;
 }) {
+    const [prevCollapsed, setPrevCollapsed] = React.useState(props.isCollapsed);
     const [isContentVisible, setIsContentVisible] = React.useState(
         !props.isCollapsed,
     );
+
+    if (prevCollapsed !== props.isCollapsed) {
+        setPrevCollapsed(props.isCollapsed);
+
+        if (!props.isCollapsed) {
+            setIsContentVisible(true);
+        }
+    }
 
     const wasCollapsedRef = React.useRef(props.isCollapsed);
 
@@ -188,25 +199,6 @@ function useDrawerSlideContentVisibility(props: {
         wasCollapsedRef.current = props.isCollapsed;
 
         if (!props.isCollapsed) {
-            setIsContentVisible(true);
-
-            return;
-        }
-
-        if (wasCollapsed) {
-            setIsContentVisible(false);
-
-            return;
-        }
-
-        const panel = props.panelRef.current;
-
-        if (
-            !panel ||
-            window.matchMedia("(prefers-reduced-motion: reduce)").matches
-        ) {
-            setIsContentVisible(false);
-
             return;
         }
 
@@ -214,6 +206,18 @@ function useDrawerSlideContentVisibility(props: {
         const hideContent = () => {
             setIsContentVisible(false);
         };
+
+        const panel = props.panelRef.current;
+
+        if (
+            wasCollapsed ||
+            !panel ||
+            window.matchMedia("(prefers-reduced-motion: reduce)").matches
+        ) {
+            const frame = window.requestAnimationFrame(hideContent);
+
+            return () => window.cancelAnimationFrame(frame);
+        }
 
         const handleTransitionEnd = (event: TransitionEvent) => {
             if (event.target !== panel || event.propertyName !== "height") {

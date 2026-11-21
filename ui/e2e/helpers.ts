@@ -228,7 +228,7 @@ export async function setupTestDir(suffix: string): Promise<TestContext> {
     await apiClient.login("test-user", "test-password");
     await apiClient.waitForConnectedAgentNames(
         ["agent1_src", "agent2_custom"],
-        120000,
+        120_000,
     );
     const agents = await apiClient.listAgents();
     const agent = agents.find((entry) => entry.name === "agent1_src");
@@ -451,7 +451,10 @@ export async function ageSignIn(page: Page): Promise<void> {
         const me = await page.request.get(`${WEB_BASE_URL}/api/v1/auth/me`);
 
         expect(me.status()).toBe(200);
-        expect((await me.json()).fresh_login_seconds_left).toBe(0);
+        const meBody = z
+            .object({ fresh_login_seconds_left: z.number() })
+            .parse(await me.json());
+        expect(meBody.fresh_login_seconds_left).toBe(0);
     }).toPass();
 }
 

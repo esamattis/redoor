@@ -33,7 +33,7 @@ describe.skipIf(process.platform !== "darwin")("macOS Trash API", () => {
         });
 
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

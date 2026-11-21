@@ -1,4 +1,5 @@
 import { onTestFinished } from "vitest";
+import { decodeJsonResponse } from "#ui/api-transport";
 
 export const MCP_PROTOCOL_VERSION = "2026-07-28";
 
@@ -145,9 +146,9 @@ export class McpTestClient {
                 );
             }
 
-            await new Promise<void>((resolve) =>
-                setTimeout(resolve, intervalMs),
-            );
+            await new Promise<void>((resolve) => {
+                setTimeout(resolve, intervalMs);
+            });
             intervalMs = Math.min(intervalMs * 2, 250);
         }
     }
@@ -193,9 +194,11 @@ export class McpTestClient {
                 signal: controller.signal,
             });
 
-            const body: McpResponse<TResult> & {
-                error?: { code: number; message: string };
-            } = await response.json();
+            const body = await decodeJsonResponse<
+                McpResponse<TResult> & {
+                    error?: { code: number; message: string };
+                }
+            >(response);
 
             if (!response.ok || body.error !== undefined) {
                 throw new Error(

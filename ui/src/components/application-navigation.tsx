@@ -589,15 +589,16 @@ function useLogout() {
 function SidebarFiles(props: { isCompact: boolean; className?: string }) {
     const outline = useAtomValue(changedFilesOutlineAtom);
     const split = useSidebarFilesSplit();
+    const { containerRef, openFilesRef } = split;
 
     return (
         <div
-            ref={split.containerRef}
+            ref={containerRef}
             className={cn("flex min-h-0 flex-1 flex-col pb-2", props.className)}
         >
             <OpenFiles
                 isCompact={props.isCompact}
-                rootRef={split.openFilesRef}
+                rootRef={openFilesRef}
                 // Without changed files below, the open files may use the whole column. A
                 // dragged split keeps room for the header, a row and the shortcut tip, since a
                 // small share of a short column would hide every row.
@@ -642,6 +643,7 @@ function OpenFiles(props: {
     className?: string;
     style?: React.CSSProperties;
 }) {
+    const { rootRef } = props;
     const [userState, setUserState] = useUserState();
     const agents = useAgents();
     const listRef = React.useRef<HTMLUListElement>(null);
@@ -678,7 +680,7 @@ function OpenFiles(props: {
 
     return (
         <div
-            ref={props.rootRef}
+            ref={rootRef}
             className={cn("flex min-h-0 shrink flex-col", props.className)}
             style={props.style}
         >

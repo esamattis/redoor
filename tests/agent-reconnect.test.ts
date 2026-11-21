@@ -31,7 +31,9 @@ async function closedPort(): Promise<number> {
     });
     const { port } = tcpAddressSchema.parse(server.address());
 
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => {
+        server.close(() => resolve());
+    });
 
     return port;
 }

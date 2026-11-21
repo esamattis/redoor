@@ -72,7 +72,9 @@ async function getConfiguration(
 
     expect(response.ok()).toBe(true);
 
-    return response.json();
+    const body: ManagedSshAgentConfigurationResponse = await response.json();
+
+    return body;
 }
 
 /**
@@ -157,7 +159,9 @@ async function getKeyStatus(
 
     expect(response.ok()).toBe(true);
 
-    return response.json();
+    const body: SshKeyStatusResponse = await response.json();
+
+    return body;
 }
 
 /**
@@ -211,7 +215,9 @@ async function probeHostKey(
 
     expect(response.ok()).toBe(true);
 
-    return response.json();
+    const body: SshHostKeyResponse = await response.json();
+
+    return body;
 }
 
 test.describe.serial("Dedicated SSH device keys", () => {

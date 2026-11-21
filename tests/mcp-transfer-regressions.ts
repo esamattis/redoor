@@ -3,6 +3,7 @@ import { ApiClient } from "#ui/api-client";
 import { readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
+import { z } from "zod";
 
 import { TEST_USERNAME, TEST_PASSWORD, waitForValue } from "./test-utils";
 import { createMcpTestClient } from './mcp-client';
@@ -80,8 +81,13 @@ export function registerMcpTransferRegressionTests(
         // Completion must reach durable storage even if no client ever asks for operation progress.
         await expect
             .poll(() => {
-                const metadata: { records: { id: string; state: string }[] } =
-                    JSON.parse(readFileSync(options.metadataPath, "utf8"));
+                const metadata = z
+                    .object({
+                        records: z.array(
+                            z.object({ id: z.string(), state: z.string() }),
+                        ),
+                    })
+                    .parse(JSON.parse(readFileSync(options.metadataPath, "utf8")));
 
                 return metadata.records.find(
                     (record) => record.id === operationId,
@@ -248,12 +254,13 @@ function registerMoveIdentityRegressionTest(
         writeFileSync(sourcePath, "replacement must survive");
         const completed = await client.waitForOperation(operationId);
         // Identity-guarded cleanup reports a partial result instead of deleting a replacement path.
-        expect(completed.result.structuredContent).toMatchObject({
-            state: "failed",
-            termination: {
-                error: expect.stringContaining("changed"),
-            },
-        });
+        const termination = z
+            .object({
+                state: z.literal("failed"),
+                termination: z.object({ error: z.string() }),
+            })
+            .parse(completed.result.structuredContent);
+        expect(termination.termination.error).toContain("changed");
         expect(
             (
                 await client.callTool("read_file", {

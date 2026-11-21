@@ -597,7 +597,7 @@ describe("Git browser REST API", () => {
         }
 
         await Promise.all(
-            Array.from({ length: 5_001 }, (_, index) =>
+            Array.from({ length: 5001 }, (_, index) =>
                 writeFile(
                     join(many, `entry-${String(index).padStart(4, "0")}`),
                     "x",
@@ -641,7 +641,7 @@ describe("Git browser REST API", () => {
         const boundedStatus = await statusPromise;
 
         // The status response never exceeds its named authoritative entry limit.
-        expect(boundedStatus.entries).toHaveLength(5_000);
+        expect(boundedStatus.entries).toHaveLength(5000);
         // Additional matching entries are represented explicitly rather than silently dropped.
         expect(boundedStatus.truncated).toBe(true);
 
@@ -676,6 +676,6 @@ describe("Git browser REST API", () => {
                     "many/entry-",
                 ),
             ),
-        ).toHaveLength(5_001);
+        ).toHaveLength(5001);
     });
 });

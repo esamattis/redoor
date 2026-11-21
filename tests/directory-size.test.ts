@@ -28,7 +28,7 @@ describe("directory size", () => {
         });
 
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

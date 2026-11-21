@@ -11,7 +11,7 @@ const RESTART_TIMEOUT_MS = 30_000;
  * How long one readiness request may take. A request to a process that is shutting down can
  * hang, and the overall deadline is only checked between attempts.
  */
-const PROBE_TIMEOUT_MS = 5_000;
+const PROBE_TIMEOUT_MS = 5000;
 
 /** Polls a target-specific probe until it proves the replacement process is ready. */
 export async function waitForRestart(
@@ -29,7 +29,9 @@ export async function waitForRestart(
             // The target is still shutting down or starting up.
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((resolve) => {
+            setTimeout(resolve, 100);
+        });
     }
 
     throw new Error(timeoutMessage);

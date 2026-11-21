@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { getRouteApi, Link } from "@tanstack/react-router";
 import {
@@ -212,6 +213,7 @@ export function GitCommitList(props: {
      */
     branchName: string | null;
 }) {
+    const [now] = useState(Date.now);
     const query = useInfiniteQuery(
         gitLogQueryOptions(
             props.agent,
@@ -240,7 +242,6 @@ export function GitCommitList(props: {
 
     const relativePath = query.data.pages[0]?.repository_relative_path ?? "";
     const commits = query.data.pages.flatMap((page) => page.commits);
-    const now = Date.now();
 
     // The walk only follows the starting commit's ancestors, so name the branch when there
     // is one; otherwise the commit itself is the most precise description.
@@ -539,6 +540,7 @@ export function GitRefList(props: {
         ),
     );
 
+    const [now] = useState(Date.now);
     const noun = isBranches
         ? scope === "local"
             ? "local branches"
@@ -618,7 +620,6 @@ export function GitRefList(props: {
 
     const refs = query.data.pages.flatMap((page) => page.refs);
     const total = query.data.pages.at(-1)?.total ?? refs.length;
-    const now = Date.now();
     const Icon = isBranches ? GitBranch : Tag;
 
     return (

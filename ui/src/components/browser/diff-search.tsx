@@ -333,6 +333,41 @@ function statusText(options: {
     return `${String(currentIndex + 1)} of ${total}`;
 }
 
+/** Caches parsed diffs by content and options so typing a query does not re-parse unchanged patches. */
+const parsedDiffCache = new Map<string, DiffFile[]>();
+const MAX_PARSED_DIFF_CACHE = 200;
+
+/** Parses one unified diff once per `(unifiedDiff, mergeModifiedLines, fullContext)` tuple. */
+function parseDiffCached(
+    unifiedDiff: string,
+    mergeModifiedLines: boolean,
+    fullContext: boolean,
+): DiffFile[] {
+    const key = JSON.stringify([unifiedDiff, mergeModifiedLines, fullContext]);
+    const cached = parsedDiffCache.get(key);
+
+    if (cached !== undefined) {
+        return cached;
+    }
+
+    const diffFiles = parseDiff(unifiedDiff, {
+        mergeModifiedLines,
+        fullContext,
+    });
+
+    if (parsedDiffCache.size >= MAX_PARSED_DIFF_CACHE) {
+        const oldestKey = parsedDiffCache.keys().next().value;
+
+        if (oldestKey !== undefined) {
+            parsedDiffCache.delete(oldestKey);
+        }
+    }
+
+    parsedDiffCache.set(key, diffFiles);
+
+    return diffFiles;
+}
+
 /**
  * Runs the search: reads every file's patch, waits for typing to pause, parses each patch the
  * way its card does and finds the matches. Files still loading and files that cannot be
@@ -340,10 +375,6 @@ function statusText(options: {
  */
 function useDiffSearchResult(files: DiffSearchListFile[], query: string) {
     const patches = useSearchablePatches(files);
-
-    // The parsed patches of this search, keyed like the card's own parse, so a file is parsed
-    // once however many queries are typed. It is dropped when the search closes.
-    const parsed = React.useRef(new Map<string, DiffFile[]>());
 
     const [searched, setSearched] = React.useState(query);
 
@@ -379,21 +410,11 @@ function useDiffSearchResult(files: DiffSearchListFile[], query: string) {
             }
 
             // Parsed with the card's own options, so the rows match the ones it renders.
-            const key = JSON.stringify([
+            const diffFiles = parseDiffCached(
                 patch.unifiedDiff,
                 file.mergeModifiedLines,
                 patch.fullContext,
-            ]);
-
-            let diffFiles = parsed.current.get(key);
-
-            if (diffFiles === undefined) {
-                diffFiles = parseDiff(patch.unifiedDiff, {
-                    mergeModifiedLines: file.mergeModifiedLines,
-                    fullContext: patch.fullContext,
-                });
-                parsed.current.set(key, diffFiles);
-            }
+            );
 
             searchFiles.push({ path: file.path, diffFiles });
         });
@@ -420,9 +441,9 @@ function useDiffSearchNavigation(options: {
     /** Counts requests from selected text, which may repeat the query being searched. */
     requestCount: number;
 }) {
+    const { listRef, typedQuery } = options;
     const { searched, result, loading } = options.search;
     const store = options.store;
-    const listRef = options.listRef;
     const expand = options.expand;
     const [currentKey, setCurrentKey] = React.useState<string | null>(null);
 
@@ -432,6 +453,11 @@ function useDiffSearchNavigation(options: {
             : result.matches.findIndex(
                   (match) => diffMatchKey(match) === currentKey,
               );
+
+    // Drop a match that a newer result no longer has so returning via history never revives it.
+    if (currentKey !== null && currentIndex === -1) {
+        setCurrentKey(null);
+    }
 
     const [highlighter, setHighlighter] =
         React.useState<DiffSearchHighlighter | null>(null);
@@ -466,14 +492,13 @@ function useDiffSearchNavigation(options: {
         [expand, highlighter],
     );
 
-    // A match that a newer result no longer has is no longer current. It runs before the jump
+    // Clear the current-match highlight when no match is active. It runs before the jump
     // below, so a new query's first match replaces the old one instead of being cleared with it.
     React.useEffect(() => {
-        if (currentKey !== null && currentIndex === -1) {
-            setCurrentKey(null);
+        if (currentIndex === -1) {
             highlighter?.setCurrent(null, false);
         }
-    }, [currentKey, currentIndex, highlighter]);
+    }, [currentIndex, highlighter]);
 
     // A query typed in this bar jumps to its first match on screen once it has one, which may
     // only be after the patches load. A query searched from selected text makes the selected
@@ -482,7 +507,6 @@ function useDiffSearchNavigation(options: {
     // restored scroll position stays where the reader left it.
     const jumpPending = React.useRef<RequestedQuery | null>(null);
     const lastSearched = React.useRef(searched);
-    const typedQuery = options.typedQuery;
     const requestCount = options.requestCount;
 
     // Runs on a new request too, since selecting another occurrence of the searched text
@@ -575,14 +599,14 @@ function DiffSearchBar(props: {
     /** Expands a collapsed card, so the match being stepped to can render. */
     expand: (path: string) => void;
 }) {
+    const { inputRef, typedQuery, listRef } = props;
     const queryClient = useQueryClient();
     const search = useDiffSearchResult(props.files, props.query);
-    const typedQuery = props.typedQuery;
 
     const navigation = useDiffSearchNavigation({
         search,
         store: props.store,
-        listRef: props.listRef,
+        listRef,
         expand: props.expand,
         typedQuery,
         requestCount: props.requestCount,
@@ -591,7 +615,7 @@ function DiffSearchBar(props: {
     // Only a request focuses the input, so a bar restored by back does not open a phone's
     // keyboard by itself.
     React.useLayoutEffect(() => {
-        const input = props.inputRef.current;
+        const input = inputRef.current;
 
         if (props.focusRequest === 0 || input === null) {
             return;
@@ -599,7 +623,7 @@ function DiffSearchBar(props: {
 
         input.focus();
         input.select();
-    }, [props.focusRequest, props.inputRef]);
+    }, [props.focusRequest, inputRef]);
 
     const status = statusText({
         query: search.searched,
@@ -619,7 +643,7 @@ function DiffSearchBar(props: {
         >
             <div className="flex items-center gap-1">
                 <InputControl
-                    ref={props.inputRef}
+                    ref={inputRef}
                     type="search"
                     aria-label="Search in diffs"
                     placeholder="Search in diffs"

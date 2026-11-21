@@ -174,6 +174,18 @@ export async function requireSuccessfulResponse(
     );
 }
 
+/** Decodes a JSON response body at the private server API trust boundary. */
+export async function decodeJsonResponse<T>(response: Response): Promise<T> {
+    // oxlint-disable-next-line typescript/no-unsafe-return -- Private server API trust boundary; callers supply the ts-rs binding type T.
+    return response.json();
+}
+
+/** Parses one JSON line at the private server API streaming trust boundary. */
+function parseNdjsonLine<T>(line: string): T {
+    // oxlint-disable-next-line typescript/no-unsafe-return -- Private server API trust boundary; callers supply the ts-rs binding type T.
+    return JSON.parse(line);
+}
+
 /** Decodes one successful JSON response after applying shared auth and error semantics. */
 export async function apiRequest<T>(
     url: string,
@@ -183,7 +195,7 @@ export async function apiRequest<T>(
     const response = await fetch(url, withAuthentication(options, context));
     await requireSuccessfulResponse(response, context);
 
-    return response.json();
+    return decodeJsonResponse<T>(response);
 }
 
 /**
@@ -226,7 +238,7 @@ export async function* streamNdjson<T>(
             // The caller names the line type the route sends, as `apiRequest` does for JSON.
             const batch: T[] = lines
                 .filter((line) => line !== "")
-                .map((line): T => JSON.parse(line));
+                .map((line): T => parseNdjsonLine<T>(line));
 
             if (batch.length > 0) {
                 yield batch;

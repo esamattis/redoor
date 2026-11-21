@@ -890,6 +890,8 @@ function LineActionsToolbar(props: {
     actions: LineActions;
     active: ActiveRow;
 }) {
+    const { ref } = props;
+
     return (
         <>
             {/* Marks the keyboard-picked line, since the box itself shows no outline. */}
@@ -899,7 +901,7 @@ function LineActionsToolbar(props: {
                 style={{ top: props.active.top, height: props.active.height }}
             />
             <div
-                ref={props.ref}
+                ref={ref}
                 role="toolbar"
                 aria-label={`Line ${String(props.active.line)} actions`}
                 className={cn(
@@ -953,7 +955,7 @@ function LineActionsFrame(props: {
     children: React.ReactNode;
 }) {
     const frameRef = React.useRef<HTMLDivElement>(null);
-    const viewportRef = props.viewportRef;
+    const { viewportRef } = props;
     const toolbarRef = React.useRef<HTMLDivElement>(null);
     const [active, setActive] = React.useState<ActiveRow | null>(null);
     const actions = props.actions;
@@ -982,7 +984,7 @@ function LineActionsFrame(props: {
         observer.observe(viewport);
 
         return () => observer.disconnect();
-    }, [activeRow, activeSource]);
+    }, [activeRow, activeSource, viewportRef]);
 
     /** Shows the toolbar for a row, or hides it when the row cannot open a line. */
     const show = (row: HTMLTableRowElement, source: ActiveRow["source"]) => {

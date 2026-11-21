@@ -22,8 +22,8 @@ export default defineConfig({
             ),
             GIT_CONFIG_NOSYSTEM: "1",
         },
-        hookTimeout: 10000,
-        testTimeout: 10000,
+        hookTimeout: 10_000,
+        testTimeout: 10_000,
         exclude: ["node_modules", "**/e2e/**", ".opencode"],
         // Each worker gets its own server port (see `tests/setup-worker-port.ts`); the files of
         // a worker still run one after another and reuse that port.

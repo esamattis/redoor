@@ -106,10 +106,19 @@ function ImageThumbnail(props: { file: File }) {
     const [url, setUrl] = React.useState<string | null>(null);
 
     React.useEffect(() => {
+        let active = true;
         const objectUrl = URL.createObjectURL(props.file);
-        setUrl(objectUrl);
 
-        return () => URL.revokeObjectURL(objectUrl);
+        queueMicrotask(() => {
+            if (active) {
+                setUrl(objectUrl);
+            }
+        });
+
+        return () => {
+            active = false;
+            URL.revokeObjectURL(objectUrl);
+        };
     }, [props.file]);
 
     return url === null ? null : (

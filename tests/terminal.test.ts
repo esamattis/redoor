@@ -66,7 +66,7 @@ function isRunning(pid: number): boolean {
 async function waitForExit(pid: number, description: string): Promise<void> {
     await waitForValue({
         predicate: async () => (isRunning(pid) ? undefined : true),
-        timeoutMs: 5_000,
+        timeoutMs: 5000,
         intervalMs: 50,
         description,
     });
@@ -101,9 +101,9 @@ async function waitForListedStatus(id: string, type: string) {
 describe("terminal sessions", () => {
     it("keeps an idle terminal usable across keepalive pings", async () => {
         const { viewer } = await openTerminal(api, testAgent, agentCwd);
-        await new Promise<void>((resolve) =>
-            viewer.socket.once("ping", () => resolve()),
-        );
+        await new Promise<void>((resolve) => {
+            viewer.socket.once("ping", () => resolve());
+        });
         const marker = "__REDOOR_IDLE_TERMINAL__";
         viewer.type(`printf '${marker}'\n`);
 
@@ -347,9 +347,9 @@ describe("terminal sessions", () => {
             cols: 80,
         });
 
-        await new Promise<void>((resolve) =>
-            viewer.socket.once("open", () => resolve()),
-        );
+        await new Promise<void>((resolve) => {
+            viewer.socket.once("open", () => resolve());
+        });
         const marker = "__REDOOR_EARLY_INPUT__";
         viewer.type(`printf '${marker}'\n`);
 

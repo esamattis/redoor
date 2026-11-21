@@ -38,7 +38,7 @@ describe("File Diff API", () => {
         serverPid = setup.serverPid;
         apiClient = setup.apiClient;
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterEach(() => {
         tempFiles.emptyDirs();
@@ -84,7 +84,7 @@ describe("File Diff API", () => {
         const waitForSecondAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(secondAgentName),
-            10000,
+            10_000,
         );
 
         const secondAgentPid = processManager.spawnAgent({

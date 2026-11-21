@@ -387,7 +387,7 @@ describe("Access token REST API", () => {
         const created = await createAccessToken(api, {
             name: "expiring",
             permissions: ["files:read"],
-            expiresAt: new Date(Date.now() + 1_500).toISOString(),
+            expiresAt: new Date(Date.now() + 1500).toISOString(),
         });
 
         const client = asToken(created.token);

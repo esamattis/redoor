@@ -5,8 +5,8 @@ export default defineConfig({
     test: {
         environment: "node",
         include: ["ui/src/**/*.test.{ts,tsx}"],
-        hookTimeout: 10000,
-        testTimeout: 10000,
+        hookTimeout: 10_000,
+        testTimeout: 10_000,
         pool: "forks",
         maxWorkers: 1,
         isolate: false,

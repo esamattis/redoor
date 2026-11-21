@@ -51,7 +51,7 @@ describe("streaming path and content search", () => {
                 `before\nstream-needle ${index}\nafter\n`,
             );
         }
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -89,7 +89,11 @@ describe("streaming path and content search", () => {
         return text
             .split("\n")
             .filter((line) => line !== "")
-            .map((line): T => JSON.parse(line));
+            .map((line): T => {
+                const parsed: T = JSON.parse(line);
+
+                return parsed;
+            });
     }
 
     /**

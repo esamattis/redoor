@@ -154,11 +154,6 @@ const restrictToHorizontalAxis: Modifier = ({ transform }) => ({
     y: 0,
 });
 
-/** Normalizes library identifiers so callers can consistently use stable string keys. */
-function textId(id: UniqueIdentifier) {
-    return String(id);
-}
-
 /** Keeps the source footprint in layout while lifting the moving row above siblings. */
 function sortableStyle(
     transform: Transform | null,
@@ -218,7 +213,7 @@ function collectionAnnouncements(
             return `${labelFor(active.id)} is now in position ${position}.`;
         },
         onDragEnd({ active, over }) {
-            if (!over || textId(over.id) === textId(active.id)) {
+            if (!over || String(over.id) === String(active.id)) {
                 return `Cancelled reordering ${labelFor(active.id)}.`;
             }
 
@@ -373,6 +368,7 @@ export function SortableList(props: {
     onMove: (move: ItemMove) => void;
     children: React.ReactNode;
 }) {
+    const { listRef } = props;
     const contextId = React.useId();
     const [activeId, setActiveId] = React.useState<string | null>(null);
     const [announcement, setAnnouncement] = React.useState("");
@@ -386,11 +382,12 @@ export function SortableList(props: {
     const dragIdsRef = useDragScope(props.itemIds);
     const lastOverIdRef = React.useRef<string | null>(null);
     const onMoveRef = React.useRef(props.onMove);
-    const labelRef = React.useRef(props.getItemLabel);
     const { markActive, markInactive } = useDragSession();
-    itemIdsRef.current = props.itemIds;
-    onMoveRef.current = props.onMove;
-    labelRef.current = props.getItemLabel;
+
+    React.useLayoutEffect(() => {
+        itemIdsRef.current = props.itemIds;
+        onMoveRef.current = props.onMove;
+    });
 
     const coordinateGetter = React.useMemo(
         () => axisCoordinates(props.orientation),
@@ -406,26 +403,30 @@ export function SortableList(props: {
     );
 
     const collisionDetection = React.useMemo(
-        () => boundedCollision(props.listRef),
-        [props.listRef],
+        () => boundedCollision(listRef),
+        [listRef],
     );
+
+    const label = props.label;
+    const getItemLabel = props.getItemLabel;
+    const itemIds = props.itemIds;
 
     const announcements = React.useMemo(
         () =>
             collectionAnnouncements(
-                props.label,
-                (id) => labelRef.current(textId(id)),
+                label,
+                (id) => getItemLabel(String(id)),
                 (id) => {
-                    const index = itemIdsRef.current.indexOf(textId(id));
+                    const index = itemIds.indexOf(String(id));
 
                     if (index < 0) {
                         return null;
                     }
 
-                    return `${index + 1} of ${itemIdsRef.current.length}`;
+                    return `${index + 1} of ${itemIds.length}`;
                 },
             ),
-        [props.label],
+        [label, getItemLabel, itemIds],
     );
 
     useSortableKeys(activeId);
@@ -448,8 +449,8 @@ export function SortableList(props: {
     };
 
     const handleDragEnd = (event: DragEndEvent) => {
-        const active = textId(event.active.id);
-        const over = event.over ? textId(event.over.id) : null;
+        const active = String(event.active.id);
+        const over = event.over ? String(event.over.id) : null;
         finishDrag(active);
 
         if (!over || active === over) {
@@ -517,16 +518,16 @@ export function SortableList(props: {
                 }}
                 onDragStart={(event) => {
                     dragIdsRef.current = [...itemIdsRef.current];
-                    lastOverIdRef.current = textId(event.active.id);
+                    lastOverIdRef.current = String(event.active.id);
                     markActive();
-                    setActiveId(textId(event.active.id));
+                    setActiveId(String(event.active.id));
                     setAnnouncement(
                         announcements.onDragStart({ active: event.active }) ??
                             "",
                     );
                 }}
                 onDragOver={(event) => {
-                    const overId = event.over ? textId(event.over.id) : null;
+                    const overId = event.over ? String(event.over.id) : null;
 
                     // Initial collision with the source must not immediately replace pickup guidance.
                     if (overId === lastOverIdRef.current) {

@@ -15,9 +15,9 @@ it("closes fixture HTTP connections before replacing the server on its worker po
             server.closeAllConnections();
 
             if (server.listening) {
-                await new Promise<void>((resolve) =>
-                    server.close(() => resolve()),
-                );
+                await new Promise<void>((resolve) => {
+                    server.close(() => resolve());
+                });
             }
         }
     });
@@ -25,20 +25,22 @@ it("closes fixture HTTP connections before replacing the server on its worker po
     for (let generation = 0; generation < 2; generation++) {
         const closed: Promise<unknown[]>[] = [];
 
-        const server = createServer(async (request, response) => {
-            const chunks: Buffer[] = [];
+        const server = createServer((request, response) => {
+            void (async () => {
+                const chunks: Buffer[] = [];
 
-            for await (const chunk of request) chunks.push(Buffer.from(chunk));
+                for await (const chunk of request) chunks.push(Buffer.from(chunk));
 
-            response.setHeader("Content-Type", "application/json");
-            response.end(
-                JSON.stringify({
-                    generation,
-                    headers: request.headers,
-                    method: request.method,
-                    body: Buffer.concat(chunks).toString(),
-                }),
-            );
+                response.setHeader("Content-Type", "application/json");
+                response.end(
+                    JSON.stringify({
+                        generation,
+                        headers: request.headers,
+                        method: request.method,
+                        body: Buffer.concat(chunks).toString(),
+                    }),
+                );
+            })();
         });
 
         servers.push(server);
@@ -66,7 +68,9 @@ it("closes fixture HTTP connections before replacing the server on its worker po
                     }),
                 );
 
-                return response.json();
+                const json: unknown = await response.json();
+
+                return json;
             }),
         );
 
@@ -109,6 +113,8 @@ it("closes fixture HTTP connections before replacing the server on its worker po
         await Promise.all(closed);
         // Observe actual socket closure before replacing the listener, without sleeps or retries.
         expect(activeSockets.size).toBe(0);
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await new Promise<void>((resolve) => {
+            server.close(() => resolve());
+        });
     }
 });

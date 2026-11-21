@@ -42,7 +42,7 @@ async function getRandomFreePorts(
     excludedPorts: Set<number>,
 ): Promise<number> {
     for (let attempt = 0; attempt < 100; attempt++) {
-        const firstPort = randomInt(10000, 60000 - count);
+        const firstPort = randomInt(10_000, 60_000 - count);
         let free = true;
 
         for (const port of portRange(firstPort, count)) {
@@ -126,7 +126,9 @@ async function freeReservedPort(port: number): Promise<void> {
             return;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => {
+            setTimeout(resolve, 50);
+        });
     }
 
     for (const pid of await listenerPids(port)) {
@@ -146,7 +148,9 @@ async function freeReservedPort(port: number): Promise<void> {
             return;
         }
 
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => {
+            setTimeout(resolve, 50);
+        });
     }
 
     throw new Error(`Test port ${port} remains occupied after cleanup`);

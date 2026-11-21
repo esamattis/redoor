@@ -78,9 +78,9 @@ async function recordOpenPathEvents(): Promise<OpenPathEvent[]> {
 
     // The server only pings once it queued the subscription with the router, which then
     // handles it before any later open request.
-    const subscribed = new Promise<void>((resolve) =>
-        socket.once("ping", () => resolve()),
-    );
+    const subscribed = new Promise<void>((resolve) => {
+        socket.once("ping", () => resolve());
+    });
 
     socket.on("message", (data) => {
         const event = openPathEventSchema.safeParse(

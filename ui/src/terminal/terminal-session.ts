@@ -144,7 +144,9 @@ function getServerDisconnectMessage(
 
 /** Gives wterm's resize observer one rendered frame before PTY dimensions are captured. */
 function waitForTerminalSizing(): Promise<void> {
-    return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    return new Promise((resolve) => {
+        requestAnimationFrame(() => resolve());
+    });
 }
 
 /** Removes control escapes and adds shell paste guards only when the PTY requested them. */

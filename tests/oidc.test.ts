@@ -92,18 +92,18 @@ class MockProvider {
 
         const port = await getAvailablePort();
 
-        await new Promise<void>((resolve) =>
-            server.listen(port, "127.0.0.1", resolve),
-        );
+        await new Promise<void>((resolve) => {
+            server.listen(port, "127.0.0.1", resolve);
+        });
         this.server = server;
         this.issuer = `http://127.0.0.1:${port}`;
     }
 
     /** Stops the provider so the test process can exit. */
     async stop(): Promise<void> {
-        await new Promise<void>((resolve) =>
-            this.server?.close(() => resolve()),
-        );
+        await new Promise<void>((resolve) => {
+            this.server?.close(() => resolve());
+        });
     }
 
     /** Routes one request to the matching endpoint. */
@@ -380,8 +380,8 @@ describe("OIDC sign-in", () => {
             /^redoor_session=[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Lax; Path=\/; Max-Age=31536000$/,
         );
         // The length picked on the login page survives the provider round trip.
-        expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
-        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604800 + 1);
+        expect(storedExpiresIn(callback)).toBeGreaterThan(604_800 - 30);
+        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604_800 + 1);
         // The one-shot state cookie is removed once it has been used.
         expect(setCookie(callback, "redoor_oidc_state")).toMatch(/Max-Age=0/);
 
@@ -524,7 +524,7 @@ describe("OIDC sign-in", () => {
         const registered = waitForLogMessage(
             serverProcess,
             /Agent registered:.*agent_name=oidc-agent/,
-            10000,
+            10_000,
         );
 
         processManager.spawnAgent({
@@ -651,8 +651,8 @@ describe("OIDC sign-in without allowed_groups", () => {
         const { callback } = await signIn("/", "year");
 
         // A year is longer than the configured week, so the session gets a week.
-        expect(storedExpiresIn(callback)).toBeGreaterThan(604800 - 30);
-        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604800 + 1);
+        expect(storedExpiresIn(callback)).toBeGreaterThan(604_800 - 30);
+        expect(storedExpiresIn(callback)).toBeLessThanOrEqual(604_800 + 1);
     });
 });
 

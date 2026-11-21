@@ -28,7 +28,7 @@ describe("File Edit API", () => {
 
         apiClient = setup.apiClient;
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterEach(() => {
         tempFiles.emptyDirs();
@@ -92,7 +92,7 @@ describe("File Edit API", () => {
         fs.chmodSync(filePath, 0o751);
 
         if (process.getuid?.() === 0) {
-            fs.chownSync(filePath, 12345, 12346);
+            fs.chownSync(filePath, 12_345, 12_346);
         }
 
         const before = fs.statSync(filePath, { bigint: true });

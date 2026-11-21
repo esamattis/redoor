@@ -76,6 +76,8 @@ function manualRestarts(processes: UpgradeProcessReport[]): ManualRestart[] {
             case "restarted":
             case "restarting":
                 return [];
+            default:
+                return [];
         }
     });
 }

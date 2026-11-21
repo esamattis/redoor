@@ -314,7 +314,9 @@ export function FileList(props: {
                         aria-label="Filter files"
                         value={filter}
                         onChange={(event) => setFilter(event.target.value)}
-                        onKeyDown={handleFilterKeyDown}
+                        onKeyDown={(event) => {
+                            void handleFilterKeyDown(event);
+                        }}
                         placeholder="Filter files (f)"
                         className="w-full bg-slate-900 py-1.5 pl-9 text-sm placeholder:text-slate-500 focus:ring-1 focus:ring-blue-500 @xl:py-2"
                     />
@@ -440,12 +442,14 @@ function FileTable(props: {
         });
     };
 
-    const getEntries = React.useEffectEvent(() =>
-        Array.from(
-            tableRef.current?.querySelectorAll<HTMLElement>(
-                '[data-keyboard-focus-entry="true"]',
-            ) ?? [],
-        ),
+    const getEntries = React.useCallback(
+        () =>
+            Array.from(
+                tableRef.current?.querySelectorAll<HTMLElement>(
+                    '[data-keyboard-focus-entry="true"]',
+                ) ?? [],
+            ),
+        [],
     );
 
     useArrayKeyboardFocus(getEntries);
@@ -889,6 +893,7 @@ function FileEntry(props: {
     gitState: GitDirectoryEntryState | null | undefined;
     onSelection: (name: string, selected: boolean, shiftKey: boolean) => void;
 }) {
+    const [now] = React.useState(Date.now);
     const selectedFileKeys = useAtomValue(selectedFileKeysAtom);
     const entry = props.entry;
     const isDirectory = entry.type === "directory";
@@ -971,10 +976,7 @@ function FileEntry(props: {
                     "-"
                 ) : (
                     <Tooltip
-                        content={formatModifiedAge(
-                            entry.modified_at,
-                            Date.now(),
-                        )}
+                        content={formatModifiedAge(entry.modified_at, now)}
                     >
                         <time
                             className="whitespace-nowrap"

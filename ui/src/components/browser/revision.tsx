@@ -72,7 +72,7 @@ export function RevisionBanner(props: {
     /** Absent while the revision could not be resolved. */
     commit: GitCommitSummary | null;
 }) {
-    const now = Date.now();
+    const [now] = React.useState(Date.now);
     const commit = props.commit;
     const showsCommitId = commit !== null && !commit.id.startsWith(props.rev);
 
@@ -566,6 +566,7 @@ export function GitCommitView(props: {
 
     // Built once per commit diff, so the memoized diff cards keep their props while the
     // filter or another file's state changes.
+    const [now] = React.useState(Date.now);
     const files = React.useMemo(
         () =>
             diffQuery.data === undefined
@@ -613,7 +614,6 @@ export function GitCommitView(props: {
     }
 
     const diff = diffQuery.data;
-    const now = Date.now();
     const worktree = isWorktreeRange(props.rev);
 
     const subject = worktree

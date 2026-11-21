@@ -394,7 +394,7 @@ describe("Git history downloads and copies", () => {
         const waitForSecondAgent = waitForLogMessage(
             serverProcess,
             agentRegisteredPattern(secondAgentName),
-            10000,
+            10_000,
         );
 
         const secondAgentPid = processManager.spawnAgent({

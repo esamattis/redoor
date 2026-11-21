@@ -27,7 +27,7 @@ describe("Create Directory API", () => {
         });
 
         testAgent = setup.testAgent;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

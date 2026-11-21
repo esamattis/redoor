@@ -47,7 +47,7 @@ describe("Remote exec and non-shell streaming API", () => {
         });
 
         tokenEnv = remoteEnv(setup.apiClient.baseUrl, created.token);
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -89,7 +89,11 @@ describe("Remote exec and non-shell streaming API", () => {
         return stdout
             .trim()
             .split("\n")
-            .map((line) => JSON.parse(line));
+            .map((line) => {
+                const parsed: ExecEvent = JSON.parse(line);
+
+                return parsed;
+            });
     }
 
     /** A missing direct child proves cancellation reaped it rather than only closing local output. */

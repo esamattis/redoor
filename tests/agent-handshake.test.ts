@@ -50,7 +50,7 @@ describe("agent websocket handshake", () => {
         api = setup.apiClient;
         serverPid = setup.serverPid;
         serverPort = setup.serverPort;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -250,9 +250,9 @@ describe("agent websocket handshake", () => {
             throw new Error(`upgrade refused with ${outcome.status}`);
         }
 
-        const closed = new Promise<void>((resolve) =>
-            outcome.socket.once("close", () => resolve()),
-        );
+        const closed = new Promise<void>((resolve) => {
+            outcome.socket.once("close", () => resolve());
+        });
 
         const logged = waitForLogMessage(
             serverProcess(),
@@ -281,9 +281,9 @@ describe("agent websocket handshake", () => {
             throw new Error(`upgrade refused with ${outcome.status}`);
         }
 
-        const closed = new Promise<void>((resolve) =>
-            outcome.socket.once("close", () => resolve()),
-        );
+        const closed = new Promise<void>((resolve) => {
+            outcome.socket.once("close", () => resolve());
+        });
 
         const logged = waitForLogMessage(
             serverProcess(),
@@ -325,9 +325,9 @@ describe("agent websocket handshake", () => {
 
         onTestFinished(
             () =>
-                new Promise<void>((resolve) =>
-                    fraudulent.close(() => resolve()),
-                ),
+                new Promise<void>((resolve) => {
+                    fraudulent.close(() => resolve());
+                }),
         );
         fraudulent.on("connection", (socket, request) => {
             upgradeHeaders.push(request.headers);
@@ -335,9 +335,9 @@ describe("agent websocket handshake", () => {
                 framesReceived += 1;
             });
         });
-        await new Promise<void>((resolve) =>
-            fraudulent.once("listening", () => resolve()),
-        );
+        await new Promise<void>((resolve) => {
+            fraudulent.once("listening", () => resolve());
+        });
         const { port } = tcpAddressSchema.parse(fraudulent.address());
 
         const agentPid = processes.spawnAgent({

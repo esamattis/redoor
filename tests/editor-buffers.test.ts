@@ -67,7 +67,7 @@ async function setOpenFiles(api: ApiClient, keys: string[]) {
 async function expectApiError(request: Promise<unknown>) {
     const error = await request.then(
         () => null,
-        (cause: Error) => cause,
+        (cause: unknown) => cause,
     );
 
     if (!(error instanceof ApiError)) {

@@ -6,7 +6,7 @@ import {
     GitBranch,
     GitCommitHorizontal,
 } from "lucide-react";
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { CopyableGitRef } from "#ui/components/copyable-git-ref";
@@ -43,6 +43,7 @@ export function GitWorktreeList(props: {
     /** The repository the page resolved, whose worktrees are listed. */
     repositoryRoot: string;
 }) {
+    const [now] = useState(Date.now);
     const query = useQuery(
         gitWorktreesQueryOptions(props.agent, props.repositoryRoot),
     );
@@ -60,7 +61,6 @@ export function GitWorktreeList(props: {
     }
 
     const worktrees = query.data.worktrees;
-    const now = Date.now();
 
     return (
         <>

@@ -57,7 +57,11 @@ test.describe.serial("Transfer Path Links", () => {
         const records: ExecEvent[] = (await response.text())
             .trim()
             .split("\n")
-            .map((line) => JSON.parse(line));
+            .map((line) => {
+                const parsed: ExecEvent = JSON.parse(line);
+
+                return parsed;
+            });
 
         const stdout = Buffer.concat(
             records.flatMap((event) =>

@@ -77,6 +77,8 @@ export function SearchQueryBar(props: {
         insensitive: <CaseLower className="h-4 w-4" />,
     } satisfies Record<CaseSensitivity, React.ReactNode>;
 
+    const { queryInputRef } = props;
+
     return (
         <div className="flex flex-col gap-2 sm:flex-row">
             <div className="flex gap-2">
@@ -142,7 +144,7 @@ export function SearchQueryBar(props: {
                 />
                 <InputControl
                     key={props.isContentSearch ? "content" : "path"}
-                    ref={props.queryInputRef}
+                    ref={queryInputRef}
                     autoFocus
                     type="search"
                     aria-label={

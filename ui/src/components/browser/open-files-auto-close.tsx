@@ -165,7 +165,9 @@ export function useOpenFilesAutoClose() {
 
     // Read by the timer, which must not restart whenever the user moves between files.
     const shownKeyRef = React.useRef(shownKey);
-    shownKeyRef.current = shownKey;
+    React.useLayoutEffect(() => {
+        shownKeyRef.current = shownKey;
+    }, [shownKey]);
 
     // Showing a file and leaving it both count as touching it, so a file read for hours
     // without edits gets its full delay from the moment the user moves on.

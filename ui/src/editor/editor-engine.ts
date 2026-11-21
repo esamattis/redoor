@@ -14,6 +14,7 @@ import { EditorView } from "@codemirror/view";
 import { getCM } from "@replit/codemirror-vim";
 import { EditorConfiguration } from "./editor-extensions";
 import type { EditorCallbacks, EditorSettings } from "./editor-extensions";
+import { storedBufferDataSchema } from "./stored-buffer";
 import type { StoredBufferData, StoredScroll } from "./stored-buffer";
 
 /**
@@ -94,9 +95,11 @@ export class EditorEngine {
         state: EditorState,
         withHistory: boolean,
     ): StoredBufferData["state"] {
-        return withHistory
-            ? state.toJSON({ history: historyField })
-            : state.toJSON();
+        return storedBufferDataSchema.shape.state.parse(
+            withHistory
+                ? state.toJSON({ history: historyField })
+                : state.toJSON(),
+        );
     }
 
     /** Turns device text into a CodeMirror document once, so comparisons can stay structural. */

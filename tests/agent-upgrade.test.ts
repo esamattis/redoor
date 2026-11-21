@@ -31,7 +31,7 @@ const AGENT_NAME = "upgrade-external-agent";
  */
 async function waitForFinishedUpgrade(target: Agent, description: string) {
     return waitForValue({
-        timeoutMs: 30000,
+        timeoutMs: 30_000,
         description,
         predicate: async () => {
             const { job } = await target.getUpgradeStatus();
@@ -89,7 +89,7 @@ describe("connected external agent upgrade", () => {
         mkdirSync(join(cachedBinary, ".."), { recursive: true });
         copyFileSync(SERVER_PATH, cachedBinary);
         chmodSync(cachedBinary, 0o755);
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -141,7 +141,7 @@ describe("connected external agent upgrade", () => {
         });
 
         const upgraded = await waitForValue({
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             description: "upgraded agent replacement connection",
             predicate: async () => {
                 const candidate = (await api.listAgents()).find(
@@ -171,7 +171,7 @@ describe("connected external agent upgrade", () => {
         await upgraded.dismissUpgrade();
         // A dismissed result is forgotten, so the UI stops showing it.
         expect((await upgraded.getUpgradeStatus()).job).toBeNull();
-    }, 60000);
+    }, 60_000);
 
     it("force-installs the exact running server binary", async () => {
         const serverInfo = await api.getServerInfo();
@@ -198,7 +198,7 @@ describe("connected external agent upgrade", () => {
         expect(job.source).toBe("running_server");
 
         const upgraded = await waitForValue({
-            timeoutMs: 30000,
+            timeoutMs: 30_000,
             description: "force-installed agent replacement connection",
             predicate: async () => {
                 const candidate = (await api.listAgents()).find(
@@ -224,7 +224,7 @@ describe("connected external agent upgrade", () => {
         });
         // Self-exec must preserve PID for the force path as well.
         expect(details.pid).toBe(agentPid);
-    }, 60000);
+    }, 60_000);
 
     it("runs one upgrade at a time and fails it when the upload completes before any byte", async () => {
         const earlyAgentName = "upgrade-early-completion-agent";

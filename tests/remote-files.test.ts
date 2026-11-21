@@ -67,7 +67,7 @@ describe("Remote CLI file commands", () => {
                 permissions: ALL_PERMISSIONS,
             })
         ).token;
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();

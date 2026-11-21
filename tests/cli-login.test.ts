@@ -62,7 +62,7 @@ describe("CLI login through the browser", () => {
         });
         baseUrl = setup.apiClient.baseUrl;
         home = files.tempDirectory();
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processes.killAll();
@@ -90,7 +90,9 @@ describe("CLI login through the browser", () => {
 
         expect(response.status).toBe(200);
 
-        return response.json();
+        const body: StartCliLoginResponse = await response.json();
+
+        return body;
     }
 
     /** One poll as the CLI. */

@@ -32,7 +32,7 @@ beforeAll(async () => {
     await waitForPort(VITEST_SERVER_PORT);
     apiClient = new ApiClient(baseUrl);
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
-}, 30000);
+}, 30_000);
 
 afterAll(async () => {
     await processManager.killAll();

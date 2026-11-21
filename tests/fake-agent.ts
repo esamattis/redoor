@@ -407,7 +407,7 @@ export class FakeAgent {
     /** Resolves with the first queued or future control frame `accepts` matches. */
     waitForFrame(
         accepts: (frame: ControlFrame) => boolean,
-        timeoutMs = 10000,
+        timeoutMs = 10_000,
     ): Promise<ControlFrame> {
         const index = this.queued.findIndex(accepts);
 
@@ -443,7 +443,7 @@ export class FakeAgent {
     }
 
     /** Waits for the next command of one type. */
-    async nextCommand(type: string, timeoutMs = 10000): Promise<FakeCommand> {
+    async nextCommand(type: string, timeoutMs = 10_000): Promise<FakeCommand> {
         return commandFrameSchema.parse(
             await this.waitForFrame((frame) => {
                 const command = commandFrameSchema.safeParse(frame);

@@ -57,7 +57,7 @@ describe("Raw Directory Archive Download API", () => {
         apiClient = setup.apiClient;
         testAgent = setup.testAgent;
         expect(testAgent).toBeDefined();
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

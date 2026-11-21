@@ -24,11 +24,17 @@ export function appendOwnershipOptions(
 ): URL {
     appendOwnerAndGroup(url, ownership ?? {});
 
-    if (ownership?.inherit_owner != null) {
+    if (
+        ownership?.inherit_owner !== null &&
+        ownership?.inherit_owner !== undefined
+    ) {
         url.searchParams.set("inherit_owner", String(ownership.inherit_owner));
     }
 
-    if (ownership?.inherit_group != null) {
+    if (
+        ownership?.inherit_group !== null &&
+        ownership?.inherit_group !== undefined
+    ) {
         url.searchParams.set("inherit_group", String(ownership.inherit_group));
     }
 
@@ -40,11 +46,11 @@ export function appendOwnerAndGroup(
     url: URL,
     ownership: Partial<ChownPathRequest>,
 ): URL {
-    if (ownership.owner != null) {
+    if (ownership.owner !== null && ownership.owner !== undefined) {
         url.searchParams.set("owner", ownership.owner);
     }
 
-    if (ownership.group != null) {
+    if (ownership.group !== null && ownership.group !== undefined) {
         url.searchParams.set("group", ownership.group);
     }
 

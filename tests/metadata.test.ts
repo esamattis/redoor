@@ -27,7 +27,7 @@ describe("Metadata Content-Type Detection", () => {
 
         testAgent = setup.testAgent;
         expect(testAgent).toBeDefined();
-    }, 30000);
+    }, 30_000);
 
     afterAll(async () => {
         await processManager.killAll();

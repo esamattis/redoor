@@ -23,6 +23,7 @@ export function TextField(props: {
     disabled: boolean;
     onChange: (value: string) => void;
 }) {
+    const { inputRef } = props;
     const inputId = React.useId();
     const descriptionId = React.useId();
 
@@ -40,7 +41,7 @@ export function TextField(props: {
                 </span>
             </div>
             <InputControl
-                ref={props.inputRef}
+                ref={inputRef}
                 id={inputId}
                 aria-label={props.ariaLabel}
                 value={props.value}

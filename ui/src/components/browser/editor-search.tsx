@@ -82,10 +82,7 @@ export function EditorSearch(props: {
 
     const canReplace = props.editable && advanced && canSearch;
 
-    const matchCount = React.useMemo(
-        () => currentMatchStatus(props.view, query, open),
-        [open, props.documentRevision, props.view, query],
-    );
+    const matchCount = currentMatchStatus(props.view, query, open);
 
     const applyQuery = React.useCallback(
         (nextQuery: SearchQuery) => {
@@ -362,12 +359,14 @@ function SearchReplaceFields(props: {
     onReplaceAll: () => void;
     onClose: () => void;
 }) {
+    const { searchInputRef } = props;
+
     return (
         <div className="space-y-2">
             <div className="flex items-center gap-2">
                 <label className="min-w-0 flex-1">
                     <InputControl
-                        ref={props.searchInputRef}
+                        ref={searchInputRef}
                         type="search"
                         codeMode
                         aria-label="Find in file"

@@ -31,19 +31,19 @@ export type BufferBase = {
  */
 export function hashText(text: Text): string {
     const content = text.toString();
-    let h1 = 0xdeadbeef;
-    let h2 = 0x41c6ce57;
+    let h1 = 0xde_ad_be_ef;
+    let h2 = 0x41_c6_ce_57;
 
     for (let index = 0; index < content.length; index += 1) {
         const code = content.charCodeAt(index);
-        h1 = Math.imul(h1 ^ code, 2654435761);
-        h2 = Math.imul(h2 ^ code, 1597334677);
+        h1 = Math.imul(h1 ^ code, 2_654_435_761);
+        h2 = Math.imul(h2 ^ code, 1_597_334_677);
     }
 
-    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507);
-    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
-    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2_246_822_507);
+    h1 ^= Math.imul(h2 ^ (h2 >>> 13), 3_266_489_909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2_246_822_507);
+    h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3_266_489_909);
 
     return `${content.length.toString(36)}-${(h2 >>> 0).toString(36)}-${(h1 >>> 0).toString(36)}`;
 }

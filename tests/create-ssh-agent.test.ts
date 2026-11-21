@@ -603,14 +603,14 @@ describe("SSH agent configuration API", () => {
 
         const port = await getAvailablePort();
 
-        await new Promise<void>((resolve) =>
-            silentServer.listen(port, "127.0.0.1", resolve),
-        );
+        await new Promise<void>((resolve) => {
+            silentServer.listen(port, "127.0.0.1", resolve);
+        });
         onTestFinished(async () => {
             for (const socket of pendingSockets) socket.destroy();
-            await new Promise<void>((resolve) =>
-                silentServer.close(() => resolve()),
-            );
+            await new Promise<void>((resolve) => {
+                silentServer.close(() => resolve());
+            });
         });
 
         await apiClient.createSshAgent(
