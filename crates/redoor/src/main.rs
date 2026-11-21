@@ -314,6 +314,11 @@ fn main() -> ExitCode {
         }
     };
     let result = runtime.block_on(run(cli.command, context, launch_parent));
+    // The logger writes asynchronously, and its last lines usually say why the process exits;
+    // the background shutdown below would drop them.
+    runtime.block_on(redoor_core::logging::flush(std::time::Duration::from_secs(
+        2,
+    )));
     // Blocking stdin readers (agents, remote exec) never finish on their own; waiting for
     // them would keep a finished command alive.
     runtime.shutdown_background();

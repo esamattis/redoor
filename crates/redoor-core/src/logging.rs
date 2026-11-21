@@ -232,6 +232,9 @@ struct Logger {
     /// failure, so a broken disk does not stop stdout logging.
     log_file: Option<RotatingLogFile>,
     format: LogFormat,
+    /// One handle for the whole process: tokio hands each write to a blocking thread, and
+    /// only the handle that started a write can wait for it to land.
+    stdout: tokio::io::Stdout,
 }
 
 impl Logger {
@@ -241,7 +244,11 @@ impl Logger {
             Some(spec) => Some(spec.open().await?),
             None => None,
         };
-        Ok(Self { log_file, format })
+        Ok(Self {
+            log_file,
+            format,
+            stdout: tokio::io::stdout(),
+        })
     }
 
     /// Reports sink failures directly to avoid recursively using the broken logger.
@@ -261,7 +268,13 @@ impl Logger {
         };
         let mut bytes = formatted.into_bytes();
         bytes.push(b'\n');
-        if let Err(error) = tokio::io::stdout().write_all(&bytes).await {
+        // Flushed like the file: tokio finishes the write in the background, and an exiting
+        // process would otherwise lose the lines that say why it exits.
+        let written = match self.stdout.write_all(&bytes).await {
+            Ok(()) => self.stdout.flush().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = written {
             eprintln!("Failed to write logger output to stdout: {error}");
         }
         if let Some(file) = self.log_file.as_mut()
