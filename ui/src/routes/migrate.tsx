@@ -11,13 +11,37 @@ const migrateSearchSchema = z.object({
     redirect: z.string().optional(),
 });
 
-/** Accepts only same-origin application paths so redirects stay inside the app. */
+/** Accepts only same-origin application paths so redirects cannot leave the app. */
 function safeRedirectPath(value: string | undefined): string {
-    if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    if (
+        !value ||
+        !value.startsWith("/") ||
+        value.startsWith("//") ||
+        value.includes("\\")
+    ) {
         return "/";
     }
 
-    return value;
+    try {
+        const parsed = new URL(value, window.location.origin);
+
+        if (
+            parsed.origin !== window.location.origin ||
+            !parsed.pathname.startsWith("/") ||
+            parsed.pathname.startsWith("//")
+        ) {
+            return "/";
+        }
+
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+        return "/";
+    }
+}
+
+/** Resolves a validated redirect path to a same-origin absolute URL for `location.replace`. */
+function safeRedirectUrl(value: string | undefined): string {
+    return new URL(safeRedirectPath(value), window.location.origin).href;
 }
 
 /** Formats the server's auth method identifier for display on the migration screen. */
@@ -130,7 +154,7 @@ function MigratePage() {
         mutationFn: () => api.confirmMigration(),
         onSuccess: () => {
             queryClient.clear();
-            window.location.replace(safeRedirectPath(search.redirect));
+            window.location.replace(safeRedirectUrl(search.redirect));
         },
     });
 
@@ -141,7 +165,7 @@ function MigratePage() {
             window.location.replace(
                 router.buildLocation({
                     to: "/login",
-                    search: { redirect: search.redirect },
+                    search: { redirect: safeRedirectPath(search.redirect) },
                 }).href,
             );
         },

@@ -70,11 +70,35 @@ function oidcErrorMessage(code: string | undefined): string | null {
 
 /** Accepts only same-origin application paths so credentials cannot enable an open redirect. */
 function safeRedirectPath(value: string | undefined): string {
-    if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    if (
+        !value ||
+        !value.startsWith("/") ||
+        value.startsWith("//") ||
+        value.includes("\\")
+    ) {
         return "/";
     }
 
-    return value;
+    try {
+        const parsed = new URL(value, window.location.origin);
+
+        if (
+            parsed.origin !== window.location.origin ||
+            !parsed.pathname.startsWith("/") ||
+            parsed.pathname.startsWith("//")
+        ) {
+            return "/";
+        }
+
+        return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    } catch {
+        return "/";
+    }
+}
+
+/** Resolves a validated redirect path to a same-origin absolute URL for `location.replace`. */
+function safeRedirectUrl(value: string | undefined): string {
+    return new URL(safeRedirectPath(value), window.location.origin).href;
 }
 
 /** Reads a first-run credential hint from the URL fragment without sending it to the server. */
@@ -149,7 +173,7 @@ function LoginPage() {
                 credentials.sessionLength,
             ),
         onSuccess: () => {
-            window.location.replace(safeRedirectPath(search.redirect));
+            window.location.replace(safeRedirectUrl(search.redirect));
         },
         onSettled: () => {
             setPassword("");
