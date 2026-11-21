@@ -95,6 +95,7 @@ type DeviceRecord = z.infer<typeof deviceRecordSchema>;
 const channelMessageSchema = z.discriminatedUnion("type", [
     z.object({
         type: z.literal("unlocked"),
+        owner: z.string(),
         vault: storedVaultSchema,
         // So every live tab can touch and check the server entry.
         deviceId: z.string(),
@@ -102,7 +103,10 @@ const channelMessageSchema = z.discriminatedUnion("type", [
         // The server's remaining idle time, so tabs agree on when the vault locks.
         expiresInSeconds: z.number().nullable(),
     }),
-    z.object({ type: z.literal("locked") }),
+    z.object({
+        type: z.literal("locked"),
+        owner: z.string(),
+    }),
     z.object({
         type: z.literal("touched"),
         deviceId: z.string(),
@@ -202,6 +206,8 @@ async function withStore<T>(
 /** Owns the lock state of this tab. */
 export class VaultSession extends ExternalStore<VaultLockState> {
     private vault: UnlockedVault | null = null;
+    /** Canonical username of the signed-in workspace this tab belongs to. */
+    private owner: string | null = null;
     /** The server entry whose secret wraps the kept key, while unlocked. */
     private deviceId: string | null = null;
     private lockAfter: VaultLockAfter = DEFAULT_VAULT_LOCK_AFTER;
@@ -223,6 +229,18 @@ export class VaultSession extends ExternalStore<VaultLockState> {
             lockAfter: DEFAULT_VAULT_LOCK_AFTER,
             pendingReason: null,
         });
+    }
+
+    /**
+     * Binds this tab's vault session to the signed-in user so broadcasts from another
+     * account after a tab-switch are never adopted.
+     */
+    setOwner(owner: string): void {
+        if (this.owner !== null && this.owner !== owner) {
+            this.drop();
+        }
+
+        this.owner = owner;
     }
 
     /**
@@ -351,7 +369,15 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         };
 
         this.adopt(vault, { ...options, source: "this tab" });
-        this.post({ type: "unlocked", vault: toStored(vault), ...options });
+
+        if (this.owner !== null) {
+            this.post({
+                type: "unlocked",
+                owner: this.owner,
+                vault: toStored(vault),
+                ...options,
+            });
+        }
 
         // A kept key that could not be opened before (an unreachable server) has an entry
         // that nothing uses anymore.
@@ -396,7 +422,10 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         const deviceIds = new Set([this.deviceId, record?.deviceId]);
         await this.forgetRecord().catch(() => undefined);
         this.drop();
-        this.post({ type: "locked" });
+
+        if (this.owner !== null) {
+            this.post({ type: "locked", owner: this.owner });
+        }
 
         await Promise.all(
             [...deviceIds].flatMap((deviceId) =>
@@ -656,6 +685,20 @@ export class VaultSession extends ExternalStore<VaultLockState> {
         }
 
         if (message.type === "unlocked") {
+            if (this.owner === null) {
+                // Wait until the authenticated loader binds this tab to a user before
+                // adopting keys from another tab.
+                return;
+            }
+
+            if (message.owner !== this.owner) {
+                // Another tab signed into a different account and unlocked its vault; drop
+                // this tab's stale keys instead of adopting the other account's keys.
+                this.drop();
+
+                return;
+            }
+
             this.lastTouchAt = Date.now();
             this.adopt(fromStored(message.vault), {
                 deviceId: message.deviceId,
@@ -664,7 +707,11 @@ export class VaultSession extends ExternalStore<VaultLockState> {
                 source: "other tab",
             });
         } else if (message.type === "locked") {
-            this.drop();
+            if (this.owner === null || message.owner === this.owner) {
+                // While `this.owner` is still unset, dropping bumps `this.locks` so an
+                // in-flight page-load restore cannot adopt keys after another tab locked.
+                this.drop();
+            }
         } else if (message.deviceId === this.deviceId) {
             // Another tab reported a use, which counts for this tab's throttle too.
             this.lastTouchAt = Date.now();

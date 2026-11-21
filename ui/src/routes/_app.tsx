@@ -3,6 +3,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { AppShell } from "#ui/components/shell/app-shell";
 import {
     agentsQueryOptions,
+    currentUserQueryOptions,
     fetchQueryUncancelled,
     serverInfoQueryOptions,
     terminalSessionsQueryOptions,
@@ -39,7 +40,11 @@ export const Route = createFileRoute("/_app")({
     // The shell only primes the cache; components read the same queries, so server events
     // and mutations refresh the UI by invalidating query keys instead of reloading routes.
     loader: async ({ context }) => {
-        await Promise.all([
+        const [currentUser] = await Promise.all([
+            fetchQueryUncancelled(
+                context.queryClient,
+                currentUserQueryOptions(context.api),
+            ),
             fetchQueryUncancelled(
                 context.queryClient,
                 agentsQueryOptions(context.api),
@@ -62,6 +67,7 @@ export const Route = createFileRoute("/_app")({
                 terminalSessionsQueryOptions(context.api),
             ),
         ]);
+        context.vault.setOwner(currentUser.name);
     },
     component: AppShell,
 });
