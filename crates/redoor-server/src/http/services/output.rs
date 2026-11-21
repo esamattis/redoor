@@ -60,8 +60,31 @@ pub(crate) struct OutputStream {
 
 impl OutputStream {
     /// Admits an output command and returns its armed consumer.
+    ///
+    /// The router sends the command to the agent before its reply reaches this caller, so a
+    /// caller dropped in between (an HTTP client that disconnects right away) would drop the
+    /// receiver unguarded and leave the agent working until its own timeout. Admitting in a
+    /// separate task always builds the guarded stream; when nobody awaits it any more, the task's
+    /// dropped output cancels the agent.
     pub(crate) async fn open(
         router: &RouterHandle,
+        agent_id: AgentId,
+        command: Command,
+        tracking: OutputStreamTracking,
+    ) -> Result<Self, ApiError> {
+        redoor_core::logging::spawn_in_user_scope(Self::admit(
+            router.clone(),
+            agent_id,
+            command,
+            tracking,
+        ))
+        .await
+        .map_err(|error| ApiError::internal(format!("Output stream admission failed: {error}")))?
+    }
+
+    /// Asks the router to start the command and arms cancellation for its receiver.
+    async fn admit(
+        router: RouterHandle,
         agent_id: AgentId,
         command: Command,
         tracking: OutputStreamTracking,
@@ -82,7 +105,7 @@ impl OutputStream {
             receive: ReusableBoxFuture::new(Self::receive(receiver)),
             peeked: None,
             guard: OutputCancelGuard {
-                router: router.clone(),
+                router,
                 agent_id,
                 request_id,
                 armed: true,
@@ -355,14 +378,17 @@ impl OutputStream {
 mod tests {
     use super::*;
     use crate::http::fake_agent::FakeAgent;
-    use futures_util::StreamExt;
+    use futures_util::{FutureExt, StreamExt};
     use redoor_protocol::wire::ServerToAgent;
 
-    /// Opens a download of `/tmp/file` on the fake agent.
-    async fn download(agent: &mut FakeAgent) -> OutputStream {
-        let stream = OutputStream::open(
-            &agent.router,
-            agent.agent_id.clone(),
+    /// Starts admitting a download of `/tmp/file` on `agent_id`.
+    async fn open_download(
+        router: &RouterHandle,
+        agent_id: AgentId,
+    ) -> Result<OutputStream, ApiError> {
+        OutputStream::open(
+            router,
+            agent_id,
             Command::RawDownload(request::RawDownload {
                 expected_identity: None,
                 path: "/tmp/file".to_string(),
@@ -377,7 +403,13 @@ mod tests {
             },
         )
         .await
-        .unwrap();
+    }
+
+    /// Opens a download of `/tmp/file` on the fake agent.
+    async fn download(agent: &mut FakeAgent) -> OutputStream {
+        let stream = open_download(&agent.router, agent.agent_id.clone())
+            .await
+            .unwrap();
         let (request_id, _) = agent.next_command().await;
         // The consumer and the agent agree on the stream they talk about.
         assert_eq!(stream.request_id(), request_id);
@@ -418,6 +450,29 @@ mod tests {
         );
         // A worker that already finished has nothing left to cancel.
         assert!(!stream.guard.armed);
+    }
+
+    /// A caller dropped after the agent got the command, but before the router's reply
+    /// reached it, still cancels the agent: an HTTP client that disconnects right away would
+    /// otherwise leave the agent working until its own timeout.
+    #[tokio::test]
+    async fn caller_dropped_during_admission_cancels_the_agent() {
+        let mut agent = FakeAgent::connect().await;
+        let router = agent.router.clone();
+        let mut open = Box::pin(open_download(&router, agent.agent_id.clone()));
+        // One poll sends the admission; the reply is then left unread, as in a dropped
+        // request handler.
+        assert!((&mut open).now_or_never().is_none());
+        let (request_id, _) = agent.next_command().await;
+        drop(open);
+        let cancel = tokio::time::timeout(Duration::from_secs(10), agent.next_priority())
+            .await
+            .expect("the agent is told to cancel");
+        // The command the agent already received must be stopped.
+        assert!(matches!(
+            cancel,
+            ServerToAgent::Cancel { id, reason: redoor_protocol::wire::partials::CancelReason::Canceled } if id == request_id
+        ));
     }
 
     /// The byte stream yields payload, then fails visibly when the agent's result is an
