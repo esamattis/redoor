@@ -26,8 +26,8 @@ pub(crate) async fn retry_agent_start_handler(
     let request = request.map(|Json(request)| request).unwrap_or_default();
     // Configuration replacement and lifecycle controls must resolve against one supervisor identity.
     let _edit_guard = state.config_edit_lock.lock().await;
-    let snapshot = managed_agent_snapshot(&state, &agent_id).await?;
-    let watchdog = managed_watchdog(&state, &snapshot)?;
+    let _snapshot = managed_agent_snapshot(&state, &agent_id).await?;
+    let watchdog = managed_watchdog(&state, &agent_id)?;
     super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
         .await?;
 

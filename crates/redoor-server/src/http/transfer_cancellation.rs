@@ -20,9 +20,14 @@ pub(crate) async fn cancel_transfer_handler(
 ) -> Result<Json<CancelTransferResponse>, ApiError> {
     let transfer_id = TransferId::new(transfer_id);
     require_transfer_write(&state, &principal, transfer_id).await?;
+    let owner = principal.owner().to_string();
     match state
         .router_ref
-        .request(|reply| RouterMsg::CancelPublicTransfer { transfer_id, reply })
+        .request(|reply| RouterMsg::CancelPublicTransfer {
+            owner,
+            transfer_id,
+            reply,
+        })
         .await?
     {
         Ok(response) => Ok(Json(response)),

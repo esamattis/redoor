@@ -1,14 +1,13 @@
-//! REST endpoints for per-device SSH keys and pinned host keys.
+//! REST endpoints for per-device SSH keys and pinned host keys, scoped to each user's workspace.
 //!
 //! Session-only, like the other agent configuration routes, because they carry login
-//! passwords and file keys and change what the server can log in to. Keys belong to the
-//! server's single account, so everyone who can sign in shares them.
+//! passwords and file keys and change what the server can log in to.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use axum::{Json, extract::State as AxumState, http::StatusCode};
-use redoor_core::config::{AgentConfig, SshBackedAgentConfig, edit_ssh_agent};
+use redoor_core::config::{AgentConfig, SshBackedAgentConfig};
 use redoor_core::log;
 use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::ssh_keys::{
@@ -31,6 +30,7 @@ use crate::ssh::keys::{GeneratedKey, ManagedKey, StoredKey};
 use crate::ssh::managed_keys::{
     ManagedKeyDevice, ManagedKeyError, PendingKey, manual_install_command,
 };
+use crate::workspaces::AgentKey;
 
 /// Route: `GET /api/v1/agents/{agent}/ssh-host-key` probes the host key the device presents
 /// so the user can confirm it before any credential is sent.
@@ -39,7 +39,7 @@ pub(crate) async fn get_host_key_handler(
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<SshHostKeyResponse>, ApiError> {
     // A probe writes temporary state too; edits or deletion must not race that write.
-    let _operation = state.ssh_key_operations.begin(&agent_id)?;
+    let _operation = state.ssh_key_operations.begin(&agent_id.id)?;
     log_failure(
         "Reading the SSH host key",
         &agent_id,
@@ -51,7 +51,7 @@ pub(crate) async fn get_host_key_handler(
 /// The probe itself, separate from the handler so its failures are logged in one place.
 async fn probe_host_key(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<SshHostKeyResponse, ApiError> {
     let device = managed_key_device(state, agent_id).await?;
     let probed = device.probe_host_key().await?;
@@ -70,7 +70,7 @@ pub(crate) async fn pin_host_key_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<PinSshHostKeyRequest>,
 ) -> Result<Json<SshHostKeyPinResponse>, ApiError> {
-    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    let operation = state.ssh_key_operations.begin(&agent_id.id)?;
     complete_operation(async move {
         let _operation = operation;
         let pinned = pin_host_key(&state, &agent_id, &request).await;
@@ -82,7 +82,7 @@ pub(crate) async fn pin_host_key_handler(
 /// The re-pin itself, kept out of the `complete_operation` closure so rustfmt formats it.
 async fn pin_host_key(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     request: &PinSshHostKeyRequest,
 ) -> Result<SshHostKeyPinResponse, ApiError> {
     let device = managed_key_device(state, agent_id).await?;
@@ -103,7 +103,7 @@ pub(crate) async fn enroll_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<EnrollSshKeyRequest>,
 ) -> Result<Json<SshKeyEnrollmentResponse>, ApiError> {
-    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    let operation = state.ssh_key_operations.begin(&agent_id.id)?;
     complete_operation(async move {
         let _operation = operation;
         let enrolled = enroll(&state, &agent_id, request).await;
@@ -115,19 +115,20 @@ pub(crate) async fn enroll_handler(
 /// The enrollment itself, kept out of the `complete_operation` closure so rustfmt formats it.
 async fn enroll(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     request: EnrollSshKeyRequest,
 ) -> Result<SshKeyEnrollmentResponse, ApiError> {
+    let owner = agent_id.owner();
     // Choosing the automatic setup abandons a manual one.
-    state.manual_ssh_keys.discard(agent_id);
+    state.manual_ssh_keys.discard(&agent_id.id);
     let config = find_ssh_agent(state, agent_id).await?;
-    let device = managed_key_device_for(state, config.clone())?;
-    let seal = vault_seal(state, request.vault).await?;
+    let device = managed_key_device_for(state, owner, config.clone())?;
+    let seal = vault_seal(state, owner, request.vault).await?;
     let rotated = config.managed_ssh_key;
     // The current key logs in for a rotation; resolved before anything changes.
     let current = if rotated {
         Some(
-            operation_credential(state, &device, request.current_file_key.as_deref())
+            operation_credential(state, owner, &device, request.current_file_key.as_deref())
                 .await?
                 .ok_or_else(|| {
                     ssh_key_locked("Unlock the vault to rotate this device's SSH key")
@@ -205,7 +206,7 @@ pub(crate) async fn prepare_manual_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<PrepareManualSshKeyRequest>,
 ) -> Result<Json<ManualSshKeyResponse>, ApiError> {
-    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    let operation = state.ssh_key_operations.begin(&agent_id.id)?;
     complete_operation(async move {
         let _operation = operation;
         let prepared = prepare_manual(&state, &agent_id, request).await;
@@ -218,14 +219,15 @@ pub(crate) async fn prepare_manual_handler(
 /// formats it.
 async fn prepare_manual(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     request: PrepareManualSshKeyRequest,
 ) -> Result<ManualSshKeyResponse, ApiError> {
+    let owner = agent_id.owner();
     // A new attempt replaces an earlier one, also when this one fails.
-    state.manual_ssh_keys.discard(agent_id);
+    state.manual_ssh_keys.discard(&agent_id.id);
     let config = find_ssh_agent(state, agent_id).await?;
-    let device = managed_key_device_for(state, config.clone())?;
-    let seal = vault_seal(state, request.vault).await?;
+    let device = managed_key_device_for(state, owner, config.clone())?;
+    let seal = vault_seal(state, owner, request.vault).await?;
     let vault_key_id = seal.as_ref().map(|seal| seal.key_id.clone());
     let generated = device
         .prepare_manual_key(request.host_key_fingerprint.as_deref(), seal.as_ref())
@@ -237,7 +239,7 @@ async fn prepare_manual(
         authorized_keys_line: line,
     };
     state.manual_ssh_keys.insert(
-        agent_id,
+        &agent_id.id,
         ManualSshKey {
             generated,
             enrolled_for: config,
@@ -257,7 +259,7 @@ pub(crate) async fn confirm_manual_handler(
     AxumState(state): AxumState<ServerState>,
     Json(request): Json<ConfirmManualSshKeyRequest>,
 ) -> Result<Json<SshKeyEnrollmentResponse>, ApiError> {
-    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    let operation = state.ssh_key_operations.begin(&agent_id.id)?;
     complete_operation(async move {
         let _operation = operation;
         let confirmed = confirm_manual(&state, &agent_id, &request.fingerprint).await;
@@ -270,12 +272,13 @@ pub(crate) async fn confirm_manual_handler(
 /// it.
 async fn confirm_manual(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     fingerprint: &str,
 ) -> Result<SshKeyEnrollmentResponse, ApiError> {
+    let owner = agent_id.owner();
     let pending = state
         .manual_ssh_keys
-        .take(agent_id, fingerprint)
+        .take(&agent_id.id, fingerprint)
         .ok_or_else(|| {
             ApiError::not_found(
                 "This SSH key setup is no longer pending (it was cancelled, replaced or the server restarted). Start the SSH key setup again.",
@@ -295,8 +298,8 @@ async fn confirm_manual(
             "The device's target or username changed during the SSH key setup. Start the SSH key setup again.",
         ));
     }
-    check_vault_unchanged(state, pending.vault_key_id.as_deref()).await?;
-    let device = managed_key_device_for(state, config)?;
+    check_vault_unchanged(state, owner, pending.vault_key_id.as_deref()).await?;
+    let device = managed_key_device_for(state, owner, config)?;
     log!(
         Level::Info,
         "Verifying manually installed SSH key: device={}, fingerprint={}",
@@ -308,7 +311,7 @@ async fn confirm_manual(
         Err(error) => {
             // The user may not have added the line yet, or added it for another account;
             // the same key can be confirmed again once they fixed it.
-            state.manual_ssh_keys.insert(agent_id, pending);
+            state.manual_ssh_keys.insert(&agent_id.id, pending);
             return Err(error.into());
         }
     };
@@ -350,11 +353,12 @@ async fn confirm_manual(
 /// rotation does not rewrap.
 async fn check_vault_unchanged(
     state: &ServerState,
+    owner: &str,
     vault_key_id: Option<&str>,
 ) -> Result<(), ApiError> {
     let current_key_id = state
         .vault
-        .summary()
+        .summary(owner)
         .await?
         .map(|summary| summary.current_key_id);
     if current_key_id.as_deref() == vault_key_id {
@@ -374,8 +378,8 @@ pub(crate) async fn discard_manual_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<StatusCode, ApiError> {
-    let _operation = state.ssh_key_operations.begin(&agent_id)?;
-    if state.manual_ssh_keys.discard(&agent_id) {
+    let _operation = state.ssh_key_operations.begin(&agent_id.id)?;
+    if state.manual_ssh_keys.discard(&agent_id.id) {
         log!(
             Level::Info,
             "Discarded a pending manual SSH key setup: device={}",
@@ -397,7 +401,7 @@ pub(crate) async fn remove_handler(
     request: Option<Json<RemoveSshKeyRequest>>,
 ) -> Result<Json<SshKeyRemovalResponse>, ApiError> {
     let request = request.map(|Json(request)| request).unwrap_or_default();
-    let operation = state.ssh_key_operations.begin(&agent_id)?;
+    let operation = state.ssh_key_operations.begin(&agent_id.id)?;
     complete_operation(async move {
         let _operation = operation;
         let removed = remove_key(&state, &agent_id, request.current_file_key.as_deref()).await;
@@ -409,18 +413,20 @@ pub(crate) async fn remove_handler(
 /// The removal itself, kept out of the `complete_operation` closure so rustfmt formats it.
 async fn remove_key(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     current_file_key: Option<&str>,
 ) -> Result<SshKeyRemovalResponse, ApiError> {
+    let owner = agent_id.owner();
     let config = find_ssh_agent(state, agent_id).await?;
     if !config.managed_ssh_key {
         return Err(ApiError::not_found(format!(
-            "Device '{agent_id}' has no managed SSH key"
+            "Device '{}' has no managed SSH key",
+            agent_id.id
         )));
     }
-    let device = managed_key_device_for(state, config.clone())?;
+    let device = managed_key_device_for(state, owner, config.clone())?;
     // Resolved before the commit stops the device and releases a held key.
-    let credential = removal_credential(state, &device, current_file_key).await?;
+    let credential = removal_credential(state, owner, &device, current_file_key).await?;
     // Persist first: a config write failure must not revoke the still-configured key.
     let runtime_error = commit_key(state, agent_id, &config, None).await?;
     let device_error = device.remove_from_device(credential.as_ref()).await;
@@ -434,8 +440,8 @@ async fn remove_key(
     }
     // The config stops using the key before its files go away.
     state
-        .ssh_keys
-        .delete_keys(agent_id)
+        .ssh_keys_for(owner)?
+        .delete_keys(&agent_id.id)
         .await
         .map_err(|error| {
             ApiError::internal(format!("Failed to delete the local SSH key: {error}"))
@@ -462,7 +468,7 @@ async fn remove_key(
 /// user fixes by changing the input (a missing confirmation or password) as warnings.
 fn log_failure<T>(
     operation: &str,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     result: Result<T, ApiError>,
 ) -> Result<T, ApiError> {
     if let Err(error) = &result {
@@ -472,7 +478,7 @@ fn log_failure<T>(
                 Level::Error,
                 "{} failed: device={}, status={}, error={}",
                 operation,
-                agent_id,
+                agent_id.id,
                 status.as_u16(),
                 error
             );
@@ -481,7 +487,7 @@ fn log_failure<T>(
                 Level::Warning,
                 "{} failed: device={}, status={}, error={}",
                 operation,
-                agent_id,
+                agent_id.id,
                 status.as_u16(),
                 error
             );
@@ -504,19 +510,24 @@ fn saved_but_not_registered(done: &str, error: ApiError) -> ApiError {
 /// Loads the device's config entry for a key operation.
 async fn managed_key_device(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<ManagedKeyDevice, ApiError> {
-    managed_key_device_for(state, find_ssh_agent(state, agent_id).await?)
+    managed_key_device_for(
+        state,
+        agent_id.owner(),
+        find_ssh_agent(state, agent_id).await?,
+    )
 }
 
 /// The key operations of a config entry.
 pub(super) fn managed_key_device_for(
     state: &ServerState,
+    owner: &str,
     config: SshBackedAgentConfig,
 ) -> Result<ManagedKeyDevice, ApiError> {
     ManagedKeyDevice::new(
         config,
-        Some(state.ssh_keys.clone()),
+        Some(state.ssh_keys_for(owner)?),
         state.held_ssh_keys.clone(),
     )
     .map_err(|error| ApiError::bad_request(error.to_string()))
@@ -544,12 +555,13 @@ fn open_error(error: SshKeyOpenError) -> ApiError {
 /// and the public key are checked. Never stored; callers decide whether to hold it.
 async fn unlock_with_file_key(
     state: &ServerState,
+    owner: &str,
     device: &ManagedKeyDevice,
     file: &crate::ssh::encrypted_keys::EncryptedKeyFile,
     encoded_file_key: &str,
 ) -> Result<ManagedKey, ApiError> {
     let key = file_key(encoded_file_key)?;
-    state.vault.require_readable(file.header()).await?;
+    state.vault.require_readable(owner, file.header()).await?;
     device.unlock(file, &key).await.map_err(open_error)
 }
 
@@ -561,6 +573,7 @@ async fn unlock_with_file_key(
 /// removing a stopped device does not make it startable with an access token.
 async fn operation_credential(
     state: &ServerState,
+    owner: &str,
     device: &ManagedKeyDevice,
     current_file_key: Option<&str>,
 ) -> Result<Option<ManagedKey>, ApiError> {
@@ -572,7 +585,7 @@ async fn operation_credential(
     match stored {
         StoredKey::Plaintext(key) => Ok(Some(key)),
         StoredKey::Encrypted(file) => match current_file_key {
-            Some(encoded) => unlock_with_file_key(state, device, &file, encoded)
+            Some(encoded) => unlock_with_file_key(state, owner, device, &file, encoded)
                 .await
                 .map(Some),
             None => Ok(device.held_key()),
@@ -586,13 +599,14 @@ async fn operation_credential(
 /// user meant to unlock it.
 pub(super) async fn removal_credential(
     state: &ServerState,
+    owner: &str,
     device: &ManagedKeyDevice,
     current_file_key: Option<&str>,
 ) -> Result<Option<ManagedKey>, ApiError> {
     match device.stored_key().await {
         Ok(StoredKey::Plaintext(key)) => Ok(Some(key)),
         Ok(StoredKey::Encrypted(file)) => match current_file_key {
-            Some(encoded) => unlock_with_file_key(state, device, &file, encoded)
+            Some(encoded) => unlock_with_file_key(state, owner, device, &file, encoded)
                 .await
                 .map(Some),
             None => Ok(device.held_key()),
@@ -612,9 +626,10 @@ pub(super) async fn removal_credential(
 /// must encrypt new keys with it, and an account without one cannot.
 async fn vault_seal(
     state: &ServerState,
+    owner: &str,
     seal: Option<SshKeyVaultSeal>,
 ) -> Result<Option<SshKeySeal>, ApiError> {
-    let has_vault = state.vault.summary().await?.is_some();
+    let has_vault = state.vault.summary(owner).await?.is_some();
     match (has_vault, seal) {
         (false, None) => Ok(None),
         (false, Some(_)) => Err(ApiError::bad_request(
@@ -626,7 +641,7 @@ async fn vault_seal(
             "This account has a vault, so the SSH key must be encrypted with it; unlock the vault",
         )),
         (true, Some(seal)) => {
-            let document = state.vault.require_current(&seal.key_id).await?;
+            let document = state.vault.require_current(owner, &seal.key_id).await?;
             if seal.vault_id != document.vault_id {
                 return Err(ApiError::coded(
                     StatusCode::CONFLICT,
@@ -651,6 +666,7 @@ pub(crate) async fn status_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<SshKeyStatusResponse>, ApiError> {
+    let owner = agent_id.owner();
     let config = find_ssh_agent(&state, &agent_id).await?;
     let mut status = SshKeyStatusResponse {
         managed: config.managed_ssh_key,
@@ -664,14 +680,14 @@ pub(crate) async fn status_handler(
     if !config.managed_ssh_key {
         return Ok(Json(status));
     }
-    let device = managed_key_device_for(&state, config)?;
+    let device = managed_key_device_for(&state, owner, config)?;
     match device.stored_key().await {
         Ok(stored) => {
             status.fingerprint = Some(stored.fingerprint());
             if let StoredKey::Encrypted(file) = stored {
                 status.encrypted = true;
                 status.held = device.held_key().is_some();
-                status.key_status = Some(state.vault.key_status(file.header()).await?);
+                status.key_status = Some(state.vault.key_status(owner, file.header()).await?);
                 status.vault_header = Some(file.header().clone());
             }
         }
@@ -686,16 +702,17 @@ pub(crate) async fn status_handler(
 /// no managed key need nothing. Called under the config edit lock, like Stop.
 pub(super) async fn unlock_for_start(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     file_key: Option<&str>,
 ) -> Result<(), ApiError> {
+    let owner = agent_id.owner();
     let Some(AgentConfig::SshBacked(config)) = find_configured_agent(state, agent_id).await? else {
         return Ok(());
     };
     if !config.managed_ssh_key {
         return Ok(());
     }
-    let device = managed_key_device_for(state, config)?;
+    let device = managed_key_device_for(state, owner, config)?;
     // A missing or broken key is reported by the watchdog like before.
     let Ok(StoredKey::Encrypted(file)) = device.stored_key().await else {
         return Ok(());
@@ -708,10 +725,10 @@ pub(super) async fn unlock_for_start(
             "The device's SSH key is encrypted with the vault. Start it from the browser to unlock it.",
         ));
     };
-    let key = unlock_with_file_key(state, &device, &file, file_key).await?;
+    let key = unlock_with_file_key(state, owner, &device, &file, file_key).await?;
     state
         .held_ssh_keys
-        .hold(agent_id, key.private_key().clone());
+        .hold(&agent_id.id, key.private_key().clone());
     log!(
         Level::Info,
         "Holding the decrypted SSH key while the device runs: device={}, fingerprint={}",
@@ -739,7 +756,7 @@ pub(super) async fn unlock_for_start(
 /// `Ok` so callers preserve the durably referenced key and finish cleanup before reporting it.
 async fn commit_key(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     enrolled_for: &SshBackedAgentConfig,
     first_key: Option<(&ManagedKeyDevice, &PendingKey)>,
 ) -> Result<Option<ApiError>, ApiError> {
@@ -761,13 +778,16 @@ async fn commit_key(
                 ApiError::internal(format!("Failed to save the new SSH key: {error}"))
             })?;
         }
-        if let Err(error) = edit_ssh_agent(&state.config_path, agent_id, Some(&config)).await {
+        if let Err(error) = state
+            .user_agents
+            .edit_ssh(agent_id.owner(), &agent_id.id, Some(config.clone()))
+            .await
+        {
             if first_key.is_some() {
                 discard_uncommitted_key(state, agent_id).await;
             }
             return Err(ApiError::internal(format!(
-                "Failed to save the SSH key setting to {}: {error:#}",
-                state.config_path.display()
+                "Failed to save the SSH key setting: {error:#}"
             )));
         }
         // Once persistence succeeds, this key must survive even if the runtime cannot
@@ -783,8 +803,11 @@ async fn commit_key(
 /// private key stays around for a device that does not use it. Logged instead of returned:
 /// the config write error is what the user needs to see, and the next setup overwrites a
 /// leftover anyway.
-async fn discard_uncommitted_key(state: &ServerState, agent_id: &AgentId) {
-    if let Err(error) = state.ssh_keys.delete_keys(agent_id).await {
+async fn discard_uncommitted_key(state: &ServerState, agent_id: &AgentKey) {
+    let Ok(keys) = state.ssh_keys_for(agent_id.owner()) else {
+        return;
+    };
+    if let Err(error) = keys.delete_keys(&agent_id.id).await {
         redoor_core::log_failure!(
             Level::Warn,
             "Failed to delete an SSH key whose config write failed: device={}, error={}",
@@ -803,7 +826,7 @@ async fn discard_uncommitted_key(state: &ServerState, agent_id: &AgentId) {
 /// pointed at another account or had its key removed meanwhile.
 async fn commit_rotation(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     enrolled_for: &SshBackedAgentConfig,
     device: &ManagedKeyDevice,
     pending: &PendingKey,
@@ -825,22 +848,22 @@ async fn commit_rotation(
     // and the new key both log in until the old line is removed after the commit.
     let running = state
         .watchdog_registry
-        .lookup(agent_id.as_str())
+        .lookup(&agent_id.watchdog_key())
         .is_some_and(|watchdog| watchdog.snapshot().desired_running);
-    let previous = state.held_ssh_keys.get(agent_id);
+    let previous = state.held_ssh_keys.get(&agent_id.id);
     let hold_new = pending.is_encrypted() && running;
     if hold_new {
         state
             .held_ssh_keys
-            .hold(agent_id, pending.key().private_key().clone());
+            .hold(&agent_id.id, pending.key().private_key().clone());
     }
     let key = match device.commit(pending).await {
         Ok(key) => key,
         Err(error) => {
             // A failed rotation leaves the held key as it was.
             match previous {
-                Some(previous) => state.held_ssh_keys.hold(agent_id, previous),
-                None => state.held_ssh_keys.release(agent_id),
+                Some(previous) => state.held_ssh_keys.hold(&agent_id.id, previous),
+                None => state.held_ssh_keys.release(&agent_id.id),
             }
             return Err(ApiError::internal(format!(
                 "Failed to switch to the new SSH key: {error}"
@@ -848,7 +871,7 @@ async fn commit_rotation(
         }
     };
     if !hold_new {
-        state.held_ssh_keys.release(agent_id);
+        state.held_ssh_keys.release(&agent_id.id);
     }
     Ok(key)
 }

@@ -6,22 +6,28 @@ use super::flows::{Flow, FlowId, OutputKind, OutputPhase, UploadPhase};
 use super::messages::{CancelPublicTransferError, RouteResponse};
 use super::state::RouterState;
 use super::transfers::copy::CopyRelease;
+use crate::workspaces::AgentKey;
 use redoor_core::log;
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::request::{CommandError, CommandOutcome};
 use redoor_protocol::{
     api::transfers::{CancelTransferResponse, CancelTransferStatus, TransferProgressState},
-    ids::{AgentId, RequestId, TransferId},
+    ids::{RequestId, TransferId},
     wire::command::CommandErrorKind,
 };
 
 impl RouterState {
-    /// Resolves a public transfer id and admits its cancellation on the priority lanes.
+    /// Resolves a public transfer id belonging to `owner` and admits its cancellation on the
+    /// priority lanes.
     pub(crate) fn cancel_public_transfer(
         &mut self,
+        owner: &str,
         transfer_id: TransferId,
     ) -> Result<CancelTransferResponse, CancelPublicTransferError> {
         self.sync_progress();
+        if self.progress.owners.get(&transfer_id).map(String::as_str) != Some(owner) {
+            return Err(CancelPublicTransferError::NotFound);
+        }
         let entry = self
             .progress
             .entries
@@ -117,7 +123,7 @@ impl RouterState {
     /// cancel became pointless.
     pub(crate) fn cancel_on_agent(
         &mut self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         request_id: RequestId,
         reason: redoor_protocol::wire::partials::CancelReason,
     ) -> Result<Option<tokio::task::JoinHandle<()>>, RouterError> {
@@ -149,7 +155,7 @@ impl RouterState {
     pub(crate) fn cancel_execution(
         &mut self,
         request_id: RequestId,
-        agent_id: AgentId,
+        agent_id: AgentKey,
     ) -> Result<bool, RouterError> {
         let Some(flow_id) = self.flows.id_for(&agent_id, request_id) else {
             return Ok(false);
@@ -168,7 +174,7 @@ impl RouterState {
     /// One-shot commands are abandoned through `RouterMsg::AbandonCommand` instead.
     ///
     /// Copies are canceled only through their public id because both agents must settle.
-    pub(crate) fn cancel_transfer(&mut self, request_id: RequestId, agent_id: AgentId) {
+    pub(crate) fn cancel_transfer(&mut self, request_id: RequestId, agent_id: AgentKey) {
         let Some(flow_id) = self.flows.id_for(&agent_id, request_id) else {
             log!(
                 Level::Warning,
@@ -245,13 +251,13 @@ impl RouterState {
 
     /// Fails every flow that cannot continue without the lost connection, in one pass over
     /// the flow table, and settles each one exactly once.
-    pub(crate) fn fail_agent_flows(&mut self, agent_id: &AgentId) {
+    pub(crate) fn fail_agent_flows(&mut self, agent_id: &AgentKey) {
         self.sync_progress();
         let lost = self.flows.extract_if(|flow| flow.involves(agent_id));
         if lost.is_empty() {
             return;
         }
-        let reason = format!("Agent disconnected: {agent_id}");
+        let reason = format!("Agent disconnected: {}", agent_id.id);
         let mut transfers = 0usize;
         for (_, flow) in lost {
             if !matches!(flow, Flow::Command(_)) {
@@ -262,17 +268,17 @@ impl RouterState {
         if transfers > 0 {
             log!(
                 Level::Warning,
-                "Agent loss cleanup: agent_id={}, transfers={}, reason={}",
+                "Agent loss cleanup: agent={}, transfers={}, reason={}",
                 agent_id,
                 transfers,
                 reason
             );
-            self.notify_transfer_refresh();
+            self.notify_transfer_refresh(agent_id.owner());
         }
     }
 
     /// Settles one flow removed because its agent went away.
-    fn settle_lost_flow(&mut self, agent_id: &AgentId, flow: Flow, reason: &str) {
+    fn settle_lost_flow(&mut self, agent_id: &AgentKey, flow: Flow, reason: &str) {
         match flow {
             Flow::Command(command) => {
                 log!(

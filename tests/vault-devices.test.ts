@@ -30,11 +30,13 @@ const AGENT_NAME = "vault-devices-test-agent";
 
 const PASSPHRASE = "correct horse battery staple";
 
-/** The shared vault file at the data directory root, which every test starts without. */
+/** The user's vault file under their workspace directory, which every test starts without. */
 const VAULT_PATH = join(
     TEST_SERVER_HOME,
     ".local/share",
     TEST_APP_NAME,
+    "users",
+    TEST_USERNAME,
     "vault.json",
 );
 

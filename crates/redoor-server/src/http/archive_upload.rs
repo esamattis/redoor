@@ -38,7 +38,7 @@ pub(crate) async fn upload_handler(
     body: Body,
 ) -> Result<Json<ArchiveUploadResponse>, ApiError> {
     let path = absolute_path_from_url(path.unwrap_or_default());
-    let request_guard = state.upload_requests.reserve(&headers)?;
+    let request_guard = state.upload_requests.reserve(agent_id.owner(), &headers)?;
     let command = Command::TarUpload(request::TarUpload {
         path: path.clone(),
         on_existing: query.on_existing,

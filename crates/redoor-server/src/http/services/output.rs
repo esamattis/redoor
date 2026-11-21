@@ -4,12 +4,13 @@ use crate::actors::router::{
     ExecuteStreamRequest, OutputReceiver, OutputStreamTracking, RouterHandle, RouterMsg,
 };
 use crate::http::error::ApiError;
+use crate::workspaces::AgentKey;
 use axum::{body::Body, http::header, response::Response};
 use bytes::Bytes;
 use futures_util::Stream;
 use redoor_protocol::wire::request;
 use redoor_protocol::{
-    ids::{AgentId, RequestId},
+    ids::RequestId,
     wire::{
         command::Command,
         exec::{ExecEvent, ExecRequest},
@@ -68,7 +69,7 @@ impl OutputStream {
     /// dropped output cancels the agent.
     pub(crate) async fn open(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         command: Command,
         tracking: OutputStreamTracking,
     ) -> Result<Self, ApiError> {
@@ -85,7 +86,7 @@ impl OutputStream {
     /// Asks the router to start the command and arms cancellation for its receiver.
     async fn admit(
         router: RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         command: Command,
         tracking: OutputStreamTracking,
     ) -> Result<Self, ApiError> {
@@ -118,7 +119,7 @@ impl OutputStream {
     /// which reports how the process ended even when the output queue is saturated.
     pub(crate) async fn open_execution(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request: ExecRequest,
     ) -> Result<(Self, watch::Receiver<Option<ExecEvent>>), ApiError> {
         let (terminal, terminal_receiver) = watch::channel(None);
@@ -141,7 +142,7 @@ impl OutputStream {
     /// before it starts.
     pub(crate) async fn open_events(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         command: Command,
         timeout: Duration,
         what: &str,
@@ -324,7 +325,7 @@ impl Stream for OutputStream {
 /// Cancels the agent worker of a stream whose consumer went away before its terminal frame.
 struct OutputCancelGuard {
     router: RouterHandle,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     request_id: RequestId,
     armed: bool,
 }
@@ -355,7 +356,7 @@ impl OutputStream {
     /// Wraps a detached receiver so consumer tests need no admission round trip.
     pub(crate) fn detached(
         router: RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         receiver: OutputReceiver,
     ) -> Self {
         let request_id = receiver.request_id();
@@ -384,7 +385,7 @@ mod tests {
     /// Starts admitting a download of `/tmp/file` on `agent_id`.
     async fn open_download(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
     ) -> Result<OutputStream, ApiError> {
         OutputStream::open(
             router,

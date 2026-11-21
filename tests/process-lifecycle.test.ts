@@ -15,6 +15,7 @@ import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import {
     getAvailablePort,
+    seedUserWorkspace,
     SERVER_PATH,
     waitForPort,
     waitForValue,
@@ -153,9 +154,7 @@ describe("process lifecycle commands", () => {
         mkdirSync(configDirectory, { recursive: true });
         writeFileSync(
             configPath,
-            `agent_token = "lifecycle-token"
-
-[server]
+            `[server]
 username = "lifecycle-user"
 password = "lifecycle-password"
 port = ${port}
@@ -346,9 +345,7 @@ server = "https://redoor.example.com"
             mkdirSync(configDirectory, { recursive: true });
             writeFileSync(
                 configPath,
-                `agent_token = "lifecycle-token"
-
-[server]
+                `[server]
 username = "lifecycle-user"
 password = "lifecycle-password"
 port = ${port}
@@ -432,19 +429,27 @@ port = ${port}
             mkdirSync(agentHome, { recursive: true });
             writeFileSync(
                 configPath,
-                `agent_token = "lifecycle-token"
-
-[server]
+                `[server]
 username = "lifecycle-user"
 password = "lifecycle-password"
 port = ${port}
-
-[[agents]]
-local = true
-name = "managed-lifecycle-agent"
-home = "${agentHome}"
 `,
             );
+            seedUserWorkspace({
+                home: isolated.env.HOME,
+                appName: isolated.env.REDOOR_APP_NAME,
+                username: "lifecycle-user",
+                agentToken: "lifecycle-token",
+                agents: [
+                    {
+                        kind: "local",
+                        id: "dev_lifecyclemanagedaaaa",
+                        name: "managed-lifecycle-agent",
+                        home: agentHome,
+                        terminal_env: {},
+                    },
+                ],
+            });
 
             await execFileAsync(
                 SERVER_PATH,

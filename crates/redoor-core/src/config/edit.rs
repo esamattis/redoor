@@ -195,12 +195,23 @@ fn user_entry_password<'a>(
     }
 }
 
-/// Drops [`BOOTSTRAP_PASSWORD_COMMENT`] from the comments above the first key, where the
-/// starter config puts it.
+/// Drops [`BOOTSTRAP_PASSWORD_COMMENT`] from the comments above the first item, where the
+/// starter config puts it. Handles both a leading key-value pair and a leading `[server]`
+/// table header.
 fn remove_bootstrap_password_comment(document: &mut DocumentMut) {
-    let Some((mut key, _)) = document.iter_mut().next() else {
+    let Some((mut key, item)) = document.iter_mut().next() else {
         return;
     };
+    if let Some(table) = item.as_table_mut() {
+        let decor = table.decor_mut();
+        if let Some(prefix) = decor.prefix().and_then(|prefix| prefix.as_str())
+            && prefix.contains(BOOTSTRAP_PASSWORD_COMMENT)
+        {
+            let cleaned = prefix.replacen(BOOTSTRAP_PASSWORD_COMMENT, "", 1);
+            decor.set_prefix(cleaned);
+            return;
+        }
+    }
     let decor = key.leaf_decor_mut();
     let Some(prefix) = decor.prefix().and_then(|prefix| prefix.as_str()) else {
         return;
@@ -209,6 +220,27 @@ fn remove_bootstrap_password_comment(document: &mut DocumentMut) {
         let cleaned = prefix.replacen(BOOTSTRAP_PASSWORD_COMMENT, "", 1);
         decor.set_prefix(cleaned);
     }
+}
+
+/// TEMPORARY MIGRATION: Strips legacy server-global `[[agents]]` entries and optionally the
+/// top-level `agent_token` from `config.toml` while preserving unrelated sections and comments.
+///
+/// `remove_agent_token` is false when `[agent]` or `[[relays]]` share the same file so those
+/// standalone roles keep their registration secret. Can be removed once all deployed servers
+/// have upgraded to layout version 2.
+pub async fn remove_legacy_server_fields(path: &Path, remove_agent_token: bool) -> Result<()> {
+    let snapshot = read_document(path).await?;
+    let has_agents = snapshot.contains_key("agents");
+    let has_token = remove_agent_token && snapshot.contains_key("agent_token");
+    if !has_agents && !has_token {
+        return Ok(());
+    }
+    let mut transaction = ConfigTransaction::begin(path).await?;
+    transaction.document.remove("agents");
+    if remove_agent_token {
+        transaction.document.remove("agent_token");
+    }
+    transaction.commit().await
 }
 
 /// Builds the persisted table in one place so create and update stay identical.
@@ -820,5 +852,58 @@ password = "x"
             // Nothing was written.
             assert_eq!(tokio::fs::read_to_string(&path).await.unwrap(), original);
         }
+    }
+
+    /// TEMPORARY MIGRATION: Verifies `remove_legacy_server_fields` strips `[[agents]]` and
+    /// conditionally strips `agent_token` without disturbing `[server]` or comments.
+    #[tokio::test]
+    async fn removes_legacy_server_fields_preserving_server_and_comments() {
+        let original = r#"# Redoor config
+agent_token = "secret"
+
+[server]
+# keep comment
+username = "alice"
+password = "pw"
+
+[[agents]]
+id = "dev_abcdefghijklmnopqrst"
+local = true
+name = "local"
+"#;
+        let (_dir, path) = config_file(original).await;
+        remove_legacy_server_fields(&path, true)
+            .await
+            .expect("legacy cleanup must succeed");
+        let content = tokio::fs::read_to_string(&path).await.unwrap();
+        // Global agents and top-level agent_token are removed.
+        assert!(!content.contains("[[agents]]"), "{content}");
+        assert!(!content.contains("agent_token"), "{content}");
+        // Server settings and comments survive.
+        assert!(content.contains("# keep comment"), "{content}");
+        assert!(content.contains(r#"username = "alice""#), "{content}");
+
+        // When `[agent]` shares the file, `remove_agent_token = false` preserves `agent_token`.
+        let shared = r#"agent_token = "secret"
+
+[server]
+username = "alice"
+password = "pw"
+
+[agent]
+server = "http://127.0.0.1:7666"
+
+[[agents]]
+id = "dev_abcdefghijklmnopqrst"
+local = true
+"#;
+        let (_dir2, path2) = config_file(shared).await;
+        remove_legacy_server_fields(&path2, false)
+            .await
+            .expect("shared cleanup must succeed");
+        let content2 = tokio::fs::read_to_string(&path2).await.unwrap();
+        assert!(!content2.contains("[[agents]]"), "{content2}");
+        assert!(content2.contains(r#"agent_token = "secret""#), "{content2}");
+        assert!(content2.contains("[agent]"), "{content2}");
     }
 }

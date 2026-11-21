@@ -1,7 +1,11 @@
 //! Single-use download tokens that let plain browser links fetch a file without session
 //! cookies, while tracking delivered byte ranges so interrupted downloads can resume.
+//!
+//! Entries are bound to `(owner, agent_id, path)` so public raw GET requests resolve the
+//! owning user's device directly from the one-time token and can never cross workspace
+//! boundaries.
 
-use redoor_protocol::ids::AgentId;
+use crate::workspaces::AgentKey;
 use std::{
     collections::HashMap,
     ops::Range,
@@ -18,10 +22,10 @@ struct TokenEntry {
     downloaded_ranges: Vec<Range<u64>>,
 }
 
-/// Keeps the registry field readable while preserving exact agent-and-path token grouping.
-type TokenEntries = HashMap<(AgentId, String), HashMap<Uuid, TokenEntry>>;
+/// Keeps the registry field readable while preserving exact `(owner, agent_id)` and path grouping.
+type TokenEntries = HashMap<(AgentKey, String), HashMap<Uuid, TokenEntry>>;
 
-/// Process-local one-time download tokens grouped by their exact agent and absolute path.
+/// Process-local one-time download tokens grouped by their exact owned device and absolute path.
 #[derive(Clone, Default)]
 pub struct OneTimeTokenRegistry {
     inner: Arc<Mutex<TokenEntries>>,
@@ -33,26 +37,38 @@ impl OneTimeTokenRegistry {
         Self::default()
     }
 
-    /// Creates another independently consumable token for the exact agent and path pair.
-    pub fn create(&self, agent_id: AgentId, absolute_path: String) -> Uuid {
+    /// Creates another independently consumable token for the exact owned device and path pair.
+    pub fn create(&self, agent: AgentKey, absolute_path: String) -> Uuid {
         debug_assert!(std::path::Path::new(&absolute_path).is_absolute());
         let token = Uuid::new_v4();
         self.inner
             .lock()
             .expect("one-time token registry mutex poisoned")
-            .entry((agent_id, absolute_path))
+            .entry((agent, absolute_path))
             .or_default()
             .insert(token, TokenEntry::default());
         token
     }
 
-    /// Lists only outstanding tokens for the exact agent and path in stable string order.
-    pub fn list(&self, agent_id: &AgentId, absolute_path: &str) -> Vec<String> {
+    /// Resolves the owning device (`AgentKey`) for an outstanding token without consuming it.
+    ///
+    /// Used by the access middleware for public raw GET requests (`?one_time_token=...`),
+    /// which have no session or bearer token to supply an owner.
+    pub fn resolve_device(&self, token: &Uuid) -> Option<AgentKey> {
+        self.inner
+            .lock()
+            .expect("one-time token registry mutex poisoned")
+            .iter()
+            .find_map(|((agent, _), tokens)| tokens.contains_key(token).then(|| agent.clone()))
+    }
+
+    /// Lists only outstanding tokens for the exact owned device and path in stable string order.
+    pub fn list(&self, agent: &AgentKey, absolute_path: &str) -> Vec<String> {
         let mut tokens = self
             .inner
             .lock()
             .expect("one-time token registry mutex poisoned")
-            .get(&(agent_id.clone(), absolute_path.to_string()))
+            .get(&(agent.clone(), absolute_path.to_string()))
             .map(|tokens| tokens.keys().map(Uuid::to_string).collect::<Vec<_>>())
             .unwrap_or_default();
         tokens.sort_unstable();
@@ -60,18 +76,18 @@ impl OneTimeTokenRegistry {
     }
 
     /// Checks exact token scope without consuming it so interrupted HTTP requests can retry.
-    pub fn contains(&self, agent_id: &AgentId, absolute_path: &str, token: &Uuid) -> bool {
+    pub fn contains(&self, agent: &AgentKey, absolute_path: &str, token: &Uuid) -> bool {
         self.inner
             .lock()
             .expect("one-time token registry mutex poisoned")
-            .get(&(agent_id.clone(), absolute_path.to_string()))
+            .get(&(agent.clone(), absolute_path.to_string()))
             .is_some_and(|tokens| tokens.contains_key(token))
     }
 
     /// Adds delivered coverage and atomically removes the token only once the whole file is covered.
     pub fn record_downloaded_range(
         &self,
-        agent_id: &AgentId,
+        agent: &AgentKey,
         absolute_path: &str,
         token: &Uuid,
         downloaded_range: Range<u64>,
@@ -81,7 +97,7 @@ impl OneTimeTokenRegistry {
             return false;
         }
 
-        let key = (agent_id.clone(), absolute_path.to_string());
+        let key = (agent.clone(), absolute_path.to_string());
         let mut entries = self
             .inner
             .lock()
@@ -133,78 +149,80 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Barrier};
 
+    fn key(owner: &str, name: &str) -> AgentKey {
+        AgentKey::new(owner, redoor_core::test_support::test_agent_id(name))
+    }
+
     /// Verifies each exact key can retain multiple independently completed tokens.
     #[test]
     fn supports_multiple_tokens_and_removes_completed_tokens() {
         let registry = OneTimeTokenRegistry::new();
-        let agent_id = redoor_core::test_support::test_agent_id("agent-1");
-        let first = registry.create(agent_id.clone(), "/tmp/file".to_string());
-        let second = registry.create(agent_id.clone(), "/tmp/file".to_string());
+        let agent = key("alice", "agent-1");
+        let first = registry.create(agent.clone(), "/tmp/file".to_string());
+        let second = registry.create(agent.clone(), "/tmp/file".to_string());
 
         // Both generated UUIDs remain outstanding until their individual use.
-        assert_eq!(registry.list(&agent_id, "/tmp/file").len(), 2);
+        assert_eq!(registry.list(&agent, "/tmp/file").len(), 2);
+        assert_eq!(registry.resolve_device(&first), Some(agent.clone()));
         // Completing one token leaves the other token available for a later request.
-        assert!(registry.record_downloaded_range(&agent_id, "/tmp/file", &first, 0..4, 4));
-        assert_eq!(
-            registry.list(&agent_id, "/tmp/file"),
-            vec![second.to_string()]
-        );
+        assert!(registry.record_downloaded_range(&agent, "/tmp/file", &first, 0..4, 4));
+        assert_eq!(registry.list(&agent, "/tmp/file"), vec![second.to_string()]);
         // A completed token cannot authorize a second request.
-        assert!(!registry.contains(&agent_id, "/tmp/file", &first));
+        assert!(!registry.contains(&agent, "/tmp/file", &first));
+        assert_eq!(registry.resolve_device(&first), None);
         // The final completed token removes the empty key from observable state.
-        assert!(registry.record_downloaded_range(&agent_id, "/tmp/file", &second, 0..4, 4));
-        assert!(registry.list(&agent_id, "/tmp/file").is_empty());
+        assert!(registry.record_downloaded_range(&agent, "/tmp/file", &second, 0..4, 4));
+        assert!(registry.list(&agent, "/tmp/file").is_empty());
     }
 
-    /// Verifies mismatched attempts cannot consume a legitimate token.
+    /// Verifies mismatched attempts (including cross-user) cannot consume a legitimate token.
     #[test]
     fn failed_matches_preserve_the_valid_token() {
         let registry = OneTimeTokenRegistry::new();
-        let agent_id = redoor_core::test_support::test_agent_id("agent-1");
-        let token = registry.create(agent_id.clone(), "/tmp/file".to_string());
+        let alice_agent = key("alice", "agent-1");
+        let bob_agent = key("bob", "agent-1");
+        let token = registry.create(alice_agent.clone(), "/tmp/file".to_string());
 
         // Matching the UUID against another path must not authorize access.
-        assert!(!registry.contains(&agent_id, "/tmp/other", &token));
+        assert!(!registry.contains(&alice_agent, "/tmp/other", &token));
         // Matching the UUID against another agent must not authorize access.
-        assert!(!registry.contains(
-            &redoor_core::test_support::test_agent_id("agent-2"),
-            "/tmp/file",
-            &token
-        ));
+        assert!(!registry.contains(&key("alice", "agent-2"), "/tmp/file", &token));
+        // Matching the UUID against another owner's agent with the same id must not authorize access.
+        assert!(!registry.contains(&bob_agent, "/tmp/file", &token));
         // The correctly bound request remains authorized after failed attempts.
-        assert!(registry.contains(&agent_id, "/tmp/file", &token));
+        assert!(registry.contains(&alice_agent, "/tmp/file", &token));
     }
 
     /// Verifies disjoint retries consume the token only after covering the whole file.
     #[test]
     fn merges_retry_ranges_before_consuming_token() {
         let registry = OneTimeTokenRegistry::new();
-        let agent_id = redoor_core::test_support::test_agent_id("agent-1");
-        let token = registry.create(agent_id.clone(), "/tmp/file".to_string());
+        let agent = key("alice", "agent-1");
+        let token = registry.create(agent.clone(), "/tmp/file".to_string());
 
         // A suffix alone must not consume a token or imply that its prefix was downloaded.
-        assert!(!registry.record_downloaded_range(&agent_id, "/tmp/file", &token, 4..10, 10));
-        assert!(registry.contains(&agent_id, "/tmp/file", &token));
+        assert!(!registry.record_downloaded_range(&agent, "/tmp/file", &token, 4..10, 10));
+        assert!(registry.contains(&agent, "/tmp/file", &token));
         // Completing the missing prefix makes the merged coverage span the full file.
-        assert!(registry.record_downloaded_range(&agent_id, "/tmp/file", &token, 0..4, 10));
-        assert!(!registry.contains(&agent_id, "/tmp/file", &token));
+        assert!(registry.record_downloaded_range(&agent, "/tmp/file", &token, 0..4, 10));
+        assert!(!registry.contains(&agent, "/tmp/file", &token));
     }
 
     /// Verifies concurrent full responses cannot both complete the same one-time token.
     #[test]
     fn concurrent_completion_has_one_winner() {
         let registry = OneTimeTokenRegistry::new();
-        let agent_id = redoor_core::test_support::test_agent_id("agent-1");
-        let token = registry.create(agent_id.clone(), "/tmp/file".to_string());
+        let agent = key("alice", "agent-1");
+        let token = registry.create(agent.clone(), "/tmp/file".to_string());
         let barrier = Arc::new(Barrier::new(3));
         let handles = (0..2)
             .map(|_| {
                 let registry = registry.clone();
-                let agent_id = agent_id.clone();
+                let agent = agent.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    registry.record_downloaded_range(&agent_id, "/tmp/file", &token, 0..4, 4)
+                    registry.record_downloaded_range(&agent, "/tmp/file", &token, 0..4, 4)
                 })
             })
             .collect::<Vec<_>>();
@@ -218,6 +236,6 @@ mod tests {
         // Holding coverage and removal under one lock permits exactly one winner.
         assert_eq!(successes, 1);
         // The winning request removes the token from registry memory.
-        assert!(registry.list(&agent_id, "/tmp/file").is_empty());
+        assert!(registry.list(&agent, "/tmp/file").is_empty());
     }
 }

@@ -4,13 +4,15 @@ import { join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { ApiClient } from "#ui/api-client";
 import {
-    DEVICE_ID_PATTERN,
     ProcessManager,
     SERVER_PATH,
     TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
+    generateDeviceId,
+    seedUserWorkspace,
+    serverDataDir,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -43,26 +45,33 @@ async function startManagedSshFixture(options: {
     const home = mkdtempSync(join(tmpdir(), "redoor-ssh-device-ids-"));
     const configPath = join(home, "config.toml");
 
-    const entries = options.agentNames
-        .map(
-            (name) => `[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_TEST_USER}"
-name = "${name}"
-`,
-        )
-        .join("\n");
-
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-${entries}`,
+`,
+    );
+    seedUserWorkspace({
+        home,
+        appName: options.appName,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: options.agentNames.map((name) => ({
+            kind: "ssh_backed" as const,
+            id: generateDeviceId(),
+            target: SSH_TEST_HOST,
+            username: SSH_TEST_USER,
+            name,
+            terminal_env: {},
+        })),
+    });
+    const agentsPath = join(
+        serverDataDir(home, options.appName),
+        "users",
+        TEST_USERNAME,
+        "agents.json",
     );
 
     onTestFinished(async () => {
@@ -102,19 +111,19 @@ ${entries}`,
     const apiClient = new ApiClient(`http://127.0.0.1:${VITEST_SERVER_PORT}`);
     await apiClient.login(TEST_USERNAME, TEST_PASSWORD);
 
-    return { apiClient, configPath, processManager, serverPid };
+    return { apiClient, configPath: agentsPath, processManager, serverPid };
 }
 
-/** Reads the id startup wrote into the `[[agents]]` entry called `name`. */
+/** Reads the id stored in `agents.json` for the entry called `name`. */
 function configuredDeviceId(
-    configPath: string,
+    agentsPath: string,
     name: string,
 ): string | undefined {
-    const entry = readFileSync(configPath, "utf8")
-        .split("[[agents]]")
-        .find((table) => table.includes(`name = "${name}"`));
+    const parsed: { agents: { id?: string; name?: string }[] } = JSON.parse(
+        readFileSync(agentsPath, "utf8"),
+    );
 
-    return entry?.match(new RegExp(`^id = "(${DEVICE_ID_PATTERN})"`, "m"))?.[1];
+    return parsed.agents.find((entry) => entry.name === name)?.id;
 }
 
 /** Starts the managed SSH agent called `name` and waits for a connection newer than `previous`. */

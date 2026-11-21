@@ -92,6 +92,15 @@ pub(crate) fn build_app(server_state: ServerState) -> Router {
             get(super::oidc::login_methods_handler),
         )
         .route("/api/v1/auth/me", get(super::auth_me::auth_me_handler))
+        // TEMPORARY MIGRATION: First-use migration status and confirmation.
+        .route(
+            "/api/v1/migration",
+            get(super::migration::get_migration_status_handler),
+        )
+        .route(
+            "/api/v1/migration/confirm",
+            post(super::migration::confirm_migration_handler),
+        )
         .route(
             "/api/v1/session/activity",
             post(super::session_activity::session_activity_handler),

@@ -2,12 +2,14 @@
 //! websocket in `terminals`.
 
 use super::{
-    access::ResolvedDevice, agent_helpers::require_absolute_path, error::ApiError,
+    access::{Principal, ResolvedDevice},
+    agent_helpers::require_absolute_path,
+    error::ApiError,
     state::ServerState,
 };
 use crate::actors::router::RouterError;
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::StatusCode,
 };
@@ -23,12 +25,13 @@ use redoor_protocol::{
 /// window then lists.
 const MAX_TERMINAL_TITLE_CHARS: usize = 200;
 
-/// Lists every session, so a reloaded window can restore its tabs.
+/// Lists every session belonging to the signed-in user, so a reloaded window can restore its tabs.
 pub(crate) async fn list_terminal_sessions_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
 ) -> Json<TerminalSessionList> {
     Json(TerminalSessionList {
-        sessions: state.terminals.list(),
+        sessions: state.terminals.list(principal.owner()),
     })
 }
 
@@ -70,9 +73,10 @@ pub(crate) async fn create_terminal_session_handler(
 pub(crate) async fn delete_terminal_session_handler(
     Path(id): Path<String>,
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
 ) -> Result<Json<CloseTerminalSessionResponse>, ApiError> {
     let id = parse_session_id(&id)?;
-    if state.terminals.close(id).await {
+    if state.terminals.close(principal.owner(), id).await {
         Ok(Json(CloseTerminalSessionResponse { id }))
     } else {
         Err(session_not_found())

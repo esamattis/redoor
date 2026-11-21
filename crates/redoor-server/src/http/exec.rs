@@ -106,7 +106,11 @@ mod tests {
     /// A slow HTTP consumer can have buffered output when the exit status arrives.
     #[tokio::test]
     async fn buffered_output_precedes_single_terminal_event() {
-        let streams = ConnectionStreams::new(redoor_core::test_support::test_agent_id("test"));
+        let agent = crate::workspaces::AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("test"),
+        );
+        let streams = ConnectionStreams::new(agent.clone());
         let receiver = streams.open_detached(RequestId::new(1));
         let output = ExecEvent::Stdout {
             data: b"trailing output".to_vec(),
@@ -118,11 +122,7 @@ mod tests {
         let (terminal, terminal_receiver) = tokio::sync::watch::channel(None);
         terminal.send_replace(Some(ExecEvent::TimedOut));
         let (router, task) = spawn_router();
-        let output = OutputStream::detached(
-            router,
-            redoor_core::test_support::test_agent_id("test"),
-            receiver,
-        );
+        let output = OutputStream::detached(router, agent, receiver);
         let bytes = axum::body::to_bytes(execution_body(output, terminal_receiver), 4096)
             .await
             .unwrap();

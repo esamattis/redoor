@@ -13,10 +13,13 @@ import {
     ProcessManager,
     TempFileManager,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForValue,
     waitForPort,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
 } from "./test-utils";
 
@@ -42,22 +45,30 @@ let agentDir: string;
 
 let secondAgentDir: string;
 
-/** Writes the config with the one managed agent the suite starts with. */
+/** Writes the config and seeds the one managed agent the suite starts with. */
 function writeValidConfig() {
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${AGENT_NAME}"
-home = "${agentDir}"
 `,
     );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_restartagentoneaaaaa",
+                name: AGENT_NAME,
+                home: agentDir,
+                terminal_env: {},
+            },
+        ],
+    });
 }
 
 beforeAll(async () => {
@@ -177,18 +188,31 @@ describe("process restart APIs", () => {
         expect(detailsAfter.pid).not.toBe(detailsBefore.pid);
     }, 60_000);
 
-    it("restarts the server in place and applies a mutated config.toml", async () => {
-        // Appended rather than rewritten, so the running device keeps the id the server
-        // assigned to it; a device with a new id would be another device.
-        writeFileSync(
-            configPath,
-            `${readFileSync(configPath, "utf8")}
-[[agents]]
-local = true
-name = "${SECOND_AGENT_NAME}"
-home = "${secondAgentDir}"
-`,
-        );
+    it("restarts the server in place and applies a mutated workspace agents.json", async () => {
+        // Keep the running device's id so the daemon reconnects as the same device, and add
+        // a second managed agent on disk for the restarted server to load.
+        seedUserWorkspace({
+            home: TEST_SERVER_HOME,
+            appName: TEST_APP_NAME,
+            username: TEST_USERNAME,
+            agentToken: TEST_AGENT_TOKEN,
+            agents: [
+                {
+                    kind: "local",
+                    id: "dev_restartagentoneaaaaa",
+                    name: AGENT_NAME,
+                    home: agentDir,
+                    terminal_env: {},
+                },
+                {
+                    kind: "local",
+                    id: "dev_restartagenttwoaaaaa",
+                    name: SECOND_AGENT_NAME,
+                    home: secondAgentDir,
+                    terminal_env: {},
+                },
+            ],
+        });
 
         const response = await apiClient.restartServer();
         // Handler acknowledges before graceful shutdown + self-exec.

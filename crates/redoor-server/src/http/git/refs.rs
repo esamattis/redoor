@@ -4,15 +4,11 @@ use axum::{
     Json,
     extract::{Path, Query, State as AxumState},
 };
-use redoor_protocol::{
-    api::git::{
-        GitPageQuery,
-        refs::{
-            GitBranchScope, GitBranchScopeQuery, GitRefListKind, GitRefListResponse,
-            GitRefSortQuery,
-        },
+use redoor_protocol::api::git::{
+    GitPageQuery,
+    refs::{
+        GitBranchScope, GitBranchScopeQuery, GitRefListKind, GitRefListResponse, GitRefSortQuery,
     },
-    ids::AgentId,
 };
 
 use super::{checked_page, route_path};
@@ -20,6 +16,7 @@ use crate::http::{
     access::ResolvedDevice, agent_client::GitRefList, agent_helpers::AgentFilePath,
     error::ApiError, state::ServerState,
 };
+use crate::workspaces::AgentKey;
 
 /// Route: `GET /api/v1/agents/{agent}/git/branches[/{*path}]?skip=&limit=&sort=recent|name&scope=all|local|remote`.
 pub(crate) async fn git_branches_handler(
@@ -66,7 +63,7 @@ pub(crate) async fn git_tags_handler(
 /// validation and the call.
 async fn list_refs(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     params: AgentFilePath,
     query: GitPageQuery,
     sort: GitRefSortQuery,

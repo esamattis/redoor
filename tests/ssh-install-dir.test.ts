@@ -10,6 +10,7 @@ import {
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -40,20 +41,29 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const configPath = join(home, "config.toml");
             writeFileSync(
                 configPath,
-                `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+                `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_TEST_USER}"
-name = "${agentName}"
-install_dir = "${noexecDir}"
 `,
             );
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+                agents: [
+                    {
+                        kind: "ssh_backed",
+                        id: "dev_sshinstalldiraaaaaaa",
+                        target: SSH_TEST_HOST,
+                        username: SSH_TEST_USER,
+                        name: agentName,
+                        install_dir: noexecDir,
+                        terminal_env: {},
+                    },
+                ],
+            });
 
             const cleanupRemote = async () => {
                 await cleanupSshTest({ remoteRoot, agentAppNames: [appName] });

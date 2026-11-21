@@ -14,6 +14,7 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { onTestFinished } from "vitest";
 import { $ } from "zx";
 import type { UpdateSshAgentRequest } from "#bindings/UpdateSshAgentRequest";
@@ -22,7 +23,6 @@ import { ApiError } from "#ui/api-transport";
 import {
     ProcessManager,
     SERVER_PATH,
-    TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
@@ -90,9 +90,7 @@ export async function startKeyFixture(options: {
 
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
@@ -143,7 +141,7 @@ port = ${VITEST_SERVER_PORT}
         apiClient,
         configPath,
         home,
-        sshDataDir: join(dataDir, "ssh"),
+        sshDataDir: join(dataDir, "users", TEST_USERNAME, "ssh"),
         dataDir,
         serverLog: join(dataDir, "server.log"),
         processManager,
@@ -251,17 +249,27 @@ export async function remoteDeviceLines(
         .filter((line) => line.includes(`redoor:${deviceId}:`));
 }
 
-/** The `[[agents]]` table of `deviceId` as written in config.toml. */
+/**
+ * The `agents.json` entry of `deviceId`, formatted as `key = <json>` lines (omitting null
+ * and false fields) so assertions can inspect persisted fields concisely.
+ */
 export function configEntry(fixture: KeyFixture, deviceId: string): string {
-    const entry = readFileSync(fixture.configPath, "utf8")
-        .split("[[agents]]")
-        .find((table) => table.includes(`id = "${deviceId}"`));
+    const agentsPath = join(fixture.sshDataDir, "..", "agents.json");
+    const raw = z
+        .object({
+            agents: z.array(z.looseObject({ id: z.string().optional() })),
+        })
+        .parse(JSON.parse(readFileSync(agentsPath, "utf8")));
+    const entry = raw.agents.find((table) => table.id === deviceId);
 
     if (entry === undefined) {
-        throw new Error(`config.toml has no entry for ${deviceId}`);
+        throw new Error(`agents.json has no entry for ${deviceId}`);
     }
 
-    return entry;
+    return Object.entries(entry)
+        .filter(([, value]) => value !== null && value !== false)
+        .map(([key, value]) => `${key} = ${JSON.stringify(value)}`)
+        .join("\n");
 }
 
 /** Directory holding the pinned host key and the key files of `deviceId`. */

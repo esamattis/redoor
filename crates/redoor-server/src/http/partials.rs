@@ -9,6 +9,7 @@ use super::{
     state::ServerState,
 };
 use crate::actors::router::CopyOperation;
+use crate::workspaces::AgentKey;
 use axum::{Extension, Json, extract::State};
 use redoor_protocol::{
     api::{tokens::Permission, transfers::*},
@@ -21,19 +22,26 @@ pub(crate) async fn list(
     State(state): State<ServerState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<PartialsResponse>, ApiError> {
+    let owner = principal.owner().to_string();
     let active = state
         .router_ref
-        .request(|reply| crate::actors::router::RouterMsg::GetTransferProgress { reply })
+        .request(
+            |reply| crate::actors::router::RouterMsg::GetTransferProgress {
+                owner: owner.clone(),
+                reply,
+            },
+        )
         .await?;
     let mut partials = Vec::new();
     for agent in state
         .agents
-        .inventory()
+        .inventory(&owner)
         .await?
         .into_iter()
         .filter(|agent| agent.connection_id.is_some() && principal.can_see(&agent.id))
     {
-        let records = match state.agents.call(&agent.id, ListPartials {}).await {
+        let agent_key = AgentKey::new(&owner, agent.id.clone());
+        let records = match state.agents.call(&agent_key, ListPartials {}).await {
             Ok(records) => records,
             Err(error) => {
                 redoor_core::log!(
@@ -97,14 +105,19 @@ pub(crate) async fn resume(
     Extension(principal): Extension<Principal>,
     Json(mut request): Json<PartialActionRequest>,
 ) -> Result<Json<ResumePartialResponse>, ApiError> {
+    let owner = principal.owner().to_string();
     // Body fields accept a name or an id; resolving before `require` keeps scope checks on
     // ids, so a name that now belongs to another device cannot slip past a scope.
-    request.dest_agent_id = state.agents.resolve(request.dest_agent_id.as_str()).await?;
+    request.dest_agent_id = state
+        .agents
+        .resolve(&owner, request.dest_agent_id.as_str())
+        .await?;
     // Reading the partial already touches the destination agent.
     principal.require(&[Permission::FilesWrite], &request.dest_agent_id)?;
+    let dest_key = AgentKey::new(&owner, request.dest_agent_id.clone());
     let record = state
         .agents
-        .call(&request.dest_agent_id, ReadPartial { key: request.key })
+        .call(&dest_key, ReadPartial { key: request.key })
         .await?
         .ok_or_else(|| ApiError::not_found("Partial not found"))?;
     if !state
@@ -128,6 +141,7 @@ pub(crate) async fn resume(
     let started = state
         .transfers
         .start_copy(CopySpec {
+            owner,
             op: match a.operation {
                 PartialOperation::Copy => CopyOperation::Copy,
                 PartialOperation::Move => CopyOperation::Move,
@@ -156,13 +170,18 @@ pub(crate) async fn discard(
     Extension(principal): Extension<Principal>,
     Json(mut request): Json<PartialActionRequest>,
 ) -> Result<Json<DiscardPartialResponse>, ApiError> {
+    let owner = principal.owner();
     // Body fields accept a name or an id; resolving before `require` keeps scope checks on
     // ids, so a name that now belongs to another device cannot slip past a scope.
-    request.dest_agent_id = state.agents.resolve(request.dest_agent_id.as_str()).await?;
+    request.dest_agent_id = state
+        .agents
+        .resolve(owner, request.dest_agent_id.as_str())
+        .await?;
     principal.require(&[Permission::FilesWrite], &request.dest_agent_id)?;
+    let dest_key = AgentKey::new(owner, request.dest_agent_id);
     state
         .agents
-        .call(&request.dest_agent_id, DeletePartial { key: request.key })
+        .call(&dest_key, DeletePartial { key: request.key })
         .await?;
     Ok(Json(DiscardPartialResponse { discarded: true }))
 }
@@ -173,18 +192,27 @@ pub(crate) async fn preflight(
     Extension(principal): Extension<Principal>,
     Json(mut request): Json<CopyPreflightRequest>,
 ) -> Result<Json<CopyPreflightResponse>, ApiError> {
+    let owner = principal.owner();
     // Body fields accept a name or an id; resolving before `require` keeps scope checks on
     // ids, so a name that now belongs to another device cannot slip past a scope.
-    request.source.agent = state.agents.resolve(request.source.agent.as_str()).await?;
-    request.dest.agent = state.agents.resolve(request.dest.agent.as_str()).await?;
+    request.source.agent = state
+        .agents
+        .resolve(owner, request.source.agent.as_str())
+        .await?;
+    request.dest.agent = state
+        .agents
+        .resolve(owner, request.dest.agent.as_str())
+        .await?;
     principal.require(&[Permission::FilesRead], &request.source.agent)?;
     principal.require(&[Permission::FilesWrite], &request.dest.agent)?;
     let source_path = require_absolute_path(request.source.path)?;
     let dest_path = require_absolute_path(request.dest.path)?;
+    let source_key = AgentKey::new(owner, request.source.agent.clone());
+    let dest_key = AgentKey::new(owner, request.dest.agent.clone());
     let source = state
         .agents
         .call(
-            &request.source.agent,
+            &source_key,
             MoveMetadata {
                 path: source_path.clone(),
             },
@@ -194,9 +222,9 @@ pub(crate) async fn preflight(
         state
             .transfers
             .candidate(
-                &request.source.agent,
+                &source_key,
                 &source_path,
-                &request.dest.agent,
+                &dest_key,
                 &dest_path,
                 &source.identity,
             )

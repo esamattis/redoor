@@ -9,10 +9,11 @@
 //! streams of its agent.
 
 use crate::actors::lanes::ControlLanes;
+use crate::workspaces::AgentKey;
 use bytes::Bytes;
 use redoor_core::stream_credit::{CreditGate, CreditLedger};
 use redoor_protocol::{
-    ids::{AgentId, RequestId},
+    ids::RequestId,
     wire::{
         ServerToAgent,
         command::CommandErrorKind,
@@ -131,7 +132,7 @@ impl StreamLease {
 #[derive(Debug)]
 pub struct CreditViolation {
     /// Agent whose connection carried the stream.
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Stream that broke its credit and is no longer routed.
     pub(crate) request_id: RequestId,
 }
@@ -151,7 +152,7 @@ struct InboundSlot {
 /// The stream tables of one connection, shared by the router and the connection's session.
 #[derive(Debug)]
 struct StreamTables {
-    agent_id: AgentId,
+    agent_id: AgentKey,
     inbound: Mutex<HashMap<RequestId, InboundSlot>>,
     outbound: Mutex<HashMap<RequestId, OutboundSlot>>,
     /// Lifecycle events of open terminals, delivered in their stream's frame order.
@@ -189,7 +190,7 @@ pub struct ConnectionStreams {
 
 impl ConnectionStreams {
     /// Creates empty tables for one agent connection.
-    pub fn new(agent_id: AgentId) -> Self {
+    pub fn new(agent_id: AgentKey) -> Self {
         Self {
             tables: Arc::new(StreamTables {
                 agent_id,
@@ -560,7 +561,7 @@ mod tests {
     /// Builds a session's tables plus the priority lane its credit grants use.
     fn session() -> (ConnectionStreams, AgentLink, mpsc::Receiver<ServerToAgent>) {
         let (lanes, receivers) = ControlLanes::bounded(16, 16);
-        let agent = redoor_core::test_support::test_agent_id("agent");
+        let agent = AgentKey::new("test", redoor_core::test_support::test_agent_id("agent"));
         (
             ConnectionStreams::new(agent.clone()),
             AgentLink::new(lanes),
@@ -726,7 +727,10 @@ mod tests {
     /// a producer cannot send before it.
     #[tokio::test]
     async fn upload_waits_for_first_grant() {
-        let streams = ConnectionStreams::new(redoor_core::test_support::test_agent_id("agent"));
+        let streams = ConnectionStreams::new(AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("agent"),
+        ));
         let (lanes, mut receivers) = ControlLanes::bounded(1, 1);
         let lease = StreamLease::new(RequestId::new(8), AgentLink::new(lanes), 0);
         let outbound = OutboundStream::new(
@@ -757,7 +761,10 @@ mod tests {
     /// producer waiting for credit.
     #[tokio::test]
     async fn outbound_stream_spends_credit_and_stops_promptly() {
-        let streams = ConnectionStreams::new(redoor_core::test_support::test_agent_id("agent"));
+        let streams = ConnectionStreams::new(AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("agent"),
+        ));
         let (lanes, mut receivers) = ControlLanes::bounded(1, 1);
         let lease = StreamLease::new(RequestId::new(7), AgentLink::new(lanes), 0);
         let outbound = OutboundStream::new(

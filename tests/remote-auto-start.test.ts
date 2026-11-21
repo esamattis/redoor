@@ -9,9 +9,12 @@ import {
     ProcessManager,
     createAccessToken,
     remoteEnv,
+    seedUserWorkspace,
     TempFileManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     waitForPort,
@@ -31,27 +34,42 @@ describe("Remote managed agent automatic startup", () => {
     beforeAll(async () => {
         const agentHome = files.tempDirectory();
         const config = files.tempFile({ suffix: ".toml" });
-        await fs.writeFile(config, `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        await fs.writeFile(
+            config,
+            `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${sourceName}"
-home = "${agentHome}"
-
-[[agents]]
-local = true
-name = "${destinationName}"
-home = "${agentHome}"
-
-[[agents]]
-local = true
-name = "${failingName}"
-home = "${agentHome}/missing"
-`);
+`,
+        );
+        seedUserWorkspace({
+            home: TEST_SERVER_HOME,
+            appName: TEST_APP_NAME,
+            username: TEST_USERNAME,
+            agentToken: TEST_AGENT_TOKEN,
+            agents: [
+                {
+                    kind: "local",
+                    id: "dev_autostartsourceaaaaa",
+                    name: sourceName,
+                    home: agentHome,
+                    terminal_env: {},
+                },
+                {
+                    kind: "local",
+                    id: "dev_autostartdestaaaaaaa",
+                    name: destinationName,
+                    home: agentHome,
+                    terminal_env: {},
+                },
+                {
+                    kind: "local",
+                    id: "dev_autostartfailaaaaaaa",
+                    name: failingName,
+                    home: `${agentHome}/missing`,
+                    terminal_env: {},
+                },
+            ],
+        });
         process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
         processes.spawnServer({ config });
         await waitForPort(VITEST_SERVER_PORT);

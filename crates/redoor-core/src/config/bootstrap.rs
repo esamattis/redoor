@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
-/// Generates a high-entropy secret for bootstrap agent tokens from the OS CSPRNG.
-fn generate_secret() -> Result<String> {
+/// Generates a high-entropy secret for per-user agent tokens from the OS CSPRNG.
+pub fn generate_agent_token() -> Result<String> {
     let mut bytes = [0u8; 24];
     getrandom::fill(&mut bytes)
         .map_err(|error| anyhow::anyhow!("Failed to read OS randomness: {error}"))?;
@@ -14,19 +14,11 @@ fn generate_secret() -> Result<String> {
 
 /// Renders the minimal starter config written only by `redoor server` on first run.
 ///
-/// Matches the README shape: top-level token, commented listener options, demo
-/// credentials, and one managed local agent so a fresh install is demoable.
-fn default_config_content(agent_token: &str) -> String {
-    let agent_token = toml_edit::Value::from(agent_token).to_string();
-    // Written up front so the first start does not have to rewrite the fresh file.
-    let local_agent_id = redoor_protocol::ids::AgentId::generate();
-    format!(
-        r#"# Redoor configuration
-# A random agent_token was generated on first start.
+/// Server configs only carry `[server]` settings; per-user agent tokens and managed devices
+/// live under `<data_dir>/users/<user>/` so multiple accounts stay isolated.
+fn default_config_content() -> String {
+    r#"# Redoor configuration
 # Browser login uses username redoor and password changeme.
-# agent_token is the shared secret between the server and agents.
-
-agent_token = {agent_token}
 
 [server]
 username = "redoor"
@@ -42,34 +34,28 @@ password = "changeme"
 # (or set cert = "..." and key = "..." to use your own).
 # [server.tls]
 # self_signed = true
-
-[[agents]]
-# local agent that runs on the same computer as the server
-id = "{local_agent_id}"
-local = true
-name = "local"
 "#
-    )
+    .to_string()
 }
 
-/// Bootstrap secrets printed once when a starter config is created.
+/// Bootstrap credentials printed once when a starter config is created.
 pub struct CreatedDefaultConfig {
+    /// The demo login username written to the new config.
+    pub username: String,
     /// The demo login password written to the new config.
     pub password: String,
-    /// Generated shared registration secret written to the new config.
-    pub agent_token: String,
 }
 
-/// Creates the conventional server config with a random token without overwriting an existing file.
+/// Creates the conventional server config without overwriting an existing file.
 ///
-/// Only `redoor server` should call this so first-run secrets and the local agent
-/// entry appear from a single, intentional entry point.
+/// Only `redoor server` should call this so first-run credentials appear from a single,
+/// intentional entry point. The starter user's per-user `account.json` and `agents.json` are
+/// created by server startup next to the data directory.
 pub async fn create_default_config_if_missing(path: &Path) -> Result<Option<CreatedDefaultConfig>> {
     if tokio::fs::try_exists(path).await? {
         return Ok(None);
     }
 
-    let agent_token = generate_secret()?;
     let parent = path
         .parent()
         .with_context(|| format!("Default config path '{}' has no parent", path.display()))?;
@@ -90,7 +76,7 @@ pub async fn create_default_config_if_missing(path: &Path) -> Result<Option<Crea
                 .with_context(|| format!("Failed to create default config '{}'", path.display()));
         }
     };
-    let content = default_config_content(&agent_token);
+    let content = default_config_content();
     file.write_all(content.as_bytes())
         .await
         .with_context(|| format!("Failed to write default config '{}'", path.display()))?;
@@ -99,8 +85,8 @@ pub async fn create_default_config_if_missing(path: &Path) -> Result<Option<Crea
         .with_context(|| format!("Failed to sync default config '{}'", path.display()))?;
     Ok(Some(CreatedDefaultConfig {
         // Fixed and printed once so the first sign-in needs nothing but this output.
+        username: "redoor".to_string(),
         password: "changeme".to_string(),
-        agent_token,
     }))
 }
 

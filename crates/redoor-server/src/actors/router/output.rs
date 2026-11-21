@@ -12,6 +12,7 @@ use super::messages::{ExecuteStreamRequest, OutputStreamTracking, RouteResponse}
 use super::progress::DownloadStartContext;
 use super::state::RouterState;
 use super::streams::{CREDIT_VIOLATION, StreamLease};
+use crate::workspaces::AgentKey;
 use redoor_protocol::wire::request::{
     self, AgentRequest, CommandError, CommandOutcome, DecodeError,
 };
@@ -131,8 +132,9 @@ impl RouterState {
             CREDIT_VIOLATION,
         ));
         if let OutputKind::Download { progress_id, .. } = flow.kind {
+            let owner = flow.agent_id.owner.clone();
             self.mark_transfer_errored(progress_id, CREDIT_VIOLATION.to_string());
-            self.notify_transfer_refresh();
+            self.notify_transfer_refresh(&owner);
         }
         // The worker may still be producing although its stream is gone.
         let _ = self.request_output_cancel(flow_id);
@@ -150,8 +152,11 @@ impl RouterState {
                 .map(|entry| &entry.state),
             Some(TransferProgressState::Canceling)
         ) {
+            let owner = self.progress.owners.get(&progress_id).cloned();
             self.mark_transfer_canceled(progress_id);
-            self.notify_transfer_refresh();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh(&owner);
+            }
         }
     }
 
@@ -187,7 +192,7 @@ impl RouterState {
                     }
                     _ => self.complete_download(&flow, progress_id),
                 }
-                self.notify_transfer_refresh();
+                self.notify_transfer_refresh(flow.agent_id.owner());
             }
             OutputKind::Events if canceling => {}
             // An event stream's summary (a search's `done` line) is already queued as data, so
@@ -251,7 +256,7 @@ impl RouterState {
     pub(crate) fn update_download_total(
         &mut self,
         flow_id: FlowId,
-        agent_id: &redoor_protocol::ids::AgentId,
+        agent_id: &AgentKey,
         total_bytes: Option<u64>,
     ) {
         let Some(Flow::Output(flow)) = self.flows.get(flow_id) else {
@@ -277,7 +282,7 @@ mod tests {
     use super::super::streams::{ConnectionStreams, OutputReceiver};
     use super::*;
     use crate::actors::lanes::{ControlLanes, QueuedCommand};
-    use redoor_protocol::ids::{AgentId, RequestId};
+    use redoor_protocol::ids::RequestId;
     use redoor_protocol::wire::ServerToAgent;
     use redoor_protocol::wire::command::Command;
     use redoor_protocol::wire::stream::StreamChunk;
@@ -289,18 +294,21 @@ mod tests {
         commands: mpsc::Receiver<QueuedCommand>,
         priority: mpsc::Receiver<ServerToAgent>,
         streams: ConnectionStreams,
-        agent: AgentId,
+        agent: AgentKey,
     }
 
     impl Fixture {
         /// Single-slot control lanes make saturation deterministic without a network peer.
         fn new() -> Self {
             let mut state = RouterState::new(tokio::spawn(std::future::pending()));
-            let agent = redoor_core::test_support::test_agent_id("output-test");
+            let agent = AgentKey::new(
+                "test",
+                redoor_core::test_support::test_agent_id("output-test"),
+            );
             let (lanes, receivers) = ControlLanes::bounded(1, 1);
             let streams = ConnectionStreams::new(agent.clone());
             let connection = AgentConnection::from_register_request(
-                RegisterAgentRequest::for_test(&agent, lanes, streams.clone()),
+                RegisterAgentRequest::for_test("test", &agent.id, lanes, streams.clone()),
             );
             state.agents.by_id.insert(agent.clone(), connection);
             Self {

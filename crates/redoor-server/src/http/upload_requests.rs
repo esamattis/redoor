@@ -1,10 +1,11 @@
 //! Request tokens let an HTTP producer cancel even after its body has ended but publication has not.
 
+use super::access::Principal;
 use super::error::ApiError;
 use super::state::ServerState;
 use crate::actors::router::{CancelPublicTransferError, RouterMsg};
 use axum::{
-    Json,
+    Extension, Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
@@ -21,7 +22,14 @@ use uuid::Uuid;
 
 /// Entries live only as long as the owning HTTP handler, so completed requests cannot accumulate.
 #[derive(Clone, Default)]
-pub(crate) struct UploadRequests(Arc<Mutex<HashMap<Uuid, UploadRequestState>>>);
+pub(crate) struct UploadRequests(Arc<Mutex<HashMap<Uuid, UploadRequestEntry>>>);
+
+/// Pairs the owner of an upload request with its lifecycle state so another user cannot cancel it.
+#[derive(Clone, PartialEq, Debug)]
+struct UploadRequestEntry {
+    owner: String,
+    state: UploadRequestState,
+}
 
 /// A reserved token records interruption before an agent worker has reported readiness.
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -40,6 +48,7 @@ impl UploadRequests {
     /// Registers an optional caller-generated UUID without allowing duplicate requests to steal its mapping.
     pub(crate) fn reserve(
         &self,
+        owner: &str,
         headers: &HeaderMap,
     ) -> Result<Option<UploadRequestGuard>, ApiError> {
         let Some(header) = headers.get("x-redoor-upload-request") else {
@@ -54,7 +63,13 @@ impl UploadRequests {
         if requests.contains_key(&token) {
             return Err(ApiError::conflict("Upload request token already active"));
         }
-        requests.insert(token, UploadRequestState::Starting { canceled: false });
+        requests.insert(
+            token,
+            UploadRequestEntry {
+                owner: owner.to_string(),
+                state: UploadRequestState::Starting { canceled: false },
+            },
+        );
         Ok(Some(UploadRequestGuard {
             requests: self.clone(),
             token,
@@ -80,10 +95,13 @@ impl UploadRequestGuard {
             .0
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        if requests.get(&self.token) != Some(&UploadRequestState::Starting { canceled: false }) {
+        let Some(entry) = requests.get_mut(&self.token) else {
+            return false;
+        };
+        if entry.state != (UploadRequestState::Starting { canceled: false }) {
             return false;
         }
-        requests.insert(self.token, UploadRequestState::Active(id));
+        entry.state = UploadRequestState::Active(id);
         true
     }
 }
@@ -102,8 +120,10 @@ impl Drop for UploadRequestGuard {
 /// DELETE /api/v1/upload-requests/{token} cancels exactly the matching still-owned upload.
 pub(crate) async fn cancel_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(token): Path<Uuid>,
 ) -> Response {
+    let owner = principal.owner().to_string();
     let request = {
         let mut requests = state
             .upload_requests
@@ -111,12 +131,14 @@ pub(crate) async fn cancel_handler(
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         match requests.get_mut(&token) {
-            Some(UploadRequestState::Starting { canceled }) => {
-                *canceled = true;
-                Some(None)
-            }
-            Some(UploadRequestState::Active(id)) => Some(Some(*id)),
-            None => None,
+            Some(entry) if entry.owner == owner => match &mut entry.state {
+                UploadRequestState::Starting { canceled } => {
+                    *canceled = true;
+                    Some(None)
+                }
+                UploadRequestState::Active(id) => Some(Some(*id)),
+            },
+            _ => None,
         }
     };
     let Some(id) = request else {
@@ -138,7 +160,11 @@ pub(crate) async fn cancel_handler(
     };
     match state
         .router_ref
-        .request(|reply| RouterMsg::CancelPublicTransfer { transfer_id, reply })
+        .request(|reply| RouterMsg::CancelPublicTransfer {
+            owner,
+            transfer_id,
+            reply,
+        })
         .await
     {
         Ok(Ok(transfer)) => Json(CancelUploadRequestResponse {
@@ -183,18 +209,18 @@ mod tests {
             "x-redoor-upload-request",
             token.to_string().parse().unwrap(),
         );
-        let guard = requests.reserve(&headers).unwrap().unwrap();
+        let guard = requests.reserve("alice", &headers).unwrap().unwrap();
         assert!(
             guard.try_activate(TransferId::new(12)),
             "a live reservation must bind the actual worker id"
         );
         assert!(
-            requests.reserve(&headers).is_err(),
+            requests.reserve("alice", &headers).is_err(),
             "duplicate tokens must not redirect cancellation to a competing upload"
         );
         assert_eq!(
-            requests.0.lock().unwrap().get(&token),
-            Some(&UploadRequestState::Active(TransferId::new(12))),
+            requests.0.lock().unwrap().get(&token).map(|e| e.state),
+            Some(UploadRequestState::Active(TransferId::new(12))),
             "the original handler must retain cancellation ownership"
         );
         drop(guard);
@@ -202,12 +228,14 @@ mod tests {
             requests.0.lock().unwrap().is_empty(),
             "terminal handlers must not leak request correlations"
         );
-        let guard = requests.reserve(&headers).unwrap().unwrap();
-        requests
-            .0
-            .lock()
-            .unwrap()
-            .insert(token, UploadRequestState::Starting { canceled: true });
+        let guard = requests.reserve("alice", &headers).unwrap().unwrap();
+        requests.0.lock().unwrap().insert(
+            token,
+            UploadRequestEntry {
+                owner: "alice".to_string(),
+                state: UploadRequestState::Starting { canceled: true },
+            },
+        );
         assert!(
             !guard.try_activate(TransferId::new(99)),
             "a cancellation during setup must not revive body forwarding when readiness arrives"
@@ -215,7 +243,7 @@ mod tests {
         drop(guard);
         headers.insert("x-redoor-upload-request", "invalid".parse().unwrap());
         assert!(
-            requests.reserve(&headers).is_err(),
+            requests.reserve("alice", &headers).is_err(),
             "malformed correlation identifiers must not enter the registry"
         );
     }

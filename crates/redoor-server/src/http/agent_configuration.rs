@@ -1,8 +1,9 @@
-//! REST endpoints that create, edit and remove server-managed local and SSH agents in the
-//! TOML config.
+//! REST endpoints that create, edit and remove server-managed local and SSH agents in each
+//! user's `agents.json`.
 
 use crate::actors::router::{RouterMsg, UnregisterManagedAgentRequest};
-use axum::{Json, extract::State as AxumState, http::StatusCode};
+use crate::workspaces::AgentKey;
+use axum::{Extension, Json, extract::State as AxumState, http::StatusCode};
 use redoor_protocol::api::agents::{
     AgentConnectionStatus, AgentInfoResponse, CreateLocalAgentRequest, CreateLocalAgentResponse,
     CreateSshAgentRequest, CreateSshAgentResponse, DeleteManagedAgentResponse,
@@ -12,33 +13,34 @@ use redoor_protocol::api::agents::{
 };
 use redoor_protocol::ids::{AgentId, validate_device_name};
 
-use redoor_core::config::{
-    AgentConfig, LocalAgentConfig, SshBackedAgentConfig, append_local_agent, append_ssh_agent,
-    edit_local_agent, edit_ssh_agent, parse_config_file,
-};
+use redoor_core::config::{AgentConfig, LocalAgentConfig, SshBackedAgentConfig};
 
 use super::{
-    access::ResolvedDevice, agents::list_agent_snapshots, error::ApiError, state::ServerState,
+    access::{Principal, ResolvedDevice},
+    agents::list_agent_snapshots,
+    error::ApiError,
+    state::ServerState,
 };
 
 /// Route: `POST /api/v1/agents` persists and immediately registers one SSH-backed agent.
 pub(crate) async fn create_ssh_agent_handler(
     AxumState(state): AxumState<ServerState>,
+    Extension(principal): Extension<Principal>,
     Json(request): Json<CreateSshAgentRequest>,
 ) -> Result<(StatusCode, Json<CreateSshAgentResponse>), ApiError> {
-    let agent = create_ssh_agent(&state, request).await?;
+    let agent = create_ssh_agent(&state, principal.owner(), request).await?;
     Ok((StatusCode::CREATED, Json(CreateSshAgentResponse { agent })))
 }
 
-/// Route: `GET /api/v1/agents/{agent}/configuration` returns editable SSH TOML fields.
+/// Route: `GET /api/v1/agents/{agent}/configuration` returns editable SSH fields.
 pub(crate) async fn get_ssh_agent_configuration_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
 ) -> Result<Json<ManagedSshAgentConfigurationResponse>, ApiError> {
     let config = find_ssh_agent(&state, &agent_id).await?;
     let has_pinned_host_key = state
-        .ssh_keys
-        .pinned_host_key(&agent_id)
+        .ssh_keys_for(agent_id.owner())?
+        .pinned_host_key(&agent_id.id)
         .await
         .map_err(internal_error)?
         .is_some();
@@ -48,7 +50,7 @@ pub(crate) async fn get_ssh_agent_configuration_handler(
     }))
 }
 
-/// Route: `PUT /api/v1/agents/{agent}` replaces one stopped SSH-backed TOML entry.
+/// Route: `PUT /api/v1/agents/{agent}` replaces one stopped SSH-backed entry.
 pub(crate) async fn update_ssh_agent_handler(
     ResolvedDevice(agent_id): ResolvedDevice,
     AxumState(state): AxumState<ServerState>,
@@ -61,7 +63,7 @@ pub(crate) async fn update_ssh_agent_handler(
     .await
 }
 
-/// Route: `DELETE /api/v1/agents/{agent}` removes one stopped SSH-backed TOML entry. The
+/// Route: `DELETE /api/v1/agents/{agent}` removes one stopped SSH-backed entry. The
 /// optional body carries an encrypted managed key's file key, so its line can be removed
 /// from the device.
 pub(crate) async fn delete_ssh_agent_handler(
@@ -86,9 +88,10 @@ pub(crate) async fn delete_ssh_agent_handler(
 /// Route: `POST /api/v1/local-agents` persists and immediately registers one local agent.
 pub(crate) async fn create_local_agent_handler(
     AxumState(state): AxumState<ServerState>,
+    Extension(principal): Extension<Principal>,
     Json(request): Json<CreateLocalAgentRequest>,
 ) -> Result<(StatusCode, Json<CreateLocalAgentResponse>), ApiError> {
-    let agent = create_local_agent(&state, request).await?;
+    let agent = create_local_agent(&state, principal.owner(), request).await?;
     Ok((
         StatusCode::CREATED,
         Json(CreateLocalAgentResponse { agent }),
@@ -131,22 +134,31 @@ pub(crate) async fn update_local_agent_handler(
 /// The server owns managed ids, so the id is generated here and never taken from the request.
 async fn create_ssh_agent(
     state: &ServerState,
+    owner: &str,
     request: CreateSshAgentRequest,
 ) -> Result<AgentInfoResponse, ApiError> {
     let mut config = validate_request(request)?;
     let agent_id = AgentId::generate();
-    config.id = Some(agent_id.clone());
+    let agent_key = AgentKey::new(owner, agent_id.clone());
+    config.id = Some(agent_id);
     let agent_config = AgentConfig::SshBacked(config.clone());
     let name = agent_config.effective_name();
     let _edit_guard = state.config_edit_lock.lock().await;
 
-    let registered_id = with_name_reserved(state, &agent_id, &name, async {
-        append_ssh_agent(&state.config_path, &config)
+    let registered_id = with_name_reserved(state, &agent_key, &name, async {
+        state
+            .user_agents
+            .append_ssh(owner, config.clone())
             .await
             .map_err(internal_error)?;
         state
             .launcher
-            .register(agent_config, &state.watchdog_registry, &state.router_ref)
+            .register(
+                owner,
+                agent_config,
+                &state.watchdog_registry,
+                &state.router_ref,
+            )
             .await
             .map_err(internal_error)
     })
@@ -174,14 +186,14 @@ async fn create_ssh_agent(
 /// machine, so the pin is dropped too and the next setup asks for confirmation again.
 async fn update_ssh_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     request: UpdateSshAgentRequest,
 ) -> Result<AgentInfoResponse, ApiError> {
     let clear_password = request.clear_password.unwrap_or(false);
     let mut config = validate_update_request(request)?;
-    let _operation = state.ssh_key_operations.begin(agent_id)?;
+    let _operation = state.ssh_key_operations.begin(&agent_id.id)?;
     // A pending manual SSH key setup was generated for the old settings.
-    state.manual_ssh_keys.discard(agent_id);
+    state.manual_ssh_keys.discard(&agent_id.id);
     let _edit_guard = state.config_edit_lock.lock().await;
     let existing_config = find_ssh_agent(state, agent_id).await?;
     config.id = existing_config.id.clone();
@@ -215,6 +227,7 @@ async fn update_ssh_agent(
         state
             .launcher
             .remote_job(
+                agent_id.owner(),
                 &AgentConfig::SshBacked(existing_config.clone()),
                 crate::ssh::ManagedRemoteAction::Stop,
             )
@@ -224,7 +237,9 @@ async fn update_ssh_agent(
     };
     with_name_reserved(state, agent_id, &name, async {
         stop_for_configuration_change(state, agent_id).await?;
-        edit_ssh_agent(&state.config_path, agent_id, Some(&config))
+        state
+            .user_agents
+            .edit_ssh(agent_id.owner(), &agent_id.id, Some(config.clone()))
             .await
             .map_err(internal_error)?;
         replace_runtime_agent(state, agent_id, agent_config, stop).await
@@ -234,20 +249,20 @@ async fn update_ssh_agent(
     // the new target or login.
     if target_changed {
         state
-            .ssh_keys
-            .delete_device(agent_id)
+            .ssh_keys_for(agent_id.owner())?
+            .delete_device(&agent_id.id)
             .await
             .map_err(internal_error)?;
     } else if username_changed {
         // Also clears a key file a crashed setup may have left without the config using it.
         state
-            .ssh_keys
-            .delete_keys(agent_id)
+            .ssh_keys_for(agent_id.owner())?
+            .delete_keys(&agent_id.id)
             .await
             .map_err(internal_error)?;
     }
     Ok(stopped_agent_response(
-        agent_id.clone(),
+        agent_id.id.clone(),
         name,
         None,
         Some(config.target),
@@ -259,22 +274,31 @@ async fn update_ssh_agent(
 /// The server owns managed ids, so the id is generated here and never taken from the request.
 async fn create_local_agent(
     state: &ServerState,
+    owner: &str,
     request: CreateLocalAgentRequest,
 ) -> Result<AgentInfoResponse, ApiError> {
     let mut config = validate_local_request(request)?;
     let agent_id = AgentId::generate();
-    config.id = Some(agent_id.clone());
+    let agent_key = AgentKey::new(owner, agent_id.clone());
+    config.id = Some(agent_id);
     let agent_config = AgentConfig::Local(config.clone());
     let name = agent_config.effective_name();
     let _edit_guard = state.config_edit_lock.lock().await;
 
-    let registered_id = with_name_reserved(state, &agent_id, &name, async {
-        append_local_agent(&state.config_path, &config)
+    let registered_id = with_name_reserved(state, &agent_key, &name, async {
+        state
+            .user_agents
+            .append_local(owner, config.clone())
             .await
             .map_err(internal_error)?;
         state
             .launcher
-            .register(agent_config, &state.watchdog_registry, &state.router_ref)
+            .register(
+                owner,
+                agent_config,
+                &state.watchdog_registry,
+                &state.router_ref,
+            )
             .await
             .map_err(internal_error)
     })
@@ -294,7 +318,7 @@ async fn create_local_agent(
 /// [`update_ssh_agent`].
 async fn update_local_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     request: UpdateLocalAgentRequest,
 ) -> Result<AgentInfoResponse, ApiError> {
     let mut config = validate_local_update_request(request)?;
@@ -307,14 +331,16 @@ async fn update_local_agent(
     let name = agent_config.effective_name();
     with_name_reserved(state, agent_id, &name, async {
         stop_for_configuration_change(state, agent_id).await?;
-        edit_local_agent(&state.config_path, agent_id, Some(&config))
+        state
+            .user_agents
+            .edit_local(agent_id.owner(), &agent_id.id, Some(config.clone()))
             .await
             .map_err(internal_error)?;
         replace_runtime_agent(state, agent_id, agent_config, None).await
     })
     .await?;
     Ok(stopped_agent_response(
-        agent_id.clone(),
+        agent_id.id.clone(),
         name,
         config.home,
         None,
@@ -328,34 +354,40 @@ async fn update_local_agent(
 /// key.
 async fn delete_managed_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     expected_kind: ManagedAgentKind,
     current_file_key: Option<&str>,
 ) -> Result<(), ApiError> {
-    let _operation = state.ssh_key_operations.begin(agent_id)?;
+    let _operation = state.ssh_key_operations.begin(&agent_id.id)?;
     // A deleted device's pending manual SSH key setup can never be confirmed.
-    state.manual_ssh_keys.discard(agent_id);
+    state.manual_ssh_keys.discard(&agent_id.id);
     let _edit_guard = state.config_edit_lock.lock().await;
     let configured = find_configured_agent(state, agent_id).await?;
     if let Some(config) = &configured {
         if !expected_kind.matches_config(config) {
-            return Err(expected_kind.not_found(agent_id));
+            return Err(expected_kind.not_found(&agent_id.id));
         }
     } else {
-        let inventory = list_agent_snapshots(state).await?;
+        let inventory = list_agent_snapshots(state, agent_id.owner()).await?;
         let retained = inventory
             .iter()
-            .find(|agent| &agent.id == agent_id && agent.configuration_editable);
+            .find(|agent| agent.id == agent_id.id && agent.configuration_editable);
         if !retained.is_some_and(|agent| expected_kind.matches_inventory(agent)) {
-            return Err(expected_kind.not_found(agent_id));
+            return Err(expected_kind.not_found(&agent_id.id));
         }
     }
 
     let removal = match &configured {
         Some(AgentConfig::SshBacked(config)) if config.managed_ssh_key => {
-            let device = super::ssh_keys::managed_key_device_for(state, config.clone())?;
-            let credential =
-                super::ssh_keys::removal_credential(state, &device, current_file_key).await?;
+            let device =
+                super::ssh_keys::managed_key_device_for(state, agent_id.owner(), config.clone())?;
+            let credential = super::ssh_keys::removal_credential(
+                state,
+                agent_id.owner(),
+                &device,
+                current_file_key,
+            )
+            .await?;
             Some((device, credential))
         }
         _ => None,
@@ -366,7 +398,11 @@ async fn delete_managed_agent(
         Some(config) => {
             state
                 .launcher
-                .remote_job(config, crate::ssh::ManagedRemoteAction::Remove)
+                .remote_job(
+                    agent_id.owner(),
+                    config,
+                    crate::ssh::ManagedRemoteAction::Remove,
+                )
                 .await
         }
         None => None,
@@ -374,12 +410,16 @@ async fn delete_managed_agent(
     stop_for_configuration_change(state, agent_id).await?;
     match &configured {
         Some(AgentConfig::SshBacked(_)) => {
-            edit_ssh_agent(&state.config_path, agent_id, None)
+            state
+                .user_agents
+                .edit_ssh(agent_id.owner(), &agent_id.id, None)
                 .await
                 .map_err(internal_error)?;
         }
         Some(AgentConfig::Local(_)) => {
-            edit_local_agent(&state.config_path, agent_id, None)
+            state
+                .user_agents
+                .edit_local(agent_id.owner(), &agent_id.id, None)
                 .await
                 .map_err(internal_error)?;
         }
@@ -406,8 +446,8 @@ async fn delete_managed_agent(
     // A deleted device's keys and pins must never be picked up by a later device; ids are
     // never reused, so this only keeps the data dir tidy.
     state
-        .ssh_keys
-        .delete_device(agent_id)
+        .ssh_keys_for(agent_id.owner())?
+        .delete_device(&agent_id.id)
         .await
         .map_err(internal_error)?;
     runtime_result
@@ -454,14 +494,19 @@ impl ManagedAgentKind {
 /// an already removed supervisor and row is a no-op.
 pub(super) async fn replace_runtime_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     config: AgentConfig,
     cleanup: Option<crate::watchdog::RemoteJob>,
 ) -> Result<(), ApiError> {
     unregister_runtime_agent(state, agent_id, cleanup).await?;
     state
         .launcher
-        .register(config, &state.watchdog_registry, &state.router_ref)
+        .register(
+            agent_id.owner(),
+            config,
+            &state.watchdog_registry,
+            &state.router_ref,
+        )
         .await
         .map_err(internal_error)?;
     Ok(())
@@ -472,13 +517,13 @@ pub(super) async fn replace_runtime_agent(
 /// `cleanup`, for a deleted device, removes its daemon and namespace in the background.
 async fn unregister_runtime_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     cleanup: Option<crate::watchdog::RemoteJob>,
 ) -> Result<(), ApiError> {
     state
         .watchdog_registry
-        .remove_stopped(agent_id.as_str(), cleanup)?;
-    state.held_ssh_keys.release(agent_id);
+        .remove_stopped(&agent_id.watchdog_key(), cleanup)?;
+    state.held_ssh_keys.release(&agent_id.id);
     state
         .router_ref
         .request(|reply| {
@@ -499,10 +544,10 @@ async fn unregister_runtime_agent(
 /// unlocked again by the next browser Start. A connected daemon ends through its connection.
 pub(super) async fn stop_for_configuration_change(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<(), ApiError> {
-    state.held_ssh_keys.release(agent_id);
-    let Some(handle) = state.watchdog_registry.lookup(agent_id.as_str()) else {
+    state.held_ssh_keys.release(&agent_id.id);
+    let Some(handle) = state.watchdog_registry.lookup(&agent_id.watchdog_key()) else {
         // A retry after persist+remove must not 404 just because the supervisor is already gone.
         return Ok(());
     };
@@ -520,25 +565,27 @@ pub(super) async fn stop_for_configuration_change(
 /// Reloads the source of truth so edits include values unavailable in public inventory.
 pub(super) async fn find_ssh_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<SshBackedAgentConfig, ApiError> {
     match find_configured_agent(state, agent_id).await? {
         Some(AgentConfig::SshBacked(config)) => Ok(config),
         Some(AgentConfig::Local(_)) | None => Err(ApiError::not_found(format!(
-            "Managed SSH agent '{agent_id}' was not found"
+            "Managed SSH agent '{}' was not found",
+            agent_id.id
         ))),
     }
 }
 
-/// Reloads local TOML fields and refuses to treat an SSH row as a local edit.
+/// Reloads local fields and refuses to treat an SSH row as a local edit.
 async fn find_local_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<LocalAgentConfig, ApiError> {
     match find_configured_agent(state, agent_id).await? {
         Some(AgentConfig::Local(config)) => Ok(config),
         Some(AgentConfig::SshBacked(_)) | None => Err(ApiError::not_found(format!(
-            "Managed local agent '{agent_id}' was not found"
+            "Managed local agent '{}' was not found",
+            agent_id.id
         ))),
     }
 }
@@ -546,15 +593,16 @@ async fn find_local_agent(
 /// Distinguishes a missing row from a local entry so SSH APIs cannot mutate non-SSH agents.
 pub(crate) async fn find_configured_agent(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<Option<AgentConfig>, ApiError> {
-    let config = parse_config_file(&state.config_path)
+    let agents = state
+        .user_agents
+        .list(agent_id.owner())
         .await
         .map_err(internal_error)?;
-    Ok(config
-        .agents
+    Ok(agents
         .into_iter()
-        .find(|config| config.id() == Some(agent_id)))
+        .find(|config| config.id() == Some(&agent_id.id)))
 }
 
 /// Runs a create or rename while the router holds `name` for `agent_id`.
@@ -565,7 +613,7 @@ pub(crate) async fn find_configured_agent(
 /// afterwards either way: on success the managed row holds the name itself.
 pub(super) async fn with_name_reserved<T>(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     name: &str,
     operation: impl std::future::Future<Output = Result<T, ApiError>>,
 ) -> Result<T, ApiError> {

@@ -14,20 +14,24 @@ use redoor_protocol::api::vault::{
     VaultDeviceStatusResponse,
 };
 
-use crate::http::{auth::ActiveSession, error::ApiError, state::ServerState};
+use crate::http::{access::Principal, auth::ActiveSession, error::ApiError, state::ServerState};
 
 /// Route: `POST /api/v1/vault/devices`. Needs no vault proof, because a random secret opens
 /// nothing by itself and the browser only ever wraps a key it already holds; it does need an
 /// existing vault, since there is nothing to keep unlocked otherwise.
 pub(crate) async fn create_device_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Extension(session): Extension<ActiveSession>,
     Json(request): Json<CreateVaultDeviceRequest>,
 ) -> Result<Json<CreateVaultDeviceResponse>, ApiError> {
-    state.vault.document().await?;
-    Ok(Json(
-        state.vault_devices.create(&session.id, request.lock_after),
-    ))
+    let owner = principal.owner();
+    state.vault.document(owner).await?;
+    Ok(Json(state.vault_devices.create(
+        owner,
+        &session.id,
+        request.lock_after,
+    )))
 }
 
 /// Route: `POST /api/v1/vault/devices/{id}/open`: the secret, for a page load restoring the

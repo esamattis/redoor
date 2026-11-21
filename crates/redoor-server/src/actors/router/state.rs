@@ -4,6 +4,7 @@ use super::flows::FlowTable;
 use super::messages::RouteResponse;
 use super::streams::ConnectionStreams;
 use crate::actors::lanes::{CommandTicket, ControlLanes};
+use crate::workspaces::AgentKey;
 use redoor_protocol::ids::{AgentId, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use redoor_protocol::wire::request;
 use redoor_protocol::{
@@ -21,6 +22,8 @@ use std::time::Instant;
 /// Not `Clone`: it owns the write tickets of its queued commands, and a copy would split them.
 #[derive(Debug)]
 pub struct AgentConnection {
+    /// Canonical username of the workspace that owns this agent.
+    pub owner: String,
     /// Stable identity used in transfer readiness errors and routing logs.
     pub agent_id: AgentId,
     /// Human-readable name shown in the UI.
@@ -53,6 +56,8 @@ pub struct AgentConnection {
 /// Retained UI inventory record for an agent seen during this server process.
 #[derive(Clone, Debug)]
 pub struct KnownAgent {
+    /// Canonical username of the workspace that owns this agent.
+    pub owner: String,
     /// Stable route and management identifier.
     pub id: AgentId,
     /// Human-readable effective agent name.
@@ -90,11 +95,13 @@ pub struct KnownAgent {
 impl KnownAgent {
     /// A retained record for an agent that has never registered in this server process.
     pub(crate) fn unregistered(
+        owner: String,
         id: AgentId,
         default_directory: Option<String>,
         status: AgentConnectionStatus,
     ) -> Self {
         Self {
+            owner,
             name: id.to_string(),
             id,
             default_directory,
@@ -116,31 +123,31 @@ impl KnownAgent {
 }
 
 #[derive(Default)]
-/// Keeps live routing separate from the retained all-agent inventory.
+/// Keeps live routing separate from the retained all-agent inventory, keyed by `(owner, id)`.
 pub struct AgentRegistry {
-    /// Connected agents addressable by their stable agent id.
-    pub(crate) by_id: HashMap<AgentId, AgentConnection>,
-    /// All agents known during this server process lifetime.
-    pub(crate) known_by_id: HashMap<AgentId, KnownAgent>,
-    /// Recent takeovers of healthy connections per id, kept only while they can still add
-    /// up to a duplicate-id conflict or one is active.
-    pub(crate) takeovers: HashMap<AgentId, super::duplicate_ids::TakeoverHistory>,
-    /// Names claimed by managed devices that are being created or renamed, by device id.
+    /// Connected agents addressable by their `(owner, id)` key.
+    pub(crate) by_id: HashMap<AgentKey, AgentConnection>,
+    /// All agents known during this server process lifetime, keyed by `(owner, id)`.
+    pub(crate) known_by_id: HashMap<AgentKey, KnownAgent>,
+    /// Recent takeovers of healthy connections per `(owner, id)`, kept only while they can
+    /// still add up to a duplicate-id conflict or one is active.
+    pub(crate) takeovers: HashMap<AgentKey, super::duplicate_ids::TakeoverHistory>,
+    /// Names claimed by managed devices that are being created or renamed, by `(owner, id)`.
     /// The config edit stops the agent and rewrites the file before the inventory row
     /// carries the new name, so without a reservation a standalone agent could take the
     /// name in between and leave two devices with it.
-    pub(crate) reserved_names: HashMap<AgentId, String>,
+    pub(crate) reserved_names: HashMap<AgentKey, String>,
 }
 
 impl AgentRegistry {
-    /// Whether `socket_id` is the live control session of `agent_id`.
+    /// Whether `socket_id` is the live control session of `agent`.
     ///
     /// Agent-originated frames (results, readiness, progress, publication requests) may only
     /// drive flows when they arrive on the session that currently owns the agent; a replaced
     /// session's late frames and frames from sessions that never registered are ignored.
-    pub(crate) fn is_current_session(&self, agent_id: &AgentId, socket_id: &SocketId) -> bool {
+    pub(crate) fn is_current_session(&self, agent: &AgentKey, socket_id: &SocketId) -> bool {
         self.by_id
-            .get(agent_id)
+            .get(agent)
             .is_some_and(|connection| &connection.socket_id == socket_id)
     }
 }
@@ -217,10 +224,12 @@ impl CopyOperation {
 }
 
 #[derive(Default)]
-/// Stored transfer progress snapshots exposed to REST and UI readers.
+/// Stored transfer progress snapshots exposed to REST and UI readers, scoped by owner.
 pub struct TransferProgressStore {
     /// Progress entries keyed by their public transfer id.
     pub(crate) entries: HashMap<TransferId, TransferProgressEntry>,
+    /// Owning workspace username for each transfer id, kept in sync with `entries`.
+    pub(crate) owners: HashMap<TransferId, String>,
     /// One-shot terminal observers retain acknowledgements after public history is pruned.
     pub(crate) terminal_observers:
         HashMap<TransferId, tokio::sync::watch::Sender<Option<TransferProgressEntry>>>,
@@ -233,17 +242,29 @@ pub struct TransferProgressStore {
     pub(crate) predicted_download_totals: HashSet<TransferId>,
 }
 
+/// One connected browser UI subscriber and the workspace it belongs to.
+pub(crate) struct UiSubscriber {
+    /// Canonical username of the signed-in browser session.
+    pub(crate) owner: String,
+    /// Event sink that receives UI events for this owner.
+    pub(crate) sender: tokio::sync::mpsc::UnboundedSender<redoor_protocol::api::ui_events::UiEvent>,
+}
+
+/// Per-owner transfer refresh throttling state so one user's transfers never throttle another's.
+#[derive(Default)]
+pub(crate) struct OwnerRefreshState {
+    /// Timestamp of the most recently broadcast refresh event for this owner.
+    pub(crate) last_refresh_sent_at: Option<Instant>,
+    /// Whether a trailing refresh still needs to be delivered for this owner.
+    pub(crate) refresh_pending: bool,
+}
+
 /// UI subscriber state and throttled refresh scheduling owned by the router.
 pub struct UiState {
     /// Connected UI subscribers keyed by subscriber id.
-    pub(crate) subscribers: HashMap<
-        String,
-        tokio::sync::mpsc::UnboundedSender<redoor_protocol::api::ui_events::UiEvent>,
-    >,
-    /// Timestamp of the most recently broadcast refresh event.
-    pub(crate) last_refresh_sent_at: Option<Instant>,
-    /// Whether a trailing refresh still needs to be delivered.
-    pub(crate) refresh_pending: bool,
+    pub(crate) subscribers: HashMap<String, UiSubscriber>,
+    /// Per-owner transfer refresh throttle state.
+    pub(crate) refresh_by_owner: HashMap<String, OwnerRefreshState>,
     /// Periodic task that checks when throttled refreshes become due.
     pub(crate) refresh_check_task: tokio::task::JoinHandle<()>,
 }
@@ -312,8 +333,7 @@ impl RouterState {
             progress: TransferProgressStore::default(),
             ui: UiState {
                 subscribers: HashMap::new(),
-                last_refresh_sent_at: None,
-                refresh_pending: false,
+                refresh_by_owner: HashMap::new(),
                 refresh_check_task: ui_refresh_check_task,
             },
             request_ids,

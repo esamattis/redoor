@@ -28,6 +28,7 @@ import type { ExecRequest } from "#bindings/ExecRequest";
 import type { ServerUpgradeResponse } from "#bindings/ServerUpgradeResponse";
 import {
     getAvailablePort,
+    seedUserWorkspace,
     SERVER_PATH,
     waitForPort,
     waitForValue,
@@ -140,14 +141,18 @@ describe.runIf(process.platform === "linux")("redoor upgrade", () => {
         mkdirSync(configDirectory, { recursive: true });
         writeFileSync(
             join(configDirectory, "config.toml"),
-            `agent_token = "${TOKEN}"
-
-[server]
+            `[server]
 username = "${USERNAME}"
 password = "${PASSWORD}"
 port = ${port}
 `,
         );
+        seedUserWorkspace({
+            home,
+            appName,
+            username: USERNAME,
+            agentToken: TOKEN,
+        });
 
         const dataDirectory = join(home, ".local", "share", appName);
         const run = $({ env, quiet: true, nothrow: true });

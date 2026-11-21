@@ -19,6 +19,7 @@ import {
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -99,19 +100,28 @@ async function startDebugProvisioningServer(options: {
 
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_TEST_USER}"
-name = "${agentName}"
 `,
     );
+    seedUserWorkspace({
+        home,
+        appName,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "ssh_backed",
+                id: "dev_sshdebugprovaaaaaaaa",
+                target: SSH_TEST_HOST,
+                username: SSH_TEST_USER,
+                name: agentName,
+                terminal_env: {},
+            },
+        ],
+    });
 
     onTestFinished(async () => {
         await processManager.killAll();

@@ -20,7 +20,6 @@ import { ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
 import {
     ProcessManager,
-    TEST_AGENT_TOKEN,
     TEST_APP_NAME,
     VITEST_SERVER_PORT,
     createAccessToken,
@@ -61,12 +60,7 @@ password = "${password}"
         )
         .join("\n");
 
-    writeFileSync(
-        configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-${entries}`,
-    );
+    writeFileSync(configPath, `${entries}`);
 }
 
 /** Starts the server on the per-file config and waits until it listens. */
@@ -240,11 +234,13 @@ describe("login methods", () => {
         mkdirSync(agentHome, { recursive: true });
         const ready = waitForAgentReady(serverProcess, agentName);
 
+        const { agent_token: aliceToken } = await alice.getServerInfo();
         const agentPid = processManager.spawnAgent({
             wsAddress: `ws://127.0.0.1:${VITEST_SERVER_PORT}/api/v1/agent/ws`,
             name: agentName,
             cwd: agentHome,
             home: agentHome,
+            token: aliceToken,
         });
 
         onTestFinished(() => processManager.kill(agentPid));

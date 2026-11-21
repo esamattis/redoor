@@ -179,13 +179,26 @@ test.describe("First-run demo", () => {
             await waitForPort(port);
             const generated = await fs.readFile(configPath, "utf8");
             // Minimal starter config must match the README-shaped first-run template.
-            expect(generated).toContain('name = "local"');
-            expect(generated).toContain("local = true");
             expect(generated).toContain(
                 '# bind = "0.0.0.0" # default 127.0.0.1',
             );
             expect(generated).toContain("# port = 7666");
             expect(generated).not.toContain("[agent]");
+            // Starter managed device is persisted in the bootstrap user's per-user agents.json.
+            const agentsJson = await fs.readFile(
+                path.join(
+                    home,
+                    ".local",
+                    "share",
+                    appName,
+                    "users",
+                    "redoor",
+                    "agents.json",
+                ),
+                "utf8",
+            );
+            expect(agentsJson).toContain('"name": "local"');
+            expect(agentsJson).toContain('"kind": "local"');
             // Every platform ships the same demo login, so a fresh install can be signed in to.
             expect(generated).toContain(`[server]
 username = "redoor"

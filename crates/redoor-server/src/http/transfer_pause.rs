@@ -19,9 +19,14 @@ pub(crate) async fn pause(
 ) -> Result<Json<PauseTransferResponse>, ApiError> {
     let transfer_id = TransferId::new(id);
     require_transfer_write(&state, &principal, transfer_id).await?;
+    let owner = principal.owner().to_string();
     state
         .router_ref
-        .request(|reply| RouterMsg::PauseTransfer { transfer_id, reply })
+        .request(|reply| RouterMsg::PauseTransfer {
+            owner,
+            transfer_id,
+            reply,
+        })
         .await?
         .map_err(ApiError::conflict)?;
     Ok(Json(PauseTransferResponse { transfer_id }))

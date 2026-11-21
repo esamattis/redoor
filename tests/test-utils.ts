@@ -34,6 +34,12 @@ import { isErrorCode } from "#error-utils";
 import type WebSocket from "ws";
 import type { ProcessPromise } from "zx";
 import { z } from "zod";
+import {
+    seedUserWorkspace,
+    serverDataDir,
+} from "./workspace-test-utils";
+
+export { seedUserWorkspace, serverDataDir };
 
 const tcpAddressSchema = z.object({ port: z.number().int().positive() });
 
@@ -341,6 +347,8 @@ export type SpawnServerArgs = {
     env?: NodeJS.ProcessEnv;
     /** Another binary than the built one, for tests of a server started from a new file. */
     executablePath?: string;
+    /** When true, leaves the server data directory unseeded (used by migration tests). */
+    skipWorkspaceSeed?: boolean;
 };
 
 /**
@@ -566,16 +574,36 @@ export class ProcessManager {
         const cliArgs: string[] = ["server"];
         const configPath = args.config ?? DEFAULT_TEST_CONFIG;
 
+        const serverHome = args.home ?? TEST_SERVER_HOME;
+        const appName = args.env?.REDOOR_APP_NAME ?? TEST_APP_NAME;
+
+        mkdirSync(serverHome, { recursive: true });
+        this.serverHomes.add(serverHome);
+
         if (args.config === undefined) {
             writeFileSync(
                 configPath,
-                `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+                `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 `,
             );
+
+            if (
+                !args.skipWorkspaceSeed &&
+                (args.home === undefined ||
+                    !existsSync(
+                        join(serverDataDir(serverHome, appName), "layout-version"),
+                    ))
+            ) {
+                seedUserWorkspace({
+                    home: serverHome,
+                    appName,
+                    username: TEST_USERNAME,
+                    agentToken: TEST_AGENT_TOKEN,
+                    agents: [],
+                });
+            }
         }
 
         cliArgs.push("--config", configPath);
@@ -585,16 +613,11 @@ password = "${TEST_PASSWORD}"
             cliArgs.push("--log", args.log);
         }
 
-        const serverHome = args.home ?? TEST_SERVER_HOME;
-
-        mkdirSync(serverHome, { recursive: true });
-        this.serverHomes.add(serverHome);
-
         return this.spawn(args.executablePath ?? SERVER_PATH, cliArgs, {
             cwd: PROJECT_ROOT,
             env: {
                 HOME: serverHome,
-                REDOOR_APP_NAME: TEST_APP_NAME,
+                REDOOR_APP_NAME: appName,
                 REDOOR_MANAGED_ORPHAN_TIMEOUT: TEST_MANAGED_ORPHAN_TIMEOUT,
                 ...args.env,
             },

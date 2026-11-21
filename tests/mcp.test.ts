@@ -21,6 +21,7 @@ import {
     TEST_USERNAME,
     DEVICE_ID_REGEXP,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForAgentReady,
     waitForPort,
     waitForValue,
@@ -158,19 +159,27 @@ beforeAll(async () => {
     mkdirSync(secondAgentRoot);
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 mcp_allowed_origins = ["${allowedOrigin}"]
-
-[[agents]]
-local = true
-name = "${managedDeviceName}"
-home = "${agentRoot}"
 `,
     );
+    seedUserWorkspace({
+        home: serverHome,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_mcpmanageddeviceaaaa",
+                name: managedDeviceName,
+                home: agentRoot,
+                terminal_env: {},
+            },
+        ],
+    });
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     serverPid = processManager.spawnServer({
         config: configPath,
@@ -1081,7 +1090,9 @@ describe("stateless authenticated MCP", () => {
                 serverHome,
                 ".local/share",
                 TEST_APP_NAME,
-                "tokens/access-tokens.json",
+                "users",
+                TEST_USERNAME,
+                "access-tokens.json",
             ),
             "utf8",
         );

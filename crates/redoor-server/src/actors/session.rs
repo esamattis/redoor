@@ -9,6 +9,7 @@ use crate::actors::router::{
 };
 use crate::terminals::registry::TerminalRegistry;
 use crate::watchdog::{ConnectVerdict, ConnectingDaemon, WatchdogHandle, WatchdogRegistry};
+use crate::workspaces::AgentKey;
 use axum::extract::ws::{Message as WsMessage, WebSocket};
 use futures_util::{SinkExt, StreamExt, stream::SplitSink};
 use redoor_core::log;
@@ -113,6 +114,8 @@ enum SessionStep {
 
 /// Runtime state held for one websocket-backed agent session.
 struct SessionRuntime {
+    /// Canonical username of the workspace whose token authenticated this connection.
+    owner: String,
     /// Identifies the websocket connection so the router can map routed work back
     /// to this specific session.
     socket_id: SocketId,
@@ -120,8 +123,8 @@ struct SessionRuntime {
     /// and streaming messages into the routing layer.
     router_ref: RouterHandle,
     /// Absent until the router accepted this connection's `hello`; afterwards every frame is
-    /// attributed to this agent, because frames themselves carry no identity.
-    agent_id: Option<AgentId>,
+    /// attributed to this owned agent, because frames themselves carry no identity.
+    agent_id: Option<AgentKey>,
     /// Typed command and priority lanes this session's writer drains.
     lanes: ControlLanes,
     /// The proof of the token over both handshake nonces the `hello` must carry. The upgrade
@@ -213,18 +216,17 @@ impl SessionRuntime {
         hello: Hello,
         watchdog_registry: &WatchdogRegistry,
     ) -> SessionStep {
-        // Look up the supervisor for this agent id, which the server passed to the agents it
-        // spawns. A `None` result is fine: it just means the agent is not supervised by the
-        // watchdog (e.g. an external agent spawned outside the server) and stale cleanup has
-        // no process to restart.
-        self.watchdog = watchdog_registry.lookup(hello.agent_id.as_str());
+        let agent_key = AgentKey::new(&self.owner, hello.agent_id.clone());
+        // Look up the supervisor for this `(owner, agent_id)`, so a managed daemon can only
+        // attach to a supervisor owned by the same user whose token authenticated the socket.
+        self.watchdog = watchdog_registry.lookup(&agent_key.watchdog_key());
         if self.watchdog.is_none() && hello.spec_hash.is_some() {
-            // A managed daemon whose device this server does not manage (deleted, or from
-            // another server sharing the token) must not show up as a standalone device; the
-            // rejection ends it.
+            // A managed daemon whose device this server does not manage for this user must not
+            // show up as a standalone device; the rejection ends it.
             log!(
                 Level::Warning,
-                "Rejecting managed agent daemon without a configured device: agent_id={}, agent_name={}",
+                "Rejecting managed agent daemon without a configured device: owner={}, agent_id={}, agent_name={}",
+                self.owner,
                 hello.agent_id,
                 hello.agent_name
             );
@@ -260,7 +262,8 @@ impl SessionRuntime {
             if let Some(reason) = reason {
                 log!(
                     Level::Warning,
-                    "Rejecting managed agent: agent_name={}, reason={:?}",
+                    "Rejecting managed agent: owner={}, agent_name={}, reason={:?}",
+                    self.owner,
                     hello.agent_name,
                     reason
                 );
@@ -273,13 +276,14 @@ impl SessionRuntime {
             }
             log!(
                 Level::Debug,
-                "Session linked to watchdog supervisor: agent_name={}",
+                "Session linked to watchdog supervisor: owner={}, agent_name={}",
+                self.owner,
                 hello.agent_name
             );
         }
-        let agent_id = hello.agent_id.clone();
-        let streams = ConnectionStreams::new(agent_id.clone());
-        let (socket_id, lanes, watchdog) = (
+        let streams = ConnectionStreams::new(agent_key.clone());
+        let (owner, socket_id, lanes, watchdog) = (
+            self.owner.clone(),
             self.socket_id.clone(),
             self.lanes.clone(),
             self.watchdog.clone(),
@@ -292,6 +296,7 @@ impl SessionRuntime {
             .router_ref
             .request(move |reply| {
                 RouterMsg::RegisterAgent(Box::new(RegisterAgentRequest {
+                    owner,
                     agent_id: hello.agent_id,
                     agent_name: hello.agent_name,
                     socket_id,
@@ -309,14 +314,14 @@ impl SessionRuntime {
         match decision {
             Ok(Ok(())) => {
                 self.streams = Some(streams);
-                self.agent_id = Some(agent_id);
+                self.agent_id = Some(agent_key);
                 SessionStep::Continue
             }
             Ok(Err(RegistrationRejection { reason, message })) => {
                 log!(
                     Level::Warning,
-                    "Agent hello rejected: agent_id={}, socket_id={}, reason={:?}, message={}",
-                    agent_id,
+                    "Agent hello rejected: agent={}, socket_id={}, reason={:?}, message={}",
+                    agent_key,
                     self.socket_id,
                     reason,
                     message
@@ -329,8 +334,8 @@ impl SessionRuntime {
             Err(error) => {
                 redoor_core::log_failure!(
                     Level::Error,
-                    "Failed to register agent: agent_id={}, socket_id={}, error={}",
-                    agent_id,
+                    "Failed to register agent: agent={}, socket_id={}, error={}",
+                    agent_key,
                     self.socket_id,
                     error
                 );
@@ -341,10 +346,10 @@ impl SessionRuntime {
 
     /// Handles a frame from a session whose `hello` was accepted.
     ///
-    /// Frames carry no agent id: the session's registered id (bound to an authenticated
+    /// Frames carry no agent id: the session's registered key (bound to an authenticated
     /// upgrade) is the only identity the router checks ownership against, so a client cannot
     /// answer or steer another agent's requests.
-    async fn handle_agent_frame(&mut self, agent_id: AgentId, message: AgentToServer) {
+    async fn handle_agent_frame(&mut self, agent_id: AgentKey, message: AgentToServer) {
         match message {
             AgentToServer::Hello { .. } => {}
             AgentToServer::Result { id, outcome } => {
@@ -635,18 +640,37 @@ async fn send_ping(sender: &mut SplitSink<WebSocket, WsMessage>, timeout: Durati
     )
 }
 
+/// Context handed from the authenticated HTTP upgrade to [`handle_websocket`].
+pub(crate) struct AgentWebSocketContext {
+    /// Canonical username of the workspace whose token proved the upgrade.
+    pub(crate) owner: String,
+    /// Unique identifier for this socket connection.
+    pub(crate) socket_id: SocketId,
+    /// Handle to the router actor.
+    pub(crate) router_ref: RouterHandle,
+    /// Watchdog registry used to associate managed agent connections.
+    pub(crate) watchdog_registry: WatchdogRegistry,
+    /// Process-wide terminal session registry.
+    pub(crate) terminals: TerminalRegistry,
+    /// Keepalive and write timeouts for the websocket.
+    pub(crate) timeouts: redoor_core::websocket::WebSocketTimeouts,
+    /// Expected `hello` proof derived from the upgrade nonces.
+    pub(crate) hello_proof: TokenProof,
+}
+
 /// Entry point for a new agent connection whose upgrade proved the token. Splits the socket
 /// into send/receive halves and wires them to the router using explicit Tokio channels; the
 /// `hello` must carry `hello_proof` before the agent is registered.
-pub(crate) async fn handle_websocket(
-    socket: WebSocket,
-    socket_id: SocketId,
-    router_ref: RouterHandle,
-    watchdog_registry: WatchdogRegistry,
-    terminals: TerminalRegistry,
-    timeouts: redoor_core::websocket::WebSocketTimeouts,
-    hello_proof: TokenProof,
-) {
+pub(crate) async fn handle_websocket(socket: WebSocket, context: AgentWebSocketContext) {
+    let AgentWebSocketContext {
+        owner,
+        socket_id,
+        router_ref,
+        watchdog_registry,
+        terminals,
+        timeouts,
+        hello_proof,
+    } = context;
     let (mut sender, mut receiver) = socket.split::<WsMessage>();
     let (lanes, receivers) = ControlLanes::bounded(
         CONTROL_COMMAND_QUEUE_CAPACITY,
@@ -660,6 +684,7 @@ pub(crate) async fn handle_websocket(
     } = receivers;
 
     let mut runtime = SessionRuntime {
+        owner,
         socket_id: socket_id.clone(),
         router_ref,
         agent_id: None,
@@ -824,9 +849,10 @@ mod tests {
         let (sender, receiver) = mpsc::channel(8);
         let (lanes, _receivers) = ControlLanes::bounded(1, 1);
         let runtime = SessionRuntime {
+            owner: "test".to_string(),
             socket_id: SocketId::new(),
             router_ref: RouterHandle::new(sender),
-            agent_id,
+            agent_id: agent_id.map(|id| AgentKey::new("test", id)),
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
@@ -922,7 +948,7 @@ mod tests {
         else {
             panic!("registered session should forward the response");
         };
-        assert_eq!(response.agent_id, own);
+        assert_eq!(response.agent_id, AgentKey::new("test", own));
         assert_eq!(response.socket_id, socket_id);
     }
 
@@ -1015,9 +1041,10 @@ mod tests {
         let request_id = RequestId::new(42);
         let (lanes, _receivers) = ControlLanes::bounded(1, 1);
         let mut runtime = SessionRuntime {
+            owner: "test".to_string(),
             socket_id: SocketId::new(),
             router_ref,
-            agent_id: Some(agent_id.clone()),
+            agent_id: Some(AgentKey::new("test", agent_id.clone())),
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
@@ -1051,7 +1078,7 @@ mod tests {
                 request_id: received_request_id,
                 socket_id: _,
                 result: CommandOutcome::Ok(serde_json::Value::Null),
-            })) if received_agent_id == agent_id && received_request_id == request_id
+            })) if received_agent_id == AgentKey::new("test", agent_id) && received_request_id == request_id
         ));
     }
 
@@ -1066,9 +1093,13 @@ mod tests {
         let socket_id = SocketId::new();
         let (lanes, _receivers) = ControlLanes::bounded(1, 1);
         let runtime = SessionRuntime {
+            owner: "test".to_string(),
             socket_id: socket_id.clone(),
             router_ref,
-            agent_id: Some(redoor_core::test_support::test_agent_id("agent")),
+            agent_id: Some(AgentKey::new(
+                "test",
+                redoor_core::test_support::test_agent_id("agent"),
+            )),
             lanes,
             hello_proof: test_hello_proof(),
             watchdog: None,
@@ -1093,7 +1124,7 @@ mod tests {
             Some(RouterMsg::UnregisterAgent {
                 agent_id,
                 socket_id: received_socket_id,
-            }) if agent_id == redoor_core::test_support::test_agent_id("agent") && received_socket_id == socket_id
+            }) if agent_id == AgentKey::new("test", redoor_core::test_support::test_agent_id("agent")) && received_socket_id == socket_id
         ));
         shutdown_task.await.expect("session shutdown task joined");
     }

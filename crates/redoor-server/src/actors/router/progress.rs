@@ -1,12 +1,14 @@
 //! Public transfer progress tracking and bounded terminal history for the transfers UI.
 
 use super::state::{RouterState, TransferProgressStore};
+use crate::workspaces::AgentKey;
 use redoor_protocol::api::transfers::{
     CopyEndpoint, TransferDirection, TransferProgressEntry, TransferProgressListResponse,
     TransferProgressState,
 };
-use redoor_protocol::ids::{AgentId, RequestId, TransferId, UnixTimestampSeconds};
+use redoor_protocol::ids::{RequestId, TransferId, UnixTimestampSeconds};
 use redoor_protocol::wire::policy::UploadKind;
+use std::collections::HashSet;
 
 /// Recent history stays useful without growing with the server lifetime.
 const MAX_TERMINAL_HISTORY: usize = 1000;
@@ -20,9 +22,8 @@ const HISTORY_PRUNE_INTERVAL_SECONDS: i64 = 60;
 impl TransferProgressStore {
     /// Bounds terminal history while leaving live workers and recent resumable downloads intact.
     ///
-    /// Resumable downloads may temporarily exceed the count cap for their 60-second
-    /// continuation window. Active and canceling transfers are never history victims.
-    pub(crate) fn prune_terminal_history(&mut self, now: UnixTimestampSeconds) -> bool {
+    /// Returns the owners whose visible history lost at least one row.
+    pub(crate) fn prune_terminal_history(&mut self, now: UnixTimestampSeconds) -> Vec<String> {
         // Deliver before eviction so observers retain even immediately pruned terminal rows.
         let terminal_ids = self
             .terminal_observers
@@ -42,9 +43,9 @@ impl TransferProgressStore {
                 sender.send_replace(self.entries.get(&id).cloned());
             }
         }
-        let previous_len = self.entries.len();
         self.last_pruned_at = Some(now);
         let mut candidates = Vec::new();
+        let mut affected_owners = HashSet::new();
         self.entries.retain(|id, entry| {
             if matches!(
                 entry.state,
@@ -62,6 +63,9 @@ impl TransferProgressStore {
                 return true;
             }
             if age >= TERMINAL_HISTORY_TTL_SECONDS {
+                if let Some(owner) = self.owners.remove(id) {
+                    affected_owners.insert(owner);
+                }
                 return false;
             }
             candidates.push((ended_at, *id));
@@ -71,28 +75,32 @@ impl TransferProgressStore {
         let excess = candidates.len().saturating_sub(MAX_TERMINAL_HISTORY);
         for (_, id) in candidates.iter().take(excess) {
             self.entries.remove(id);
+            if let Some(owner) = self.owners.remove(id) {
+                affected_owners.insert(owner);
+            }
         }
+        self.owners.retain(|id, _| self.entries.contains_key(id));
         self.predicted_download_totals
             .retain(|id| self.entries.contains_key(id));
         // Shrinking releases hash-table buckets after a burst of protected resumable rows.
         self.entries
             .shrink_to(self.entries.len().max(MAX_TERMINAL_HISTORY));
+        self.owners
+            .shrink_to(self.owners.len().max(MAX_TERMINAL_HISTORY));
         self.predicted_download_totals
             .shrink_to(self.predicted_download_totals.len());
-        self.entries.len() != previous_len
+        affected_owners.into_iter().collect()
     }
 
     /// Idle servers must also release expired rows after the resume window closes.
-    pub(crate) fn prune_history_if_due(&mut self, now: UnixTimestampSeconds) -> bool {
+    pub(crate) fn prune_history_if_due(&mut self, now: UnixTimestampSeconds) -> Vec<String> {
         if self
             .last_pruned_at
             .is_some_and(|last| now.0.saturating_sub(last.0) < HISTORY_PRUNE_INTERVAL_SECONDS)
         {
-            return false;
+            return Vec::new();
         }
-        let previous_len = self.entries.len();
-        self.prune_terminal_history(now);
-        self.entries.len() != previous_len
+        self.prune_terminal_history(now)
     }
 }
 
@@ -101,7 +109,7 @@ pub(crate) struct DownloadStartContext {
     /// Internal request id of the direct download stream.
     pub(crate) request_id: RequestId,
     /// Agent producing the download stream.
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Path shown in progress listings.
     pub(crate) path: String,
     /// Expected total byte count for the transfer.
@@ -117,7 +125,7 @@ pub(crate) struct UploadStartContext {
     /// Internal request id of the direct upload stream.
     pub(crate) request_id: RequestId,
     /// Agent receiving the upload stream.
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Path shown in progress listings.
     pub(crate) path: String,
     /// Expected total byte count for the transfer.
@@ -131,11 +139,11 @@ pub(crate) struct CopyStartContext {
     /// Public transfer id for the logical copy.
     pub(crate) request_id: TransferId,
     /// Source agent shown in progress listings.
-    pub(crate) source_agent_id: AgentId,
+    pub(crate) source_agent_id: AgentKey,
     /// Source path shown in progress listings.
     pub(crate) source_path: String,
     /// Destination agent shown in progress listings.
-    pub(crate) dest_agent_id: AgentId,
+    pub(crate) dest_agent_id: AgentKey,
     /// Destination path shown in progress listings.
     pub(crate) dest_path: String,
     /// Expected total byte count for the copy.
@@ -148,18 +156,23 @@ impl RouterState {
     /// Records file progress without taking ownership of the underlying output transport.
     pub(crate) fn record_download_start(&mut self, context: DownloadStartContext) -> TransferId {
         let transfer_id = context.request_id.as_transfer_id();
+        let owner = context.agent_id.owner.clone();
         let now = UnixTimestampSeconds::new(jiff::Timestamp::now().as_second());
         let restart_offset = context
             .full_size
             .map(|_| context.resume_offset.unwrap_or(0));
         let resumed_transfer_id = restart_offset.and_then(|restart_offset| {
             let full_size = context.full_size?;
-            self
-                .progress
+            self.progress
                 .entries
                 .values()
                 .filter(|entry| {
-                    entry.agent_id == context.agent_id
+                    self.progress
+                        .owners
+                        .get(&entry.request_id)
+                        .map(String::as_str)
+                        == Some(owner.as_str())
+                        && entry.agent_id == context.agent_id.id
                         && entry.path == context.path
                         && matches!(entry.direction, TransferDirection::Download)
                         && matches!(entry.state, TransferProgressState::Errored)
@@ -190,11 +203,12 @@ impl RouterState {
             progress.ended_at = None;
             progress.error = None;
         } else {
+            self.progress.owners.insert(transfer_id, owner.clone());
             self.progress.entries.insert(
                 transfer_id,
                 TransferProgressEntry {
                     request_id: transfer_id,
-                    agent_id: context.agent_id.clone(),
+                    agent_id: context.agent_id.id.clone(),
                     path: context.path,
                     source: None,
                     dest: None,
@@ -214,19 +228,21 @@ impl RouterState {
             );
         }
         // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-        self.notify_transfer_refresh_immediately();
+        self.notify_transfer_refresh_immediately(&owner);
         progress_id
     }
 
     /// Creates a progress entry for a newly started upload.
     pub(crate) fn record_upload_start(&mut self, context: UploadStartContext) {
         let transfer_id = context.request_id.as_transfer_id();
+        let owner = context.agent_id.owner.clone();
         let now = UnixTimestampSeconds::new(jiff::Timestamp::now().as_second());
+        self.progress.owners.insert(transfer_id, owner.clone());
         self.progress.entries.insert(
             transfer_id,
             TransferProgressEntry {
                 request_id: transfer_id,
-                agent_id: context.agent_id.clone(),
+                agent_id: context.agent_id.id.clone(),
                 path: context.path,
                 source: None,
                 dest: None,
@@ -245,24 +261,28 @@ impl RouterState {
             },
         );
         // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-        self.notify_transfer_refresh_immediately();
+        self.notify_transfer_refresh_immediately(&owner);
     }
 
     /// Creates a progress entry for a newly started logical copy transfer.
     pub(crate) fn record_copy_start(&mut self, context: CopyStartContext) {
+        let owner = context.dest_agent_id.owner.clone();
         let now = UnixTimestampSeconds::new(jiff::Timestamp::now().as_second());
+        self.progress
+            .owners
+            .insert(context.request_id, owner.clone());
         self.progress.entries.insert(
             context.request_id,
             TransferProgressEntry {
                 request_id: context.request_id,
-                agent_id: context.dest_agent_id.clone(),
+                agent_id: context.dest_agent_id.id.clone(),
                 path: context.dest_path.clone(),
                 source: Some(CopyEndpoint {
-                    agent: context.source_agent_id,
+                    agent: context.source_agent_id.id,
                     path: context.source_path,
                 }),
                 dest: Some(CopyEndpoint {
-                    agent: context.dest_agent_id,
+                    agent: context.dest_agent_id.id,
                     path: context.dest_path,
                 }),
                 direction: context.direction,
@@ -280,16 +300,14 @@ impl RouterState {
             },
         );
         // Transfer creation must reach the persistent UI bar before progress-update throttling begins.
-        self.notify_transfer_refresh_immediately();
+        self.notify_transfer_refresh_immediately(&owner);
     }
 
     /// Copies the byte counts of live data paths into their history rows.
     ///
-    /// Chunks no longer pass through the router, so progress is pulled from the stream
-    /// leases when it is read (REST listing), before terminal transitions, and on the
-    /// periodic tick that drives UI refreshes. Returns whether any row changed.
-    pub(crate) fn sync_progress(&mut self) -> bool {
-        let mut changed = false;
+    /// Returns the owners whose progress changed.
+    pub(crate) fn sync_progress(&mut self) -> Vec<String> {
+        let mut changed_owners = HashSet::new();
         for (id, bytes) in self.flows.live_progress() {
             if let Some(entry) = self.progress.entries.get_mut(&id)
                 && matches!(entry.state, TransferProgressState::Active)
@@ -297,10 +315,12 @@ impl RouterState {
             {
                 entry.transferred_bytes = bytes;
                 entry.error = None;
-                changed = true;
+                if let Some(owner) = self.progress.owners.get(&id) {
+                    changed_owners.insert(owner.clone());
+                }
             }
         }
-        changed
+        changed_owners.into_iter().collect()
     }
 
     /// Replaces copy progress counts with the latest agent-reported values.
@@ -320,15 +340,12 @@ impl RouterState {
             updated = true;
         }
 
-        if updated {
-            self.notify_transfer_refresh();
+        if updated && let Some(owner) = self.progress.owners.get(&transfer_id).cloned() {
+            self.notify_transfer_refresh(&owner);
         }
     }
 
     /// Records a later-discovered download total without rewriting counted bytes.
-    ///
-    /// Directory archives start with `total_bytes=0` and learn the tar size from a
-    /// metadata walk. Chunk `increment_bytes` remains the source of transferred counts.
     pub(crate) fn set_download_total(&mut self, transfer_id: TransferId, total_bytes: u64) {
         let mut updated = false;
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
@@ -342,20 +359,16 @@ impl RouterState {
             self.progress.predicted_download_totals.insert(transfer_id);
             updated = true;
         }
-        if updated {
-            self.notify_transfer_refresh();
+        if updated && let Some(owner) = self.progress.owners.get(&transfer_id).cloned() {
+            self.notify_transfer_refresh(&owner);
         }
     }
 
     /// Marks a transfer as completed and aligns transferred/total byte counts.
-    ///
-    /// Unknown totals promote the counted stream size so the row does not reset to
-    /// zero. Known-size files still snap transferred to the planned total. A later
-    /// directory prediction that disagrees keeps the counted tar bytes so completed
-    /// UI does not display a stale archive estimate.
     pub(crate) fn mark_transfer_completed(&mut self, transfer_id: TransferId) {
         let mut updated = false;
         let mut routes_changed = false;
+        let owner = self.progress.owners.get(&transfer_id).cloned();
         let had_predicted_download_total =
             self.progress.predicted_download_totals.remove(&transfer_id);
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
@@ -386,9 +399,11 @@ impl RouterState {
                 .prune_terminal_history(UnixTimestampSeconds::new(
                     jiff::Timestamp::now().as_second(),
                 ));
-            self.notify_transfer_refresh_immediately();
-            if routes_changed {
-                self.notify_routes_changed();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh_immediately(&owner);
+                if routes_changed {
+                    self.notify_routes_changed(&owner);
+                }
             }
         }
     }
@@ -400,6 +415,7 @@ impl RouterState {
         total_bytes: Option<u64>,
     ) {
         let mut updated = false;
+        let owner = self.progress.owners.get(&transfer_id).cloned();
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
             if let Some(total_bytes) = total_bytes {
                 progress.total_bytes = total_bytes;
@@ -420,8 +436,10 @@ impl RouterState {
                 .prune_terminal_history(UnixTimestampSeconds::new(
                     jiff::Timestamp::now().as_second(),
                 ));
-            self.notify_transfer_refresh_immediately();
-            self.notify_routes_changed();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh_immediately(&owner);
+                self.notify_routes_changed(&owner);
+            }
         }
     }
 
@@ -429,6 +447,7 @@ impl RouterState {
     pub(crate) fn mark_transfer_errored(&mut self, transfer_id: TransferId, error_message: String) {
         let mut updated = false;
         let mut routes_changed = false;
+        let owner = self.progress.owners.get(&transfer_id).cloned();
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
             // An edit becomes non-cancelable immediately before terminal delivery authorizes rewrite.
             routes_changed =
@@ -449,27 +468,33 @@ impl RouterState {
                 .prune_terminal_history(UnixTimestampSeconds::new(
                     jiff::Timestamp::now().as_second(),
                 ));
-            self.notify_transfer_refresh_immediately();
-            if routes_changed {
-                self.notify_routes_changed();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh_immediately(&owner);
+                if routes_changed {
+                    self.notify_routes_changed(&owner);
+                }
             }
         }
     }
 
     /// Publishes cancellation intent before control messages are sent to transfer workers.
     pub(crate) fn mark_transfer_canceling(&mut self, transfer_id: TransferId) {
+        let owner = self.progress.owners.get(&transfer_id).cloned();
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Canceling;
             progress.cancelable = false;
             progress.pausable = false;
             progress.verifying = false;
             progress.error = None;
-            self.notify_transfer_refresh_immediately();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh_immediately(&owner);
+            }
         }
     }
 
     /// Settles an acknowledged cancellation without discarding partial byte progress.
     pub(crate) fn mark_transfer_canceled(&mut self, transfer_id: TransferId) {
+        let owner = self.progress.owners.get(&transfer_id).cloned();
         if let Some(progress) = self.progress.entries.get_mut(&transfer_id) {
             progress.state = TransferProgressState::Canceled;
             progress.cancelable = false;
@@ -484,7 +509,9 @@ impl RouterState {
                 .prune_terminal_history(UnixTimestampSeconds::new(
                     jiff::Timestamp::now().as_second(),
                 ));
-            self.notify_transfer_refresh_immediately();
+            if let Some(owner) = owner {
+                self.notify_transfer_refresh_immediately(&owner);
+            }
         }
     }
 
@@ -496,9 +523,21 @@ impl RouterState {
             .map(|progress| progress.transferred_bytes)
     }
 
-    /// Returns all progress entries sorted newest-first for REST and UI consumers.
-    pub(crate) fn list_transfer_progress(&self) -> TransferProgressListResponse {
-        let mut transfers: Vec<_> = self.progress.entries.values().cloned().collect();
+    /// Returns progress entries belonging to `owner` sorted newest-first for REST and UI consumers.
+    pub(crate) fn list_transfer_progress(&self, owner: &str) -> TransferProgressListResponse {
+        let mut transfers: Vec<_> = self
+            .progress
+            .entries
+            .values()
+            .filter(|entry| {
+                self.progress
+                    .owners
+                    .get(&entry.request_id)
+                    .map(String::as_str)
+                    == Some(owner)
+            })
+            .cloned()
+            .collect();
         transfers.sort_by_key(|transfer| std::cmp::Reverse(transfer.request_id));
         TransferProgressListResponse { transfers }
     }
@@ -575,6 +614,7 @@ mod tests {
                 1 => TransferProgressState::Canceled,
                 _ => TransferProgressState::Errored,
             };
+            store.owners.insert(entry.request_id, "test".to_string());
             store.entries.insert(entry.request_id, entry);
         }
         for (id, state) in [
@@ -584,6 +624,7 @@ mod tests {
             let mut entry = terminal_entry(id, 1);
             entry.state = state;
             entry.ended_at = None;
+            store.owners.insert(entry.request_id, "test".to_string());
             store.entries.insert(entry.request_id, entry);
         }
         store.predicted_download_totals.insert(TransferId::new(1));
@@ -592,7 +633,9 @@ mod tests {
             .insert(TransferId::new(2001));
 
         assert!(
-            store.prune_terminal_history(UnixTimestampSeconds::new(11000)),
+            !store
+                .prune_terminal_history(UnixTimestampSeconds::new(11000))
+                .is_empty(),
             "a long server lifetime must discard excess finished transfers"
         );
         assert_eq!(
@@ -628,6 +671,7 @@ mod tests {
             let mut entry = terminal_entry(id, 10000);
             entry.state = TransferProgressState::Errored;
             entry.error = Some("Download canceled by client".to_string());
+            store.owners.insert(entry.request_id, "test".to_string());
             store.entries.insert(entry.request_id, entry);
         }
         store.prune_terminal_history(UnixTimestampSeconds::new(10060));
@@ -637,11 +681,15 @@ mod tests {
             "the inclusive 60-second continuation window must survive count pressure"
         );
         assert!(
-            !store.prune_history_if_due(UnixTimestampSeconds::new(10061)),
+            store
+                .prune_history_if_due(UnixTimestampSeconds::new(10061))
+                .is_empty(),
             "the periodic UI tick must not rescan all history every 250 milliseconds"
         );
         assert!(
-            store.prune_history_if_due(UnixTimestampSeconds::new(10120)),
+            !store
+                .prune_history_if_due(UnixTimestampSeconds::new(10120))
+                .is_empty(),
             "the existing periodic task must remove overflow even without new transfers"
         );
         assert_eq!(
@@ -650,7 +698,9 @@ mod tests {
             "expired resume protection must return history to its normal count budget"
         );
         assert!(
-            store.prune_history_if_due(UnixTimestampSeconds::new(13600)),
+            !store
+                .prune_history_if_due(UnixTimestampSeconds::new(13600))
+                .is_empty(),
             "terminal rows must expire at their one-hour TTL even below the count cap"
         );
         assert!(
@@ -677,6 +727,10 @@ mod tests {
         let mut entry = terminal_entry(1501, now);
         entry.state = TransferProgressState::Errored;
         entry.error = Some("Download canceled by client".to_string());
+        state
+            .progress
+            .owners
+            .insert(entry.request_id, "test".to_string());
         state.progress.entries.insert(entry.request_id, entry);
         state
             .progress
@@ -684,7 +738,7 @@ mod tests {
 
         let progress_id = state.record_download_start(DownloadStartContext {
             request_id: RequestId::new(2000),
-            agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+            agent_id: AgentKey::new("test", redoor_core::test_support::test_agent_id("agent-1")),
             path: "/tmp/archive".to_string(),
             total_bytes: 2048,
             full_size: Some(4096),
@@ -716,15 +770,32 @@ mod tests {
         let refresh_check_task = tokio::spawn(async {});
         let mut state = RouterState::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
-        state.ui.refresh_pending = true;
-        state.ui.last_refresh_sent_at = Some(Instant::now());
+        state.ui.subscribers.insert(
+            "ui-1".to_string(),
+            super::super::state::UiSubscriber {
+                owner: "test".to_string(),
+                sender: ui_tx,
+            },
+        );
+        let throttle = state
+            .ui
+            .refresh_by_owner
+            .entry("test".to_string())
+            .or_default();
+        throttle.refresh_pending = true;
+        throttle.last_refresh_sent_at = Some(Instant::now());
 
         state.record_copy_start(CopyStartContext {
             request_id: TransferId::new(8),
-            source_agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+            source_agent_id: AgentKey::new(
+                "test",
+                redoor_core::test_support::test_agent_id("agent-1"),
+            ),
             source_path: "/tmp/source.bin".to_string(),
-            dest_agent_id: redoor_core::test_support::test_agent_id("agent-2"),
+            dest_agent_id: AgentKey::new(
+                "test",
+                redoor_core::test_support::test_agent_id("agent-2"),
+            ),
             dest_path: "/tmp/destination.bin".to_string(),
             total_bytes: 16,
             direction: TransferDirection::Copy,
@@ -739,7 +810,7 @@ mod tests {
             "transfer creation should bypass the throttle so the persistent UI bar updates immediately"
         );
         assert!(
-            !state.ui.refresh_pending,
+            !state.ui.refresh_by_owner["test"].refresh_pending,
             "an immediate start refresh should replace any older pending refresh"
         );
 
@@ -751,9 +822,15 @@ mod tests {
         let refresh_check_task = tokio::spawn(async {});
         let mut state = RouterState::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        state.ui.subscribers.insert(
+            "ui-1".to_string(),
+            super::super::state::UiSubscriber {
+                owner: "test".to_string(),
+                sender: ui_tx,
+            },
+        );
 
-        state.notify_agents_changed();
+        state.notify_agents_changed("test");
 
         let agent_event = ui_rx
             .recv()
@@ -764,11 +841,15 @@ mod tests {
             "agent changes should identify the affected cache domain"
         );
         assert!(
-            state.ui.last_refresh_sent_at.is_none(),
+            state
+                .ui
+                .refresh_by_owner
+                .get("test")
+                .is_none_or(|refresh| refresh.last_refresh_sent_at.is_none()),
             "agent events should not delay the next transfer progress event"
         );
 
-        state.notify_transfer_refresh();
+        state.notify_transfer_refresh("test");
         let transfer_event = ui_rx
             .recv()
             .await
@@ -786,9 +867,19 @@ mod tests {
         let refresh_check_task = tokio::spawn(async {});
         let mut state = RouterState::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        state.ui.subscribers.insert(
+            "ui-1".to_string(),
+            super::super::state::UiSubscriber {
+                owner: "test".to_string(),
+                sender: ui_tx,
+            },
+        );
 
         let transfer_id = TransferId::new(7);
+        state
+            .progress
+            .owners
+            .insert(transfer_id, "test".to_string());
         state.progress.entries.insert(
             transfer_id,
             TransferProgressEntry {
@@ -812,7 +903,7 @@ mod tests {
             },
         );
 
-        state.notify_transfer_refresh();
+        state.notify_transfer_refresh("test");
         let first_event = ui_rx
             .recv()
             .await
@@ -822,8 +913,13 @@ mod tests {
             "the setup refresh should confirm the subscriber wiring before the terminal-state assertion"
         );
 
-        state.ui.refresh_pending = true;
-        state.ui.last_refresh_sent_at = Some(Instant::now());
+        let throttle = state
+            .ui
+            .refresh_by_owner
+            .entry("test".to_string())
+            .or_default();
+        throttle.refresh_pending = true;
+        throttle.last_refresh_sent_at = Some(Instant::now());
 
         state.mark_transfer_completed(transfer_id);
 
@@ -836,7 +932,7 @@ mod tests {
             "terminal transfer updates should bypass the normal refresh throttle so the UI reflects completion immediately"
         );
         assert!(
-            !state.ui.refresh_pending,
+            !state.ui.refresh_by_owner["test"].refresh_pending,
             "the immediate terminal refresh should clear any older trailing refresh instead of leaving a stale refresh queued"
         );
 
@@ -866,8 +962,18 @@ mod tests {
         let refresh_check_task = tokio::spawn(async {});
         let mut state = RouterState::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        state.ui.subscribers.insert(
+            "ui-1".to_string(),
+            super::super::state::UiSubscriber {
+                owner: "test".to_string(),
+                sender: ui_tx,
+            },
+        );
         let transfer_id = TransferId::new(10);
+        state
+            .progress
+            .owners
+            .insert(transfer_id, "test".to_string());
         state.progress.entries.insert(
             transfer_id,
             TransferProgressEntry {
@@ -909,8 +1015,18 @@ mod tests {
         let refresh_check_task = tokio::spawn(async {});
         let mut state = RouterState::new(refresh_check_task);
         let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
-        state.ui.subscribers.insert("ui-1".to_string(), ui_tx);
+        state.ui.subscribers.insert(
+            "ui-1".to_string(),
+            super::super::state::UiSubscriber {
+                owner: "test".to_string(),
+                sender: ui_tx,
+            },
+        );
         let transfer_id = TransferId::new(11);
+        state
+            .progress
+            .owners
+            .insert(transfer_id, "test".to_string());
         state.progress.entries.insert(
             transfer_id,
             TransferProgressEntry {

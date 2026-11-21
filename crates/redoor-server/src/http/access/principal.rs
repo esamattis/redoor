@@ -25,6 +25,8 @@ pub(crate) enum Principal {
 #[derive(Clone, Debug)]
 pub(crate) struct TokenGrant {
     pub(crate) id: Uuid,
+    /// Canonical username of the workspace that owns this token and its device scope.
+    pub(crate) owner: String,
     /// The token's display name, for log lines and `GET /api/v1/auth/me`.
     pub(crate) name: String,
     pub(crate) permissions: BTreeSet<Permission>,
@@ -32,6 +34,14 @@ pub(crate) struct TokenGrant {
 }
 
 impl Principal {
+    /// Canonical username of the workspace this principal acts within.
+    pub(crate) fn owner(&self) -> &str {
+        match self {
+            Principal::Session(user) => &user.name,
+            Principal::Token(grant) => &grant.owner,
+        }
+    }
+
     /// The one place a device permission decision is made: the device must be in scope and
     /// every listed permission held. An empty list is a pure scope check.
     pub(crate) fn require(
@@ -119,6 +129,7 @@ mod tests {
     fn token(permissions: &[Permission], devices: DeviceScope) -> Principal {
         Principal::Token(TokenGrant {
             id: Uuid::new_v4(),
+            owner: "alice".to_string(),
             name: "test token".to_string(),
             permissions: permissions.iter().copied().collect(),
             devices,

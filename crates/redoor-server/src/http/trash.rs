@@ -1,16 +1,13 @@
 //! REST endpoints for listing, emptying and restoring agent trash.
 
 use crate::http::access::ResolvedDevice;
+use crate::workspaces::AgentKey;
 use axum::{Json, extract::State as AxumState};
-use redoor_protocol::{
-    api::{
-        agents::AgentInfoResponse,
-        trash::{
-            EmptyTrashResponse, RestoreTrashItemRequest, RestoreTrashItemResponse,
-            TrashListResponse,
-        },
+use redoor_protocol::api::{
+    agents::AgentInfoResponse,
+    trash::{
+        EmptyTrashResponse, RestoreTrashItemRequest, RestoreTrashItemResponse, TrashListResponse,
     },
-    ids::AgentId,
 };
 
 use super::{
@@ -23,19 +20,19 @@ use super::{
 /// Finds the retained inventory row whose registration decides which trash commands it knows.
 pub(crate) async fn inventory_entry(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<AgentInfoResponse, ApiError> {
-    list_agent_snapshots(state)
+    list_agent_snapshots(state, agent_id.owner())
         .await?
         .into_iter()
-        .find(|agent| &agent.id == agent_id)
+        .find(|agent| agent.id == agent_id.id)
         .ok_or_else(|| ApiError::not_found("Agent not found"))
 }
 
 /// Rejects unsupported or disconnected agents before sending commands they cannot understand.
 pub(crate) async fn require_trash_inventory_support(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<(), ApiError> {
     if !inventory_entry(state, agent_id).await?.supports_trash {
         return Err(ApiError::bad_request(
@@ -48,7 +45,7 @@ pub(crate) async fn require_trash_inventory_support(
 /// Allows move-only providers without exposing inventory and restore commands to them.
 pub(crate) async fn require_move_to_trash_support(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<(), ApiError> {
     if !inventory_entry(state, agent_id)
         .await?

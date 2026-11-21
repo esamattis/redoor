@@ -37,11 +37,16 @@ fn header_text<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name)?.to_str().ok()
 }
 
-/// The agent's nonce, when the upgrade request proves the token over it.
-fn proven_agent_nonce(headers: &HeaderMap, key: &AgentTokenKey) -> Option<HandshakeNonce> {
+/// Authenticates an agent upgrade request against all users' agent tokens, returning the
+/// owning user, their token key, and the agent's nonce when the proof matches.
+async fn authenticate_agent_upgrade(
+    headers: &HeaderMap,
+    accounts: &crate::workspaces::UserAccountStore,
+) -> Option<(String, AgentTokenKey, HandshakeNonce)> {
     let nonce = HandshakeNonce::parse(header_text(headers, AGENT_NONCE_HEADER)?)?;
     let proof = header_text(headers, AGENT_PROOF_HEADER)?;
-    key.upgrade_proof(&nonce).matches(proof).then_some(nonce)
+    let (owner, key) = accounts.authenticate_upgrade(&nonce, proof).await?;
+    Some((owner, key, nonce))
 }
 
 /// The subprotocols an upgrade request offers.
@@ -66,16 +71,23 @@ fn agent_version(headers: &HeaderMap) -> Option<String> {
         .map(str::to_string)
 }
 
-/// Refuses an upgrade that does not offer [`PROTOCOL`] with `426` and remembers the attempt.
-fn protocol_mismatch(state: &ServerState, remote: &ClientAddress, headers: &HeaderMap) -> Response {
+/// Refuses an upgrade that does not offer [`PROTOCOL`] with `426` and remembers the attempt
+/// under `owner` (already authenticated by the token proof).
+fn protocol_mismatch(
+    state: &ServerState,
+    owner: String,
+    remote: &ClientAddress,
+    headers: &HeaderMap,
+) -> Response {
     let version = agent_version(headers);
     let offered = offered(headers);
     // An error, not a warning: the agent cannot connect until an operator upgrades it.
     redoor_core::log_failure!(
         Level::Error,
-        "Rejecting agent with an incompatible protocol: remote={}, agent_version={}, offered={:?}, server_protocol={}",
+        "Rejecting agent with an incompatible protocol: remote={}, agent_version={}, owner={}, offered={:?}, server_protocol={}",
         remote,
         version.as_deref().unwrap_or("unknown"),
+        owner,
         offered,
         PROTOCOL
     );
@@ -84,6 +96,7 @@ fn protocol_mismatch(state: &ServerState, remote: &ClientAddress, headers: &Head
         // The IP, not the address: every retry comes from a new ephemeral port, and one agent's
         // reconnect loop must keep replacing its own entry.
         .record(
+            owner,
             remote.peer.ip().to_string(),
             remote.forwarded_for.clone(),
             version,
@@ -105,17 +118,24 @@ fn protocol_mismatch(state: &ServerState, remote: &ClientAddress, headers: &Head
 
 /// Route: `GET /api/v1/agent/ws`
 ///
-/// `401` when the request does not prove the token (checked first, so unauthenticated clients
-/// cannot fill the mismatch list), `426` for a missing or unknown protocol, otherwise the
-/// upgrade echoing [`PROTOCOL`] with the server's nonce and its proof of the token.
+/// `503` while first-use migration is pending, `401` when the request does not prove any
+/// user's agent token (checked first, so unauthenticated clients cannot fill mismatch lists),
+/// `426` for a missing or unknown protocol, otherwise the upgrade echoing [`PROTOCOL`] with
+/// the server's nonce and its proof of the owning user's token.
 pub(crate) async fn agent_websocket_handler(
     ws: WebSocketUpgrade,
     remote: ClientAddress,
     headers: HeaderMap,
     AxumState(state): AxumState<ServerState>,
 ) -> Response {
-    let key = AgentTokenKey::new(state.auth.agent_token());
-    let Some(agent_nonce) = proven_agent_nonce(&headers, &key) else {
+    // TEMPORARY MIGRATION: Hold off agent connections until legacy data is migrated into a
+    // user workspace so standalone agents and managed daemons back off and reconnect once done.
+    if state.migration.is_pending().await {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let Some((owner, key, agent_nonce)) =
+        authenticate_agent_upgrade(&headers, &state.accounts).await
+    else {
         log!(
             Level::Warning,
             "Rejecting agent with a missing or invalid token proof: remote={}, agent_version={}",
@@ -125,7 +145,7 @@ pub(crate) async fn agent_websocket_handler(
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if !offers_protocol(&headers) {
-        return protocol_mismatch(&state, &remote, &headers);
+        return protocol_mismatch(&state, owner, &remote, &headers);
     }
     let nonces = HandshakeNonces {
         agent: agent_nonce,
@@ -143,12 +163,15 @@ pub(crate) async fn agent_websocket_handler(
         .on_upgrade(move |socket| {
             actors::session::handle_websocket(
                 socket,
-                SocketId::new(),
-                router_ref,
-                watchdog_registry,
-                terminals,
-                timeouts,
-                hello_proof,
+                actors::session::AgentWebSocketContext {
+                    owner,
+                    socket_id: SocketId::new(),
+                    router_ref,
+                    watchdog_registry,
+                    terminals,
+                    timeouts,
+                    hello_proof,
+                },
             )
         })
         .into_response();
@@ -171,9 +194,19 @@ mod tests {
     use super::*;
     use axum::http::HeaderValue;
 
-    /// Verifies the upgrade is accepted only with a proof over the agent's own nonce.
-    #[test]
-    fn upgrade_requires_a_proof_of_the_token() {
+    /// Verifies the upgrade is accepted only with a proof over the agent's own nonce, and
+    /// routes the connection to the user whose token produced the proof.
+    #[tokio::test]
+    async fn upgrade_requires_a_proof_of_the_token() {
+        let temp = redoor_core::test_support::TempDir::create();
+        let paths = redoor_core::paths::AppPaths::for_home("redoor-test", temp.path());
+        let accounts = crate::workspaces::UserAccountStore::load_all(paths)
+            .await
+            .unwrap();
+        accounts
+            .set_account_token("alice", "token".to_string())
+            .await
+            .unwrap();
         let key = AgentTokenKey::new("token");
         let nonce = HandshakeNonce::generate();
         let mut headers = HeaderMap::new();
@@ -182,12 +215,23 @@ mod tests {
             AGENT_PROOF_HEADER,
             hex_header(key.upgrade_proof(&nonce).as_str()),
         );
-        // A proof made with the server's token is accepted and yields the agent's nonce.
-        assert_eq!(proven_agent_nonce(&headers, &key), Some(nonce.clone()));
-        // A proof made with another token is refused.
-        assert_eq!(
-            proven_agent_nonce(&headers, &AgentTokenKey::new("other")),
-            None
+        // A proof made with a user's token is accepted and yields that user and the nonce.
+        let (owner, _, proven_nonce) = authenticate_agent_upgrade(&headers, &accounts)
+            .await
+            .expect("valid upgrade proof");
+        assert_eq!(owner, "alice");
+        assert_eq!(proven_nonce, nonce);
+        // A proof made with an unknown token is refused.
+        let mut wrong = HeaderMap::new();
+        wrong.insert(AGENT_NONCE_HEADER, hex_header(nonce.as_str()));
+        wrong.insert(
+            AGENT_PROOF_HEADER,
+            hex_header(AgentTokenKey::new("other").upgrade_proof(&nonce).as_str()),
+        );
+        assert!(
+            authenticate_agent_upgrade(&wrong, &accounts)
+                .await
+                .is_none()
         );
         headers.insert(
             header::AUTHORIZATION,
@@ -195,7 +239,11 @@ mod tests {
         );
         headers.remove(AGENT_PROOF_HEADER);
         // The plain bearer token of older agents no longer authenticates.
-        assert_eq!(proven_agent_nonce(&headers, &key), None);
+        assert!(
+            authenticate_agent_upgrade(&headers, &accounts)
+                .await
+                .is_none()
+        );
     }
 
     /// Verifies negotiation accepts the server's protocol among several offers.

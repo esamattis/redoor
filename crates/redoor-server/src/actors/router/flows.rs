@@ -12,9 +12,10 @@ use super::RouterError;
 use super::messages::{RouterReply, UploadStartOutcome};
 use super::state::CopyContentKind;
 use super::streams::{OutboundStream, StreamLease};
+use crate::workspaces::AgentKey;
 use redoor_protocol::wire::request::CommandOutcome;
 use redoor_protocol::{
-    ids::{AgentId, RequestId, TransferId},
+    ids::{RequestId, TransferId},
     wire::{
         command::{Command, MoveSourceIdentity},
         exec::ExecEvent,
@@ -26,8 +27,8 @@ use std::collections::HashMap;
 /// Identifies one flow; it is the first request id allocated for the flow.
 pub(crate) type FlowId = RequestId;
 
-/// One request as an agent sees it: the agent connection plus the id scoped to it.
-pub(crate) type AgentRequest = (AgentId, RequestId);
+/// One request as an agent sees it: the owned agent connection plus the id scoped to it.
+pub(crate) type AgentRequest = (AgentKey, RequestId);
 
 /// One unit of in-flight work owned by the router.
 pub(crate) enum Flow {
@@ -41,7 +42,7 @@ pub(crate) enum Flow {
 /// A one-shot command whose REST caller waits for the final result.
 pub(crate) struct CommandFlow {
     pub(crate) request_id: RequestId,
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Whether the agent registers the command for `cancel` (request cancel scope),
     /// so an abandoned caller's cancel can actually stop its work.
     pub(crate) cancelable: bool,
@@ -51,7 +52,7 @@ pub(crate) struct CommandFlow {
 /// An agent-to-consumer stream: file download or process output.
 pub(crate) struct OutputFlow {
     pub(crate) request_id: RequestId,
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     pub(crate) kind: OutputKind,
     /// Shared with the consumer; cancelling it stops the data path.
     pub(crate) lease: StreamLease,
@@ -101,7 +102,7 @@ impl Drop for OutputFlow {
 /// A REST upload, archive upload or file edit streaming into one agent.
 pub(crate) struct UploadFlow {
     pub(crate) request_id: RequestId,
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Defines public progress semantics and the only accepted successful result.
     pub(crate) kind: UploadKind,
     pub(crate) phase: UploadPhase,
@@ -136,8 +137,8 @@ pub(crate) struct CopyFlow {
     pub(crate) resumable: bool,
     /// Public transfer id shown in progress listings and used for cancellation.
     pub(crate) progress_id: TransferId,
-    pub(crate) source_agent_id: AgentId,
-    pub(crate) dest_agent_id: AgentId,
+    pub(crate) source_agent_id: AgentKey,
+    pub(crate) dest_agent_id: AgentKey,
     pub(crate) content_kind: CopyContentKind,
     /// Follow-up after the destination is published; moves delete the verified source.
     pub(crate) then: Option<DeleteSource>,
@@ -264,7 +265,7 @@ impl CopyFlow {
     /// the destination can still publish. A local copy runs entirely on the source agent, and
     /// once a move published its destination only the source deletion is left, so losing the
     /// destination agent then must not mark a successful move as errored.
-    fn involves(&self, agent_id: &AgentId) -> bool {
+    fn involves(&self, agent_id: &AgentKey) -> bool {
         match &self.phase {
             CopyPhase::Verifying(_) => {
                 &self.source_agent_id == agent_id || &self.dest_agent_id == agent_id
@@ -332,7 +333,7 @@ impl Flow {
     }
 
     /// Whether this flow depends on `agent_id` at all.
-    pub(crate) fn involves(&self, agent_id: &AgentId) -> bool {
+    pub(crate) fn involves(&self, agent_id: &AgentKey) -> bool {
         match self {
             Self::Command(flow) => &flow.agent_id == agent_id,
             Self::Output(flow) => &flow.agent_id == agent_id,
@@ -402,7 +403,7 @@ impl FlowTable {
     }
 
     /// Finds the flow a request sent to `agent_id` belongs to.
-    pub(crate) fn id_for(&self, agent_id: &AgentId, request_id: RequestId) -> Option<FlowId> {
+    pub(crate) fn id_for(&self, agent_id: &AgentKey, request_id: RequestId) -> Option<FlowId> {
         self.by_request
             .get(&(agent_id.clone(), request_id))
             .copied()
@@ -496,7 +497,7 @@ impl FlowTable {
 
     /// Server-to-agent byte streams currently open into `agent_id`: uploads, edits and copy
     /// destinations, which the per-connection upload cap counts.
-    pub(crate) fn uploads_into(&self, agent_id: &AgentId) -> usize {
+    pub(crate) fn uploads_into(&self, agent_id: &AgentKey) -> usize {
         self.flows
             .values()
             .filter(|flow| match flow {
@@ -536,7 +537,7 @@ mod tests {
         (
             Flow::Command(CommandFlow {
                 request_id: RequestId::new(id),
-                agent_id: redoor_core::test_support::test_agent_id(agent),
+                agent_id: AgentKey::new("test", redoor_core::test_support::test_agent_id(agent)),
                 cancelable: false,
                 reply,
             }),
@@ -552,23 +553,15 @@ mod tests {
         let (kept, _kept_reply) = command(2, "kept");
         table.insert(RequestId::new(1), lost);
         table.insert(RequestId::new(2), kept);
-        let extracted = table
-            .extract_if(|flow| flow.involves(&redoor_core::test_support::test_agent_id("lost")));
+        let lost_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("lost"));
+        let kept_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("kept"));
+        let extracted = table.extract_if(|flow| flow.involves(&lost_key));
         // Only the lost agent's work is settled by its disconnect.
         assert_eq!(extracted.len(), 1);
-        assert_eq!(
-            table.id_for(
-                &redoor_core::test_support::test_agent_id("lost"),
-                RequestId::new(1)
-            ),
-            None
-        );
+        assert_eq!(table.id_for(&lost_key, RequestId::new(1)), None);
         // Unrelated flows and their routing survive.
         assert_eq!(
-            table.id_for(
-                &redoor_core::test_support::test_agent_id("kept"),
-                RequestId::new(2)
-            ),
+            table.id_for(&kept_key, RequestId::new(2)),
             Some(RequestId::new(2))
         );
     }
@@ -579,24 +572,12 @@ mod tests {
         let mut table = FlowTable::default();
         let (owned, _reply) = command(7, "owner");
         table.insert(RequestId::new(7), owned);
+        let owner_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("owner"));
+        let other_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("other"));
         // The owning agent's frames reach the flow.
-        assert!(
-            table
-                .id_for(
-                    &redoor_core::test_support::test_agent_id("owner"),
-                    RequestId::new(7)
-                )
-                .is_some()
-        );
+        assert!(table.id_for(&owner_key, RequestId::new(7)).is_some());
         // The same number from another connection must not resolve someone else's work.
-        assert!(
-            table
-                .id_for(
-                    &redoor_core::test_support::test_agent_id("other"),
-                    RequestId::new(7)
-                )
-                .is_none()
-        );
+        assert!(table.id_for(&other_key, RequestId::new(7)).is_none());
     }
 
     /// Builds a cross-agent move from `source` to `dest` in a stream-less phase.
@@ -605,8 +586,11 @@ mod tests {
             pause: None,
             resumable: false,
             progress_id: TransferId::new(1),
-            source_agent_id: redoor_core::test_support::test_agent_id("source"),
-            dest_agent_id: redoor_core::test_support::test_agent_id("dest"),
+            source_agent_id: AgentKey::new(
+                "test",
+                redoor_core::test_support::test_agent_id("source"),
+            ),
+            dest_agent_id: AgentKey::new("test", redoor_core::test_support::test_agent_id("dest")),
             content_kind: CopyContentKind::RawFile,
             then: Some(DeleteSource {
                 path: "/src".to_string(),
@@ -627,16 +611,18 @@ mod tests {
     /// destination agent must not fail (and mark as errored) an already successful move.
     #[test]
     fn deleting_source_depends_only_on_the_source_agent() {
+        let source_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("source"));
+        let dest_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("dest"));
         let flow = move_flow(CopyPhase::DeletingSource {
             request_id: RequestId::new(9),
         });
-        assert!(flow.involves(&redoor_core::test_support::test_agent_id("source")));
-        assert!(!flow.involves(&redoor_core::test_support::test_agent_id("dest")));
+        assert!(flow.involves(&source_key));
+        assert!(!flow.involves(&dest_key));
         // A local phase likewise runs entirely on the source agent.
         let local = move_flow(CopyPhase::Local {
             request_id: RequestId::new(9),
         });
-        assert!(!local.involves(&redoor_core::test_support::test_agent_id("dest")));
+        assert!(!local.involves(&dest_key));
     }
 
     /// Abandoned REST replies are pruned without touching live callers.
@@ -657,7 +643,7 @@ mod tests {
         assert!(
             table
                 .id_for(
-                    &redoor_core::test_support::test_agent_id("agent"),
+                    &AgentKey::new("test", redoor_core::test_support::test_agent_id("agent")),
                     RequestId::new(2)
                 )
                 .is_some()

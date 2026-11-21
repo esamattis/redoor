@@ -86,13 +86,16 @@ async fn created(temp: &TempDir) -> (VaultStore, Proof, VaultSummary) {
     ));
     let proof = Proof::new();
     let summary = store
-        .create(CreateVaultRequest {
-            vault_id: id("vlt_"),
-            label: "tester@test".to_string(),
-            key_id: id("kid_"),
-            auth_verifier: proof.verifier.clone(),
-            slots: vec![passphrase_slot()],
-        })
+        .create(
+            "alice",
+            CreateVaultRequest {
+                vault_id: id("vlt_"),
+                label: "tester@test".to_string(),
+                key_id: id("kid_"),
+                auth_verifier: proof.verifier.clone(),
+                slots: vec![passphrase_slot()],
+            },
+        )
         .await
         .unwrap();
     (store, proof, summary)
@@ -120,13 +123,16 @@ async fn rotate(store: &VaultStore, proof: &Proof, slots: Vec<VaultSlotInput>) -
     let next = Proof::new();
     let key_id = id("kid_");
     store
-        .rotate(RotateVaultRequest {
-            auth_proof: proof.proof.clone(),
-            new_key_id: key_id.clone(),
-            new_auth_verifier: next.verifier.clone(),
-            previous_key_wrap: wrap(),
-            slots,
-        })
+        .rotate(
+            "alice",
+            RotateVaultRequest {
+                auth_proof: proof.proof.clone(),
+                new_key_id: key_id.clone(),
+                new_auth_verifier: next.verifier.clone(),
+                previous_key_wrap: wrap(),
+                slots,
+            },
+        )
         .await
         .unwrap();
     (next, key_id)
@@ -146,18 +152,21 @@ async fn create_refuses_a_second_vault_and_writes_a_private_file() {
     assert_eq!(summary.generations.len(), 1);
     assert!(summary.generations[0].current);
     let second = store
-        .create(CreateVaultRequest {
-            vault_id: id("vlt_"),
-            label: "again".to_string(),
-            key_id: id("kid_"),
-            auth_verifier: proof.verifier.clone(),
-            slots: vec![passphrase_slot()],
-        })
+        .create(
+            "alice",
+            CreateVaultRequest {
+                vault_id: id("vlt_"),
+                label: "again".to_string(),
+                key_id: id("kid_"),
+                auth_verifier: proof.verifier.clone(),
+                slots: vec![passphrase_slot()],
+            },
+        )
         .await;
     // Replacing a vault would make its files unreadable, so creation is refused.
     assert_eq!(code(second), Some(ApiErrorCode::VaultExists));
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(store.path().unwrap())
+    let mode = std::fs::metadata(store.path("alice").unwrap())
         .unwrap()
         .permissions()
         .mode();
@@ -181,10 +190,13 @@ async fn create_accepts_passkey_only_and_refuses_no_slots() {
         auth_verifier: Proof::new().verifier,
         slots,
     };
-    let empty = store.create(request(vec![])).await;
+    let empty = store.create("alice", request(vec![])).await;
     // A vault without slots could never be opened again.
     assert_eq!(code(empty), Some(ApiErrorCode::VaultLastSlot));
-    let created = store.create(request(vec![passkey_slot()])).await.unwrap();
+    let created = store
+        .create("alice", request(vec![passkey_slot()]))
+        .await
+        .unwrap();
     // A passphrase is optional: one passkey is enough to unlock.
     assert_eq!(created.slots.len(), 1);
 }
@@ -196,47 +208,56 @@ async fn slot_changes_need_proof_and_keep_the_last_slot() {
     let (store, proof, summary) = created(&temp).await;
     let passkey = passkey_slot();
     let forged = store
-        .add_slot(AddVaultSlotRequest {
-            auth_proof: Proof::new().proof,
-            slot: passkey.clone(),
-        })
+        .add_slot(
+            "alice",
+            AddVaultSlotRequest {
+                auth_proof: Proof::new().proof,
+                slot: passkey.clone(),
+            },
+        )
         .await;
     // A stolen session without the vault key cannot add its own passkey.
     assert_eq!(code(forged), Some(ApiErrorCode::VaultProofInvalid));
     let added = store
-        .add_slot(AddVaultSlotRequest {
-            auth_proof: proof.proof.clone(),
-            slot: passkey.clone(),
-        })
+        .add_slot(
+            "alice",
+            AddVaultSlotRequest {
+                auth_proof: proof.proof.clone(),
+                slot: passkey.clone(),
+            },
+        )
         .await
         .unwrap();
     // The right proof adds the slot.
     assert_eq!(added.slots.len(), 2);
     let duplicate = store
-        .add_slot(AddVaultSlotRequest {
-            auth_proof: proof.proof.clone(),
-            slot: VaultSlotInput {
-                id: id("slot_"),
-                ..passkey.clone()
+        .add_slot(
+            "alice",
+            AddVaultSlotRequest {
+                auth_proof: proof.proof.clone(),
+                slot: VaultSlotInput {
+                    id: id("slot_"),
+                    ..passkey.clone()
+                },
             },
-        })
+        )
         .await;
     // The same credential twice would only confuse unlocking.
     assert_eq!(code(duplicate), Some(ApiErrorCode::VaultInvalid));
     let passphrase_id = &summary.slots[0].id;
     let without_passphrase = store
-        .remove_slot(passphrase_id, &proof.proof)
+        .remove_slot("alice", passphrase_id, &proof.proof)
         .await
         .unwrap();
     // The passphrase is optional while a passkey remains.
     assert_eq!(without_passphrase.slots.len(), 1);
     let renamed = store
-        .rename_slot(&passkey.id, &proof.proof, "Laptop key".to_string())
+        .rename_slot("alice", &passkey.id, &proof.proof, "Laptop key".to_string())
         .await
         .unwrap();
     // Renaming changes only the label.
     assert!(renamed.slots.iter().any(|slot| slot.label == "Laptop key"));
-    let last = store.remove_slot(&passkey.id, &proof.proof).await;
+    let last = store.remove_slot("alice", &passkey.id, &proof.proof).await;
     // Removing the last slot would leave nothing that unlocks the vault.
     assert_eq!(code(last), Some(ApiErrorCode::VaultLastSlot));
 }
@@ -248,29 +269,35 @@ async fn rotation_chains_generations_and_rejects_stale_writes() {
     let (store, proof, summary) = created(&temp).await;
     let old_key = summary.current_key_id.clone();
     let stale_proof = store
-        .rotate(RotateVaultRequest {
-            auth_proof: Proof::new().proof,
-            new_key_id: id("kid_"),
-            new_auth_verifier: Proof::new().verifier,
-            previous_key_wrap: wrap(),
-            slots: vec![passphrase_slot()],
-        })
+        .rotate(
+            "alice",
+            RotateVaultRequest {
+                auth_proof: Proof::new().proof,
+                new_key_id: id("kid_"),
+                new_auth_verifier: Proof::new().verifier,
+                previous_key_wrap: wrap(),
+                slots: vec![passphrase_slot()],
+            },
+        )
         .await;
     // Rotation is a vault change and needs the proof.
     assert_eq!(code(stale_proof), Some(ApiErrorCode::VaultProofInvalid));
     let no_slots = store
-        .rotate(RotateVaultRequest {
-            auth_proof: proof.proof.clone(),
-            new_key_id: id("kid_"),
-            new_auth_verifier: Proof::new().verifier,
-            previous_key_wrap: wrap(),
-            slots: vec![],
-        })
+        .rotate(
+            "alice",
+            RotateVaultRequest {
+                auth_proof: proof.proof.clone(),
+                new_key_id: id("kid_"),
+                new_auth_verifier: Proof::new().verifier,
+                previous_key_wrap: wrap(),
+                slots: vec![],
+            },
+        )
         .await;
     // A rotation that keeps no slot would leave the new key unreachable.
     assert_eq!(code(no_slots), Some(ApiErrorCode::VaultLastSlot));
     let (next, new_key) = rotate(&store, &proof, vec![passphrase_slot()]).await;
-    let material = store.unlock_material().await.unwrap();
+    let material = store.unlock_material("alice").await.unwrap();
     // The new generation is current and wraps the old one.
     assert_eq!(material.current_key_id, new_key);
     assert_eq!(material.keys[1].key_id, old_key);
@@ -280,27 +307,31 @@ async fn rotation_chains_generations_and_rejects_stale_writes() {
     );
     // A tab that missed the rotation must not keep writing with the old generation.
     assert_eq!(
-        code(store.require_current(&old_key).await),
+        code(store.require_current("alice", &old_key).await),
         Some(ApiErrorCode::StaleVaultKey)
     );
-    assert!(store.require_current(&new_key).await.is_ok());
+    assert!(store.require_current("alice", &new_key).await.is_ok());
     // Old files stay readable, reported as older so the UI offers a rewrap.
     let vault_id = summary.vault_id.clone();
     assert_eq!(
         store
-            .key_status(&header(&vault_id, &old_key))
+            .key_status("alice", &header(&vault_id, &old_key))
             .await
             .unwrap(),
         VaultFileKeyStatus::Older
     );
     // The old proof is no longer accepted.
     assert_eq!(
-        code(store.update_label(&proof.proof, "x".to_string()).await),
+        code(
+            store
+                .update_label("alice", &proof.proof, "x".to_string())
+                .await
+        ),
         Some(ApiErrorCode::VaultProofInvalid)
     );
     assert!(
         store
-            .update_label(&next.proof, "x".to_string())
+            .update_label("alice", &next.proof, "x".to_string())
             .await
             .is_ok()
     );
@@ -316,6 +347,7 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
     let (proof, newest) = rotate(&store, &proof, vec![passphrase_slot()]).await;
     let without_relink = store
         .destroy_key(
+            "alice",
             &middle,
             DestroyVaultKeyRequest {
                 auth_proof: proof.proof.clone(),
@@ -327,6 +359,7 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
     assert_eq!(code(without_relink), Some(ApiErrorCode::VaultInvalid));
     store
         .destroy_key(
+            "alice",
             &middle,
             DestroyVaultKeyRequest {
                 auth_proof: proof.proof.clone(),
@@ -335,7 +368,7 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
         )
         .await
         .unwrap();
-    let material = store.unlock_material().await.unwrap();
+    let material = store.unlock_material("alice").await.unwrap();
     // The first generation is now wrapped by the newest one directly.
     assert_eq!(material.keys.len(), 2);
     assert_eq!(material.keys[1].key_id, first);
@@ -345,7 +378,7 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
     );
     // Files on the destroyed generation get a precise error.
     let status = store
-        .key_status(&header(&summary.vault_id, &middle))
+        .key_status("alice", &header(&summary.vault_id, &middle))
         .await
         .unwrap();
     assert!(matches!(status, VaultFileKeyStatus::Retired { .. }));
@@ -354,6 +387,7 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
         code(
             store
                 .destroy_key(
+                    "alice",
                     &newest,
                     DestroyVaultKeyRequest {
                         auth_proof: proof.proof.clone(),
@@ -371,37 +405,46 @@ async fn destroying_a_middle_generation_relinks_the_chain() {
 async fn restore_over_a_vault_needs_its_proof() {
     let temp = TempDir::create();
     let (store, proof, _) = created(&temp).await;
-    let backup = store.document().await.unwrap();
+    let backup = store.document("alice").await.unwrap();
     let other_temp = TempDir::create();
     let (other, other_proof, _) = created(&other_temp).await;
-    let foreign = other.document().await.unwrap();
+    let foreign = other.document("alice").await.unwrap();
     let swapped = store
-        .restore(RestoreVaultBackupRequest {
-            backup: foreign.clone(),
-            backup_auth_proof: other_proof.proof.clone(),
-            current_auth_proof: None,
-        })
+        .restore(
+            "alice",
+            RestoreVaultBackupRequest {
+                backup: foreign.clone(),
+                backup_auth_proof: other_proof.proof.clone(),
+                current_auth_proof: None,
+            },
+        )
         .await;
     // A stolen session could otherwise install a vault it controls.
     assert_eq!(code(swapped), Some(ApiErrorCode::VaultProofInvalid));
     let empty = store
-        .restore(RestoreVaultBackupRequest {
-            backup: VaultDocument {
-                slots: vec![],
-                ..foreign.clone()
+        .restore(
+            "alice",
+            RestoreVaultBackupRequest {
+                backup: VaultDocument {
+                    slots: vec![],
+                    ..foreign.clone()
+                },
+                backup_auth_proof: other_proof.proof.clone(),
+                current_auth_proof: Some(proof.proof.clone()),
             },
-            backup_auth_proof: other_proof.proof.clone(),
-            current_auth_proof: Some(proof.proof.clone()),
-        })
+        )
         .await;
     // A backup without slots could never be unlocked once installed.
     assert_eq!(code(empty), Some(ApiErrorCode::VaultLastSlot));
     let wrong_backup_proof = store
-        .restore(RestoreVaultBackupRequest {
-            backup: foreign.clone(),
-            backup_auth_proof: proof.proof.clone(),
-            current_auth_proof: Some(proof.proof.clone()),
-        })
+        .restore(
+            "alice",
+            RestoreVaultBackupRequest {
+                backup: foreign.clone(),
+                backup_auth_proof: proof.proof.clone(),
+                current_auth_proof: Some(proof.proof.clone()),
+            },
+        )
         .await;
     // The backup must really unlock with the key the browser holds.
     assert_eq!(
@@ -409,11 +452,14 @@ async fn restore_over_a_vault_needs_its_proof() {
         Some(ApiErrorCode::VaultProofInvalid)
     );
     let restored = store
-        .restore(RestoreVaultBackupRequest {
-            backup: foreign.clone(),
-            backup_auth_proof: other_proof.proof.clone(),
-            current_auth_proof: Some(proof.proof.clone()),
-        })
+        .restore(
+            "alice",
+            RestoreVaultBackupRequest {
+                backup: foreign.clone(),
+                backup_auth_proof: other_proof.proof.clone(),
+                current_auth_proof: Some(proof.proof.clone()),
+            },
+        )
         .await
         .unwrap();
     // With both proofs the backup replaces the vault.
@@ -428,9 +474,9 @@ async fn slot_use_is_recorded_once_a_day() {
     let (store, _, summary) = created(&temp).await;
     let slot = &summary.slots[0].id;
     // The first unlock of the day writes the date.
-    assert!(store.mark_slot_used(slot).await.unwrap());
+    assert!(store.mark_slot_used("alice", slot).await.unwrap());
     // Later unlocks the same day do not rewrite the file.
-    assert!(!store.mark_slot_used(slot).await.unwrap());
+    assert!(!store.mark_slot_used("alice", slot).await.unwrap());
 }
 
 /// Files of other vaults and unknown generations are told apart.
@@ -441,7 +487,7 @@ async fn key_status_names_foreign_and_unknown_files() {
     // Another vault id means another vault, whatever the key id.
     assert_eq!(
         store
-            .key_status(&header(&id("vlt_"), &summary.current_key_id))
+            .key_status("alice", &header(&id("vlt_"), &summary.current_key_id))
             .await
             .unwrap(),
         VaultFileKeyStatus::ForeignVault
@@ -449,13 +495,13 @@ async fn key_status_names_foreign_and_unknown_files() {
     // A key id the vault never had suggests an older backup was restored.
     assert_eq!(
         store
-            .key_status(&header(&summary.vault_id, &id("kid_")))
+            .key_status("alice", &header(&summary.vault_id, &id("kid_")))
             .await
             .unwrap(),
         VaultFileKeyStatus::UnknownKey
     );
     let error = store
-        .require_readable(&header(&id("vlt_"), &summary.current_key_id))
+        .require_readable("alice", &header(&id("vlt_"), &summary.current_key_id))
         .await
         .unwrap_err();
     // The message names the other vault so the user knows which one to look for.

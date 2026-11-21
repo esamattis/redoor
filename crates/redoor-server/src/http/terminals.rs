@@ -3,6 +3,7 @@
 //! shell keeps running in the agent.
 
 use super::{
+    access::Principal,
     auth::ActiveSession,
     session_watch::{SessionWatch, close_for_ended_session},
     state::ServerState,
@@ -61,6 +62,7 @@ pub(crate) async fn attach_terminal_websocket_handler(
     Query(query): Query<AttachQuery>,
     headers: HeaderMap,
     AxumState(state): AxumState<ServerState>,
+    Extension(principal): Extension<Principal>,
     Extension(session): Extension<ActiveSession>,
     websocket: WebSocketUpgrade,
 ) -> Response {
@@ -75,14 +77,16 @@ pub(crate) async fn attach_terminal_websocket_handler(
         )
             .into_response();
     }
+    let owner = principal.owner().to_string();
     let id = match parse_session_id(&id) {
-        Ok(id) if state.terminals.contains(id) => id,
+        Ok(id) if state.terminals.contains(&owner, id) => id,
         Ok(_) => return super::terminal_sessions::session_not_found().into_response(),
         Err(error) => return error.into_response(),
     };
     let viewer = Viewer {
         registry: state.terminals.clone(),
         router: state.router_ref.clone(),
+        owner,
         id,
         size,
         timeouts: state.runtime.ws_timeouts,
@@ -100,6 +104,7 @@ pub(crate) async fn attach_terminal_websocket_handler(
 struct Viewer {
     registry: TerminalRegistry,
     router: RouterHandle,
+    owner: String,
     id: TerminalSessionId,
     size: TerminalSize,
     timeouts: WebSocketTimeouts,
@@ -129,6 +134,7 @@ impl Viewer {
         let Self {
             registry,
             router,
+            owner,
             id,
             size,
             timeouts,
@@ -136,10 +142,10 @@ impl Viewer {
         } = self;
         let Some(ViewerTicket {
             serial,
-            agent_id,
+            agent: agent_id,
             reason,
             ended,
-        }) = registry.attach(id)
+        }) = registry.attach(&owner, id)
         else {
             // Closed between the lookup and the attach.
             let _ = send_event(&mut browser, &TerminalServerMessage::Closed).await;

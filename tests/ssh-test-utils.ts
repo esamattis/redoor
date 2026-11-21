@@ -11,7 +11,7 @@ import { $ } from "zx";
 import { z } from "zod";
 import { ApiClient } from '#ui/api-client';
 import type { Agent } from '#ui/api-client';
-import { SERVER_PATH, TEST_AGENT_TOKEN, TEST_PASSWORD, TEST_USERNAME, VITEST_SERVER_PORT, waitForPort, waitForValue } from './test-utils';
+import { SERVER_PATH, TEST_AGENT_TOKEN, TEST_PASSWORD, TEST_USERNAME, VITEST_SERVER_PORT, seedUserWorkspace, waitForPort, waitForValue } from './test-utils';
 import type { ProcessManager } from './test-utils';
 import { TEST_TERMINAL_SIZE, TerminalViewer } from "./terminal-test-utils";
 
@@ -136,20 +136,29 @@ export async function startRootSshAgent(options: {
 
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_ROOT_USER}"
-password = ${JSON.stringify(sshPassword)}
-name = "${options.agentName}"
 `,
     );
+    seedUserWorkspace({
+        home: options.home,
+        appName: options.appName,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "ssh_backed",
+                id: "dev_sshtestagentaaaaaaaa",
+                target: SSH_TEST_HOST,
+                username: SSH_ROOT_USER,
+                password: sshPassword,
+                name: options.agentName,
+                terminal_env: {},
+            },
+        ],
+    });
 
     const serverPid = options.processManager.spawn(
         SERVER_PATH,

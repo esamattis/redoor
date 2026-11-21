@@ -14,6 +14,7 @@ use super::{
     services::output::OutputStream,
     state::ServerState,
 };
+use crate::workspaces::AgentKey;
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -196,7 +197,7 @@ pub(crate) async fn path_status_handler(
 /// Lists one manager's units.
 async fn list_units(
     state: &ServerState,
-    agent_id: &redoor_protocol::ids::AgentId,
+    agent_id: &AgentKey,
     scope: SystemdScope,
 ) -> Result<Json<SystemdUnitListResponse>, ApiError> {
     Ok(Json(
@@ -210,7 +211,7 @@ async fn list_units(
 /// Reads one unit's status.
 async fn unit_details(
     state: &ServerState,
-    agent_id: &redoor_protocol::ids::AgentId,
+    agent_id: &AgentKey,
     scope: SystemdScope,
     unit: String,
 ) -> Result<Json<SystemdUnitDetailsResponse>, ApiError> {
@@ -225,7 +226,7 @@ async fn unit_details(
 /// Runs one unit action and answers with the unit's status afterwards.
 async fn unit_action(
     state: &ServerState,
-    agent_id: &redoor_protocol::ids::AgentId,
+    agent_id: &AgentKey,
     scope: SystemdScope,
     unit: String,
     request: SystemdUnitActionRequest,
@@ -241,7 +242,7 @@ async fn unit_action(
 /// Makes one manager reload its unit files.
 async fn daemon_reload(
     state: &ServerState,
-    agent_id: &redoor_protocol::ids::AgentId,
+    agent_id: &AgentKey,
     scope: SystemdScope,
 ) -> Result<Json<SystemdDaemonReloadResponse>, ApiError> {
     state
@@ -260,7 +261,7 @@ async fn daemon_reload(
 /// entries until the client goes away, which stops `journalctl` on the agent.
 async fn journal(
     state: &ServerState,
-    agent_id: redoor_protocol::ids::AgentId,
+    agent_id: AgentKey,
     scope: SystemdScope,
     unit: String,
     query: SystemdJournalQuery,

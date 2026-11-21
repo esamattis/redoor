@@ -116,10 +116,10 @@ flowchart LR
 Agents always open the connections. The server never dials an agent, so an agent can run
 behind NAT, on a phone (Termux) or on a host only reachable over SSH.
 
-- **Standalone agents** are started by the user or a service manager and connect with the
-  agent token.
-- **Managed agents** are `[[agents]]` entries in the server config, local or SSH-backed. They
-  run as daemons supervised by the server's watchdog (see "Managed agents").
+- **Standalone agents** are started by the user or a service manager and connect with that
+  user's agent token, which binds the connection to their workspace.
+- **Managed agents** are stored per user in `<data_dir>/users/<user>/agents.json`, local or
+  SSH-backed. They run as daemons supervised by the server's watchdog (see "Managed agents").
 - **Relays** (`redoor agent relay`) start a plain agent over an SSH TCP forward, for agents
   of a remote server.
 - **Browsers, the CLI and MCP clients** only use the REST API, `/mcp` and browser
@@ -198,10 +198,12 @@ people. Everything stored refers to the id (config entries, token scopes, resume
 manifests), so renaming a device never silently moves access to another device. Requests
 accept either a name or an id; it is resolved once, before access control.
 
-The id is owned by the server for managed agents (in `config.toml`), by the relay for
+The id is owned by the server for managed agents (in the user's `agents.json`), by the relay for
 relayed agents, and by the agent itself for standalone agents (`<data_dir>/agent-id`). The
-router detects cloned standalone agents that share an id by their eviction loop and rejects
-the newcomers with a warning instead of letting them evict each other forever.
+router keys connected agents by `(owner, agent_id)` so two users may each have a device with
+the same name or id without colliding. The router detects cloned standalone agents that share
+an id within one workspace by their eviction loop and rejects the newcomers with a warning
+instead of letting them evict each other forever.
 
 ## Connection recovery
 
@@ -235,8 +237,8 @@ not match the latest report is rejected as superseded.
 - **SSH provisioning** probes the device, uploads the matching binary when needed and
   verifies it, on every start. Install paths identify the build (versioned for releases, a
   content hash for debug builds), so devices never hash binaries.
-- **Config edits apply at runtime**: adding, editing and deleting devices rewrites
-  `config.toml` (format-preserving, under a file lock) and replaces the supervisor.
+- **Config edits apply at runtime**: adding, editing and deleting devices rewrites the user's
+  `agents.json` atomically under a per-user lock and replaces the supervisor.
 
 ## Upgrading in place
 
@@ -453,9 +455,9 @@ The UI is a TanStack Router application embedded in the server binary.
 
 ## Vault and encrypted files
 
-The vault holds the keys that encrypt `.redoorencrypted` files and managed SSH keys. Everyone
-who signs in shares it. The browser creates, unlocks and rewraps every vault key; the server
-stores only wrapped keys (`vault.json`) and never sees the vault key.
+Each user has their own vault (`<data_dir>/users/<user>/vault.json`) holding the keys that
+encrypt their `.redoorencrypted` files and managed SSH keys. The browser creates, unlocks and
+rewraps every vault key; the server stores only wrapped keys and never sees the vault key.
 
 | Party | Holds | Never holds |
 |---|---|---|
@@ -494,18 +496,22 @@ command, so no connection can bypass the host key and auth policies.
 
 ## Authentication and trust
 
-Redoor has exactly one account with full access, by design: anyone who can sign in can
-already run commands as the server's OS user, so per-user roles would only pretend to protect
-anything. Several people and login methods lead into it; only UI state, editor buffers and the
-name in logs are per person. Each client kind has its own credential, which only works on its
-own endpoints:
+Every signed-in user owns an isolated **workspace** keyed by their canonical username (so
+password and OIDC logins with the same username share one workspace). Devices, managed agent
+definitions (`agents.json`), agent registration tokens (`account.json`), vaults (`vault.json`),
+SSH keys (`ssh/`), access tokens (`access-tokens.json`), UI state (`state.json`), editor
+buffers, terminals, transfers, protocol mismatches, one-time download links, and UI websocket
+events are all scoped to the user's workspace. All users remain equally privileged for
+server-wide operations (server logs, restart, upgrade, local agents), because anyone who can
+run a local agent already acts as the server's OS user. Each client kind has its own
+credential, which only works on its own endpoints:
 
 | Client | Credential | Grants |
 |---|---|---|
-| Browser UI | `redoor_session` cookie from password or OIDC sign-in | REST API and browser websockets, full access, including session-only routes |
-| `redoor remote` CLI, MCP clients, scripts | `redoor_at_...` access token | REST API and `/mcp`, limited by permissions and a device scope |
-| Agents | Proof of the shared agent token | `/api/v1/agent/ws` only |
-| Plain download links | One-time token | One file on one agent, once |
+| Browser UI | `redoor_session` cookie from password or OIDC sign-in | REST API and browser websockets for that user's workspace, including session-only routes |
+| `redoor remote` CLI, MCP clients, scripts | `redoor_at_...` access token | REST API and `/mcp` for the issuing user's workspace, limited by permissions and a device scope |
+| Agents | Proof of a user's agent token | `/api/v1/agent/ws` only, routed to that token's owner |
+| Plain download links | One-time token | One file on one agent of the issuing user, once |
 
 - **Login methods** are password users in the config file (`[[server.users]]`, re-read when
   the file changes) and optional OIDC.

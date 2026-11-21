@@ -7,6 +7,7 @@ import {
     onTestFinished,
 } from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createServer } from 'node:net';
 import type { Socket } from 'node:net';
 
@@ -18,12 +19,16 @@ import {
     ProcessManager,
     TempFileManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     DEVICE_ID_REGEXP,
     getAvailablePort,
     restartServerAndWait,
+    seedUserWorkspace,
+    serverDataDir,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -72,23 +77,39 @@ let apiClient: ApiClient;
 
 let configPath: string;
 
+let agentsJsonPath: string;
+
 let serverLog: string;
 
 beforeAll(async () => {
     configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `# This comment must survive the config edit.
-agent_token = "${TEST_AGENT_TOKEN}"
-
+        `# This comment must survive any server operation.
 [server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${LOCAL_AGENT_NAME}"
 `,
+    );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_createsshlocalfixaaa",
+                name: LOCAL_AGENT_NAME,
+                terminal_env: {},
+            },
+        ],
+    });
+    agentsJsonPath = join(
+        serverDataDir(TEST_SERVER_HOME, TEST_APP_NAME),
+        "users",
+        TEST_USERNAME,
+        "agents.json",
     );
     serverLog = tempFiles.tempFile({ suffix: ".log" });
     rmSync(serverLog, { force: true });
@@ -148,19 +169,18 @@ describe("SSH agent configuration API", () => {
                 ?.sshTarget,
         ).toBeNull();
 
-        const editedConfig = readFileSync(configPath, "utf8");
-        // toml_edit must preserve unrelated operator comments while appending every explicit field.
-        expect(editedConfig).toContain(
-            "# This comment must survive the config edit.",
-        );
-        expect(editedConfig).toContain('target = "example-host"');
-        expect(editedConfig).toContain('username = "deploy"');
-        expect(editedConfig).toContain("ssh_port = 2222");
-        expect(editedConfig).toContain(`name = "${AGENT_NAME}"`);
-        expect(editedConfig).toContain('install_dir = "/mnt/tank/apps"');
-        expect(editedConfig).toContain('password = "ssh-secret"');
+        const persisted = readFileSync(agentsJsonPath, "utf8");
+        expect(persisted).toContain('"target": "example-host"');
+        expect(persisted).toContain('"username": "deploy"');
+        expect(persisted).toContain('"ssh_port": 2222');
+        expect(persisted).toContain(`"name": "${AGENT_NAME}"`);
+        expect(persisted).toContain('"install_dir": "/mnt/tank/apps"');
+        expect(persisted).toContain('"password": "ssh-secret"');
         // The id is created on add and stored with the entry, so it survives restarts.
-        expect(editedConfig).toContain(`id = "${response.agent.id}"`);
+        expect(persisted).toContain(`"id": "${response.agent.id}"`);
+        expect(readFileSync(configPath, "utf8")).toContain(
+            "# This comment must survive any server operation.",
+        );
 
         await restartServerAndWait({ apiClient, serverLog });
 
@@ -177,8 +197,8 @@ describe("SSH agent configuration API", () => {
         ).toBe("stopped");
     });
 
-    it("rejects invalid and duplicate effective names without appending TOML", async () => {
-        const before = readFileSync(configPath, "utf8");
+    it("rejects invalid and duplicate effective names without mutating agents.json", async () => {
+        const before = readFileSync(agentsJsonPath, "utf8");
         await expect(
             apiClient.createSshAgent({
                 target: "   ",
@@ -218,7 +238,7 @@ describe("SSH agent configuration API", () => {
                 "install_dir must not contain control characters such as newlines",
         } satisfies Partial<ApiError>);
         // Rejected submissions must not modify the durable source of truth.
-        expect(readFileSync(configPath, "utf8")).toBe(before);
+        expect(readFileSync(agentsJsonPath, "utf8")).toBe(before);
     });
 
     it("reads, updates, renames, and deletes a stopped SSH entry", async () => {
@@ -280,29 +300,25 @@ describe("SSH agent configuration API", () => {
         // GET must keep omitting the secret after an update that replaces it.
         expect(afterUpdate.password).toBeNull();
         expect(afterUpdate.has_password).toBe(true);
-        const editedConfig = readFileSync(configPath, "utf8");
-        // Updating must preserve unrelated comments while replacing old SSH values.
-        expect(editedConfig).toContain(
-            "# This comment must survive the config edit.",
-        );
-        expect(editedConfig).toContain('target = "updated-host"');
-        expect(editedConfig).not.toContain('target = "example-host"');
+        const persisted = readFileSync(agentsJsonPath, "utf8");
+        expect(persisted).toContain('"target": "updated-host"');
+        expect(persisted).not.toContain('"target": "example-host"');
         // A typed password on PUT must replace the durable secret, not keep the old one.
-        expect(editedConfig).toContain('password = "updated-secret"');
-        expect(editedConfig).not.toContain('password = "ssh-secret"');
+        expect(persisted).toContain('"password": "updated-secret"');
+        expect(persisted).not.toContain('"password": "ssh-secret"');
         // The edit handler rebuilds the entry, so it must carry the id over explicitly.
-        expect(editedConfig).toContain(`id = "${configuredAgent.id}"`);
+        expect(persisted).toContain(`"id": "${configuredAgent.id}"`);
 
         const deletion = await apiClient.deleteManagedAgent(renamed, "ssh");
         expect(deletion.deleted).toBe(true);
-        // Deletion must remove both durable TOML and retained runtime inventory.
+        // Deletion must remove both durable agents.json and retained runtime inventory.
         expect(
             (await apiClient.listAgents()).some(
                 (agent) => agent.name === renamed,
             ),
         ).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(
-            `name = "${renamed}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain(
+            `"name": "${renamed}"`,
         );
     });
 
@@ -338,15 +354,13 @@ describe("SSH agent configuration API", () => {
             ssh_target: "after-host",
         });
 
-        const table = readFileSync(configPath, "utf8")
-            .split("[[agents]]")
-            .find((entry) => entry.includes(`name = "${name}"`));
+        const persisted = readFileSync(agentsJsonPath, "utf8");
 
         // The rewritten entry still carries the original id, so the next startup does not
         // assign a new one and break token scopes.
-        expect(table).toContain(`id = "${created.agent.id}"`);
+        expect(persisted).toContain(`"id": "${created.agent.id}"`);
         // The edit itself was applied to the same entry.
-        expect(table).toContain('target = "after-host"');
+        expect(persisted).toContain('"target": "after-host"');
     });
 
     it("returns 404 for unknown and local agents without converting them", async () => {
@@ -390,12 +404,14 @@ describe("SSH agent configuration API", () => {
         // A rejected SSH mutation must not convert or remove the local fixture.
         expect(local?.managed).toBe(true);
         expect(local?.configurationEditable).toBe(true);
-        expect(readFileSync(configPath, "utf8")).toContain(
-            `name = "${LOCAL_AGENT_NAME}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            `"name": "${LOCAL_AGENT_NAME}"`,
         );
-        expect(readFileSync(configPath, "utf8")).toContain("local = true");
-        expect(readFileSync(configPath, "utf8")).not.toContain(
-            'target = "converted-host"',
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            '"kind": "local"',
+        );
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain(
+            '"target": "converted-host"',
         );
     });
 
@@ -485,11 +501,11 @@ describe("SSH agent configuration API", () => {
         // Presence must stay true so the edit form can keep the password radio selected.
         expect(kept.has_password).toBe(true);
         // An empty PUT password must leave the durable secret untouched.
-        expect(readFileSync(configPath, "utf8")).toContain(
-            'password = "keep-me"',
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            '"password": "keep-me"',
         );
-        expect(readFileSync(configPath, "utf8")).toContain(
-            'target = "secret-host-2"',
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            '"target": "secret-host-2"',
         );
     });
 
@@ -519,8 +535,8 @@ describe("SSH agent configuration API", () => {
                 password: "temporary-secret",
             }),
         );
-        expect(readFileSync(configPath, "utf8")).toContain(
-            'password = "temporary-secret"',
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            '"password": "temporary-secret"',
         );
         expect(
             (await apiClient.getSshAgentConfiguration(name)).has_password,
@@ -538,16 +554,10 @@ describe("SSH agent configuration API", () => {
         // Clearing must flip presence so the UI can switch to key mode on the next edit.
         expect(cleared.has_password).toBe(false);
         expect(cleared.password).toBeNull();
-        const afterClear = readFileSync(configPath, "utf8");
-
-        const clearedTable = afterClear
-            .split("[[agents]]")
-            .find((table) => table.includes(`name = "${name}"`));
-
-        // Persistence must drop the TOML key rather than leave an empty password string.
-        expect(clearedTable).toBeDefined();
-        expect(clearedTable).not.toMatch(/^\s*password\s*=/m);
-        expect(afterClear).toContain('target = "key-only-host"');
+        const afterClear = readFileSync(agentsJsonPath, "utf8");
+        // Persistence must clear the password rather than leave a non-null secret.
+        expect(afterClear).not.toContain('"temporary-secret"');
+        expect(afterClear).toContain('"target": "key-only-host"');
     });
 
     it("stops a desired-running agent before deleting it", async () => {
@@ -577,12 +587,12 @@ describe("SSH agent configuration API", () => {
 
         const deletion = await apiClient.deleteManagedAgent(name, "ssh");
         expect(deletion.deleted).toBe(true);
-        // Both inventory and TOML must be gone after an auto-stop delete.
+        // Both inventory and agents.json must be gone after an auto-stop delete.
         expect(
             (await apiClient.listAgents()).some((agent) => agent.name === name),
         ).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(
-            `name = "${name}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain(
+            `"name": "${name}"`,
         );
     });
 

@@ -6,7 +6,7 @@
 //! cross-process lock.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -124,9 +124,10 @@ impl StoredToken {
 
     /// The authorization view handed to request handlers, without lifecycle details. The
     /// name comes along so log lines can say which token made a request.
-    fn grant(&self) -> TokenGrant {
+    fn grant(&self, owner: &str) -> TokenGrant {
         TokenGrant {
             id: self.id,
+            owner: owner.to_string(),
             name: self.name.clone(),
             permissions: self.permissions.clone(),
             devices: self.devices.clone(),
@@ -141,62 +142,86 @@ struct StoreDocument {
     tokens: Vec<StoredToken>,
 }
 
-/// Cheaply cloneable handle to the single in-memory token table.
+/// In-memory per-user token tables plus an O(1) id-to-owner index for bearer auth.
+#[derive(Default)]
+struct TokenTables {
+    by_owner: HashMap<String, Vec<StoredToken>>,
+    owner_by_id: HashMap<Uuid, String>,
+}
+
+impl TokenTables {
+    /// Replaces one owner's token list and updates the id-to-owner index.
+    fn set_owner_tokens(&mut self, owner: String, tokens: Vec<StoredToken>) {
+        if let Some(previous) = self.by_owner.remove(&owner) {
+            for token in previous {
+                self.owner_by_id.remove(&token.id);
+            }
+        }
+        for token in &tokens {
+            self.owner_by_id.insert(token.id, owner.clone());
+        }
+        if !tokens.is_empty() {
+            self.by_owner.insert(owner, tokens);
+        }
+    }
+}
+
+/// File name of a user's access token table inside `<user_dir>/`.
+const ACCESS_TOKENS_FILE: &str = "access-tokens.json";
+
+/// Cheaply cloneable handle to the per-user in-memory token tables.
 #[derive(Clone)]
 pub(crate) struct TokenStore {
-    path: Arc<PathBuf>,
+    paths: redoor_core::paths::AppPaths,
     /// Writers hold the lock across the file write, so persisted states are never interleaved.
-    tokens: Arc<RwLock<Vec<StoredToken>>>,
+    tables: Arc<RwLock<TokenTables>>,
 }
 
 impl TokenStore {
-    /// Loads `<data_dir>/tokens/access-tokens.json` once at startup, creating a private directory.
-    pub(crate) async fn load(data_dir: &Path) -> anyhow::Result<Self> {
-        let directory = data_dir.join("tokens");
-        tokio::fs::create_dir_all(&directory)
-            .await
-            .with_context(|| format!("creating {}", directory.display()))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            tokio::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700))
-                .await
-                .with_context(|| format!("protecting {}", directory.display()))?;
+    /// Creates an empty store backed by `paths` (for tests or before loading).
+    pub(crate) fn new(paths: redoor_core::paths::AppPaths) -> Self {
+        Self {
+            paths,
+            tables: Arc::default(),
         }
-        let path = directory.join("access-tokens.json");
-        let tokens = match tokio::fs::read(&path).await {
-            Ok(bytes) => {
-                let document: StoreDocument = serde_json::from_slice(&bytes)
-                    .with_context(|| format!("parsing {}", path.display()))?;
-                anyhow::ensure!(
-                    document.version == STORE_VERSION,
-                    "unsupported access token store version {} in {}",
-                    document.version,
-                    path.display()
-                );
-                document
-                    .tokens
-                    .into_iter()
-                    .map(|mut token| {
-                        token.persisted_last_used_at = token.last_used_at;
-                        token
-                    })
-                    .collect()
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => {
-                return Err(error).with_context(|| format!("reading {}", path.display()));
-            }
-        };
-        Ok(Self {
-            path: Arc::new(path),
-            tokens: Arc::new(RwLock::new(tokens)),
-        })
     }
 
-    /// Mints a new token and returns its secret exactly once.
+    /// Loads `<user_dir>/access-tokens.json` for every known user at startup.
+    pub(crate) async fn load_all(
+        paths: redoor_core::paths::AppPaths,
+        usernames: &[String],
+    ) -> anyhow::Result<Self> {
+        let store = Self::new(paths);
+        for username in usernames {
+            store.reload_user(username).await?;
+        }
+        Ok(store)
+    }
+
+    /// Loads or refreshes one user's `<user_dir>/access-tokens.json` into memory.
+    pub(crate) async fn reload_user(&self, owner: &str) -> anyhow::Result<()> {
+        let path =
+            crate::http::user_state::user_directory(&self.paths, owner)?.join(ACCESS_TOKENS_FILE);
+        let tokens = read_tokens_file(&path).await?;
+        self.tables
+            .write()
+            .await
+            .set_owner_tokens(owner.to_string(), tokens);
+        Ok(())
+    }
+
+    /// Path of `owner`'s `access-tokens.json`, ensuring `<user_dir>/` exists with mode 0700.
+    async fn prepare_owner_path(&self, owner: &str) -> Result<PathBuf, TokenStoreError> {
+        let dir = crate::http::user_state::prepare_user_directory(&self.paths, owner)
+            .await
+            .map_err(TokenStoreError::Storage)?;
+        Ok(dir.join(ACCESS_TOKENS_FILE))
+    }
+
+    /// Mints a new token for `owner` and returns its secret exactly once.
     pub(crate) async fn create(
         &self,
+        owner: &str,
         policy: TokenPolicy,
         expires_at: Option<Timestamp>,
     ) -> Result<IssuedToken, TokenStoreError> {
@@ -221,83 +246,114 @@ impl TokenStore {
             persisted_last_used_at: None,
         };
         let metadata = token.metadata();
-        let mut tokens = self.tokens.write().await;
-        tokens.push(token);
-        if let Err(error) = persist(&self.path, &mut tokens).await {
+        let path = self.prepare_owner_path(owner).await?;
+        let mut tables = self.tables.write().await;
+        let owner_tokens = tables.by_owner.entry(owner.to_string()).or_default();
+        owner_tokens.push(token);
+        if let Err(error) = persist(&path, owner_tokens).await {
             // Never hand out a secret the store could forget on restart.
-            tokens.retain(|token| token.id != id);
+            owner_tokens.retain(|token| token.id != id);
             return Err(error);
         }
+        tables.owner_by_id.insert(id, owner.to_string());
         Ok(IssuedToken { secret, metadata })
     }
 
-    /// Lists every token oldest first, without secrets or verifiers.
-    pub(crate) async fn list(&self) -> Vec<AccessTokenResponse> {
-        let tokens = self.tokens.read().await;
+    /// Lists `owner`'s tokens oldest first, without secrets or verifiers.
+    pub(crate) async fn list(&self, owner: &str) -> Vec<AccessTokenResponse> {
+        let tables = self.tables.read().await;
+        let Some(tokens) = tables.by_owner.get(owner) else {
+            return Vec::new();
+        };
         let mut sorted = tokens.iter().collect::<Vec<_>>();
         sorted.sort_by_key(|token| token.created_at);
         sorted.into_iter().map(StoredToken::metadata).collect()
     }
 
-    /// Reads one token's metadata, used by `/api/v1/tokens/current`.
-    pub(crate) async fn get(&self, id: Uuid) -> Option<AccessTokenResponse> {
-        self.tokens
+    /// Reads one token's metadata for `owner`, used by `/api/v1/tokens/current`.
+    pub(crate) async fn get(&self, owner: &str, id: Uuid) -> Option<AccessTokenResponse> {
+        self.tables
             .read()
             .await
+            .by_owner
+            .get(owner)?
             .iter()
             .find(|token| token.id == id)
             .map(StoredToken::metadata)
     }
 
-    /// Replaces the policy in place, so the next request with the same secret sees it.
+    /// Replaces the policy in place for `owner`'s token, so the next request with the same
+    /// secret sees it.
     pub(crate) async fn update(
         &self,
+        owner: &str,
         id: Uuid,
         policy: TokenPolicy,
     ) -> Result<AccessTokenResponse, TokenStoreError> {
         let policy = validate(policy)?;
-        let mut tokens = self.tokens.write().await;
-        let index = active_index(&tokens, id)?;
+        let path = self.prepare_owner_path(owner).await?;
+        let mut tables = self.tables.write().await;
+        let tokens = tables
+            .by_owner
+            .get_mut(owner)
+            .ok_or(TokenStoreError::NotFound)?;
+        let index = active_index(tokens, id)?;
         let previous = tokens[index].clone();
         let token = &mut tokens[index];
         token.name = policy.name;
         token.permissions = policy.permissions;
         token.devices = policy.devices;
         let metadata = token.metadata();
-        if let Err(error) = persist(&self.path, &mut tokens).await {
+        if let Err(error) = persist(&path, tokens).await {
             tokens[index] = previous;
             return Err(error);
         }
         Ok(metadata)
     }
 
-    /// Replaces the secret but keeps the id, so MCP operations owned by the token survive.
-    pub(crate) async fn rotate(&self, id: Uuid) -> Result<IssuedToken, TokenStoreError> {
+    /// Replaces the secret for `owner`'s token while keeping the id, so MCP operations owned
+    /// by the token survive.
+    pub(crate) async fn rotate(
+        &self,
+        owner: &str,
+        id: Uuid,
+    ) -> Result<IssuedToken, TokenStoreError> {
         let secret = new_secret(id)?;
-        let mut tokens = self.tokens.write().await;
-        let index = active_index(&tokens, id)?;
+        let path = self.prepare_owner_path(owner).await?;
+        let mut tables = self.tables.write().await;
+        let tokens = tables
+            .by_owner
+            .get_mut(owner)
+            .ok_or(TokenStoreError::NotFound)?;
+        let index = active_index(tokens, id)?;
         let previous = tokens[index].verifier.clone();
         tokens[index].verifier = verifier(&secret);
         let metadata = tokens[index].metadata();
-        if let Err(error) = persist(&self.path, &mut tokens).await {
+        if let Err(error) = persist(&path, tokens).await {
             tokens[index].verifier = previous;
             return Err(error);
         }
         Ok(IssuedToken { secret, metadata })
     }
 
-    /// Deletes a token; any request using it is rejected from now on.
-    pub(crate) async fn delete(&self, id: Uuid) -> Result<(), TokenStoreError> {
-        let mut tokens = self.tokens.write().await;
+    /// Deletes `owner`'s token; any request using it is rejected from now on.
+    pub(crate) async fn delete(&self, owner: &str, id: Uuid) -> Result<(), TokenStoreError> {
+        let path = self.prepare_owner_path(owner).await?;
+        let mut tables = self.tables.write().await;
+        let tokens = tables
+            .by_owner
+            .get_mut(owner)
+            .ok_or(TokenStoreError::NotFound)?;
         let index = tokens
             .iter()
             .position(|token| token.id == id)
             .ok_or(TokenStoreError::NotFound)?;
         let removed = tokens.remove(index);
-        if let Err(error) = persist(&self.path, &mut tokens).await {
+        if let Err(error) = persist(&path, tokens).await {
             tokens.insert(index, removed);
             return Err(error);
         }
+        tables.owner_by_id.remove(&id);
         Ok(())
     }
 
@@ -311,25 +367,66 @@ impl TokenStore {
         // Hash before parsing so malformed tokens take the same path as unknown ones.
         let presented = verifier(secret);
         let id = parse_token_id(secret)?;
-        let mut tokens = self.tokens.write().await;
+        let mut tables = self.tables.write().await;
+        let owner = tables.owner_by_id.get(&id)?.clone();
+        let tokens = tables.by_owner.get_mut(&owner)?;
         let token = tokens.iter_mut().find(|token| token.id == id)?;
         let matches: bool = token.verifier.as_bytes().ct_eq(presented.as_bytes()).into();
         if !matches || token.is_expired(now) {
             return None;
         }
         token.last_used_at = Some(now);
-        let grant = token.grant();
+        let grant = token.grant(&owner);
         let stale = token
             .persisted_last_used_at
             .is_none_or(|persisted| now.duration_since(persisted) >= LAST_USED_PERSIST_INTERVAL);
-        if stale && let Err(error) = persist(&self.path, &mut tokens).await {
-            // Last use is informational; failing to record it must not reject the request.
-            log!(
-                Level::Warning,
-                "Failed to record access token use: {error:#}"
-            );
+        if stale {
+            match crate::http::user_state::prepare_user_directory(&self.paths, &owner).await {
+                Ok(dir) => {
+                    let path = dir.join(ACCESS_TOKENS_FILE);
+                    if let Err(error) = persist(&path, tokens).await {
+                        // Last use is informational; failing to record it must not reject the request.
+                        log!(
+                            Level::Warning,
+                            "Failed to record access token use: {error:#}"
+                        );
+                    }
+                }
+                Err(error) => {
+                    log!(
+                        Level::Warning,
+                        "Failed to prepare user directory for access token use: {error:#}"
+                    );
+                }
+            }
         }
         Some(grant)
+    }
+}
+
+/// Reads one user's `access-tokens.json`, returning an empty list when the file is absent.
+async fn read_tokens_file(path: &Path) -> anyhow::Result<Vec<StoredToken>> {
+    match tokio::fs::read(path).await {
+        Ok(bytes) => {
+            let document: StoreDocument = serde_json::from_slice(&bytes)
+                .with_context(|| format!("parsing {}", path.display()))?;
+            anyhow::ensure!(
+                document.version == STORE_VERSION,
+                "unsupported access token store version {} in {}",
+                document.version,
+                path.display()
+            );
+            Ok(document
+                .tokens
+                .into_iter()
+                .map(|mut token| {
+                    token.persisted_last_used_at = token.last_used_at;
+                    token
+                })
+                .collect())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(error) => Err(error).with_context(|| format!("reading {}", path.display())),
     }
 }
 
@@ -476,12 +573,22 @@ mod tests {
         }
     }
 
-    /// Reads the persisted document to observe what survives a restart.
+    /// Reads the persisted document for `"alice"` to observe what survives a restart.
     async fn on_disk(root: &TempDir) -> serde_json::Value {
-        let bytes = tokio::fs::read(root.path().join("tokens/access-tokens.json"))
+        let paths = redoor_core::paths::AppPaths::for_home("redoor-test", root.path());
+        let dir = crate::http::user_state::user_directory(&paths, "alice").unwrap();
+        let bytes = tokio::fs::read(dir.join("access-tokens.json"))
             .await
             .unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Loads a fresh `TokenStore` rooted in `root`.
+    async fn load_store(root: &TempDir) -> TokenStore {
+        let paths = redoor_core::paths::AppPaths::for_home("redoor-test", root.path());
+        TokenStore::load_all(paths, &["alice".to_string()])
+            .await
+            .unwrap()
     }
 
     /// The secret format is what secret scanners and the id lookup rely on.
@@ -513,13 +620,14 @@ mod tests {
     #[tokio::test]
     async fn lifecycle_rotation_keeps_id_and_deletion_rejects() {
         let root = TempDir::create();
-        let store = TokenStore::load(root.path()).await.unwrap();
+        let store = load_store(&root).await;
         let issued = store
-            .create(policy(&[Permission::FilesRead]), None)
+            .create("alice", policy(&[Permission::FilesRead]), None)
             .await
             .unwrap();
         let grant = store.authenticate(&issued.secret).await.unwrap();
-        // The grant carries the stored policy.
+        // The grant carries the stored policy and owner.
+        assert_eq!(grant.owner, "alice");
         assert_eq!(grant.id.to_string(), issued.metadata.id);
         assert!(grant.permissions.contains(&Permission::FilesRead));
         // A malformed or wrong secret is rejected without error.
@@ -528,19 +636,29 @@ mod tests {
         tampered.push('x');
         assert!(store.authenticate(&tampered).await.is_none());
 
-        let rotated = store.rotate(grant.id).await.unwrap();
+        // Another user cannot rotate or delete alice's token.
+        assert!(matches!(
+            store.rotate("bob", grant.id).await,
+            Err(TokenStoreError::NotFound)
+        ));
+        assert!(matches!(
+            store.delete("bob", grant.id).await,
+            Err(TokenStoreError::NotFound)
+        ));
+
+        let rotated = store.rotate("alice", grant.id).await.unwrap();
         // Rotation keeps the id so operation ownership survives.
         assert_eq!(rotated.metadata.id, issued.metadata.id);
         // Only the new secret authenticates afterwards.
         assert!(store.authenticate(&issued.secret).await.is_none());
         assert!(store.authenticate(&rotated.secret).await.is_some());
 
-        store.delete(grant.id).await.unwrap();
+        store.delete("alice", grant.id).await.unwrap();
         // Deletion takes effect on the very next request.
         assert!(store.authenticate(&rotated.secret).await.is_none());
         // Deleting again reports the missing token.
         assert!(matches!(
-            store.delete(grant.id).await,
+            store.delete("alice", grant.id).await,
             Err(TokenStoreError::NotFound)
         ));
     }
@@ -549,10 +667,10 @@ mod tests {
     #[tokio::test]
     async fn expiry_rejects_authentication_and_mutation() {
         let root = TempDir::create();
-        let store = TokenStore::load(root.path()).await.unwrap();
+        let store = load_store(&root).await;
         let expiry = Timestamp::now() + SignedDuration::from_secs(3600);
         let issued = store
-            .create(policy(&[Permission::FilesRead]), Some(expiry))
+            .create("alice", policy(&[Permission::FilesRead]), Some(expiry))
             .await
             .unwrap();
         // Before expiry the token works.
@@ -573,6 +691,7 @@ mod tests {
         assert!(matches!(
             store
                 .create(
+                    "alice",
                     policy(&[Permission::FilesRead]),
                     Some(Timestamp::now() - SignedDuration::from_secs(1))
                 )
@@ -585,7 +704,7 @@ mod tests {
     #[tokio::test]
     async fn validation_rejects_bad_policies() {
         let root = TempDir::create();
-        let store = TokenStore::load(root.path()).await.unwrap();
+        let store = load_store(&root).await;
         let cases = [
             TokenPolicy {
                 name: "  ".to_string(),
@@ -610,21 +729,22 @@ mod tests {
         for case in cases {
             // Every invalid policy is a client error, never a stored token.
             assert!(matches!(
-                store.create(case, None).await,
+                store.create("alice", case, None).await,
                 Err(TokenStoreError::Invalid(_))
             ));
         }
         // Nothing was stored by the rejected attempts.
-        assert!(store.list().await.is_empty());
+        assert!(store.list("alice").await.is_empty());
     }
 
     /// The store survives a restart and its file is private.
     #[tokio::test]
     async fn persistence_round_trip_is_private() {
         let root = TempDir::create();
-        let store = TokenStore::load(root.path()).await.unwrap();
+        let store = load_store(&root).await;
         let issued = store
             .create(
+                "alice",
                 TokenPolicy {
                     name: " padded ".to_string(),
                     permissions: vec![Permission::FilesWrite, Permission::FilesRead],
@@ -640,8 +760,8 @@ mod tests {
             )
             .await
             .unwrap();
-        let reloaded = TokenStore::load(root.path()).await.unwrap();
-        let listed = reloaded.list().await;
+        let reloaded = load_store(&root).await;
+        let listed = reloaded.list("alice").await;
         // The reloaded token keeps its normalized policy.
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "padded");
@@ -658,17 +778,21 @@ mod tests {
                 ]
             }
         );
+        // Bob does not see alice's tokens.
+        assert!(reloaded.list("bob").await.is_empty());
         // The secret still authenticates after restart.
         assert!(reloaded.authenticate(&issued.secret).await.is_some());
-        let raw = tokio::fs::read_to_string(root.path().join("tokens/access-tokens.json"))
-            .await
-            .unwrap();
+        let paths = redoor_core::paths::AppPaths::for_home("redoor-test", root.path());
+        let path = crate::http::user_state::user_directory(&paths, "alice")
+            .unwrap()
+            .join("access-tokens.json");
+        let raw = tokio::fs::read_to_string(&path).await.unwrap();
         // Only the verifier is stored, never the secret.
         assert!(!raw.contains(&issued.secret));
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = tokio::fs::metadata(root.path().join("tokens/access-tokens.json"))
+            let mode = tokio::fs::metadata(&path)
                 .await
                 .unwrap()
                 .permissions()
@@ -682,9 +806,9 @@ mod tests {
     #[tokio::test]
     async fn last_used_persistence_is_throttled() {
         let root = TempDir::create();
-        let store = TokenStore::load(root.path()).await.unwrap();
+        let store = load_store(&root).await;
         let issued = store
-            .create(policy(&[Permission::FilesRead]), None)
+            .create("alice", policy(&[Permission::FilesRead]), None)
             .await
             .unwrap();
         let start = Timestamp::now();
@@ -702,7 +826,10 @@ mod tests {
             serde_json::json!(start.to_string())
         );
         // The in-memory value is current for listings.
-        assert_eq!(store.list().await[0].last_used_at, Some(soon.to_string()));
+        assert_eq!(
+            store.list("alice").await[0].last_used_at,
+            Some(soon.to_string())
+        );
         let later = start + SignedDuration::from_secs(61);
         store.authenticate_at(&issued.secret, later).await.unwrap();
         // Once the stored value is stale it is written again.

@@ -22,6 +22,7 @@ import {
     ProcessManager,
     TEST_APP_NAME,
     TEST_SERVER_HOME,
+    TEST_USERNAME,
     TempFileManager,
     createAccessToken,
     startServerAndAgent,
@@ -36,11 +37,13 @@ const MAGIC = Buffer.from("REDOORENCRYPTED\0", "latin1");
 /** Magic, version and header length, before the JSON header. */
 const PREFIX_LENGTH = MAGIC.length + 3;
 
-/** The shared vault file at the data directory root, which every test starts without. */
+/** The user's vault file under their workspace directory, which every test starts without. */
 const VAULT_PATH = join(
     TEST_SERVER_HOME,
     ".local/share",
     TEST_APP_NAME,
+    "users",
+    TEST_USERNAME,
     "vault.json",
 );
 

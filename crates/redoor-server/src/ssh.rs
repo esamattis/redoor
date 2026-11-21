@@ -123,6 +123,13 @@ pub(crate) struct ProvisionContext {
 }
 
 impl ProvisionContext {
+    /// Returns a clone scoped to one user's managed SSH key store.
+    pub(crate) fn with_ssh_keys(&self, ssh_keys: keys::SshKeyStore) -> Self {
+        let mut copy = self.clone();
+        copy.ssh_keys = Some(ssh_keys);
+        copy
+    }
+
     /// Pairs an agent's configured log path with this process's log size limit.
     pub(crate) fn log_file(&self, path: &str) -> redoor_core::rotating_log::LogFileSpec {
         redoor_core::rotating_log::LogFileSpec::new(path, self.log_max_size)

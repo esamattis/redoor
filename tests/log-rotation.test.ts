@@ -5,7 +5,6 @@ import { ApiClient } from "#ui/api-client";
 import {
     ProcessManager,
     TempFileManager,
-    TEST_AGENT_TOKEN,
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
@@ -39,9 +38,7 @@ beforeAll(async () => {
     const configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 log = "${serverLog}"

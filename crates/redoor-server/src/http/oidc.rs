@@ -784,6 +784,13 @@ pub(crate) async fn oidc_callback_handler(
             );
         }
     };
+    // Lazily create the user's workspace account.json (and agent_token) on first login
+    // unless first-use migration is still waiting to claim legacy data.
+    if !state.migration.is_pending().await
+        && let Err(error) = state.accounts.ensure_agent_token(&session.user.name).await
+    {
+        log_error!(error, "Failed to initialize per-user account on OIDC login");
+    }
     log!(
         Level::Info,
         "OIDC sign-in: subject={}, preferred_username={}, email={}, user={}",

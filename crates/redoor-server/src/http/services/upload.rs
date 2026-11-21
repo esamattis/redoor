@@ -5,6 +5,7 @@ use crate::actors::router::{
     OutboundStream, RouterError, RouterHandle, RouterMsg, StartUploadRequest, UploadStartOutcome,
 };
 use crate::http::{agent_client::STANDARD_TIMEOUT, error::ApiError};
+use crate::workspaces::AgentKey;
 use axum::body::Body;
 use bytes::{Bytes, BytesMut};
 use futures_util::{FutureExt, StreamExt};
@@ -13,7 +14,7 @@ use redoor_protocol::wire::request::{
     self, AgentRequest, CommandError, CommandOutcome, DecodeError,
 };
 use redoor_protocol::{
-    ids::{AgentId, RequestId},
+    ids::RequestId,
     wire::{
         command::Command,
         policy::UploadKind,
@@ -33,7 +34,7 @@ pub(crate) enum UploadStart {
 /// Owns one admitted server-to-agent upload and cancels it if its producer exits early.
 pub(crate) struct AgentUpload {
     router: RouterHandle,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     kind: UploadKind,
     total_bytes: u64,
     bytes_written: u64,
@@ -52,7 +53,7 @@ impl AgentUpload {
     /// existing destination) come back as the matching [`ApiError`].
     pub(crate) async fn start(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         command: Command,
         path: String,
         total_bytes: u64,
@@ -249,7 +250,7 @@ impl AgentUpload {
                     }))
                     .await;
                 Err(RouterError::UploadForwardFailed {
-                    agent_id: self.agent_id.to_string(),
+                    agent_id: self.agent_id.id.to_string(),
                     request_id: self.request_id().to_string(),
                 }
                 .into())
@@ -335,7 +336,7 @@ impl FrameBuffer {
 /// Cancels an upload whose producer exits before it reaches a terminal state.
 struct UploadCancelGuard {
     router: RouterHandle,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     request_id: RequestId,
     armed: bool,
 }
@@ -386,7 +387,7 @@ mod tests {
         oneshot::Sender<Result<CommandOutcome, RouterError>>,
     ) {
         let request_id = RequestId::new(11);
-        let agent_id = redoor_core::test_support::test_agent_id("agent");
+        let agent_id = AgentKey::new("test", redoor_core::test_support::test_agent_id("agent"));
         let router = RouterHandle::closed_for_test();
         let (stream, frames) = OutboundStream::detached(request_id, 64);
         let (completion_sender, completion) = oneshot::channel();

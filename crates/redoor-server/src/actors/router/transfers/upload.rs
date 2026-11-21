@@ -15,16 +15,13 @@ use super::super::messages::{
 use super::super::progress::UploadStartContext;
 use super::super::state::RouterState;
 use super::super::streams::{OutboundError, OutboundStart, OutboundStream, StreamLease};
+use crate::workspaces::AgentKey;
 use redoor_core::{log, log_command_failure};
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::policy::UploadKind;
 use redoor_protocol::wire::request::CommandOutcome;
 use redoor_protocol::wire::stream::STREAM_CREDIT_WINDOW_FRAMES;
-use redoor_protocol::{
-    api::transfers::TransferProgressState,
-    ids::{AgentId, RequestId},
-    wire::ServerToAgent,
-};
+use redoor_protocol::{api::transfers::TransferProgressState, ids::RequestId, wire::ServerToAgent};
 
 /// Uploads (including edits and copy destinations) one connection may receive at once.
 ///
@@ -119,7 +116,7 @@ impl RouterState {
                     request_id.as_transfer_id(),
                     "Upload stream canceled by client".to_string(),
                 );
-                self.notify_transfer_refresh();
+                self.notify_transfer_refresh(flow.agent_id.owner());
             }
             let _ = self.cancel_on_agent(
                 &request.agent_id,
@@ -160,7 +157,7 @@ impl RouterState {
             entry.cancelable = false;
             entry.pausable = false;
         }
-        self.notify_transfer_refresh_immediately();
+        self.notify_transfer_refresh_immediately(request.agent_id.owner());
         let agent_id = request.agent_id;
         let request_id = request.request_id;
         let chunk = request.chunk;
@@ -219,7 +216,7 @@ impl RouterState {
     }
 
     /// Releases the HTTP producer once the agent worker exists, or starts a copy's source.
-    pub(crate) fn mark_transfer_ready(&mut self, agent_id: AgentId, request_id: RequestId) {
+    pub(crate) fn mark_transfer_ready(&mut self, agent_id: AgentKey, request_id: RequestId) {
         let Some(flow_id) = self.flows.id_for(&agent_id, request_id) else {
             return;
         };
@@ -245,7 +242,7 @@ impl RouterState {
     /// Reserves the irreversible publication boundary only for a live destination worker.
     pub(crate) fn authorize_publication(
         &mut self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         request_id: RequestId,
     ) -> bool {
         let Some(flow_id) = self.flows.id_for(agent_id, request_id) else {
@@ -294,7 +291,7 @@ impl RouterState {
     ///
     /// The decision must never be lost: the agent's worker waits for it, and a granted
     /// publication is already non-cancelable, so a full priority lane retains it in a task.
-    pub(crate) fn begin_upload_publication(&mut self, agent_id: AgentId, request_id: RequestId) {
+    pub(crate) fn begin_upload_publication(&mut self, agent_id: AgentKey, request_id: RequestId) {
         let allowed = self.authorize_publication(&agent_id, request_id);
         if let Some(connection) = self.agents.by_id.get(&agent_id) {
             let decision = ServerToAgent::PublishDecision {
@@ -305,7 +302,7 @@ impl RouterState {
             let _ = connection.lanes.queue_priority(decision);
         }
         if allowed {
-            self.notify_transfer_refresh_immediately();
+            self.notify_transfer_refresh_immediately(agent_id.owner());
         }
     }
 
@@ -354,7 +351,7 @@ impl RouterState {
         {
             // No control owner remains that could acknowledge cancellation.
             self.release_upload(&upload);
-            self.notify_transfer_refresh();
+            self.notify_transfer_refresh(upload.agent_id.owner());
         }
     }
 
@@ -400,7 +397,7 @@ impl RouterState {
             } else if explicit {
                 self.mark_transfer_canceled(transfer_id);
             }
-            self.notify_transfer_refresh();
+            self.notify_transfer_refresh(response.agent_id.owner());
             if let Some(sender) = completion {
                 let _ = sender.send(Err(RouterError::ClientCanceledUpload));
             }
@@ -432,7 +429,7 @@ impl RouterState {
             }
         }
         let completion_result = Ok(result);
-        self.notify_transfer_refresh();
+        self.notify_transfer_refresh(response.agent_id.owner());
 
         if let Some(sender) = ready {
             // HTTP is still blocked on readiness when setup fails before the first credit grant.
@@ -476,6 +473,11 @@ mod tests {
         )
     }
 
+    /// Builds a test `AgentKey` under `"test"`.
+    fn test_key(label: &str) -> AgentKey {
+        AgentKey::new("test", redoor_core::test_support::test_agent_id(label))
+    }
+
     /// Registers one streaming upload flow plus its history row and returns its completion.
     fn record_upload(
         state: &mut RouterState,
@@ -483,9 +485,10 @@ mod tests {
         kind: UploadKind,
     ) -> oneshot::Receiver<Result<CommandOutcome, RouterError>> {
         let (completion, completion_receiver) = oneshot::channel();
+        let agent_id = test_key("agent-1");
         state.record_upload_start(UploadStartContext {
             request_id,
-            agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+            agent_id: agent_id.clone(),
             path: "/tmp/file.txt".to_string(),
             total_bytes: 4,
             kind,
@@ -494,7 +497,7 @@ mod tests {
             request_id,
             Flow::Upload(UploadFlow {
                 request_id,
-                agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+                agent_id,
                 kind,
                 phase: UploadPhase::Streaming,
                 completion: Some(completion),
@@ -514,13 +517,14 @@ mod tests {
     #[tokio::test]
     async fn uploads_beyond_the_per_connection_cap_are_refused() {
         let mut state = router_state();
-        let agent = redoor_core::test_support::test_agent_id("agent-1");
+        let agent = test_key("agent-1");
         let (lanes, _receivers) = crate::actors::lanes::ControlLanes::bounded(64, 16);
         state.agents.by_id.insert(
             agent.clone(),
             super::super::super::state::AgentConnection::from_register_request(
                 super::super::super::messages::RegisterAgentRequest::for_test(
-                    &agent,
+                    agent.owner(),
+                    &agent.id,
                     lanes,
                     super::super::super::streams::ConnectionStreams::new(agent.clone()),
                 ),
@@ -566,11 +570,13 @@ mod tests {
             let public_id = RequestId::new(60);
             let source_id = RequestId::new(61);
             let destination_id = RequestId::new(62);
+            let source_key = test_key("source");
+            let dest_key = test_key("agent-1");
             state.record_copy_start(CopyStartContext {
                 request_id: public_id.as_transfer_id(),
-                source_agent_id: redoor_core::test_support::test_agent_id("source"),
+                source_agent_id: source_key.clone(),
                 source_path: "/source".into(),
-                dest_agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+                dest_agent_id: dest_key.clone(),
                 dest_path: "/dest".into(),
                 total_bytes: 4,
                 direction: TransferDirection::Copy,
@@ -581,8 +587,8 @@ mod tests {
                     pause: None,
                     resumable: false,
                     progress_id: public_id.as_transfer_id(),
-                    source_agent_id: redoor_core::test_support::test_agent_id("source"),
-                    dest_agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+                    source_agent_id: source_key.clone(),
+                    dest_agent_id: dest_key.clone(),
                     content_kind: CopyContentKind::TarDirectory,
                     then: is_move.then(|| DeleteSource {
                         path: "/source".into(),
@@ -608,17 +614,11 @@ mod tests {
                 })),
             );
             assert!(
-                !state.authorize_publication(
-                    &redoor_core::test_support::test_agent_id("source"),
-                    source_id
-                ),
+                !state.authorize_publication(&source_key, source_id),
                 "the source worker cannot reserve the destination's publication boundary"
             );
             assert!(
-                state.authorize_publication(
-                    &redoor_core::test_support::test_agent_id("agent-1"),
-                    destination_id
-                ),
+                state.authorize_publication(&dest_key, destination_id),
                 "a remote destination must use public copy progress"
             );
             assert!(
@@ -637,23 +637,17 @@ mod tests {
             let request_id = RequestId::new(51);
             let _completion = record_upload(&mut state, request_id, kind);
             assert!(
-                !state.authorize_publication(
-                    &redoor_core::test_support::test_agent_id("other-agent"),
-                    request_id
-                ),
+                !state.authorize_publication(&test_key("other-agent"), request_id),
                 "another agent must not make a live upload noncancelable"
             );
             assert!(
                 state
-                    .cancel_public_transfer(request_id.as_transfer_id())
+                    .cancel_public_transfer("test", request_id.as_transfer_id())
                     .is_ok(),
                 "post-body cancellation must remain accepted before publication authorization"
             );
             assert!(
-                !state.authorize_publication(
-                    &redoor_core::test_support::test_agent_id("agent-1"),
-                    request_id
-                ),
+                !state.authorize_publication(&test_key("agent-1"), request_id),
                 "an accepted cancel must prevent publication before its control reaches the agent"
             );
             state.ui.refresh_check_task.abort();
@@ -661,15 +655,12 @@ mod tests {
             let mut state = router_state();
             let _completion = record_upload(&mut state, request_id, kind);
             assert!(
-                state.authorize_publication(
-                    &redoor_core::test_support::test_agent_id("agent-1"),
-                    request_id
-                ),
+                state.authorize_publication(&test_key("agent-1"), request_id),
                 "the owning prepared worker must be able to reserve publication"
             );
             assert!(
                 matches!(
-                    state.cancel_public_transfer(request_id.as_transfer_id()),
+                    state.cancel_public_transfer("test", request_id.as_transfer_id()),
                     Err(super::super::super::messages::CancelPublicTransferError::NotCancelable)
                 ),
                 "cancellation after the irreversible grant must be rejected"
@@ -688,7 +679,7 @@ mod tests {
         let edit_id = RequestId::new(41);
         let _edit_completion = record_upload(&mut state, edit_id, UploadKind::EditFile);
         let edit_request = CommitDirectUploadRequest {
-            agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+            agent_id: test_key("agent-1"),
             request_id: edit_id,
             chunk: terminal(edit_id),
             reply: oneshot::channel().0,
@@ -699,7 +690,7 @@ mod tests {
         let upload_id = RequestId::new(42);
         let _upload_completion = record_upload(&mut state, upload_id, UploadKind::RawUpload);
         let upload_request = CommitDirectUploadRequest {
-            agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+            agent_id: test_key("agent-1"),
             request_id: upload_id,
             chunk: terminal(upload_id),
             reply: oneshot::channel().0,
@@ -724,7 +715,7 @@ mod tests {
         state.finish_upload_response(
             request_id,
             RouteResponse {
-                agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+                agent_id: test_key("agent-1"),
                 socket_id: redoor_protocol::ids::SocketId::new(),
                 request_id,
                 result: CommandOutcome::Ok(serde_json::Value::Null),
@@ -744,10 +735,7 @@ mod tests {
         assert!(
             state
                 .flows
-                .id_for(
-                    &redoor_core::test_support::test_agent_id("agent-1"),
-                    request_id
-                )
+                .id_for(&test_key("agent-1"), request_id)
                 .is_none()
         );
         state.ui.refresh_check_task.abort();

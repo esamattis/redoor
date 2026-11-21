@@ -131,6 +131,10 @@ pub(crate) fn router(state: ServerState) -> Router<ServerState> {
             mcp_state.clone(),
             authenticate,
         ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            require_migrated,
+        ))
         .layer(middleware::from_fn_with_state(mcp_state, validate_origin))
         .layer(
             CorsLayer::new()
@@ -145,6 +149,26 @@ pub(crate) fn router(state: ServerState) -> Router<ServerState> {
                     header::HeaderName::from_static("mcp-name"),
                 ]),
         )
+}
+
+/// TEMPORARY MIGRATION: Blocks MCP requests with 503 while first-use migration from the
+/// legacy single-account layout is pending; remove once first-use migration is retired.
+async fn require_migrated(
+    State(state): State<ServerState>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if state.migration.is_pending().await {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(redoor_protocol::api::ErrorResponse {
+                code: Some(redoor_protocol::api::ApiErrorCode::MigrationRequired),
+                error: "Server upgrade requires migration confirmation in the web UI".to_string(),
+            }),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// Authenticates an access token on every request and never considers cookies or agent secrets.

@@ -18,7 +18,7 @@ use redoor_protocol::{
         AgentUpgradeSource, AgentUpgradeStatusResponse, UpgradeAgentRequest, UpgradeAgentResponse,
     },
     identity::BinaryIdentity,
-    ids::{AgentId, SocketId, UnixTimestampMillis},
+    ids::{SocketId, UnixTimestampMillis},
     wire::{command::Command, log::Level},
 };
 
@@ -30,13 +30,14 @@ use crate::http::{
     services::upload::{AgentUpload, UploadStart},
     state::ServerState,
 };
+use crate::workspaces::AgentKey;
 
 /// Agent upgrades by agent: the running one, or the last one until it is dismissed.
 ///
 /// Kept in memory only: a server restart ends every upgrade task anyway.
 #[derive(Clone, Default)]
 pub(crate) struct AgentUpgrades {
-    jobs: Arc<Mutex<HashMap<AgentId, TrackedUpgrade>>>,
+    jobs: Arc<Mutex<HashMap<AgentKey, TrackedUpgrade>>>,
 }
 
 /// One upgrade plus what the server needs to tell when the agent is back.
@@ -102,13 +103,13 @@ impl TrackedUpgrade {
 
 impl AgentUpgrades {
     /// Locks the table; a poisoned lock still holds consistent plain data.
-    fn jobs(&self) -> std::sync::MutexGuard<'_, HashMap<AgentId, TrackedUpgrade>> {
+    fn jobs(&self) -> std::sync::MutexGuard<'_, HashMap<AgentKey, TrackedUpgrade>> {
         self.jobs.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// Registers a new upgrade, refusing while another one of the same agent is running,
     /// since both would write the same executable.
-    fn begin(&self, agent_id: &AgentId, upgrade: TrackedUpgrade) -> Result<(), ApiError> {
+    fn begin(&self, agent_id: &AgentKey, upgrade: TrackedUpgrade) -> Result<(), ApiError> {
         let mut jobs = self.jobs();
         if jobs
             .get(agent_id)
@@ -123,7 +124,7 @@ impl AgentUpgrades {
     }
 
     /// Moves an upgrade to `phase`, unless a newer upgrade replaced it meanwhile.
-    fn set_phase(&self, agent_id: &AgentId, job_id: &str, phase: AgentUpgradePhase) {
+    fn set_phase(&self, agent_id: &AgentKey, job_id: &str, phase: AgentUpgradePhase) {
         if let Some(tracked) = self.jobs().get_mut(agent_id)
             && tracked.job.id == job_id
         {
@@ -134,7 +135,7 @@ impl AgentUpgrades {
     /// The agent's current or last upgrade, ended first if the agent is back.
     fn status(
         &self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         entry: Option<&AgentListEntry>,
     ) -> Option<AgentUpgradeJob> {
         let mut jobs = self.jobs();
@@ -144,7 +145,7 @@ impl AgentUpgrades {
     }
 
     /// Forgets a finished upgrade; a running one cannot be dismissed.
-    fn dismiss(&self, agent_id: &AgentId) -> Result<(), ApiError> {
+    fn dismiss(&self, agent_id: &AgentKey) -> Result<(), ApiError> {
         let mut jobs = self.jobs();
         if jobs
             .get(agent_id)
@@ -193,7 +194,7 @@ enum UpgradeBinary {
 /// An accepted upgrade, run to its end by its own task.
 struct UpgradeTask {
     state: ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     job_id: String,
     target_version: String,
     binary: UpgradeBinary,
@@ -363,14 +364,14 @@ impl UpgradeTask {
 /// Finds the inventory row of one agent.
 async fn inventory_entry(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<Option<AgentListEntry>, ApiError> {
     Ok(state
         .agents
-        .inventory()
+        .inventory(agent_id.owner())
         .await?
         .into_iter()
-        .find(|entry| &entry.id == agent_id))
+        .find(|entry| entry.id == agent_id.id))
 }
 
 /// Route: `POST /api/v1/agents/{agent}/upgrade` validates the request, then installs and
@@ -516,10 +517,12 @@ mod tests {
     /// An inventory row of agent `a` connected on `connection` and running `version`.
     fn connected_entry(connection: SocketId, version: &str) -> AgentListEntry {
         let agent_id = redoor_core::test_support::test_agent_id("a");
+        let agent_key = AgentKey::new("test", agent_id.clone());
         let mut registration = RegisterAgentRequest::for_test(
+            "test",
             &agent_id,
             ControlLanes::bounded(1, 1).0,
-            ConnectionStreams::new(agent_id.clone()),
+            ConnectionStreams::new(agent_key.clone()),
         );
         registration.identity.binary.version = version.to_string();
         AgentListEntry {
@@ -591,7 +594,7 @@ mod tests {
     #[test]
     fn refuses_a_second_running_upgrade_and_its_dismissal() {
         let upgrades = AgentUpgrades::default();
-        let agent_id = redoor_core::test_support::test_agent_id("a");
+        let agent_id = AgentKey::new("test", redoor_core::test_support::test_agent_id("a"));
         let mut running = restarting_upgrade(SocketId::new());
         running.job.phase = AgentUpgradePhase::Preparing;
         upgrades.begin(&agent_id, running).unwrap();

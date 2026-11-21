@@ -3,16 +3,14 @@
 
 use crate::actors;
 use crate::http::access::ResolvedDevice;
+use crate::workspaces::AgentKey;
 use axum::{Extension, Json, extract::State as AxumState, http::StatusCode};
-use redoor_protocol::{
-    api::{
-        agents::{
-            AgentDetailsResponse, AgentInfoResponse, AgentListResponse, ShutdownAgentResponse,
-            StartAgentRequest, StartAgentResponse,
-        },
-        server::RestartResponse,
+use redoor_protocol::api::{
+    agents::{
+        AgentDetailsResponse, AgentInfoResponse, AgentListResponse, ShutdownAgentResponse,
+        StartAgentRequest, StartAgentResponse,
     },
-    ids::AgentId,
+    server::RestartResponse,
 };
 
 use super::{access::Principal, agent_client::Restart, error::ApiError, state::ServerState};
@@ -41,13 +39,14 @@ pub(crate) use upgrade::{
     agent_upgrade_status_handler, dismiss_agent_upgrade_handler, upgrade_agent_handler,
 };
 
-/// Loads and sorts retained inventory so every client receives stable ordering.
+/// Loads and sorts retained inventory for `owner` so every client receives stable ordering.
 pub(super) async fn list_agent_snapshots(
     state: &ServerState,
+    owner: &str,
 ) -> Result<Vec<AgentInfoResponse>, ApiError> {
     let mut agents = state
         .agents
-        .inventory()
+        .inventory(owner)
         .await?
         .into_iter()
         .map(AgentInfoResponse::from)
@@ -66,7 +65,7 @@ pub(crate) async fn list_agents_handler(
     AxumState(state): AxumState<ServerState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<AgentListResponse>, ApiError> {
-    let agents = list_agent_snapshots(&state)
+    let agents = list_agent_snapshots(&state, principal.owner())
         .await?
         .into_iter()
         .filter(|agent| principal.can_see(&agent.id))
@@ -77,16 +76,17 @@ pub(crate) async fn list_agents_handler(
 /// Finds one retained inventory record while preserving unknown/unmanaged distinctions.
 pub(super) async fn managed_agent_snapshot(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<AgentInfoResponse, ApiError> {
-    let agent = list_agent_snapshots(state)
+    let agent = list_agent_snapshots(state, agent_id.owner())
         .await?
         .into_iter()
-        .find(|agent| &agent.id == agent_id)
-        .ok_or_else(|| ApiError::not_found(format!("Agent not found: {agent_id}")))?;
+        .find(|agent| agent.id == agent_id.id)
+        .ok_or_else(|| ApiError::not_found(format!("Agent not found: {}", agent_id.id)))?;
     if !agent.managed {
         return Err(ApiError::conflict(format!(
-            "Agent is external and cannot be managed: {agent_id}"
+            "Agent is external and cannot be managed: {}",
+            agent_id.id
         )));
     }
     Ok(agent)
@@ -98,18 +98,18 @@ pub(super) async fn managed_agent_snapshot(
 /// inconsistent rather than that the client asked for something unknown.
 pub(super) fn managed_watchdog(
     state: &ServerState,
-    agent: &AgentInfoResponse,
+    agent: &AgentKey,
 ) -> Result<WatchdogHandle, ApiError> {
     state
         .watchdog_registry
-        .lookup(agent.id.as_str())
+        .lookup(&agent.watchdog_key())
         .ok_or_else(|| ApiError::internal(format!("Managed supervisor unavailable: {}", agent.id)))
 }
 
 /// Waits until the router has projected a control snapshot and completed socket cleanup.
 pub(super) async fn apply_managed_snapshot(
     state: &ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     snapshot: crate::watchdog::WatchdogSnapshot,
 ) -> Result<(), ApiError> {
     apply_managed_snapshot_with_eviction(state, agent_id, snapshot, false).await
@@ -118,7 +118,7 @@ pub(super) async fn apply_managed_snapshot(
 /// Fences retry against the router's old socket before a replacement can register.
 pub(super) async fn evict_managed_snapshot(
     state: &ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     snapshot: crate::watchdog::WatchdogSnapshot,
 ) -> Result<(), ApiError> {
     apply_managed_snapshot_with_eviction(state, agent_id, snapshot, true).await
@@ -127,7 +127,7 @@ pub(super) async fn evict_managed_snapshot(
 /// Projects one lifecycle snapshot with optional retry-specific connection cleanup.
 async fn apply_managed_snapshot_with_eviction(
     state: &ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     snapshot: crate::watchdog::WatchdogSnapshot,
     evict_existing: bool,
 ) -> Result<(), ApiError> {
@@ -150,13 +150,15 @@ async fn apply_managed_snapshot_with_eviction(
 /// Re-reads the sorted inventory row of one agent after a lifecycle change.
 pub(super) async fn current_agent_snapshot(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
 ) -> Result<AgentInfoResponse, ApiError> {
-    list_agent_snapshots(state)
+    list_agent_snapshots(state, agent_id.owner())
         .await?
         .into_iter()
-        .find(|agent| &agent.id == agent_id)
-        .ok_or_else(|| ApiError::internal(format!("Managed inventory disappeared: {agent_id}")))
+        .find(|agent| agent.id == agent_id.id)
+        .ok_or_else(|| {
+            ApiError::internal(format!("Managed inventory disappeared: {}", agent_id.id))
+        })
 }
 
 /// Route: `POST /api/v1/agents/{agent}/start` accepts desired-running without waiting for connection.
@@ -178,14 +180,14 @@ pub(crate) async fn start_agent_handler(
     // delayed tab start cannot land behind shutdown and revive the old supervisor.
     let _edit_guard = state.config_edit_lock.lock().await;
     let mut snapshot = managed_agent_snapshot(&state, &agent_id).await?;
-    let watchdog = managed_watchdog(&state, &snapshot)?;
+    let watchdog = managed_watchdog(&state, &agent_id)?;
     let was_running = watchdog.snapshot().desired_running;
     super::ssh_keys::unlock_for_start(&state, &agent_id, request.ssh_key_file_key.as_deref())
         .await?;
     if let Err(error) = watchdog.start().await {
         // A device that did not start must not keep a key unlocked for token starts.
         if !was_running {
-            state.held_ssh_keys.release(&agent_id);
+            state.held_ssh_keys.release(&agent_id.id);
         }
         return Err(error.into());
     }
@@ -213,8 +215,8 @@ pub(crate) async fn shutdown_agent_handler(
     // Configuration replacement also mutates this supervisor; sharing the lock prevents
     // shutdown from racing a persist-then-register and reviving the outgoing identity.
     let _edit_guard = state.config_edit_lock.lock().await;
-    let snapshot = managed_agent_snapshot(&state, &agent_id).await?;
-    let watchdog = managed_watchdog(&state, &snapshot)?;
+    let _snapshot = managed_agent_snapshot(&state, &agent_id).await?;
+    let watchdog = managed_watchdog(&state, &agent_id)?;
     stop_managed_device(&state, &agent_id, &watchdog).await?;
     apply_managed_snapshot(&state, agent_id.clone(), watchdog.snapshot()).await?;
     Ok(Json(ShutdownAgentResponse {
@@ -230,19 +232,23 @@ pub(crate) async fn shutdown_agent_handler(
 /// prepared stop keeps its own copy of the key until it finishes or gives up.
 pub(crate) async fn stop_managed_device(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     watchdog: &WatchdogHandle,
 ) -> Result<(), ApiError> {
     let stop = match super::agent_configuration::find_configured_agent(state, agent_id).await? {
         Some(config) => {
             state
                 .launcher
-                .remote_job(&config, crate::ssh::ManagedRemoteAction::Stop)
+                .remote_job(
+                    agent_id.owner(),
+                    &config,
+                    crate::ssh::ManagedRemoteAction::Stop,
+                )
                 .await
         }
         None => None,
     };
-    state.held_ssh_keys.release(agent_id);
+    state.held_ssh_keys.release(&agent_id.id);
     tokio::time::timeout(std::time::Duration::from_secs(10), watchdog.shutdown(stop))
         .await
         .map_err(|_| {
@@ -261,7 +267,10 @@ pub(crate) async fn get_agent_details_handler(
 ) -> Result<Json<AgentDetailsResponse>, ApiError> {
     let details = state.agents.agent_details(&agent_id).await?;
     if details.name.is_empty() {
-        return Err(ApiError::not_found(format!("Agent not found: {agent_id}")));
+        return Err(ApiError::not_found(format!(
+            "Agent not found: {}",
+            agent_id.id
+        )));
     }
     Ok(Json(details))
 }
@@ -278,7 +287,7 @@ pub(crate) async fn restart_agent_handler(
         redoor_protocol::wire::log::Level::Info,
         "Device restart requested: device={agent_id}"
     );
-    if let Some(watchdog) = state.watchdog_registry.lookup(agent_id.as_str()) {
+    if let Some(watchdog) = state.watchdog_registry.lookup(&agent_id.watchdog_key()) {
         watchdog.restart().await?;
         return Ok(Json(RestartResponse { restarting: true }));
     }

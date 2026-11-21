@@ -13,10 +13,13 @@ import {
     ProcessManager,
     TempFileManager,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForValue,
     waitForPort,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
 } from "./test-utils";
 
@@ -48,23 +51,33 @@ beforeAll(async () => {
     configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${AGENT_NAME}"
-home = "${agentDir}"
-
-[[agents]]
-local = true
-name = "${FAILING_AGENT_NAME}"
-home = "${agentDir}/does-not-exist"
 `,
     );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_watchdogagentaaaaaaa",
+                name: AGENT_NAME,
+                home: agentDir,
+                terminal_env: {},
+            },
+            {
+                kind: "local",
+                id: "dev_watchdogfailaaaaaaaa",
+                name: FAILING_AGENT_NAME,
+                home: `${agentDir}/does-not-exist`,
+                terminal_env: {},
+            },
+        ],
+    });
 
     // Capture the server's own log to a file so the test can
     // inspect it on failure. The agent's own log is configured

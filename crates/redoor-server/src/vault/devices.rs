@@ -44,6 +44,8 @@ struct DeviceEntry {
     /// The last vault use the browser reported. Opening on a page load does not move it, so
     /// reloading is not use.
     last_used_at: Instant,
+    /// Canonical username of the workspace whose vault this entry unlocks.
+    owner: String,
     /// The login session that created the entry; only it may open or touch it.
     session_id: String,
 }
@@ -105,10 +107,11 @@ impl VaultDeviceStore {
         devices
     }
 
-    /// Creates an entry for the session with a fresh secret. At the cap, the least recently
-    /// used entry goes, whichever session it belongs to.
+    /// Creates an entry for the session with a fresh secret. At the per-user cap, the least
+    /// recently used entry of that owner goes.
     pub(crate) fn create(
         &self,
+        owner: &str,
         session_id: &str,
         lock_after: VaultLockAfter,
     ) -> CreateVaultDeviceResponse {
@@ -118,9 +121,15 @@ impl VaultDeviceStore {
         let encoded_secret = redoor_vault::encode_base64url(secret.as_ref());
         let now = (self.clock)();
         let mut devices = self.devices();
-        while devices.len() >= MAX_DEVICES {
+        while devices
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .count()
+            >= MAX_DEVICES
+        {
             let Some(oldest) = devices
                 .iter()
+                .filter(|(_, entry)| entry.owner == owner)
                 .min_by_key(|(_, entry)| entry.last_used_at)
                 .map(|(id, _)| id.clone())
             else {
@@ -134,6 +143,7 @@ impl VaultDeviceStore {
                 secret,
                 lock_after,
                 last_used_at: now,
+                owner: owner.to_string(),
                 session_id: session_id.to_string(),
             },
         );
@@ -211,10 +221,10 @@ impl VaultDeviceStore {
             .retain(|_, entry| entry.session_id != session_id);
     }
 
-    /// Deletes every entry, because a rotation or backup restore replaced the generation
-    /// every stored raw key belongs to.
-    pub(crate) fn clear(&self) {
-        self.devices().clear();
+    /// Deletes every entry belonging to `owner`, because a rotation or backup restore
+    /// replaced the generation their stored raw keys belong to.
+    pub(crate) fn clear_owner(&self, owner: &str) {
+        self.devices().retain(|_, entry| entry.owner != owner);
     }
 
     /// The sessions that own entries, for the prune task to check without holding the lock.
@@ -323,7 +333,7 @@ mod tests {
             let clock = ManualClock::new();
             let store = clock.store();
             let idle = lock_after.idle_duration().unwrap();
-            let created = store.create(SESSION, lock_after);
+            let created = store.create("alice", SESSION, lock_after);
             // The browser learns the full window right away.
             assert_eq!(created.expires_in_seconds, Some(idle.as_secs()));
 
@@ -344,7 +354,7 @@ mod tests {
     fn never_does_not_expire() {
         let clock = ManualClock::new();
         let store = clock.store();
-        let created = store.create(SESSION, VaultLockAfter::Never);
+        let created = store.create("alice", SESSION, VaultLockAfter::Never);
         // No deadline is reported to the browser.
         assert_eq!(created.expires_in_seconds, None);
         clock.advance(Duration::from_secs(400 * 24 * 60 * 60));
@@ -359,7 +369,7 @@ mod tests {
     fn open_keeps_the_deadline_and_touch_extends_it() {
         let clock = ManualClock::new();
         let store = clock.store();
-        let created = store.create(SESSION, VaultLockAfter::FifteenMinutes);
+        let created = store.create("alice", SESSION, VaultLockAfter::FifteenMinutes);
 
         clock.advance(Duration::from_secs(10 * 60));
         let opened = store.open(&created.device_id, SESSION).unwrap();
@@ -393,8 +403,8 @@ mod tests {
     fn any_access_prunes_expired_entries() {
         let clock = ManualClock::new();
         let store = clock.store();
-        let short = store.create(SESSION, VaultLockAfter::FifteenMinutes);
-        let long = store.create(SESSION, VaultLockAfter::Never);
+        let short = store.create("alice", SESSION, VaultLockAfter::FifteenMinutes);
+        let long = store.create("alice", SESSION, VaultLockAfter::Never);
         clock.advance(Duration::from_secs(15 * 60));
 
         store.status(&long.device_id, SESSION).unwrap();
@@ -409,7 +419,7 @@ mod tests {
     #[test]
     fn other_sessions_are_refused() {
         let store = ManualClock::new().store();
-        let created = store.create(SESSION, VaultLockAfter::OneHour);
+        let created = store.create("alice", SESSION, VaultLockAfter::OneHour);
 
         // Another session cannot read the secret, use it or check it.
         assert_not_found(store.open(&created.device_id, OTHER_SESSION));
@@ -429,8 +439,8 @@ mod tests {
     #[test]
     fn deleting_a_session_keeps_other_sessions() {
         let store = ManualClock::new().store();
-        let mine = store.create(SESSION, VaultLockAfter::Never);
-        let theirs = store.create(OTHER_SESSION, VaultLockAfter::Never);
+        let mine = store.create("alice", SESSION, VaultLockAfter::Never);
+        let theirs = store.create("alice", OTHER_SESSION, VaultLockAfter::Never);
 
         store.delete_session(SESSION);
         // The signed-out session's browser is locked.
@@ -444,18 +454,18 @@ mod tests {
     fn the_cap_drops_the_least_recently_used_entry() {
         let clock = ManualClock::new();
         let store = clock.store();
-        let first = store.create(SESSION, VaultLockAfter::Never);
+        let first = store.create("alice", SESSION, VaultLockAfter::Never);
         clock.advance(Duration::from_secs(1));
-        let second = store.create(SESSION, VaultLockAfter::Never);
+        let second = store.create("alice", SESSION, VaultLockAfter::Never);
         for _ in 2..MAX_DEVICES {
             clock.advance(Duration::from_secs(1));
-            store.create(SESSION, VaultLockAfter::Never);
+            store.create("alice", SESSION, VaultLockAfter::Never);
         }
         clock.advance(Duration::from_secs(1));
         // Using the oldest entry makes the second one the least recently used.
         store.touch(&first.device_id, SESSION).unwrap();
 
-        store.create(SESSION, VaultLockAfter::Never);
+        store.create("alice", SESSION, VaultLockAfter::Never);
         // The map never grows past the cap.
         assert_eq!(store.devices.lock().unwrap().len(), MAX_DEVICES);
         // The least recently used entry went.
@@ -465,17 +475,20 @@ mod tests {
     }
 
     /// Rotation and backup restore replace the generation every stored key belongs to, so
-    /// every browser's entry goes.
+    /// every browser's entry goes for that owner while other users' entries remain.
     #[test]
     fn clear_removes_every_session_entry() {
         let store = ManualClock::new().store();
-        let mine = store.create(SESSION, VaultLockAfter::Never);
-        let theirs = store.create(OTHER_SESSION, VaultLockAfter::OneWeek);
+        let mine = store.create("alice", SESSION, VaultLockAfter::Never);
+        let theirs = store.create("alice", OTHER_SESSION, VaultLockAfter::OneWeek);
+        let bob = store.create("bob", OTHER_SESSION, VaultLockAfter::OneWeek);
 
-        store.clear();
-        // Neither browser can open its wrapped key anymore.
+        store.clear_owner("alice");
+        // Neither of alice's browsers can open its wrapped key anymore.
         assert_not_found(store.open(&mine.device_id, SESSION));
         assert_not_found(store.open(&theirs.device_id, OTHER_SESSION));
+        // Bob's browser is unaffected.
+        store.open(&bob.device_id, OTHER_SESSION).unwrap();
     }
 
     /// The prune task drops entries of sessions that ended and keeps those of live ones.
@@ -483,10 +496,10 @@ mod tests {
     async fn prune_drops_entries_of_ended_sessions() {
         let (_directory, auth, session) = crate::http::auth::test_support::signed_in_auth().await;
         let store = ManualClock::new().store();
-        let live = store.create(&session.id, VaultLockAfter::Never);
+        let live = store.create("admin", &session.id, VaultLockAfter::Never);
         // A well-formed session id without a session file stands for an ended session.
         let ended_session = uuid::Uuid::new_v4().to_string();
-        let ended = store.create(&ended_session, VaultLockAfter::Never);
+        let ended = store.create("admin", &ended_session, VaultLockAfter::Never);
 
         store.prune(&auth).await;
         // The ended session's secret left memory.

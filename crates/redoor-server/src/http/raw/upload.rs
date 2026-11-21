@@ -80,7 +80,7 @@ pub(crate) async fn raw_agent_put_handler(
     let ownership = params.ownership();
     ownership.validate().map_err(ApiError::bad_request)?;
     let total_bytes = required_content_length(&headers, "uploads")?;
-    let request_guard = state.upload_requests.reserve(&headers)?;
+    let request_guard = state.upload_requests.reserve(agent_id.owner(), &headers)?;
     let command = Command::RawUpload(request::RawUpload {
         partial: None,
         path: path.clone(),

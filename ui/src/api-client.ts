@@ -50,6 +50,8 @@ import type { SessionExpiry } from "#bindings/SessionExpiry";
 import type { SessionRotationResponse } from "#bindings/SessionRotationResponse";
 import type { SessionLength } from "#bindings/SessionLength";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
+import type { MigrationStatusResponse } from "#bindings/MigrationStatusResponse";
+import type { ConfirmMigrationResponse } from "#bindings/ConfirmMigrationResponse";
 import type { BrowserSessionListResponse } from "#bindings/BrowserSessionListResponse";
 import type { SignOutSessionsResponse } from "#bindings/SignOutSessionsResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
@@ -2617,6 +2619,32 @@ export class ApiClient {
         return apiRequest<UserStateResponse>(
             `${this.baseUrl}/api/v1/user/state`,
             undefined,
+            this.requestContext(),
+        );
+    }
+
+    /**
+     * Checks whether legacy global data is waiting for first-use workspace migration.
+     *
+     * TEMPORARY MIGRATION: Can be removed after layout v2 adoption.
+     */
+    async getMigrationStatus(): Promise<MigrationStatusResponse> {
+        return apiRequest<MigrationStatusResponse>(
+            `${this.baseUrl}/api/v1/migration`,
+            undefined,
+            this.requestContext(),
+        );
+    }
+
+    /**
+     * Moves legacy global data into the signed-in user's workspace and lifts the 503 gate.
+     *
+     * TEMPORARY MIGRATION: Can be removed after layout v2 adoption.
+     */
+    async confirmMigration(): Promise<ConfirmMigrationResponse> {
+        return apiRequest<ConfirmMigrationResponse>(
+            `${this.baseUrl}/api/v1/migration/confirm`,
+            { method: "POST" },
             this.requestContext(),
         );
     }

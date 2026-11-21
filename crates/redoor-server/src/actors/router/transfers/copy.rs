@@ -17,9 +17,10 @@ use super::super::messages::{
 use super::super::progress::CopyStartContext;
 use super::super::state::{CopyContentKind, CopyOperation, RouterState};
 use super::super::streams::{OutboundStart, OutboundStream, OutputReceiver, StreamLease};
+use crate::workspaces::AgentKey;
 use redoor_core::partials::SEGMENT_SIZE;
 use redoor_core::{log, log_command_failure};
-use redoor_protocol::ids::{AgentId, RequestId, TransferId};
+use redoor_protocol::ids::{RequestId, TransferId};
 use redoor_protocol::wire::command::CommandErrorKind;
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::partials::CancelReason;
@@ -102,13 +103,15 @@ impl RouterState {
         };
         // Two writers would share one deterministic partial, and even without partials the
         // later publication would silently replace the earlier one.
-        if self.progress.entries.values().any(|entry| {
-            matches!(
-                entry.state,
-                TransferProgressState::Active | TransferProgressState::Canceling
-            ) && entry.dest.as_ref().is_some_and(|dest| {
-                dest.agent == target.dest_agent_id && dest.path == target.dest_path
-            })
+        if self.progress.entries.iter().any(|(id, entry)| {
+            self.progress.owners.get(id).map(String::as_str) == Some(target.dest_agent_id.owner())
+                && matches!(
+                    entry.state,
+                    TransferProgressState::Active | TransferProgressState::Canceling
+                )
+                && entry.dest.as_ref().is_some_and(|dest| {
+                    dest.agent == target.dest_agent_id.id && dest.path == target.dest_path
+                })
         }) {
             let _ = reply.send(Err(RouterError::DestinationBusy {
                 path: target.dest_path,
@@ -211,7 +214,7 @@ impl RouterState {
         target: CopyTarget,
         then: Option<DeleteSource>,
         verification: ResumeVerification,
-    ) -> (AgentId, bool) {
+    ) -> (AgentKey, bool) {
         if let Some(entry) = self.progress.entries.get_mut(&flow_id.as_transfer_id()) {
             entry.verifying = true;
         }
@@ -252,7 +255,7 @@ impl RouterState {
 
     /// Asks both agents for the hash of the segment at the current verification offset;
     /// returns the agent whose control queue refused its command.
-    fn send_segment_hashes(&mut self, flow_id: FlowId) -> Result<(), AgentId> {
+    fn send_segment_hashes(&mut self, flow_id: FlowId) -> Result<(), AgentKey> {
         let Some(Flow::Copy(flow)) = self.flows.get(flow_id) else {
             return Ok(());
         };
@@ -342,11 +345,12 @@ impl RouterState {
         let offset = verification.offset;
         let done = !matched || offset >= verification.end;
         let progress_id = flow.progress_id;
+        let owner = flow.dest_agent_id.owner.clone();
         if let Some(entry) = self.progress.entries.get_mut(&progress_id) {
             // Hashed bytes are the only visible progress on slow disks.
             entry.transferred_bytes = offset;
         }
-        self.notify_transfer_refresh();
+        self.notify_transfer_refresh(&owner);
         if done {
             self.finish_prefix_verification(flow_id);
         } else {
@@ -509,7 +513,7 @@ impl RouterState {
         flow_id: FlowId,
         target: &CopyTarget,
         then: Option<DeleteSource>,
-    ) -> (AgentId, bool) {
+    ) -> (AgentKey, bool) {
         let request_id = self.next_id();
         let command = match &then {
             Some(delete) => Command::LocalMove(request::LocalMove {
@@ -565,7 +569,7 @@ impl RouterState {
         flow_id: FlowId,
         target: &CopyTarget,
         then: Option<DeleteSource>,
-    ) -> (AgentId, bool) {
+    ) -> (AgentKey, bool) {
         let dest_id = self.next_id();
         let source_id = self.next_id();
         let Some(source_agent) = self.agents.by_id.get(&target.source_agent_id) else {
@@ -678,8 +682,8 @@ impl RouterState {
     /// a worker that already answered is ignored by its agent.
     pub(crate) fn release_remote_copy(
         &mut self,
-        source_agent_id: &AgentId,
-        dest_agent_id: &AgentId,
+        source_agent_id: &AgentKey,
+        dest_agent_id: &AgentKey,
         remote: &RemoteCopy,
         release: CopyRelease,
     ) {
@@ -735,7 +739,7 @@ impl RouterState {
     pub(crate) fn start_copy_source(
         &mut self,
         flow_id: FlowId,
-        dest_agent_id: &AgentId,
+        dest_agent_id: &AgentKey,
         dest_request_id: RequestId,
     ) {
         let Some(Flow::Copy(flow)) = self.flows.get_mut(flow_id) else {
@@ -1108,9 +1112,14 @@ impl RouterState {
     /// Pause uses cancellation ownership but keeps its reply until durable destination cleanup.
     pub(crate) fn pause_transfer(
         &mut self,
+        owner: &str,
         transfer_id: TransferId,
         reply: RouterReply<Result<(), String>>,
     ) {
+        if self.progress.owners.get(&transfer_id).map(String::as_str) != Some(owner) {
+            let _ = reply.send(Err("Transfer not found".into()));
+            return;
+        }
         let eligible = self
             .progress
             .entries
@@ -1140,8 +1149,11 @@ impl RouterState {
     /// Removes a paused transfer entirely; the destination partial is now its only record.
     fn forget_paused_transfer(&mut self, transfer_id: TransferId) {
         self.progress.entries.remove(&transfer_id);
+        let owner = self.progress.owners.remove(&transfer_id);
         self.progress.terminal_observers.remove(&transfer_id);
-        self.notify_transfer_refresh_immediately();
+        if let Some(owner) = owner {
+            self.notify_transfer_refresh_immediately(&owner);
+        }
     }
 
     /// Applies prefix verification progress of an agent-local resumable copy.
@@ -1150,7 +1162,7 @@ impl RouterState {
     /// move publishes by rename or stages through a partial.
     pub(crate) fn update_local_verification(
         &mut self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         request_id: RequestId,
         bytes: u64,
         verifying: bool,
@@ -1173,7 +1185,7 @@ impl RouterState {
         if !verifying {
             entry.resumed_bytes = bytes;
         }
-        self.notify_transfer_refresh();
+        self.notify_transfer_refresh(agent_id.owner());
     }
 
     /// Applies agent-reported progress of an agent-local copy.
@@ -1207,7 +1219,7 @@ impl RouterState {
 fn pending_segment_hashes(
     flow: &CopyFlow,
     verification: &PrefixVerification,
-) -> Vec<(AgentId, RequestId)> {
+) -> Vec<(AgentKey, RequestId)> {
     [
         (&flow.source_agent_id, &verification.source),
         (&flow.dest_agent_id, &verification.dest),
@@ -1231,7 +1243,7 @@ mod tests {
 
     /// Builds one agent connection with an observable bulk lane.
     fn agent(name: &str) -> (ConnectionStreams, AgentLink, mpsc::Receiver<StreamChunk>) {
-        let agent = redoor_core::test_support::test_agent_id(name);
+        let agent = AgentKey::new("test", redoor_core::test_support::test_agent_id(name));
         let (lanes, receivers) = ControlLanes::bounded(16, 16);
         (
             ConnectionStreams::new(agent.clone()),
@@ -1360,11 +1372,13 @@ mod tests {
         let mut state = RouterState::new(tokio::spawn(async {}));
         let flow_id = RequestId::new(70);
         let (dest_id, source_id) = (RequestId::new(71), RequestId::new(72));
+        let source_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("source"));
+        let dest_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("dest"));
         state.record_copy_start(CopyStartContext {
             request_id: flow_id.as_transfer_id(),
-            source_agent_id: redoor_core::test_support::test_agent_id("source"),
+            source_agent_id: source_key.clone(),
             source_path: "/source".into(),
-            dest_agent_id: redoor_core::test_support::test_agent_id("dest"),
+            dest_agent_id: dest_key.clone(),
             dest_path: "/dest".into(),
             total_bytes: 8,
             direction: TransferDirection::Copy,
@@ -1376,8 +1390,8 @@ mod tests {
                 pause: None,
                 resumable: false,
                 progress_id: flow_id.as_transfer_id(),
-                source_agent_id: redoor_core::test_support::test_agent_id("source"),
-                dest_agent_id: redoor_core::test_support::test_agent_id("dest"),
+                source_agent_id: source_key,
+                dest_agent_id: dest_key.clone(),
                 content_kind: CopyContentKind::RawFile,
                 then: None,
                 phase: CopyPhase::Remote(Box::new(RemoteCopy {
@@ -1394,13 +1408,13 @@ mod tests {
         );
         assert!(
             state
-                .cancel_public_transfer(flow_id.as_transfer_id())
+                .cancel_public_transfer("test", flow_id.as_transfer_id())
                 .is_ok()
         );
         state.finish_copy_response(
             flow_id,
             RouteResponse {
-                agent_id: redoor_core::test_support::test_agent_id("dest"),
+                agent_id: dest_key.clone(),
                 socket_id: redoor_protocol::ids::SocketId::new(),
                 request_id: dest_id,
                 result: CommandOutcome::error(
@@ -1414,12 +1428,7 @@ mod tests {
             state.progress.entries[&flow_id.as_transfer_id()].state,
             TransferProgressState::Canceled
         ));
-        assert!(
-            state
-                .flows
-                .id_for(&redoor_core::test_support::test_agent_id("dest"), dest_id)
-                .is_none()
-        );
+        assert!(state.flows.id_for(&dest_key, dest_id).is_none());
         state.ui.refresh_check_task.abort();
     }
 
@@ -1430,12 +1439,13 @@ mod tests {
         let mut state = RouterState::new(tokio::spawn(async {}));
         let mut lanes = Vec::new();
         for name in ["source", "dest"] {
-            let agent = redoor_core::test_support::test_agent_id(name);
+            let agent = AgentKey::new("test", redoor_core::test_support::test_agent_id(name));
             let (agent_lanes, receivers) = ControlLanes::bounded(4, 4);
             state.agents.by_id.insert(
                 agent.clone(),
                 AgentConnection::from_register_request(RegisterAgentRequest::for_test(
-                    &agent,
+                    "test",
+                    &agent.id,
                     agent_lanes,
                     ConnectionStreams::new(agent.clone()),
                 )),
@@ -1444,17 +1454,22 @@ mod tests {
         }
         let flow_id = RequestId::new(80);
         let (dest_id, source_id) = (RequestId::new(81), RequestId::new(82));
+        let source_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("source"));
+        let dest_key = AgentKey::new("test", redoor_core::test_support::test_agent_id("dest"));
         state.record_copy_start(CopyStartContext {
             request_id: flow_id.as_transfer_id(),
-            source_agent_id: redoor_core::test_support::test_agent_id("source"),
+            source_agent_id: source_key.clone(),
             source_path: "/source".into(),
-            dest_agent_id: redoor_core::test_support::test_agent_id("dest"),
+            dest_agent_id: dest_key.clone(),
             dest_path: "/dest".into(),
             total_bytes: 8,
             direction: TransferDirection::Copy,
         });
-        let link =
-            |name: &str| state.agents.by_id[&redoor_core::test_support::test_agent_id(name)].link();
+        let link = |name: &str| {
+            state.agents.by_id
+                [&AgentKey::new("test", redoor_core::test_support::test_agent_id(name))]
+                .link()
+        };
         let (source_link, dest_link) = (link("source"), link("dest"));
         state.flows.insert(
             flow_id,
@@ -1462,8 +1477,8 @@ mod tests {
                 pause: None,
                 resumable: false,
                 progress_id: flow_id.as_transfer_id(),
-                source_agent_id: redoor_core::test_support::test_agent_id("source"),
-                dest_agent_id: redoor_core::test_support::test_agent_id("dest"),
+                source_agent_id: source_key.clone(),
+                dest_agent_id: dest_key,
                 content_kind: CopyContentKind::RawFile,
                 then: None,
                 phase: CopyPhase::Remote(Box::new(RemoteCopy {
@@ -1481,7 +1496,7 @@ mod tests {
         state.finish_copy_response(
             flow_id,
             RouteResponse {
-                agent_id: redoor_core::test_support::test_agent_id("source"),
+                agent_id: source_key,
                 socket_id: redoor_protocol::ids::SocketId::new(),
                 request_id: source_id,
                 result: CommandOutcome::error(

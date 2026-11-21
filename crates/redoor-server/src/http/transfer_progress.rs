@@ -1,4 +1,4 @@
-//! REST endpoint that lists retained transfer progress.
+//! REST endpoint that lists retained transfer progress for the caller's workspace.
 
 use crate::actors::router::RouterMsg;
 use axum::{Extension, Json, extract::State as AxumState};
@@ -12,9 +12,10 @@ pub(crate) async fn list_transfer_progress_handler(
     AxumState(state): AxumState<ServerState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Json<TransferProgressListResponse>, ApiError> {
+    let owner = principal.owner().to_string();
     let mut progress = state
         .router_ref
-        .request(|reply| RouterMsg::GetTransferProgress { reply })
+        .request(|reply| RouterMsg::GetTransferProgress { owner, reply })
         .await?;
     progress
         .transfers
@@ -33,25 +34,26 @@ pub(crate) fn transfer_visible(principal: &Principal, entry: &TransferProgressEn
             .all(|endpoint| principal.can_see(&endpoint.agent))
 }
 
-/// Finds the retained row of a transfer the caller may act on, and requires write on the
-/// device that receives its data, which is what cancel and pause change.
+/// Finds the retained row of a transfer the caller may act on (enforcing workspace ownership
+/// for sessions as well as tokens), and requires write on the destination device for tokens.
 pub(crate) async fn require_transfer_write(
     state: &ServerState,
     principal: &Principal,
     transfer_id: redoor_protocol::ids::TransferId,
 ) -> Result<(), ApiError> {
-    if matches!(principal, Principal::Session(_)) {
-        return Ok(());
-    }
+    let owner = principal.owner().to_string();
     let progress = state
         .router_ref
-        .request(|reply| RouterMsg::GetTransferProgress { reply })
+        .request(|reply| RouterMsg::GetTransferProgress { owner, reply })
         .await?;
     let entry = progress
         .transfers
         .into_iter()
         .find(|entry| entry.request_id == transfer_id && transfer_visible(principal, entry))
         .ok_or_else(|| ApiError::not_found("Transfer not found"))?;
+    if matches!(principal, Principal::Session(_)) {
+        return Ok(());
+    }
     let destination = entry
         .dest
         .map(|endpoint| endpoint.agent)

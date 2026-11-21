@@ -7,9 +7,13 @@ import {
     ProcessManager,
     TempFileManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
+    serverDataDir,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -83,18 +87,26 @@ beforeAll(async () => {
     configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${AGENT_NAME}"
-home = "${agentHome}"
 `,
     );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_terminalenvagentaaaa",
+                name: AGENT_NAME,
+                home: agentHome,
+                terminal_env: {},
+            },
+        ],
+    });
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     processes.spawnServer({
         config: configPath,
@@ -133,10 +145,18 @@ describe("terminal environment", () => {
         expect(
             (await api.getLocalAgentConfiguration(agent.id)).terminal_env,
         ).toEqual(saved.env);
-        // They are persisted in the TOML entry, not only in memory.
-        expect(readFileSync(configPath, "utf8")).toContain(
-            'REDOOR_TEST_GREETING = "hello world"',
-        );
+        // They are persisted in the user's agents.json, not only in memory.
+        expect(
+            readFileSync(
+                join(
+                    serverDataDir(TEST_SERVER_HOME, TEST_APP_NAME),
+                    "users",
+                    TEST_USERNAME,
+                    "agents.json",
+                ),
+                "utf8",
+            ),
+        ).toContain('"REDOOR_TEST_GREETING": "hello world"');
         // A shell opened after the save gets the variable, spaces included.
         expect(await shellVariable(agent, "REDOOR_TEST_GREETING")).toBe(
             "hello world",

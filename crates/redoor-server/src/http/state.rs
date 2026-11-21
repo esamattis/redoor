@@ -43,6 +43,12 @@ pub(crate) struct ServerState {
     pub(crate) protocol_mismatches: crate::protocol_mismatches::ProtocolMismatches,
     /// Validates opaque cookies against durable, server-side session files.
     pub(crate) auth: AuthState,
+    /// Per-user accounts (`account.json`) and their agent tokens.
+    pub(crate) accounts: crate::workspaces::UserAccountStore,
+    /// Per-user managed devices (`agents.json`).
+    pub(crate) user_agents: crate::workspaces::UserAgentsStore,
+    /// TEMPORARY MIGRATION: Tracks whether legacy global state awaits confirmation.
+    pub(crate) migration: crate::migration::MigrationState,
     /// OpenID Connect sign-in, present only when `[server.oidc]` is configured.
     pub(crate) oidc: Option<Arc<super::oidc::OidcClient>>,
     /// The server-owned access token table used by REST and MCP authentication.
@@ -66,8 +72,8 @@ pub(crate) struct ServerState {
     /// Browsers' vault device secrets, in memory only, so the vault's idle lock holds even
     /// with no redoor tab open and a server restart locks every browser.
     pub(crate) vault_devices: crate::vault::devices::VaultDeviceStore,
-    /// Managed SSH keys and pinned host keys of SSH devices.
-    pub(crate) ssh_keys: crate::ssh::keys::SshKeyStore,
+    /// Process-wide lock serializing `authorized_keys` rewrites across per-user SSH key stores.
+    pub(crate) ssh_authorized_keys_lock: Arc<tokio::sync::Mutex<()>>,
     /// Decrypted SSH keys of running devices, shared with the launcher's provisioning.
     pub(crate) held_ssh_keys: crate::ssh::held_keys::HeldSshKeys,
     /// Devices with a key operation or edit in progress, so they cannot race each other.
@@ -84,6 +90,21 @@ pub(crate) struct ServerState {
     pub(crate) boot_id: Arc<str>,
     /// Agent upgrades running in the background, and the last outcome of each.
     pub(crate) agent_upgrades: super::agents::upgrade::AgentUpgrades,
+}
+
+impl ServerState {
+    /// Returns the managed SSH key store scoped to `owner`'s workspace (`<user_dir>/ssh/`).
+    pub(crate) fn ssh_keys_for(
+        &self,
+        owner: &str,
+    ) -> Result<crate::ssh::keys::SshKeyStore, super::error::ApiError> {
+        crate::ssh::keys::SshKeyStore::for_user(
+            &self.runtime.paths,
+            owner,
+            self.ssh_authorized_keys_lock.clone(),
+        )
+        .map_err(|error| super::error::ApiError::internal(error.to_string()))
+    }
 }
 
 /// Arguments for `redoor server`.

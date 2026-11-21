@@ -549,6 +549,12 @@ async fn validate_existing_config(role: &ServiceRole, config_path: &Path) -> Res
             redoor_core::config::require_server_section(&config)?;
         }
         ServiceRole::Relay(id) => {
+            if config.agent_token.is_none() {
+                bail!(
+                    "config '{}' is missing top-level agent_token required by relay '{id}'",
+                    config_path.display()
+                );
+            }
             // The service would otherwise install fine and then fail on every restart.
             redoor_core::config::require_relay(&config, id).with_context(|| {
                 format!(

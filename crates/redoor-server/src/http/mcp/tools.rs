@@ -1,6 +1,7 @@
 //! Schema-driven MCP device tool catalog and authorized dispatch.
 
 use crate::actors::router::{CopyOperation, OutputStreamTracking, RouterMsg};
+use crate::workspaces::AgentKey;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use redoor_protocol::wire::request::{self, LsResponse};
 use redoor_protocol::{
@@ -397,7 +398,7 @@ async fn list_devices(
     principal: &Principal,
     id: &Value,
 ) -> Result<Value, McpError> {
-    let devices = crate::http::agents::list_agent_snapshots(state)
+    let devices = crate::http::agents::list_agent_snapshots(state, principal.owner())
         .await
         .map_err(|error| op(error.to_string(), id))?
         .into_iter()
@@ -415,11 +416,11 @@ async fn get_device(
 ) -> Result<Value, McpError> {
     let device = string(args, "device_id", id)?;
     let agent_id = authorize_device(state, principal, &[], device, id).await?;
-    let agent = crate::http::agents::list_agent_snapshots(state)
+    let agent = crate::http::agents::list_agent_snapshots(state, principal.owner())
         .await
         .map_err(|error| op(error.to_string(), id))?
         .into_iter()
-        .find(|agent| agent.id == agent_id)
+        .find(|agent| agent.id == agent_id.id)
         .ok_or_else(|| op("Device not found", id))?;
     Ok(json!({"device":device_json(agent)}))
 }
@@ -489,7 +490,11 @@ async fn run_command(
     let record = state
         .mcp
         .operations
-        .create(owner(principal, id)?, vec![agent_id.to_string()], "command")
+        .create(
+            owner(principal, id)?,
+            vec![agent_id.id.to_string()],
+            "command",
+        )
         .await
         .map_err(|error| {
             op(
@@ -943,12 +948,16 @@ async fn cancel_operation(
     let accepted = match (kind.as_str(), remote_id, device.as_deref()) {
         ("command", Some(remote), Some(device)) => state
             .agents
-            .cancel_execution(AgentId::unchecked(device), RequestId::new(remote))
+            .cancel_execution(
+                AgentKey::new(principal.owner(), AgentId::unchecked(device)),
+                RequestId::new(remote),
+            )
             .await
             .map_err(|error| op(error.to_string(), id))?,
         ("copy" | "move", Some(remote), _) => state
             .router_ref
             .request(|reply| RouterMsg::CancelPublicTransfer {
+                owner: principal.owner().to_string(),
                 transfer_id: TransferId::new(remote),
                 reply,
             })
@@ -1111,7 +1120,7 @@ async fn write_file(
 /// Writes bounded inline bytes through the shared streamed upload and returns the bytes written.
 async fn write_inline(
     state: &ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     path: &str,
     command: Command,
     bytes: &[u8],
@@ -1198,7 +1207,7 @@ async fn transfer(
         .operations
         .create(
             owner,
-            vec![source_id.to_string(), destination_id.to_string()],
+            vec![source_id.id.to_string(), destination_id.id.to_string()],
             kind,
         )
         .await
@@ -1224,17 +1233,18 @@ async fn transfer(
             })?;
     }
     let spec = CopySpec {
+        owner: principal.owner().to_string(),
         op: if is_move {
             CopyOperation::Move
         } else {
             CopyOperation::Copy
         },
         source: CopyEndpoint {
-            agent: source_id,
+            agent: source_id.id,
             path: source_path.to_string(),
         },
         dest: CopyEndpoint {
-            agent: destination_id,
+            agent: destination_id.id,
             path: destination_path.to_string(),
         },
         on_existing: mode,
@@ -1466,12 +1476,12 @@ async fn managed_agent(
 ) -> Result<Value, McpError> {
     let device = string(args, "device_id", id)?;
     let agent_id = authorize_device(state, principal, &[AgentsManage], device, id).await?;
-    let snapshot = crate::http::agents::managed_agent_snapshot(state, &agent_id)
+    let _snapshot = crate::http::agents::managed_agent_snapshot(state, &agent_id)
         .await
         .map_err(|error| op(error.to_string(), id))?;
     let watchdog = state
         .watchdog_registry
-        .lookup(snapshot.id.as_str())
+        .lookup(&agent_id.watchdog_key())
         .ok_or_else(|| op("Managed supervisor unavailable", id))?;
     if start {
         watchdog
@@ -1481,7 +1491,7 @@ async fn managed_agent(
         crate::http::agents::apply_managed_snapshot(state, agent_id.clone(), watchdog.snapshot())
             .await
             .map_err(|error| op(error.to_string(), id))?;
-        Ok(json!({"device_id":agent_id,"accepted":true,"poll_device":true}))
+        Ok(json!({"device_id":agent_id.id,"accepted":true,"poll_device":true}))
     } else {
         crate::http::agents::stop_managed_device(state, &agent_id, &watchdog)
             .await
@@ -1489,7 +1499,7 @@ async fn managed_agent(
         crate::http::agents::apply_managed_snapshot(state, agent_id.clone(), watchdog.snapshot())
             .await
             .map_err(|error| op(error.to_string(), id))?;
-        Ok(json!({"device_id":agent_id,"cleanup_complete":true}))
+        Ok(json!({"device_id":agent_id.id,"cleanup_complete":true}))
     }
 }
 /// Rechecks the token's current permissions and scope rather than trusting admission-time
@@ -1544,16 +1554,17 @@ async fn authorize_device(
     permissions: &[Permission],
     device: &str,
     id: &Value,
-) -> Result<AgentId, McpError> {
+) -> Result<AgentKey, McpError> {
+    let owner = principal.owner();
     let agent_id = state
         .agents
-        .resolve(device)
+        .resolve(owner, device)
         .await
         .map_err(|error| op(error.to_string(), id))?;
     principal
         .require(permissions, &agent_id)
         .map_err(|error| McpError::denied(error, id))?;
-    Ok(agent_id)
+    Ok(AgentKey::new(owner, agent_id))
 }
 
 /// The token that owns new operations; MCP only admits token principals.

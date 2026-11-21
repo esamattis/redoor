@@ -218,14 +218,14 @@ fn invalid(message: impl Into<String>) -> Invalid {
 impl RawConfig {
     /// Applies cross-key rules and converts into the public config model.
     pub(super) fn validate(self) -> Result<RedoorConfig, Invalid> {
-        let agent_token = self
-            .agent_token
-            .filter(|token| !token.is_empty())
-            .ok_or_else(|| {
-                invalid(
-                    "agent_token must be a non-empty string at the top level of the config file",
-                )
-            })?;
+        let agent_token = match self.agent_token {
+            Some(token) if token.is_empty() => {
+                return Err(invalid(
+                    "agent_token must be a non-empty string when set at the top level of the config file",
+                ));
+            }
+            other => other,
+        };
         let server = self.server.map(RawServerSection::validate).transpose()?;
         let agent = self.agent.map(RawAgentSection::validate).transpose()?;
         let agents = self

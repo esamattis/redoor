@@ -42,9 +42,26 @@ pub(crate) async fn access_control(
         warn_unclassified(request.method(), &matched);
         Access::SessionOnly
     });
-    let public = access == Access::Public
-        || routes::is_one_time_token_raw_request(request.method(), request.uri());
-    // Authenticating before resolving keeps anonymous callers from probing device names.
+    let is_one_time_raw = routes::is_one_time_token_raw_request(request.method(), request.uri());
+    let migration_pending = state.migration.is_pending().await;
+    // TEMPORARY MIGRATION: Bearer access tokens are not loaded until migration completes,
+    // so return 503 instead of 401 while migration is pending; also hold off public
+    // non-migration routes such as one-time downloads.
+    if migration_pending
+        && (bearer_token(request.headers()).is_some()
+            || (is_one_time_raw
+                && !routes::is_allowed_during_migration(request.method(), &matched)))
+    {
+        return ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            redoor_protocol::api::ApiErrorCode::MigrationRequired,
+            "Server migration is required before this endpoint can be used",
+        )
+        .into_response();
+    }
+    let public = access == Access::Public || is_one_time_raw;
+    // Authenticating before resolving keeps anonymous callers from probing device names or
+    // learning whether migration is pending.
     let Authenticated {
         principal,
         session,
@@ -61,10 +78,21 @@ pub(crate) async fn access_control(
             Err(error) => return error.into_response(),
         }
     };
+    // TEMPORARY MIGRATION: Block all normal authenticated API/WS traffic while legacy global
+    // state awaits confirmation into a user workspace.
+    if migration_pending && !routes::is_allowed_during_migration(request.method(), &matched) {
+        return ApiError::coded(
+            StatusCode::SERVICE_UNAVAILABLE,
+            redoor_protocol::api::ApiErrorCode::MigrationRequired,
+            "Server migration is required before this endpoint can be used",
+        )
+        .into_response();
+    }
     let (mut parts, body) = request.into_parts();
-    // Every handler and the scope check below see the resolved id, never the name the client
-    // used, so a renamed device cannot slip past a scope.
-    let device = match resolve_device(&state, &mut parts).await {
+    // Every handler and the scope check below see the resolved `(owner, id)` key, never the
+    // name the client used, so a renamed device or another user's device cannot slip past.
+    let device = match resolve_device(&state, &mut parts, principal.as_ref(), is_one_time_raw).await
+    {
         Ok(device) => device,
         Err(error) => return error.into_response(),
     };
@@ -157,11 +185,23 @@ pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
     scheme.eq_ignore_ascii_case("bearer").then(|| secret.trim())
 }
 
-/// Resolves the route's `{agent}` parameter (a name or an id) to a known device id; `None`
+/// Extracts the `one_time_token` UUID query parameter from a raw download URI.
+fn one_time_token_param(uri: &axum::http::Uri) -> Option<uuid::Uuid> {
+    let query = uri.query()?;
+    let value = query.split('&').find_map(|parameter| {
+        let (name, value) = parameter.split_once('=')?;
+        (name == "one_time_token" && !value.is_empty()).then_some(value)
+    })?;
+    uuid::Uuid::parse_str(value).ok()
+}
+
+/// Resolves the route's `{agent}` parameter (a name or an id) to an owned device key; `None`
 /// for routes without the parameter.
 async fn resolve_device(
     state: &ServerState,
     parts: &mut Parts,
+    principal: Option<&Principal>,
+    is_one_time_raw: bool,
 ) -> Result<Option<ResolvedDevice>, ApiError> {
     let value = parts
         .extract::<RawPathParams>()
@@ -173,10 +213,38 @@ async fn resolve_device(
                 .find(|(name, _)| *name == "agent")
                 .map(|(_, value)| value.to_owned())
         });
-    match value {
-        Some(value) => Ok(Some(ResolvedDevice(state.agents.resolve(&value).await?))),
-        None => Ok(None),
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    if let Some(principal) = principal {
+        let owner = principal.owner();
+        let id = state.agents.resolve(owner, &value).await?;
+        return Ok(Some(ResolvedDevice(crate::workspaces::AgentKey::new(
+            owner, id,
+        ))));
     }
+    if is_one_time_raw {
+        let Some(token) = one_time_token_param(&parts.uri) else {
+            return Err(unauthorized("Invalid one-time download token"));
+        };
+        let Some(agent) = state.one_time_token_registry.resolve_device(&token) else {
+            return Err(unauthorized("Invalid or expired one-time download token"));
+        };
+        // Verify the `{agent}` path parameter matches the token's device (by id or name).
+        let matches = agent.id.as_str() == value
+            || state
+                .agents
+                .resolve(&agent.owner, &value)
+                .await
+                .is_ok_and(|resolved| resolved == agent.id);
+        if !matches {
+            return Err(unauthorized(
+                "One-time download token does not match device",
+            ));
+        }
+        return Ok(Some(ResolvedDevice(agent)));
+    }
+    Err(unauthorized("Authentication required"))
 }
 
 /// Applies the coarse route rule; `AnyPrincipal` and `Handler` routes decide in the handler.
@@ -189,7 +257,7 @@ fn authorize(
         Access::Public | Access::AnyPrincipal | Access::Handler => Ok(()),
         Access::SessionOnly => principal.require_session(),
         Access::Device(permissions) => match device {
-            Some(ResolvedDevice(agent)) => principal.require(permissions, agent),
+            Some(ResolvedDevice(agent)) => principal.require(permissions, &agent.id),
             // A device rule on a route without `{agent}` is a table bug: fail closed.
             None => principal.require_session(),
         },

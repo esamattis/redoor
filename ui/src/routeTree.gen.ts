@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as MigrateRouteImport } from './routes/migrate'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppSplatRouteImport } from './routes/_app/$'
 import { Route as AppLogsRouteImport } from './routes/_app/logs'
@@ -42,6 +43,11 @@ const AppRoute = AppRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const MigrateRoute = MigrateRouteImport.update({
+  id: '/migrate',
+  path: '/migrate',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AppIndexRoute = AppIndexRouteImport.update({
@@ -172,6 +178,7 @@ const AppAgentsDeviceNameSystemdUserUserIndexRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
+  '/migrate': typeof MigrateRoute
   '/$': typeof AppSplatRoute
   '/logs': typeof AppLogsRoute
   '/agents/$deviceName': typeof AppAgentsDeviceNameRouteWithChildren
@@ -197,6 +204,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/migrate': typeof MigrateRoute
   '/$': typeof AppSplatRoute
   '/logs': typeof AppLogsRoute
   '/': typeof AppIndexRoute
@@ -223,6 +231,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
+  '/migrate': typeof MigrateRoute
   '/_app/$': typeof AppSplatRoute
   '/_app/logs': typeof AppLogsRoute
   '/_app/': typeof AppIndexRoute
@@ -252,6 +261,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/migrate'
     | '/$'
     | '/logs'
     | '/agents/$deviceName'
@@ -277,6 +287,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/migrate'
     | '/$'
     | '/logs'
     | '/'
@@ -302,6 +313,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/login'
+    | '/migrate'
     | '/_app/$'
     | '/_app/logs'
     | '/_app/'
@@ -330,6 +342,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   AppRoute: typeof AppRouteWithChildren
   LoginRoute: typeof LoginRoute
+  MigrateRoute: typeof MigrateRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -346,6 +359,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/migrate': {
+      id: '/migrate'
+      path: '/migrate'
+      fullPath: '/migrate'
+      preLoaderRoute: typeof MigrateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/_app/': {
@@ -593,6 +613,7 @@ const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
 const rootRouteChildren: RootRouteChildren = {
   AppRoute: AppRouteWithChildren,
   LoginRoute: LoginRoute,
+  MigrateRoute: MigrateRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

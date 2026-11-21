@@ -5,6 +5,7 @@ use super::state::CopyContentKind;
 use super::streams::{ConnectionStreams, CreditViolation, OutboundStream, OutputReceiver};
 use crate::actors::lanes::ControlLanes;
 use crate::watchdog::WatchdogSnapshot;
+use crate::workspaces::AgentKey;
 use redoor_protocol::ids::{AgentId, RequestId, SocketId, TransferId, UnixTimestampSeconds};
 use redoor_protocol::wire::request::CommandOutcome;
 use redoor_protocol::wire::terminal::{TerminalServerMessage, TerminalSize};
@@ -42,7 +43,9 @@ pub struct RegistrationRejection {
 
 /// Payload for registering one websocket-backed agent session with the router.
 pub struct RegisterAgentRequest {
-    /// Stable agent identifier used as the router registry key.
+    /// Canonical username of the workspace whose token authenticated this agent.
+    pub owner: String,
+    /// Stable agent identifier used as part of the router registry key.
     pub agent_id: AgentId,
     /// Human-readable agent name shown in the UI.
     pub agent_name: String,
@@ -166,8 +169,8 @@ impl From<AgentListEntry> for AgentInfoResponse {
 
 /// Registers a configured entry before any process can be started.
 pub struct RegisterManagedAgentRequest {
-    /// Device id from the config entry, known before the agent first connects.
-    pub agent_id: AgentId,
+    /// Workspace owner and device id from the user's `agents.json`.
+    pub agent_id: AgentKey,
     /// Effective name from the config entry, shown until the agent registers.
     pub name: String,
     /// Configured directory may be absent for an SSH target.
@@ -180,10 +183,10 @@ pub struct RegisterManagedAgentRequest {
     pub reply: RouterReply<()>,
 }
 
-/// Removes a stopped managed record after its TOML entry and supervisor are gone.
+/// Removes a stopped managed record after its entry and supervisor are gone.
 pub struct UnregisterManagedAgentRequest {
     /// Selects the retained inventory row that must disappear with the supervisor.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Acknowledges cleanup so HTTP delete/replace can return only after inventory is gone.
     pub reply: RouterReply<()>,
 }
@@ -191,7 +194,7 @@ pub struct UnregisterManagedAgentRequest {
 /// Applies asynchronous supervisor state without waiting in the router task.
 pub struct ApplyManagedLifecycleRequest {
     /// Selects the configured inventory record to update.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Contains only small control-plane state, never process output.
     pub snapshot: WatchdogSnapshot,
     /// Removes the previous live connection at an explicit retry boundary.
@@ -204,7 +207,7 @@ pub struct ApplyManagedLifecycleRequest {
 /// signals it with the stream's first credit grant.
 pub struct RouteTransferReadyRequest {
     /// Agent that registered the destination-side upload worker.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Control session that reported readiness; the router ignores frames from any session
     /// other than the agent's current one, so a stale or forged socket cannot drive a flow.
     pub socket_id: SocketId,
@@ -215,7 +218,7 @@ pub struct RouteTransferReadyRequest {
 /// Final command response routed back from an agent to the original caller.
 pub struct RouteResponse {
     /// Agent that produced the response.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Control session that delivered the response; only the agent's current session may
     /// resolve its flows.
     pub socket_id: SocketId,
@@ -225,10 +228,12 @@ pub struct RouteResponse {
     pub result: CommandOutcome,
 }
 
-/// Registers one UI event stream that should receive router refresh events.
+/// Registers one UI event stream that should receive router refresh events for `owner`.
 pub struct RegisterUiSubscriberRequest {
     /// Unique subscriber identifier used for later unregistering.
     pub subscriber_id: String,
+    /// Canonical username of the signed-in browser session.
+    pub owner: String,
     /// Event sink that receives UI refresh notifications.
     pub sender: tokio::sync::mpsc::UnboundedSender<UiEvent>,
 }
@@ -236,7 +241,7 @@ pub struct RegisterUiSubscriberRequest {
 /// Executes a one-shot command on an agent and replies with its final result.
 pub struct ExecuteCommandRequest {
     /// Target agent that should execute the command.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// One-shot command to run on the agent.
     pub command: Command,
     /// Id the caller drew from [`RouterHandle::next_request_id`], so a caller that gives up
@@ -253,7 +258,7 @@ pub struct ExecuteCommandRequest {
 /// Starts agent-to-REST output transport with explicit resource-specific tracking.
 pub struct ExecuteStreamRequest {
     /// Target agent producing file bytes or execution events.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Streaming command to run on the agent.
     pub command: Command,
     /// File progress is independent of transport; execution has no filesystem resource.
@@ -315,7 +320,7 @@ pub enum UploadStartOutcome {
 /// Starts a direct upload stream and returns the allocated internal request id.
 pub struct StartUploadRequest {
     /// Target agent that should receive the upload.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Streaming upload command to run on the agent.
     pub command: Command,
     /// Path used for progress reporting.
@@ -337,7 +342,7 @@ pub struct StartUploadRequest {
 /// Transfers terminal edit delivery to the router while publishing the commit boundary.
 pub struct CommitDirectUploadRequest {
     /// Agent receiving the edit bytes.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Active direct edit request entering commit.
     pub request_id: RequestId,
     /// Terminal frame whose delivery authorizes the agent-side inode rewrite.
@@ -349,11 +354,11 @@ pub struct CommitDirectUploadRequest {
 /// What a copy reads and writes, kept by a flow that starts its data path only later.
 pub struct CopyTarget {
     /// Source agent that provides the file or directory contents.
-    pub source_agent_id: AgentId,
+    pub source_agent_id: AgentKey,
     /// Source path to copy from.
     pub source_path: String,
     /// Destination agent that receives the copied contents.
-    pub dest_agent_id: AgentId,
+    pub dest_agent_id: AgentKey,
     /// Destination path to copy to.
     pub dest_path: String,
     /// Expected total byte count used for progress reporting.
@@ -402,7 +407,7 @@ pub struct StartCopyRequest {
 /// Progress notification emitted by an agent for copy-style transfers.
 pub struct TransferProgressUpdateRequest {
     /// Agent that emitted the progress update.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Control session that delivered the update; only the agent's current session counts.
     pub socket_id: SocketId,
     /// Internal request id the update belongs to.
@@ -426,7 +431,7 @@ pub enum OutboundFailureReason {
 /// Terminal event of a server-to-agent stream observed by its producer.
 pub struct OutboundFailure {
     /// Agent receiving the stream.
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     /// Stream that failed.
     pub request_id: RequestId,
     /// What went wrong.
@@ -435,7 +440,7 @@ pub struct OutboundFailure {
 
 /// Attaches to a terminal session of a connected agent as one stream of its connection.
 pub struct AttachTerminalRequest {
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     pub session: redoor_protocol::ids::TerminalSessionId,
     pub size: TerminalSize,
     pub reply: RouterReply<Result<TerminalStream, RouterError>>,
@@ -443,7 +448,7 @@ pub struct AttachTerminalRequest {
 
 /// Opens a live log stream of a connected agent as one stream of its connection.
 pub struct OpenAgentLogStreamRequest {
-    pub agent_id: AgentId,
+    pub agent_id: AgentKey,
     pub reply: RouterReply<Result<LogStream, RouterError>>,
 }
 
@@ -474,12 +479,12 @@ pub enum RouterMsg {
     /// Ends a managed daemon's connection that turned out not to be the daemon its ensure
     /// step reported, with `rejected { superseded }`.
     SupersedeManagedConnection {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         /// Only this connection is ended, never a newer one.
         socket_id: SocketId,
     },
     UnregisterAgent {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         /// Identifies which websocket session is unregistering so a stale
         /// session cannot accidentally remove a replacement connection that
         /// took over the same agent name.
@@ -488,25 +493,28 @@ pub enum RouterMsg {
     RouteResponse(RouteResponse),
     RouteTransferReady(RouteTransferReadyRequest),
     GetAgentList {
+        owner: String,
         reply: RouterReply<Vec<AgentListEntry>>,
     },
-    /// Resolves a device name or id from a request to the id of a known device.
+    /// Resolves a device name or id from a request to the id of a known device owned by `owner`.
     ResolveDevice {
+        owner: String,
         value: String,
         reply: RouterReply<Option<AgentId>>,
     },
     /// Claims a name for a managed device being created or renamed; the error carries the
-    /// device that already holds it.
+    /// device that already holds it within the same owner's workspace.
     ReserveName {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         name: String,
         reply: RouterReply<Result<(), AgentId>>,
     },
     /// Drops a device's name reservation once its edit finished, successfully or not.
     ReleaseName {
-        agent_id: AgentId,
+        agent_id: AgentKey,
     },
     GetTransferProgress {
+        owner: String,
         reply: RouterReply<TransferProgressListResponse>,
     },
     RegisterUiSubscriber(RegisterUiSubscriberRequest),
@@ -522,7 +530,7 @@ pub enum RouterMsg {
     ExecuteStreamCommandRest(ExecuteStreamRequest),
     /// Cancels only an execution owned by the specified agent, independently of file progress.
     CancelExecution {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request_id: RequestId,
         reply: RouterReply<Result<bool, RouterError>>,
     },
@@ -530,34 +538,36 @@ pub enum RouterMsg {
     CommitDirectUpload(CommitDirectUploadRequest),
     /// Serializes staged publication with public cancellation before filesystem mutation.
     BeginUploadPublication {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         /// Session that asked; publication is authorized only for the agent's current session.
         socket_id: SocketId,
         request_id: RequestId,
     },
     CancelTransfer {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request_id: RequestId,
     },
     /// The caller of a one-shot command gave up (deadline or dropped HTTP request). A command
     /// that already answered or was pruned is ignored.
     AbandonCommand {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request_id: RequestId,
     },
     /// Prefix verification progress of an agent-local resumable copy.
     LocalVerification {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request_id: RequestId,
         bytes: u64,
         verifying: bool,
     },
     /// Replies only when the destination has durably stopped, without retaining resume state.
     PauseTransfer {
+        owner: String,
         transfer_id: TransferId,
         reply: RouterReply<Result<(), String>>,
     },
     CancelPublicTransfer {
+        owner: String,
         transfer_id: TransferId,
         reply: RouterReply<
             Result<
@@ -572,14 +582,16 @@ pub enum RouterMsg {
     OpenAgentLogStream(OpenAgentLogStreamRequest),
     /// A terminal or log bridge ended: forget the stream and stop it on the agent.
     CloseStream {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         stream: RequestId,
     },
-    /// A terminal session was created, closed or exited; open windows refresh their tabs.
-    TerminalsChanged,
-    /// `rd-open` ran in a terminal of `agent_id`; browsers are asked to show `path`.
+    /// A terminal session was created, closed or exited; open windows of `owner` refresh.
+    TerminalsChanged {
+        owner: String,
+    },
+    /// `rd-open` ran in a terminal of `agent_id`; browsers of its owner are asked to show `path`.
     OpenPath {
-        agent_id: AgentId,
+        agent_id: AgentKey,
         /// Session the frame arrived on, so a replaced connection cannot steer browsers.
         socket_id: SocketId,
         path: String,
@@ -595,11 +607,13 @@ pub enum RouterMsg {
 impl RegisterAgentRequest {
     /// A plain registration for router and HTTP unit tests with every capability on.
     pub(crate) fn for_test(
+        owner: &str,
         agent_id: &AgentId,
         lanes: ControlLanes,
         streams: ConnectionStreams,
     ) -> Self {
         Self {
+            owner: owner.to_string(),
             agent_id: agent_id.clone(),
             // Names must not look like ids, so tests derive a readable one from the id.
             agent_name: format!("name-{}", agent_id.as_str().trim_start_matches("dev_")),
@@ -640,10 +654,12 @@ mod tests {
 
     /// An inventory row of a connected agent.
     fn entry() -> AgentListEntry {
+        let agent_id = redoor_core::test_support::test_agent_id("a");
         let registration = RegisterAgentRequest::for_test(
-            &redoor_core::test_support::test_agent_id("a"),
+            "alice",
+            &agent_id,
             ControlLanes::bounded(1, 1).0,
-            ConnectionStreams::new(redoor_core::test_support::test_agent_id("a")),
+            ConnectionStreams::new(AgentKey::new("alice", agent_id.clone())),
         );
         AgentListEntry {
             id: redoor_core::test_support::test_agent_id("a"),

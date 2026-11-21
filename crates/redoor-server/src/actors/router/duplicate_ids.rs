@@ -11,9 +11,10 @@
 
 use super::messages::RegisterAgentRequest;
 use super::state::RouterState;
+use crate::workspaces::AgentKey;
 use redoor_core::log;
 use redoor_protocol::api::agents::DuplicateIdWarning;
-use redoor_protocol::ids::{AgentId, UnixTimestampSeconds};
+use redoor_protocol::ids::UnixTimestampSeconds;
 use redoor_protocol::wire::log::Level;
 use std::collections::VecDeque;
 use tokio::time::{Duration, Instant};
@@ -146,18 +147,15 @@ impl RouterState {
     /// nothing competes. This also lets a fixed clone, or the remaining machine after the
     /// connected one went away, through on its next retry.
     pub(crate) fn admit_takeover(&mut self, request: &RegisterAgentRequest) -> Result<(), String> {
-        let Some(current) = self.agents.by_id.get(&request.agent_id) else {
+        let key = AgentKey::new(&request.owner, request.agent_id.clone());
+        let Some(current) = self.agents.by_id.get(&key) else {
             return Ok(());
         };
         if !current.activity.is_healthy() {
             return Ok(());
         }
         let current_hostname = current.identity.hostname.clone();
-        let history = self
-            .agents
-            .takeovers
-            .entry(request.agent_id.clone())
-            .or_default();
+        let history = self.agents.takeovers.entry(key.clone()).or_default();
         match history.competing_hello(
             Instant::now(),
             &current_hostname,
@@ -171,11 +169,11 @@ impl RouterState {
             } => {
                 log!(
                     Level::Warning,
-                    "Several machines are using one device id; refusing newcomers while the current connection is healthy: agent_id={}, hostnames={:?}",
-                    request.agent_id,
+                    "Several machines are using one device id; refusing newcomers while the current connection is healthy: agent={}, hostnames={:?}",
+                    key,
                     history.hostnames
                 );
-                self.publish_duplicate_id(&request.agent_id);
+                self.publish_duplicate_id(&key);
                 Ok(())
             }
             TakeoverDecision::Refuse { warning_changed } => {
@@ -185,7 +183,7 @@ impl RouterState {
                     history.hostnames.join(", ")
                 );
                 if warning_changed {
-                    self.publish_duplicate_id(&request.agent_id);
+                    self.publish_duplicate_id(&key);
                 }
                 Err(message)
             }
@@ -193,17 +191,17 @@ impl RouterState {
     }
 
     /// Copies the id's current conflict warning (or its absence) into the inventory and
-    /// tells UI subscribers, so the device page explains why one machine stays offline.
-    fn publish_duplicate_id(&mut self, agent_id: &AgentId) {
+    /// tells UI subscribers of its owner, so the device page explains why one machine stays offline.
+    fn publish_duplicate_id(&mut self, agent: &AgentKey) {
         let warning = self
             .agents
             .takeovers
-            .get(agent_id)
+            .get(agent)
             .and_then(TakeoverHistory::warning);
-        if let Some(known) = self.agents.known_by_id.get_mut(agent_id) {
+        if let Some(known) = self.agents.known_by_id.get_mut(agent) {
             known.duplicate_id = warning;
         }
-        self.notify_agents_changed();
+        self.notify_agents_changed(agent.owner());
     }
 
     /// Ends conflicts whose competitors have been quiet for a whole window and forgets old
@@ -214,19 +212,19 @@ impl RouterState {
         }
         let now = Instant::now();
         let mut ended = Vec::new();
-        self.agents.takeovers.retain(|agent_id, history| {
+        self.agents.takeovers.retain(|agent, history| {
             if history.expire(now) {
-                ended.push(agent_id.clone());
+                ended.push(agent.clone());
             }
             !history.is_idle()
         });
-        for agent_id in ended {
+        for agent in ended {
             log!(
                 Level::Info,
-                "Device id conflict ended after a quiet window: agent_id={}",
-                agent_id
+                "Device id conflict ended after a quiet window: agent={}",
+                agent
             );
-            self.publish_duplicate_id(&agent_id);
+            self.publish_duplicate_id(&agent);
         }
     }
 }
@@ -262,10 +260,11 @@ mod tests {
 
     /// Builds a `hello` from a machine called `hostname`, whose connection stays healthy
     /// until time advances past the heartbeat window without a `touch`.
-    fn hello(agent_id: &AgentId, hostname: &str) -> Hello {
+    fn hello(agent_id: &AgentKey, hostname: &str) -> Hello {
         let (lanes, receivers) = ControlLanes::bounded(4, 4);
         let mut request = RegisterAgentRequest::for_test(
-            agent_id,
+            agent_id.owner(),
+            &agent_id.id,
             lanes,
             ConnectionStreams::new(agent_id.clone()),
         );
@@ -296,7 +295,7 @@ mod tests {
     }
 
     /// The warning the device currently shows.
-    fn warning(state: &RouterState, agent_id: &AgentId) -> Option<DuplicateIdWarning> {
+    fn warning(state: &RouterState, agent_id: &AgentKey) -> Option<DuplicateIdWarning> {
         state.agents.known_by_id[agent_id].duplicate_id.clone()
     }
 
@@ -305,7 +304,10 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn replacing_a_dead_connection_is_a_normal_reconnect() {
         let mut state = test_state();
-        let agent_id = redoor_core::test_support::test_agent_id("reconnect");
+        let agent_id = AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("reconnect"),
+        );
         for _ in 0..TAKEOVER_LIMIT + 1 {
             let (decision, _receivers) = register(&mut state, hello(&agent_id, "laptop")).await;
             // Every reconnect is welcomed, because the connection it replaces is dead.
@@ -324,7 +326,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn repeated_takeovers_of_healthy_connections_become_duplicate_id_rejections() {
         let mut state = test_state();
-        let agent_id = redoor_core::test_support::test_agent_id("clone");
+        let agent_id = AgentKey::new("test", redoor_core::test_support::test_agent_id("clone"));
         let (first, _first) = register(&mut state, hello(&agent_id, "vm-a")).await;
         // The first connection has nothing to compete with.
         assert!(first.is_ok());
@@ -374,7 +376,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn newcomer_gets_through_once_the_defended_connection_dies() {
         let mut state = test_state();
-        let agent_id = redoor_core::test_support::test_agent_id("survivor");
+        let agent_id = AgentKey::new("test", redoor_core::test_support::test_agent_id("survivor"));
         for _ in 0..=TAKEOVER_LIMIT {
             let (decision, _receivers) = register(&mut state, hello(&agent_id, "vm")).await;
             assert!(decision.is_ok());
@@ -394,7 +396,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn warning_clears_after_a_quiet_window() {
         let mut state = test_state();
-        let agent_id = redoor_core::test_support::test_agent_id("quiet");
+        let agent_id = AgentKey::new("test", redoor_core::test_support::test_agent_id("quiet"));
         let mut current = None;
         for _ in 0..=TAKEOVER_LIMIT {
             let (decision, receivers) = register(&mut state, hello(&agent_id, "vm")).await;

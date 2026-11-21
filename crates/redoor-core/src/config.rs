@@ -19,11 +19,12 @@ use std::path::{Path, PathBuf};
 
 pub use bootstrap::{
     CreatedDefaultConfig, create_default_config_if_missing, default_local_agent_name,
+    generate_agent_token,
 };
 pub use edit::{
     DeviceIdScope, ServerPasswordEditError, append_local_agent, append_ssh_agent,
-    assign_missing_device_ids, edit_local_agent, edit_ssh_agent, set_server_password,
-    set_terminal_env,
+    assign_missing_device_ids, edit_local_agent, edit_ssh_agent, remove_legacy_server_fields,
+    set_server_password, set_terminal_env,
 };
 pub use import::import_agent_config_from_stdin;
 pub use local_agent::LocalServerEndpoint;
@@ -76,7 +77,7 @@ pub enum ConfigError {
 /// Configuration for one SSH-backed agent, independent of any specific CLI
 /// surface so both `redoor agent relay` and `redoor server --agents` can construct it
 /// without depending on clap.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct SshBackedAgentConfig {
     /// Stable device id the remote agent registers with (`id` in `[[agents]]`, `agent_id` in
     /// `[[relays]]`). `None` only for hand-written entries until startup assigns one, because
@@ -112,10 +113,12 @@ pub struct SshBackedAgentConfig {
     /// the same path: rotation then switches keys with one file rename and no config write,
     /// so a connected agent is not stopped. The config never holds key material. Never set
     /// together with `password`.
+    #[serde(default)]
     pub managed_ssh_key: bool,
     /// Extra environment variables for the device's terminal shells (`terminal_env`). Kept in
     /// the server's config rather than on the device, because the server starts every shell
     /// and a device's own profile is not always editable. Always empty for relays.
+    #[serde(default)]
     pub terminal_env: BTreeMap<String, String>,
 }
 
@@ -144,7 +147,7 @@ impl std::fmt::Debug for SshBackedAgentConfig {
 /// directory, and an optional log file. The server reuses its own binary
 /// (via `std::env::current_exe`) to start the agent, so no binary path
 /// needs to be configured.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LocalAgentConfig {
     /// Stable device id passed to the spawned agent; `None` only for hand-written entries
     /// until startup assigns one.
@@ -157,6 +160,7 @@ pub struct LocalAgentConfig {
     pub home: Option<String>,
     /// Extra environment variables for the device's terminal shells, like
     /// [`SshBackedAgentConfig::terminal_env`].
+    #[serde(default)]
     pub terminal_env: BTreeMap<String, String>,
 }
 
@@ -164,7 +168,8 @@ pub struct LocalAgentConfig {
 /// whether the server can start an SSH-backed agent or a plain local one,
 /// so the dispatcher in `register_agents` can pick the right transport
 /// without inspecting the per-variant fields itself.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum AgentConfig {
     SshBacked(SshBackedAgentConfig),
     Local(LocalAgentConfig),
@@ -446,13 +451,14 @@ pub struct AgentSection {
 /// Full parsed config file shared by server and agent processes.
 #[derive(Debug, Clone)]
 pub struct RedoorConfig {
-    /// Shared secret agents present when upgrading their websocket connection.
-    pub agent_token: String,
+    /// Registration secret for standalone `[agent]` and `[[relays]]` roles; optional for
+    /// server-only configs, where each user has their own token in `account.json`.
+    pub agent_token: Option<String>,
     /// Present when the file configures a server process.
     pub server: Option<ServerSection>,
     /// Present when the file configures a standalone agent process.
     pub agent: Option<AgentSection>,
-    /// Server-managed local/SSH-backed agents (server mode only).
+    /// Legacy server-managed local/SSH-backed agents read only during first-use migration.
     pub agents: Vec<AgentConfig>,
     /// Named SSH relays that operators start and stop independently.
     pub relays: Vec<RelayConfig>,
@@ -606,7 +612,11 @@ pub fn standalone_agent_is_fully_configured(config: &RedoorConfig) -> bool {
     let Some(agent) = config.agent.as_ref() else {
         return false;
     };
-    !config.agent_token.is_empty() && agent.server.as_ref().is_some_and(|value| !value.is_empty())
+    config
+        .agent_token
+        .as_deref()
+        .is_some_and(|token| !token.is_empty())
+        && agent.server.as_ref().is_some_and(|value| !value.is_empty())
 }
 
 // The REST views live with the config types so the server can convert without orphan wrappers.
@@ -1086,9 +1096,9 @@ server = "http://127.0.0.1:3000"
         );
     }
 
-    /// Verifies omitting the shared top-level token fails for every process role.
+    /// Verifies server configs may omit top-level `agent_token` while an empty token is rejected.
     #[tokio::test]
-    async fn test_parse_config_file_rejects_missing_agent_token() {
+    async fn test_parse_config_file_allows_missing_agent_token_and_rejects_empty() {
         let (_directory, temp) = test_config_path();
         std::fs::write(
             &temp,
@@ -1099,9 +1109,28 @@ password = "test-password"
         )
         .unwrap();
 
-        let result = parse_config_file(&temp).await;
+        let parsed = parse_config_file(&temp)
+            .await
+            .expect("server config without top-level agent_token must parse");
+        assert!(
+            parsed.agent_token.is_none(),
+            "missing agent_token must parse as None"
+        );
 
-        assert!(result.is_err(), "top-level agent_token must be required");
+        std::fs::write(
+            &temp,
+            r#"agent_token = ""
+[server]
+username = "test-user"
+password = "test-password"
+"#,
+        )
+        .unwrap();
+        let empty_result = parse_config_file(&temp).await;
+        assert!(
+            empty_result.is_err(),
+            "empty top-level agent_token must be rejected"
+        );
     }
 
     /// Verifies that all three [server] fields are read from the file so
@@ -1126,10 +1155,10 @@ target = "host"
         assert_eq!(server.port, Some(4000));
         assert_eq!(server.bind.as_deref(), Some("127.0.0.1"));
         assert_eq!(server.log.as_deref(), Some("/tmp/x"));
-        assert_eq!(config.agent_token, "test-agent-token");
+        assert_eq!(config.agent_token.as_deref(), Some("test-agent-token"));
     }
 
-    /// Verifies first startup creates a minimal, parseable demo config and later startups preserve it.
+    /// Verifies first startup creates a minimal, parseable `[server]`-only demo config and later startups preserve it.
     #[tokio::test]
     async fn test_create_default_config_if_missing() {
         let directory = crate::test_support::TempDir::create();
@@ -1140,13 +1169,13 @@ target = "host"
         let config = parse_config_file(&path).await.unwrap();
 
         let bootstrap = created.expect("a missing conventional config should be created");
-        assert_eq!(
-            config.agent_token, bootstrap.agent_token,
-            "the generated agent_token should match the one-time printed secret"
+        assert!(
+            config.agent_token.is_none(),
+            "server starter config must not write a global top-level agent_token"
         );
         assert!(
-            bootstrap.agent_token.len() >= 32,
-            "bootstrap agent_token must be high entropy"
+            config.agents.is_empty(),
+            "server starter config must not write global [[agents]] entries"
         );
         let server = config
             .server
@@ -1170,6 +1199,10 @@ target = "host"
             "demo login should use the fixed changeme password"
         );
         assert_eq!(
+            bootstrap.username, "redoor",
+            "bootstrap should report the fixed demo username once"
+        );
+        assert_eq!(
             bootstrap.password, "changeme",
             "bootstrap should report the fixed demo password once"
         );
@@ -1178,24 +1211,10 @@ target = "host"
             server.log.is_none(),
             "starter config should rely on conventional runtime log paths"
         );
-        let local_agent = config.agents.iter().find_map(|entry| match entry {
-            AgentConfig::Local(config) => Some(config),
-            AgentConfig::SshBacked(_) => None,
-        });
-        let local_agent =
-            local_agent.expect("starter config must include a managed local [[agents]] entry");
-        assert_eq!(
-            local_agent.name.as_deref(),
-            Some("local"),
-            "demo local agent should use the README name"
-        );
         for option in [
-            "agent_token =",
             "# port = 7666",
             "# bind = \"0.0.0.0\" # default 127.0.0.1",
             "# cookie_secure = false",
-            "local = true",
-            "name = \"local\"",
         ] {
             assert!(
                 content.contains(option),

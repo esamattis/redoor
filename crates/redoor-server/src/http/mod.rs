@@ -25,6 +25,7 @@ mod git;
 mod logging_levels;
 mod logs;
 pub(crate) mod mcp;
+mod migration;
 mod moves;
 pub(crate) mod oidc;
 mod partials;

@@ -4,8 +4,9 @@ use crate::actors::lanes::{ControlLanes, QueuedCommand};
 use crate::actors::router::{
     ConnectionStreams, RegisterAgentRequest, RouteResponse, RouterHandle, RouterMsg, spawn_router,
 };
+use crate::workspaces::AgentKey;
 use redoor_protocol::{
-    ids::{AgentId, RequestId, SocketId},
+    ids::{RequestId, SocketId},
     wire::{
         ServerToAgent,
         command::Command,
@@ -19,7 +20,7 @@ use tokio::sync::mpsc;
 /// stream tables its connection reader would deliver frames into.
 pub(crate) struct FakeAgent {
     pub(crate) router: RouterHandle,
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent_id: AgentKey,
     /// Control session the agent registered on; the router only accepts its frames from it.
     socket_id: SocketId,
     pub(crate) commands: mpsc::Receiver<QueuedCommand>,
@@ -33,11 +34,15 @@ impl FakeAgent {
     /// Starts a router and registers one agent.
     pub(crate) async fn connect() -> Self {
         let (router, _task) = spawn_router();
-        let agent_id = redoor_core::test_support::test_agent_id("fake-agent");
+        let agent_id = AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("fake-agent"),
+        );
         let (lanes, receivers) = ControlLanes::bounded(16, 16);
         let (commands, mut priority) = (receivers.commands, receivers.priority);
         let streams = ConnectionStreams::new(agent_id.clone());
-        let registration = RegisterAgentRequest::for_test(&agent_id, lanes, streams.clone());
+        let registration =
+            RegisterAgentRequest::for_test("test", &agent_id.id, lanes, streams.clone());
         let socket_id = registration.socket_id.clone();
         router
             .send_async(RouterMsg::RegisterAgent(Box::new(registration)))

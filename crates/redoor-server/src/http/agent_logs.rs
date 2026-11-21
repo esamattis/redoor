@@ -11,6 +11,7 @@ use crate::actors::router::{
     LogStream, OpenAgentLogStreamRequest, OutputReceiver, RouterError, RouterMsg, StreamCloseGuard,
 };
 use crate::http::access::ResolvedDevice;
+use crate::workspaces::AgentKey;
 use axum::{
     Extension,
     extract::{
@@ -25,10 +26,7 @@ use futures_util::{
     stream::{SplitSink, SplitStream},
 };
 use redoor_core::{log, websocket::WebSocketTimeouts};
-use redoor_protocol::{
-    ids::AgentId,
-    wire::log::{Level, LogEvent, MAX_LOG_EVENT_SIZE},
-};
+use redoor_protocol::wire::log::{Level, LogEvent, MAX_LOG_EVENT_SIZE};
 
 /// Caps websocket frames on log sockets so one oversized event cannot force a large allocation.
 const MAX_LOG_MESSAGE_SIZE: usize = 256 * 1024;
@@ -60,7 +58,7 @@ pub(crate) async fn browser_agent_logs_websocket_handler(
 /// the session that opened the socket ends.
 async fn run_log_relay(
     mut browser: WebSocket,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     state: ServerState,
     watch: SessionWatch,
 ) {
@@ -88,7 +86,7 @@ async fn run_log_relay(
     log!(
         Level::Info,
         "Agent log relay started: agent_id={}, stream={}",
-        agent_id,
+        agent_id.id,
         stream
     );
     let (mut browser_sink, browser_stream) = browser.split();
@@ -103,7 +101,7 @@ async fn run_log_relay(
     log!(
         Level::Info,
         "Agent log relay stopped: agent_id={}, stream={}",
-        agent_id,
+        agent_id.id,
         stream
     );
 }

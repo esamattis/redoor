@@ -15,11 +15,14 @@ import {
     ALL_PERMISSIONS,
     ProcessManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     TempFileManager,
     VITEST_SERVER_PORT,
     createAccessToken,
+    seedUserWorkspace,
     waitForAgentReady,
     waitForPort,
     waitForValue,
@@ -147,18 +150,26 @@ beforeAll(async () => {
     const configPath = join(directory, "config.toml");
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${managedAgent}"
-home = "${managedRoot}"
 `,
     );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_accessctrlmanagedaaa",
+                name: managedAgent,
+                home: managedRoot,
+                terminal_env: {},
+            },
+        ],
+    });
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     const serverPid = processManager.spawnServer({ config: configPath });
     await waitForPort(VITEST_SERVER_PORT);

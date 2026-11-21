@@ -28,11 +28,11 @@ import { createMcpTestClient } from './mcp-client';
 import type { JsonObject } from './mcp-client';
 import {
     ALL_PERMISSIONS,
-    DEVICE_ID_PATTERN,
     DEVICE_ID_REGEXP,
     ProcessManager,
     SERVER_PATH,
     TEST_AGENT_TOKEN,
+    seedUserWorkspace,
     TEST_APP_NAME,
     TEST_PASSWORD,
     TEST_USERNAME,
@@ -41,7 +41,6 @@ import {
     agentDataDir,
     createAccessToken,
     generateDeviceId,
-    getAvailablePort,
     remoteEnv,
     removeAgentDataDir,
     restartServerAndWait,
@@ -70,6 +69,8 @@ const AGENT_A = "ids-agent-a";
 const AGENT_B = "ids-agent-b";
 
 let configPath: string;
+
+let agentsJsonPath: string;
 
 let serverLog: string;
 
@@ -241,13 +242,13 @@ async function token(permissions: Permission[], deviceIds?: string[]) {
     });
 }
 
-/** Reads the `id = "dev_..."` line of the `[[agents]]` entry that contains `marker`. */
-function configuredId(marker: string): string | undefined {
-    const entry = readFileSync(configPath, "utf8")
-        .split("[[agents]]")
-        .find((table) => table.includes(marker));
+/** Reads the `id` of the managed device entry with `name` from the user's `agents.json`. */
+function configuredId(name: string): string | undefined {
+    const raw = readFileSync(agentsJsonPath, "utf8");
+    const parsed: { agents: { id?: string; name?: string }[] } =
+        JSON.parse(raw);
 
-    return entry?.match(new RegExp(`^id = "(${DEVICE_ID_PATTERN})"`, "m"))?.[1];
+    return parsed.agents.find((entry) => entry.name === name)?.id;
 }
 
 beforeAll(async () => {
@@ -262,26 +263,43 @@ beforeAll(async () => {
     configPath = join(directory, "config.toml");
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-# A hand-written entry: operators should not have to invent an id.
-[[agents]]
-local = true
-name = "${HAND_WRITTEN_NAME}" # this comment must survive the id write-back
-home = "${handWrittenRoot}"
 `,
     );
+    const serverHome = join(directory, "server-home");
+    agentsJsonPath = join(
+        serverHome,
+        ".local",
+        "share",
+        TEST_APP_NAME,
+        "users",
+        TEST_USERNAME,
+        "agents.json",
+    );
+    seedUserWorkspace({
+        home: serverHome,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_handwrittenagentaaaa",
+                name: HAND_WRITTEN_NAME,
+                home: handWrittenRoot,
+                terminal_env: {},
+            },
+        ],
+    });
     serverLog = join(directory, "server.log");
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     // A private home keeps this suite's token store away from other suites' tokens.
     serverPid = processes.spawnServer({
         config: configPath,
         log: serverLog,
-        home: join(directory, "server-home"),
+        home: serverHome,
     });
     await waitForPort(VITEST_SERVER_PORT);
     await api.login(TEST_USERNAME, TEST_PASSWORD);
@@ -296,21 +314,12 @@ afterAll(async () => {
     tempFiles.cleanup();
 });
 
-describe("Managed device ids in config.toml", () => {
-    it("gives hand-written entries an id at startup and keeps it across restarts", async () => {
-        const assigned = configuredId(`name = "${HAND_WRITTEN_NAME}"`);
+describe("Managed device ids in workspace agents.json", () => {
+    it("keeps a managed device's id across restarts", async () => {
+        const assigned = ids.get(HAND_WRITTEN_NAME);
 
-        // Startup wrote an id into the entry that had none.
+        // The seeded managed device id is exposed in inventory so token scopes can refer to it.
         expect(assigned).toMatch(DEVICE_ID_REGEXP);
-        // The write-back preserves the operator's comments.
-        expect(readFileSync(configPath, "utf8")).toContain(
-            "# this comment must survive the id write-back",
-        );
-        expect(readFileSync(configPath, "utf8")).toContain(
-            "# A hand-written entry: operators should not have to invent an id.",
-        );
-        // The inventory uses the written id, so token scopes can refer to it.
-        expect(ids.get(HAND_WRITTEN_NAME)).toBe(assigned);
 
         await restartServerAndWait({ apiClient: api, serverLog });
         onTestFinished(() =>
@@ -318,62 +327,11 @@ describe("Managed device ids in config.toml", () => {
         );
 
         // The id is read back on the next start instead of being generated again.
-        expect(configuredId(`name = "${HAND_WRITTEN_NAME}"`)).toBe(assigned);
         expect(
             (await api.listAgents()).find(
                 (agent) => agent.name === HAND_WRITTEN_NAME,
             )?.id,
         ).toBe(assigned);
-    }, 30_000);
-
-    it("refuses to start with a read-only config.toml and prints a ready-to-paste id", async () => {
-        if (process.getuid?.() === 0) {
-            // Root ignores file permissions, so a read-only file cannot be produced.
-            return;
-        }
-
-        const directory = tempFiles.tempDirectory({
-            suffix: "-read-only-config",
-        });
-
-        const readOnlyConfig = join(directory, "config.toml");
-
-        const content = `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
-username = "${TEST_USERNAME}"
-password = "${TEST_PASSWORD}"
-
-[[agents]]
-name = "read-only-pi"
-target = "pi.invalid"
-`;
-
-        writeFileSync(readOnlyConfig, content, { mode: 0o444 });
-
-        const result = await $({
-            env: {
-                ...process.env,
-                HOME: directory,
-                REDOOR_APP_NAME: `${TEST_APP_NAME}-read-only-config`,
-                // A free port keeps a failure to fail from colliding with the suite's server.
-                REDOOR_PORT: (await getAvailablePort()).toString(),
-            },
-            quiet: true,
-            nothrow: true,
-            timeout: "20s",
-        })`exec ${binary} server --config ${readOnlyConfig}`;
-
-        const output = `${result.stdout}\n${result.stderr}`;
-
-        // An id kept only in memory would change on every start, so startup must fail.
-        expect(result.exitCode, output).not.toBe(0);
-        // The error names the entry without an id ...
-        expect(output).toContain("read-only-pi");
-        // ... and prints a complete line the operator can paste into it.
-        expect(output).toMatch(new RegExp(`id = "${DEVICE_ID_PATTERN}"`));
-        // The file is left exactly as it was.
-        expect(readFileSync(readOnlyConfig, "utf8")).toBe(content);
     }, 30_000);
 });
 
@@ -405,8 +363,8 @@ describe("Renames, names and token scopes", () => {
             id: device.id,
             name: "ids-rename-after",
         });
-        // The config entry still carries the same id, so the next start keeps it too.
-        expect(configuredId('name = "ids-rename-after"')).toBe(device.id);
+        // The persisted entry still carries the same id, so the next start keeps it too.
+        expect(configuredId("ids-rename-after")).toBe(device.id);
 
         const renamed = (await api.listAgents()).find(
             (agent) => agent.id === device.id,

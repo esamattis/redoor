@@ -59,12 +59,27 @@ pub(crate) struct SshKeyStore {
 }
 
 impl SshKeyStore {
-    /// Stores keys under `<data_dir>/ssh`.
+    /// Stores keys under `<data_dir>/ssh`, for standalone tests.
+    #[cfg(test)]
     pub(crate) fn for_data_dir(data_dir: &Path) -> Self {
         Self {
             root: data_dir.join(SSH_DIR),
             authorized_keys_lock: Arc::default(),
         }
+    }
+
+    /// Stores keys under `<user_dir>/ssh`, sharing one process-wide `authorized_keys_lock` so
+    /// two users targeting the same remote account still serialize `authorized_keys` rewrites.
+    pub(crate) fn for_user(
+        paths: &redoor_core::paths::AppPaths,
+        owner: &str,
+        authorized_keys_lock: Arc<tokio::sync::Mutex<()>>,
+    ) -> anyhow::Result<Self> {
+        let user_dir = crate::http::user_state::user_directory(paths, owner)?;
+        Ok(Self {
+            root: user_dir.join(SSH_DIR),
+            authorized_keys_lock,
+        })
     }
 
     /// Held while one `authorized_keys` rewrite runs on a device.

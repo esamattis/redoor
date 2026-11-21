@@ -98,8 +98,6 @@ pub(crate) struct AuthState {
     sessions_directory: PathBuf,
     /// When true, Set-Cookie includes `Secure` so browsers only send the session over HTTPS.
     cookie_secure: bool,
-    /// Shared secret agents must present at registration to prevent unauthenticated hijacks.
-    agent_token: String,
     /// Counts failed logins of every method and failed current-password checks of the change
     /// form alike, so a stolen session cannot be used to guess a password faster than the
     /// login page.
@@ -699,7 +697,6 @@ impl AuthState {
     pub(crate) async fn new(
         config_path: PathBuf,
         oidc: Option<&OidcConfig>,
-        agent_token: String,
         cookie_secure: bool,
         data_dir: &std::path::Path,
     ) -> anyhow::Result<Self> {
@@ -726,7 +723,6 @@ impl AuthState {
             password_change_lock: Arc::default(),
             sessions_directory,
             cookie_secure,
-            agent_token,
             login_limiter: Arc::new(LoginRateLimiter::new()),
             oidc_sessions: oidc.map(|config| OidcSessionPolicy {
                 fingerprint: oidc_fingerprint(config),
@@ -741,11 +737,6 @@ impl AuthState {
         auth.purge_stale_sessions().await?;
 
         Ok(auth)
-    }
-
-    /// Shared secret that agents must present when upgrading their websocket connection.
-    pub(crate) fn agent_token(&self) -> &str {
-        &self.agent_token
     }
 
     /// Maps a validated UUID to its one-file-per-session storage path.
@@ -899,11 +890,12 @@ impl AuthState {
         }
     }
 
-    /// Every session that is still signed in, newest sign-in first, for the session list.
+    /// Every session for `owner` that is still signed in, newest sign-in first, for the
+    /// session list.
     ///
     /// Read-only: files of ended sessions are left for the request check and the startup
     /// purge to remove, so listing never races a renewal or a logout.
-    pub(crate) async fn list_sessions(&self) -> anyhow::Result<Vec<ListedSession>> {
+    pub(crate) async fn list_sessions(&self, owner: &str) -> anyhow::Result<Vec<ListedSession>> {
         let logins = self.logins.current().await;
         let now = jiff::Timestamp::now().as_second();
         let mut sessions = Vec::new();
@@ -913,6 +905,9 @@ impl AuthState {
             let Some(session) = read_session_file(&path).await else {
                 continue;
             };
+            if session.username != owner {
+                continue;
+            }
             // A file whose name does not match its id is never let in, so it is not listed.
             if self.session_path(&session.session_id).as_deref() != Some(path.as_path()) {
                 continue;
@@ -937,15 +932,15 @@ impl AuthState {
         Ok(sessions)
     }
 
-    /// Signs out the signed-in session the list names `public_id`, or returns `None` when
-    /// there is none. Returns the session so the caller can log it and drop what else
-    /// belongs to it, such as its vault entries.
+    /// Signs out `owner`'s signed-in session named `public_id`, or returns `None` when there
+    /// is none (including sessions belonging to other users).
     pub(crate) async fn sign_out_session(
         &self,
+        owner: &str,
         public_id: &str,
     ) -> anyhow::Result<Option<ListedSession>> {
         let Some(session) = self
-            .list_sessions()
+            .list_sessions(owner)
             .await?
             .into_iter()
             .find(|session| session.public_id == public_id)
@@ -956,14 +951,14 @@ impl AuthState {
         Ok(Some(session))
     }
 
-    /// Signs out every signed-in session except the caller's own `keep`, so a user who
-    /// suspects a stolen cookie can end all other browsers without locking themselves out.
+    /// Signs out every signed-in session belonging to `owner` except the caller's own `keep`.
     pub(crate) async fn sign_out_other_sessions(
         &self,
+        owner: &str,
         keep: &str,
     ) -> anyhow::Result<Vec<ListedSession>> {
         let mut signed_out = Vec::new();
-        for session in self.list_sessions().await? {
+        for session in self.list_sessions(owner).await? {
             if session.id == keep {
                 continue;
             }
@@ -1714,6 +1709,16 @@ pub(crate) async fn login_handler(
                 .into_response();
         }
     };
+    // Lazily create the user's workspace account.json (and agent_token) on first login
+    // unless first-use migration is still waiting to claim legacy data.
+    if !state.migration.is_pending().await
+        && let Err(error) = state.accounts.ensure_agent_token(&session.user.name).await
+    {
+        log_error!(
+            error,
+            "Failed to initialize per-user account on password login"
+        );
+    }
     log!(
         Level::Info,
         "Signed in: user={}, address={client}",
@@ -1809,7 +1814,7 @@ password = "password"
         )
         .await
         .expect("write config");
-        let auth = AuthState::new(config, None, "t".to_string(), false, directory.path())
+        let auth = AuthState::new(config, None, false, directory.path())
             .await
             .expect("auth state must initialize");
         let LoginVerification::Authenticated(grant) = auth.verify_login("admin", "password").await
@@ -1904,15 +1909,9 @@ password = '{password}'
     /// Auth state started from the config file already in `directory`, as a restart would
     /// build it.
     async fn auth_from_file(directory: &TempDir, oidc: Option<&OidcConfig>) -> AuthState {
-        AuthState::new(
-            config_path(directory),
-            oidc,
-            "agent-token".to_string(),
-            false,
-            directory.path(),
-        )
-        .await
-        .expect("auth state must initialize")
+        AuthState::new(config_path(directory), oidc, false, directory.path())
+            .await
+            .expect("auth state must initialize")
     }
 
     /// Auth state with the given logins written to the config file in `directory`, as a
@@ -3091,7 +3090,7 @@ port = "not-a-port"
         let laptop = browser_session(&auth, "Laptop").await;
         let phone = browser_session(&auth, "Phone").await;
 
-        let sessions = auth.list_sessions().await.expect("list");
+        let sessions = auth.list_sessions("admin").await.expect("list");
         let mut agents: Vec<_> = sessions
             .iter()
             .map(|session| session.client.user_agent.clone().unwrap_or_default())
@@ -3110,7 +3109,7 @@ port = "not-a-port"
         }
 
         set_expiry(&directory, &phone, jiff::Timestamp::now().as_second() - 1).await;
-        let sessions = auth.list_sessions().await.expect("list");
+        let sessions = auth.list_sessions("admin").await.expect("list");
         // An expired session would not be let in, so it is not listed either.
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, session_id(&laptop));
@@ -3128,7 +3127,7 @@ port = "not-a-port"
 
         let target = public_session_id(&session_id(&first));
         let signed_out = auth
-            .sign_out_session(&target)
+            .sign_out_session("admin", &target)
             .await
             .expect("sign out")
             .expect("the session is listed");
@@ -3138,14 +3137,14 @@ port = "not-a-port"
         assert!(session_user(&auth, &first).await.is_none());
         // Signing out an id that is no longer listed reports that nothing matched.
         assert!(
-            auth.sign_out_session(&target)
+            auth.sign_out_session("admin", &target)
                 .await
                 .expect("sign out")
                 .is_none()
         );
 
         let others = auth
-            .sign_out_other_sessions(&session_id(&own))
+            .sign_out_other_sessions("admin", &session_id(&own))
             .await
             .expect("sign out others");
         // Only the remaining other browser was signed out.

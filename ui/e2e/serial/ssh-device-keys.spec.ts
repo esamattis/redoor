@@ -38,7 +38,16 @@ async function removeVault() {
 
     await Promise.all(
         apps.map((app) =>
-            fs.rm(path.join(SERVER_SHARE, app, "vault.json"), { force: true }),
+            fs.rm(
+                path.join(
+                    SERVER_SHARE,
+                    app,
+                    "users",
+                    "test-user",
+                    "vault.json",
+                ),
+                { force: true },
+            ),
         ),
     );
 }

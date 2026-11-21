@@ -22,7 +22,6 @@ use redoor_protocol::api::{
         VaultPayloadParams,
     },
 };
-use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::{
     command::{Command, CommandErrorKind, UploadPrecondition},
     request,
@@ -48,6 +47,7 @@ use crate::http::{
     state::ServerState,
     upload_requests::UploadRequestGuard,
 };
+use crate::workspaces::AgentKey;
 
 /// Carries the generation that wraps the file key of a `fetch` write.
 const KEY_ID_HEADER: &str = "redoor-vault-key-id";
@@ -113,7 +113,7 @@ fn new_preamble(
 }
 
 /// Refuses agents that would ignore the write precondition.
-async fn require_preconditions(state: &ServerState, agent_id: &AgentId) -> Result<(), ApiError> {
+async fn require_preconditions(state: &ServerState, agent_id: &AgentKey) -> Result<(), ApiError> {
     let entry = crate::http::trash::inventory_entry(state, agent_id).await?;
     if entry.supports_upload_preconditions {
         Ok(())
@@ -129,7 +129,7 @@ async fn require_preconditions(state: &ServerState, agent_id: &AgentId) -> Resul
 /// The identity of the file on the device, checked against the revision the browser read.
 async fn current_identity(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     path: &str,
     expected: &str,
 ) -> Result<redoor_protocol::wire::command::MoveSourceIdentity, ApiError> {
@@ -177,7 +177,7 @@ fn source_error(error: std::io::Error) -> ApiError {
 /// One encrypted write: the destination, its precondition and the exact ciphertext size.
 struct Publication<'a> {
     state: &'a ServerState,
-    agent_id: &'a AgentId,
+    agent_id: &'a AgentKey,
     path: String,
     precondition: Option<UploadPrecondition>,
     on_existing: CopyExistingMode,
@@ -275,7 +275,10 @@ pub(crate) async fn edit_handler(
     let keys = WriteKeys::from_headers(&headers)?;
     let expected = required_header(&headers, REVISION_HEADER)?;
     let plaintext = required_content_length(&headers, "vault saves")?;
-    let document = state.vault.require_current(&keys.key_id).await?;
+    let document = state
+        .vault
+        .require_current(agent_id.owner(), &keys.key_id)
+        .await?;
     require_preconditions(&state, &agent_id).await?;
     let identity = current_identity(&state, &agent_id, &path, expected).await?;
     let preamble = new_preamble(&document, &keys, VaultObjectKind::File, Default::default())?;
@@ -317,9 +320,12 @@ pub(crate) async fn upload_handler(
     let path = vault_path(path)?;
     let keys = WriteKeys::from_headers(&headers)?;
     let plaintext = required_content_length(&headers, "uploads")?;
-    let document = state.vault.require_current(&keys.key_id).await?;
+    let document = state
+        .vault
+        .require_current(agent_id.owner(), &keys.key_id)
+        .await?;
     require_preconditions(&state, &agent_id).await?;
-    let request_guard = state.upload_requests.reserve(&headers)?;
+    let request_guard = state.upload_requests.reserve(agent_id.owner(), &headers)?;
     let preamble = new_preamble(&document, &keys, VaultObjectKind::File, Default::default())?;
     let total_bytes = preamble.len() as u64 + payload_len(plaintext);
     let encrypting =
@@ -350,7 +356,7 @@ pub(crate) async fn upload_handler(
 /// belongs to this vault.
 async fn open_for_rewrite(
     state: &ServerState,
-    agent_id: &AgentId,
+    agent_id: &AgentKey,
     path: &str,
     expected_revision: &str,
 ) -> Result<VaultSource, ApiError> {
@@ -358,7 +364,7 @@ async fn open_for_rewrite(
     require_revision(&source.identity, expected_revision)?;
     state
         .vault
-        .require_readable(source.preamble.header())
+        .require_readable(agent_id.owner(), source.preamble.header())
         .await?;
     source.plaintext_len()?;
     Ok(source)
@@ -376,7 +382,10 @@ pub(crate) async fn rewrap_handler(
 ) -> Result<Json<VaultFileWriteResponse>, ApiError> {
     let path = vault_path(path)?;
     let key = file_key(&request.file_key)?;
-    let document = state.vault.require_current(&request.key_id).await?;
+    let document = state
+        .vault
+        .require_current(agent_id.owner(), &request.key_id)
+        .await?;
     require_preconditions(&state, &agent_id).await?;
     let source = open_for_rewrite(&state, &agent_id, &path, &request.expected_revision).await?;
     source.preamble.verify(&key).map_err(format_error)?;
@@ -423,7 +432,10 @@ pub(crate) async fn reencrypt_handler(
         key_id: request.key_id,
         wrap: request.wrap,
     };
-    let document = state.vault.require_current(&keys.key_id).await?;
+    let document = state
+        .vault
+        .require_current(agent_id.owner(), &keys.key_id)
+        .await?;
     require_preconditions(&state, &agent_id).await?;
     let source = open_for_rewrite(&state, &agent_id, &path, &request.expected_revision).await?;
     let plaintext = source.plaintext_len()?;

@@ -563,7 +563,7 @@ function ServerRestartDialog(props: { isOpen: boolean; onClose: () => void }) {
  * fails.
  */
 function useLogout() {
-    const { api, vault } = rootRouteApi.useRouteContext();
+    const { api, queryClient, vault } = rootRouteApi.useRouteContext();
     const router = useRouter();
 
     return useMutation({
@@ -573,6 +573,7 @@ function useLogout() {
             return api.logout();
         },
         onSuccess: () => {
+            queryClient.clear();
             window.location.replace(
                 router.buildLocation({ to: "/login" }).href,
             );

@@ -71,32 +71,22 @@ const SHUTDOWN_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
 pub async fn run_server(args: CoordinatorArgs, runtime: RuntimeContext) -> Result<ExitCode> {
     deny_same_user_memory_access();
     let location = ConfigLocation::find_or_bootstrap(args.config.clone(), &runtime.paths).await?;
-    // The server owns managed ids, so hand-written entries get theirs before anything uses them.
-    let assigned = redoor_core::config::assign_missing_device_ids(
-        &location.path,
-        redoor_core::config::DeviceIdScope::ManagedAgents,
-    )
-    .await?;
     let file = redoor_core::config::parse_config_file(&location.path).await?;
-    // Only the server registers managed agents, so only it rejects invalid or colliding names.
-    file.validate_managed_agent_names(&location.path)?;
+    // Only validate legacy `[[agents]]` names if any exist in config.toml (before migration).
+    if !file.agents.is_empty() {
+        file.validate_managed_agent_names(&location.path)?;
+    }
+    let was_created = location.created.is_some();
     let config = ServerConfig::resolve(
         &args,
         &ServerEnvironment::from_process(),
         file,
         location.path,
+        location.created,
         &runtime.paths,
     )?;
     let server = ServerRuntime::build(config, runtime).await?;
-    // Logged only now because the logger starts inside `build`.
-    if assigned > 0 {
-        log!(
-            Level::Info,
-            "Assigned device ids to {} [[agents]] entries and wrote them to the config file",
-            assigned
-        );
-    }
-    if location.created {
+    if was_created {
         server.open_first_run_login();
     }
     server.serve_until_restart().await?;
@@ -109,18 +99,16 @@ pub async fn run_server(args: CoordinatorArgs, runtime: RuntimeContext) -> Resul
 struct ConfigLocation {
     /// Canonical path, also shown in the UI and re-validated before restarts.
     path: PathBuf,
-    /// True on the first run that wrote the starter config (enables the browser demo).
-    created: bool,
+    /// Present on the first run that wrote the starter config (enables the browser demo and
+    /// starter user workspace bootstrap).
+    created: Option<redoor_core::config::CreatedDefaultConfig>,
 }
 
 impl ConfigLocation {
     /// Uses `--config` as given, or bootstraps the conventional path on first run.
-    ///
-    /// Only this command bootstraps the conventional path so first-run secrets and the
-    /// local agent entry appear from a single intentional entry point.
     async fn find_or_bootstrap(explicit: Option<String>, paths: &AppPaths) -> Result<Self> {
         let (path, created) = match explicit {
-            Some(path) => (PathBuf::from(path), false),
+            Some(path) => (PathBuf::from(path), None),
             None => {
                 let path = paths.default_config_path()?;
                 let created = redoor_core::config::create_default_config_if_missing(&path)
@@ -128,10 +116,7 @@ impl ConfigLocation {
                     .with_context(|| {
                         format!("Failed to create default config '{}'", path.display())
                     })?;
-                if let Some(created) = &created {
-                    print_bootstrap_secrets(&path, created);
-                }
-                (path, created.is_some())
+                (path, created)
             }
         };
         let path = tokio::fs::canonicalize(&path)
@@ -145,16 +130,18 @@ impl ConfigLocation {
 fn print_bootstrap_secrets(
     path: &std::path::Path,
     created: &redoor_core::config::CreatedDefaultConfig,
+    agent_token: &str,
 ) {
     eprintln!(
         "Created default config '{}'.
-  username: redoor
+  username: {}
   password: {}
   agent_token: {}
 Store these secrets securely; they will not be shown again.",
         path.display(),
+        created.username,
         created.password,
-        created.agent_token
+        agent_token
     );
 }
 
@@ -204,10 +191,10 @@ struct ServerConfig {
     oidc: Option<redoor_core::config::OidcConfig>,
     /// Browser origins allowed to call MCP.
     mcp_allowed_origins: Vec<String>,
-    /// Shared agent registration secret.
-    agent_token: String,
-    /// Managed agents registered at startup.
-    agents: Vec<AgentConfig>,
+    /// Full parsed TOML file kept for legacy first-use migration detection.
+    parsed_file: RedoorConfig,
+    /// Present on the first run that created the starter `config.toml`.
+    bootstrapped: Option<redoor_core::config::CreatedDefaultConfig>,
     /// Orphan limit passed to managed daemons.
     managed_orphan_timeout: std::time::Duration,
 }
@@ -222,6 +209,7 @@ impl ServerConfig {
         env: &ServerEnvironment,
         file: RedoorConfig,
         config_path: PathBuf,
+        bootstrapped: Option<redoor_core::config::CreatedDefaultConfig>,
         paths: &AppPaths,
     ) -> Result<Self> {
         let server = redoor_core::config::require_server_section(&file)?.clone();
@@ -258,8 +246,8 @@ impl ServerConfig {
             tls: server.tls,
             oidc: server.oidc,
             mcp_allowed_origins: server.mcp_allowed_origins,
-            agent_token: file.agent_token,
-            agents: file.agents,
+            parsed_file: file,
+            bootstrapped,
             managed_orphan_timeout: args
                 .managed_orphan_timeout
                 .unwrap_or(crate::http::watchdog::DEFAULT_ORPHAN_TIMEOUT),
@@ -357,7 +345,6 @@ impl ServerRuntime {
         let auth = AuthState::new(
             config.config_path.clone(),
             config.oidc.as_ref(),
-            config.agent_token.clone(),
             config.cookie_secure,
             &data_dir,
         )
@@ -376,9 +363,57 @@ impl ServerRuntime {
             })
             .transpose()
             .context("Failed to initialize OIDC sign-in")?;
-        let tokens = crate::http::tokens::TokenStore::load(&data_dir)
+
+        // TEMPORARY MIGRATION: Detect legacy global state before loading per-user workspaces.
+        let pending_migration =
+            crate::migration::detect_pending_migration(&data_dir, &config.parsed_file)
+                .await
+                .context("Failed to inspect server workspace layout")?;
+        let migration_pending = pending_migration.is_some();
+        let migration = crate::migration::MigrationState::new(pending_migration);
+
+        let accounts = crate::workspaces::UserAccountStore::load_all(runtime.paths.clone())
             .await
-            .context("Failed to load access tokens")?;
+            .context("Failed to load user accounts")?;
+        let user_agents = crate::workspaces::UserAgentsStore::new(runtime.paths.clone());
+
+        if !migration_pending {
+            if !crate::workspaces::has_layout_version(&data_dir).await? {
+                crate::workspaces::write_layout_version(&runtime.paths).await?;
+            }
+            if let Some(created) = &config.bootstrapped {
+                let agent_token = redoor_core::config::generate_agent_token()?;
+                accounts
+                    .set_account_token(&created.username, agent_token.clone())
+                    .await
+                    .context("Failed to initialize starter user account")?;
+                let starter_local = AgentConfig::Local(redoor_core::config::LocalAgentConfig {
+                    id: Some(redoor_protocol::ids::AgentId::generate()),
+                    name: Some("local".to_string()),
+                    home: None,
+                    terminal_env: std::collections::BTreeMap::new(),
+                });
+                user_agents
+                    .write_all(&created.username, &[starter_local])
+                    .await
+                    .context("Failed to initialize starter local agent")?;
+                print_bootstrap_secrets(&config.config_path, created, &agent_token);
+            }
+        } else {
+            log!(
+                Level::Warning,
+                "Legacy global workspace detected; server is in migration-required mode until an operator confirms migration in the UI"
+            );
+        }
+
+        let usernames = accounts.usernames().await;
+        let tokens = if migration_pending {
+            crate::http::tokens::TokenStore::new(runtime.paths.clone())
+        } else {
+            crate::http::tokens::TokenStore::load_all(runtime.paths.clone(), &usernames)
+                .await
+                .context("Failed to load access tokens")?
+        };
         let mcp =
             crate::http::mcp::McpState::new(tokens.clone(), config.mcp_allowed_origins, &data_dir)
                 .await
@@ -388,15 +423,17 @@ impl ServerRuntime {
         // Built before the listener so the registry exists when the first WebSocket connects.
         let watchdogs = WatchdogRegistry::default();
         let binaries = crate::binaries::BinaryCache::new(runtime.paths.clone());
-        let ssh_keys = crate::ssh::keys::SshKeyStore::for_data_dir(&data_dir);
+        let ssh_authorized_keys_lock = Arc::new(tokio::sync::Mutex::new(()));
         let held_ssh_keys = crate::ssh::held_keys::HeldSshKeys::default();
         let launcher = ManagedLauncher::new(
             server_endpoint,
-            config.agent_token,
+            accounts.clone(),
+            runtime.paths.clone(),
+            ssh_authorized_keys_lock.clone(),
             crate::ssh::ProvisionContext {
                 app_name: runtime.paths.app_name().to_string(),
                 binaries: binaries.clone(),
-                ssh_keys: Some(ssh_keys.clone()),
+                ssh_keys: None,
                 held_ssh_keys: held_ssh_keys.clone(),
                 log_max_size: config.log_max_size,
                 // Empty until the first SSH provision, so servers that never provision a
@@ -423,6 +460,14 @@ impl ServerRuntime {
             crate::http::agent_client::AgentClient::new(router.clone()),
             crate::terminals::TerminalsChangedNotifier::new(router.clone()),
         );
+        let all_user_agents = if migration_pending {
+            Vec::new()
+        } else {
+            user_agents
+                .load_all(&usernames)
+                .await
+                .context("Failed to load per-user managed devices")?
+        };
         let state = ServerState {
             vault,
             vault_devices,
@@ -438,6 +483,9 @@ impl ServerRuntime {
             upload_requests: crate::http::upload_requests::UploadRequests::default(),
             protocol_mismatches: crate::protocol_mismatches::ProtocolMismatches::default(),
             auth,
+            accounts,
+            user_agents,
+            migration,
             oidc,
             tokens,
             cli_logins: Default::default(),
@@ -446,7 +494,7 @@ impl ServerRuntime {
             self_signed_tls: matches!(config.tls, Some(ServerTls::SelfSigned)),
             config_edit_lock: Arc::new(tokio::sync::Mutex::new(())),
             editor_buffer_lock: Arc::default(),
-            ssh_keys,
+            ssh_authorized_keys_lock,
             held_ssh_keys,
             ssh_key_operations: crate::http::ssh_keys::SshKeyOperations::default(),
             manual_ssh_keys: crate::http::ssh_keys::ManualSshKeys::default(),
@@ -470,17 +518,18 @@ impl ServerRuntime {
         }
         let scheme = if server_endpoint.tls { "https" } else { "http" };
         println!("Server running on {scheme}://{address}");
-        if !config.agents.is_empty() {
+        if !all_user_agents.is_empty() {
             tokio::spawn(warn_if_restart_kills_managed_daemons());
         }
 
         // Registered after binding so sessions point daemons at a resolved port, and before
-        // serving, so a daemon that reconnects at once finds its device desired-running. Only
-        // the devices that were running before the server started are started again.
-        launcher
-            .register_all(&config.agents, &watchdogs, &router)
-            .await
-            .context("Failed to register managed agents")?;
+        // serving, so a daemon that reconnects at once finds its device desired-running.
+        for (owner, agents) in &all_user_agents {
+            launcher
+                .register_all(owner, agents, &watchdogs, &router)
+                .await
+                .with_context(|| format!("Failed to register managed agents for user '{owner}'"))?;
+        }
 
         Ok(Self {
             app,
@@ -636,6 +685,7 @@ log_format = "json"
             env,
             file,
             PathBuf::from("/etc/redoor/config.toml"),
+            None,
             &AppPaths::for_home("redoor", "/home/test"),
         )
     }

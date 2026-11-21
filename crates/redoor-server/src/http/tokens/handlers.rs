@@ -19,31 +19,38 @@ use uuid::Uuid;
 use super::store::{IssuedToken, TokenPolicy};
 use crate::http::{access::Principal, auth::ActiveSession, error::ApiError, state::ServerState};
 
-/// Route: `GET /api/v1/tokens` lists every token's metadata.
-pub(crate) async fn list(State(state): State<ServerState>) -> Response {
+/// Route: `GET /api/v1/tokens` lists the signed-in user's tokens' metadata.
+pub(crate) async fn list(
+    State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
+) -> Response {
     no_store(Json(AccessTokenListResponse {
-        tokens: state.tokens.list().await,
+        tokens: state.tokens.list(principal.owner()).await,
     }))
 }
 
-/// Route: `POST /api/v1/tokens` mints a token and returns its secret once. Needs a fresh
-/// sign-in ([`require_fresh_login`]).
+/// Route: `POST /api/v1/tokens` mints a token for the signed-in user and returns its secret
+/// once. Needs a fresh sign-in ([`require_fresh_login`]).
 pub(crate) async fn create(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     session: Option<Extension<ActiveSession>>,
     headers: HeaderMap,
     Json(request): Json<CreateAccessTokenRequest>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
     require_fresh_login(session.as_deref())?;
-    Ok(no_store(Json(mint(&state, request).await?)))
+    Ok(no_store(Json(
+        mint(&state, principal.owner(), request).await?,
+    )))
 }
 
-/// Creates a token from a creation request and returns its only copy of the secret. Shared
-/// by `POST /api/v1/tokens` and the CLI login approval, so both validate the same way; the
-/// callers check the fresh sign-in first.
+/// Creates a token from a creation request under `owner` and returns its only copy of the
+/// secret. Shared by `POST /api/v1/tokens` and the CLI login approval, so both validate the
+/// same way; the callers check the fresh sign-in first.
 pub(crate) async fn mint(
     state: &ServerState,
+    owner: &str,
     request: CreateAccessTokenRequest,
 ) -> Result<AccessTokenSecretResponse, ApiError> {
     let expires_at = request
@@ -55,10 +62,11 @@ pub(crate) async fn mint(
                 .map_err(|_| ApiError::bad_request("Token expiry must be an RFC 3339 timestamp"))
         })
         .transpose()?;
-    let devices = resolve_scope(state, request.devices).await?;
+    let devices = resolve_scope(state, owner, request.devices).await?;
     let issued = state
         .tokens
         .create(
+            owner,
             TokenPolicy {
                 name: request.name,
                 permissions: request.permissions,
@@ -90,16 +98,19 @@ pub(crate) fn require_fresh_login(session: Option<&ActiveSession>) -> Result<(),
 /// Route: `PUT /api/v1/tokens/{token_id}` replaces the policy without changing the secret.
 pub(crate) async fn update(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     headers: HeaderMap,
     Path(token_id): Path<String>,
     Json(request): Json<UpdateAccessTokenRequest>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
     let id = parse_id(&token_id)?;
-    let devices = resolve_scope(&state, request.devices).await?;
+    let owner = principal.owner();
+    let devices = resolve_scope(&state, owner, request.devices).await?;
     let metadata = state
         .tokens
         .update(
+            owner,
             id,
             TokenPolicy {
                 name: request.name,
@@ -115,24 +126,32 @@ pub(crate) async fn update(
 /// Hands out a secret like creation, so it needs a fresh sign-in too.
 pub(crate) async fn rotate(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     session: Option<Extension<ActiveSession>>,
     headers: HeaderMap,
     Path(token_id): Path<String>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
     require_fresh_login(session.as_deref())?;
-    let issued = state.tokens.rotate(parse_id(&token_id)?).await?;
+    let issued = state
+        .tokens
+        .rotate(principal.owner(), parse_id(&token_id)?)
+        .await?;
     Ok(no_store(Json(secret(issued))))
 }
 
 /// Route: `DELETE /api/v1/tokens/{token_id}` revokes a token immediately.
 pub(crate) async fn delete(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     headers: HeaderMap,
     Path(token_id): Path<String>,
 ) -> Result<Response, ApiError> {
     validate_mutation_origin(&headers)?;
-    state.tokens.delete(parse_id(&token_id)?).await?;
+    state
+        .tokens
+        .delete(principal.owner(), parse_id(&token_id)?)
+        .await?;
     Ok(no_store(Json(DeleteAccessTokenResponse { deleted: true })))
 }
 
@@ -144,7 +163,7 @@ pub(crate) async fn current(
     let id = current_id(&principal)?;
     let metadata = state
         .tokens
-        .get(id)
+        .get(principal.owner(), id)
         .await
         .ok_or_else(|| ApiError::not_found("Access token not found"))?;
     Ok(no_store(Json(metadata)))
@@ -155,7 +174,10 @@ pub(crate) async fn delete_current(
     State(state): State<ServerState>,
     Extension(principal): Extension<Principal>,
 ) -> Result<Response, ApiError> {
-    state.tokens.delete(current_id(&principal)?).await?;
+    state
+        .tokens
+        .delete(principal.owner(), current_id(&principal)?)
+        .await?;
     Ok(no_store(Json(DeleteAccessTokenResponse { deleted: true })))
 }
 
@@ -171,12 +193,13 @@ fn parse_id(value: &str) -> Result<Uuid, ApiError> {
     Uuid::parse_str(value).map_err(|_| ApiError::bad_request("Token id must be a UUID"))
 }
 
-/// Resolves the device names or ids of a scope to the ids of known devices.
-///
-/// A scope stays tied to the devices it was created for: storing names would let a token
-/// follow a name to whichever device takes it later. Unknown values are refused because
-/// they are almost always typos.
-async fn resolve_scope(state: &ServerState, devices: DeviceScope) -> Result<DeviceScope, ApiError> {
+/// Resolves the device names or ids of a scope to the ids of known devices in `owner`'s
+/// workspace.
+async fn resolve_scope(
+    state: &ServerState,
+    owner: &str,
+    devices: DeviceScope,
+) -> Result<DeviceScope, ApiError> {
     let DeviceScope::Only { device_ids } = devices else {
         return Ok(DeviceScope::All);
     };
@@ -184,7 +207,7 @@ async fn resolve_scope(state: &ServerState, devices: DeviceScope) -> Result<Devi
     for device in device_ids {
         let id = state
             .agents
-            .resolve(device.as_str())
+            .resolve(owner, device.as_str())
             .await
             .map_err(|error| match error.status_code() {
                 axum::http::StatusCode::NOT_FOUND => {

@@ -39,6 +39,7 @@ use subtle::ConstantTimeEq;
 use tokio::sync::Notify;
 
 use super::{
+    access::Principal,
     auth::ActiveSession,
     client_address::ClientAddress,
     error::ApiError,
@@ -494,6 +495,7 @@ pub(crate) async fn get_handler(
 /// sign-in check as `POST /api/v1/tokens`; its secret goes to the CLI only.
 pub(crate) async fn approve_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     session: Option<Extension<ActiveSession>>,
     headers: HeaderMap,
     Path(id): Path<String>,
@@ -505,7 +507,8 @@ pub(crate) async fn approve_handler(
     state
         .cli_logins
         .begin_approval(&id, &request.user_code, Instant::now())?;
-    let token = match mint(&state, request.token).await {
+    let owner = principal.owner();
+    let token = match mint(&state, owner, request.token).await {
         Ok(token) => token,
         Err(error) => {
             state.cli_logins.finish_approval(&id, None);
@@ -516,7 +519,7 @@ pub(crate) async fn approve_handler(
     if !state.cli_logins.finish_approval(&id, Some(token)) {
         // The request expired while the token was created; nobody would pick it up.
         if let Ok(token_id) = metadata.id.parse()
-            && let Err(error) = state.tokens.delete(token_id).await
+            && let Err(error) = state.tokens.delete(owner, token_id).await
         {
             log_error!(
                 anyhow::Error::from(error),

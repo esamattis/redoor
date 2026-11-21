@@ -7,7 +7,6 @@ import { ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
 import {
     ProcessManager,
-    TEST_AGENT_TOKEN,
     VITEST_SERVER_PORT,
     createAccessToken,
     waitForPort,
@@ -93,9 +92,7 @@ function storedPassword(): string {
 beforeAll(async () => {
     rmSync(serverHome, { recursive: true, force: true });
     writeConfig(
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${username}"
 password = "${oldPassword}" # kept comment
 `,
@@ -175,9 +172,7 @@ describe("password change", () => {
         const before = await signIn(newPassword);
 
         writeConfig(
-            `agent_token = "${TEST_AGENT_TOKEN}"
-
-[[server.users]]
+            `[[server.users]]
 name = "${username}"
 password = "hand-edited-password"
 
@@ -198,18 +193,14 @@ password = "second-password"
         const second = await signIn("second-password", "second-user");
 
         writeConfig(
-            `agent_token = "${TEST_AGENT_TOKEN}"
-
-[[server.users]
+            `[[server.users]
 `,
         );
         // A file that does not parse keeps the last good logins instead of signing out.
         await expect(second.listAgents()).resolves.toEqual([]);
 
         writeConfig(
-            `agent_token = "${TEST_AGENT_TOKEN}"
-
-[[server.users]]
+            `[[server.users]]
 name = "${username}"
 password = "hand-edited-password"
 `,

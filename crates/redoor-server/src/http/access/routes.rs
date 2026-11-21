@@ -155,6 +155,9 @@ pub(crate) fn classify(method: &Method, matched_path: &str) -> Option<Access> {
         | ("POST", "/api/v1/tokens/{token_id}/rotate") => Access::SessionOnly,
         // A token may read and delete itself, which is what CLI status and logout use.
         ("GET" | "DELETE", "/api/v1/tokens/current") => Access::AnyPrincipal,
+        // TEMPORARY MIGRATION: First-use migration status and confirmation are session-only.
+        ("GET", "/api/v1/migration") | ("POST", "/api/v1/migration/confirm") => Access::SessionOnly,
+
         // Who is calling only describes the caller itself.
         ("GET", "/api/v1/auth/me") => Access::AnyPrincipal,
 
@@ -267,6 +270,28 @@ pub(crate) fn is_session_transfer(method: &Method, matched_path: &str) -> bool {
                 | "/api/v1/agents/{agent}/archive"
                 | "/api/v1/agents/{agent}/vault/raw"
         ) | ("POST", "/api/v1/agents/{agent}/vault/download")
+    )
+}
+
+/// Routes that remain accessible to browser sessions while first-use migration is pending.
+///
+/// TEMPORARY MIGRATION: Everything else (agents, MCP, access tokens, normal API/WS routes)
+/// returns `503 Service Unavailable` with `ApiErrorCode::MigrationRequired` until confirmed.
+/// Can be removed after layout v2 adoption.
+pub(crate) fn is_allowed_during_migration(method: &Method, matched_path: &str) -> bool {
+    matches!(
+        (method.as_str(), matched_path),
+        (
+            "POST",
+            "/api/v1/login" | "/api/v1/logout" | "/api/v1/migration/confirm"
+        ) | (
+            "GET",
+            "/api/v1/auth/methods"
+                | "/api/v1/auth/oidc/login"
+                | "/api/v1/auth/oidc/callback"
+                | "/api/v1/auth/me"
+                | "/api/v1/migration"
+        )
     )
 }
 

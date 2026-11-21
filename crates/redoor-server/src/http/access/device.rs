@@ -1,17 +1,19 @@
-//! The device a request addresses, resolved from the `{agent}` path parameter.
+//! The device a request addresses, resolved from the `{agent}` path parameter within the
+//! caller's workspace.
 
 use axum::{extract::FromRequestParts, http::request::Parts};
-use redoor_protocol::ids::AgentId;
 
 use crate::http::error::ApiError;
+use crate::workspaces::AgentKey;
 
-/// Id of the device named by the route's `{agent}` parameter.
+/// Owned device key (`owner` + `AgentId`) resolved from the route's `{agent}` parameter.
 ///
-/// The parameter accepts a name or an id. The access middleware resolves it once, before
-/// access control, and handlers take the id from here instead of reading the raw parameter,
-/// so a handler can never act on a name that scope checks did not see.
+/// The parameter accepts a name or an id. The access middleware resolves it once within the
+/// caller's workspace, before access control, and handlers take the key from here instead of
+/// reading the raw parameter, so a handler can never act on a device belonging to another user
+/// or a name that scope checks did not see.
 #[derive(Clone, Debug)]
-pub(crate) struct ResolvedDevice(pub(crate) AgentId);
+pub(crate) struct ResolvedDevice(pub(crate) AgentKey);
 
 impl<S: Send + Sync> FromRequestParts<S> for ResolvedDevice {
     type Rejection = ApiError;

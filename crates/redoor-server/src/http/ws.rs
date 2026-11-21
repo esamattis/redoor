@@ -15,6 +15,7 @@ use redoor_protocol::api::ui_events::UiEvent;
 use uuid::Uuid;
 
 use super::{
+    access::Principal,
     auth::ActiveSession,
     session_watch::{SessionWatch, close_for_ended_session},
     state::ServerState,
@@ -24,11 +25,13 @@ use super::{
 pub(crate) async fn ui_websocket_handler(
     ws: WebSocketUpgrade,
     AxumState(state): AxumState<ServerState>,
+    Extension(principal): Extension<Principal>,
     Extension(session): Extension<ActiveSession>,
 ) -> impl IntoResponse {
+    let owner = principal.owner().to_string();
     let timeouts = state.runtime.ws_timeouts;
     let watch = SessionWatch::new(state.auth.clone(), &session);
-    ws.on_upgrade(move |socket| handle_ui_socket(socket, state.router_ref, timeouts, watch))
+    ws.on_upgrade(move |socket| handle_ui_socket(socket, owner, state.router_ref, timeouts, watch))
 }
 
 /// Relays UI events from the router to the websocket until either side closes.
@@ -82,6 +85,7 @@ async fn wait_for_ui_disconnect(receiver: &mut futures_util::stream::SplitStream
 /// ends.
 async fn handle_ui_socket(
     socket: WebSocket,
+    owner: String,
     router_ref: actors::router::RouterHandle,
     timeouts: WebSocketTimeouts,
     watch: SessionWatch,
@@ -94,6 +98,7 @@ async fn handle_ui_socket(
         .send_async(actors::router::RouterMsg::RegisterUiSubscriber(
             actors::router::RegisterUiSubscriberRequest {
                 subscriber_id: subscriber_id.clone(),
+                owner,
                 sender: tx_out,
             },
         ))

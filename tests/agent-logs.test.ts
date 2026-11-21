@@ -292,9 +292,7 @@ describe.sequential("dedicated agent log tunnel", () => {
         const port = await getAvailablePort();
 
         const config = tempFiles.create(
-            `agent_token = "format-test-token"
-
-[server]
+            `[server]
 port = ${port}
 username = "format-user"
 password = "format-password"

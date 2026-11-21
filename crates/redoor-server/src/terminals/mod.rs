@@ -33,14 +33,19 @@ impl TerminalsChangedNotifier {
 
     /// Queues the event without waiting; a full mailbox hands it to a task so the session
     /// loop never blocks on the router.
-    pub(crate) fn publish(&self) {
+    pub(crate) fn publish(&self, owner: &str) {
         let Some(router) = &self.router else {
             return;
         };
-        if let Err(RouterSendError::Full) = router.send(RouterMsg::TerminalsChanged) {
+        let owner = owner.to_string();
+        if let Err(RouterSendError::Full) = router.send(RouterMsg::TerminalsChanged {
+            owner: owner.clone(),
+        }) {
             let router = router.clone();
             tokio::spawn(async move {
-                let _ = router.send_async(RouterMsg::TerminalsChanged).await;
+                let _ = router
+                    .send_async(RouterMsg::TerminalsChanged { owner })
+                    .await;
             });
         }
     }

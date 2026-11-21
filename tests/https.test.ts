@@ -29,6 +29,7 @@ import {
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     restartServerAndWait,
+    seedUserWorkspace,
     selfSignedCertificatePath,
     trustSelfSignedCertificate,
     approveCliLogin,
@@ -61,9 +62,7 @@ let restoreTrust: (() => void) | undefined;
 function writeConfig(tls: string): void {
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
@@ -76,6 +75,13 @@ ${tls}
 
 /** Starts the server on this file's config and home. */
 function spawnServer(): number {
+    seedUserWorkspace({
+        home,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+    });
+
     return processManager.spawnServer({
         config: configPath,
         log: serverLog,

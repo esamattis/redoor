@@ -16,19 +16,26 @@ use redoor_protocol::api::sessions::{
 };
 use redoor_protocol::wire::log::Level;
 
+use super::access::Principal;
 use super::auth::{ActiveSession, ListedSession, SessionMethod};
 use super::error::ApiError;
 use super::state::ServerState;
 
-/// Lists every signed-in browser session, marking the caller's own.
+/// Lists every signed-in browser session belonging to the signed-in user, marking the
+/// caller's own.
 pub(crate) async fn list_sessions_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Extension(current): Extension<ActiveSession>,
 ) -> Result<Json<BrowserSessionListResponse>, ApiError> {
-    let sessions = state.auth.list_sessions().await.map_err(|error| {
-        log_error!(error, "Failed to list sessions");
-        ApiError::internal("Failed to list sessions")
-    })?;
+    let sessions = state
+        .auth
+        .list_sessions(principal.owner())
+        .await
+        .map_err(|error| {
+            log_error!(error, "Failed to list sessions");
+            ApiError::internal("Failed to list sessions")
+        })?;
     Ok(Json(BrowserSessionListResponse {
         sessions: sessions
             .into_iter()
@@ -37,16 +44,20 @@ pub(crate) async fn list_sessions_handler(
     }))
 }
 
-/// Signs out one session by its public id. The caller's own session may be signed out too;
-/// its next request then gets 401 and leads to the login page.
+/// Signs out one session of the signed-in user by its public id.
 pub(crate) async fn sign_out_session_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Path(id): Path<String>,
 ) -> Result<Json<SignOutSessionsResponse>, ApiError> {
-    let session = state.auth.sign_out_session(&id).await.map_err(|error| {
-        log_error!(error, "Failed to sign out a session");
-        ApiError::internal("Failed to sign out the session")
-    })?;
+    let session = state
+        .auth
+        .sign_out_session(principal.owner(), &id)
+        .await
+        .map_err(|error| {
+            log_error!(error, "Failed to sign out a session");
+            ApiError::internal("Failed to sign out the session")
+        })?;
     let Some(session) = session else {
         return Err(ApiError::not_found("No signed-in session has this id"));
     };
@@ -54,15 +65,15 @@ pub(crate) async fn sign_out_session_handler(
     Ok(Json(SignOutSessionsResponse { signed_out: 1 }))
 }
 
-/// Signs out every session except the caller's, so a user who suspects a stolen cookie
-/// can end all other browsers in one step and keep working in this one.
+/// Signs out every session of the signed-in user except the caller's.
 pub(crate) async fn sign_out_other_sessions_handler(
     State(state): State<ServerState>,
+    Extension(principal): Extension<Principal>,
     Extension(current): Extension<ActiveSession>,
 ) -> Result<Json<SignOutSessionsResponse>, ApiError> {
     let sessions = state
         .auth
-        .sign_out_other_sessions(&current.id)
+        .sign_out_other_sessions(principal.owner(), &current.id)
         .await
         .map_err(|error| {
             log_error!(error, "Failed to sign out other sessions");

@@ -504,7 +504,12 @@ async fn run_named_relay(
     let token = std::env::var("REDOOR_AGENT_TOKEN")
         .ok()
         .filter(|token| !token.is_empty())
-        .unwrap_or(parsed.agent_token);
+        .or(parsed.agent_token)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "agent token is required for relay; set REDOOR_AGENT_TOKEN or top-level agent_token"
+            )
+        })?;
     redoor_server::ssh::relay::run_relay(relay, token, agent_app_name, paths.clone()).await?;
     Ok(ExitCode::SUCCESS)
 }

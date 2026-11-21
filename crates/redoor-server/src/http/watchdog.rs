@@ -21,11 +21,13 @@ use crate::watchdog::{
     CycleRequest, ManagedSession, RemoteJob, SnapshotCallback, SpawnError, SpawnFn,
     SupersedeCallback, WatchdogRegistry, spawn_supervisor,
 };
+use crate::workspaces::{AgentKey, UserAccountStore};
 use anyhow::Result;
 use redoor_core::config::{
     AgentConfig, LocalAgentConfig, SshBackedAgentConfig, default_local_agent_name,
 };
 use redoor_core::log;
+use redoor_core::paths::AppPaths;
 use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::log::Level;
 use redoor_protocol::wire::managed::{ManagedConnect, ManagedLaunch};
@@ -37,7 +39,7 @@ pub(crate) const DEFAULT_ORPHAN_TIMEOUT: Duration = Duration::from_secs(24 * 60 
 /// How long a local stop or removal may take before it counts as failed and is retried.
 const LOCAL_REMOTE_JOB_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Process-wide inputs every managed agent session needs besides its own TOML row.
+/// Process-wide inputs every managed agent session needs besides its own `agents.json` row.
 ///
 /// Built once by server startup and stored in the HTTP state, so create/update routes
 /// register supervisors exactly like startup does.
@@ -45,64 +47,70 @@ const LOCAL_REMOTE_JOB_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) struct ManagedLauncher {
     /// This server's listener, which managed daemons connect to.
     server: redoor_core::config::LocalServerEndpoint,
-    /// Registration secret handed to the daemons in their payload.
-    agent_token: String,
+    /// Per-user accounts supplying each device's owning user's `agent_token`.
+    accounts: UserAccountStore,
+    /// Data directory paths for locating per-user SSH key stores.
+    paths: AppPaths,
+    /// Process-wide `authorized_keys` lock shared across per-user SSH key stores.
+    ssh_authorized_keys_lock: Arc<tokio::sync::Mutex<()>>,
     /// Namespace and release cache used by local and SSH sessions.
     provision: crate::ssh::ProvisionContext,
     /// Orphan limit passed to every daemon.
     orphan_timeout: Duration,
     /// What the server keeps about each SSH device across cycles, shared between its
     /// session closure and the stop and removal jobs.
-    ssh_devices: Arc<Mutex<HashMap<AgentId, Arc<ManagedSshDevice>>>>,
+    ssh_devices: Arc<Mutex<HashMap<AgentKey, Arc<ManagedSshDevice>>>>,
 }
 
 impl ManagedLauncher {
-    /// Captures the listener, secret, provisioning context and orphan limit shared by every
-    /// managed agent.
+    /// Captures the listener, account store, provisioning context and orphan limit shared by
+    /// every managed agent.
     pub(crate) fn new(
         server: redoor_core::config::LocalServerEndpoint,
-        agent_token: String,
+        accounts: UserAccountStore,
+        paths: AppPaths,
+        ssh_authorized_keys_lock: Arc<tokio::sync::Mutex<()>>,
         provision: crate::ssh::ProvisionContext,
         orphan_timeout: Duration,
     ) -> Self {
         Self {
             server,
-            agent_token,
+            accounts,
+            paths,
+            ssh_authorized_keys_lock,
             provision,
             orphan_timeout,
             ssh_devices: Arc::default(),
         }
     }
 
-    /// Registers configured inventory and supervisors, all stopped. No device is started on
-    /// the user's behalf; a local daemon that outlived the last server process reconnects and
-    /// is adopted (see [`crate::watchdog::WatchdogHandle::mark_connected`]).
-    ///
-    /// Config validation already rejected duplicate ids and names, so a registry conflict
-    /// here means an earlier registration of the same id is still alive.
+    /// Registers configured inventory and supervisors for `owner`, all stopped. No device is
+    /// started on the user's behalf; a local daemon that outlived the last server process
+    /// reconnects and is adopted (see [`crate::watchdog::WatchdogHandle::mark_connected`]).
     pub(crate) async fn register_all(
         &self,
+        owner: &str,
         configs: &[AgentConfig],
         registry: &WatchdogRegistry,
         router: &RouterHandle,
     ) -> Result<()> {
         log!(
             Level::Info,
-            "Registering {} managed agent(s) from config",
-            configs.len()
+            "Registering {} managed agent(s) for user '{}'",
+            configs.len(),
+            owner
         );
         for config in configs.iter().cloned() {
-            self.register(config, registry, router).await?;
+            self.register(owner, config, registry, router).await?;
         }
         Ok(())
     }
 
-    /// Registers one newly persisted agent without disturbing existing supervisors or connections.
-    ///
-    /// The supervisor is keyed by the entry's id, which is what the daemon sends in its
-    /// `hello`, so the session finds its supervisor even after a rename.
+    /// Registers one newly persisted agent for `owner` without disturbing existing supervisors
+    /// or connections.
     pub(crate) async fn register(
         &self,
+        owner: &str,
         config: AgentConfig,
         registry: &WatchdogRegistry,
         router: &RouterHandle,
@@ -113,26 +121,27 @@ impl ManagedLauncher {
                 config.effective_name()
             )
         })?;
+        let key = AgentKey::new(owner, agent_id.clone());
         let name = config.effective_name();
         let default_directory = configured_directory(&config);
-        // Both local and SSH TOML entries are operator-owned, so the UI can edit either kind.
+        // Both local and SSH entries are user-owned, so the UI can edit either kind.
         let configuration_editable = true;
         let ssh_target = match &config {
             AgentConfig::SshBacked(config) => Some(config.target.clone()),
             AgentConfig::Local(_) => None,
         };
-        let callback = lifecycle_projection(router.clone(), agent_id.clone());
+        let callback = lifecycle_projection(router.clone(), key.clone());
         spawn_supervisor(
-            agent_id.to_string(),
-            self.spawn_fn(&agent_id, config),
+            key.watchdog_key(),
+            self.spawn_fn(&key, config),
             registry,
             callback,
-            supersede_projection(router.clone(), agent_id.clone()),
+            supersede_projection(router.clone(), key.clone()),
         )?;
         router
             .request(|reply| {
                 RouterMsg::RegisterManagedAgent(RegisterManagedAgentRequest {
-                    agent_id: agent_id.clone(),
+                    agent_id: key,
                     name,
                     default_directory,
                     configuration_editable,
@@ -153,13 +162,14 @@ impl ManagedLauncher {
     /// The payload of one cycle, before the transport fills in the connect address.
     fn launch(
         &self,
+        token: String,
         agent_id: &AgentId,
         name: String,
         home: Option<String>,
         request: &CycleRequest,
     ) -> ManagedLaunch {
         ManagedLaunch {
-            token: self.agent_token.clone(),
+            token,
             agent_id: agent_id.clone(),
             name,
             server_url: self.server.agent_ws_url(),
@@ -172,50 +182,67 @@ impl ManagedLauncher {
         }
     }
 
-    /// The SSH device state of `agent_id`, created on first use.
-    fn ssh_device(&self, agent_id: &AgentId) -> Arc<ManagedSshDevice> {
+    /// The SSH device state of `agent`, created on first use.
+    fn ssh_device(&self, agent: &AgentKey) -> Arc<ManagedSshDevice> {
         self.ssh_devices
             .lock()
             .expect("ssh device state poisoned")
-            .entry(agent_id.clone())
-            .or_insert_with(|| Arc::new(ManagedSshDevice::new(self.namespace(agent_id))))
+            .entry(agent.clone())
+            .or_insert_with(|| Arc::new(ManagedSshDevice::new(self.namespace(&agent.id))))
             .clone()
     }
 
+    /// Returns a provisioning context scoped to `owner`'s SSH key store.
+    fn provision_for(&self, owner: &str) -> Result<crate::ssh::ProvisionContext, std::io::Error> {
+        let ssh_keys = crate::ssh::keys::SshKeyStore::for_user(
+            &self.paths,
+            owner,
+            self.ssh_authorized_keys_lock.clone(),
+        )
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+        Ok(self.provision.with_ssh_keys(ssh_keys))
+    }
+
     /// Builds the session closure for one agent config.
-    fn spawn_fn(&self, agent_id: &AgentId, config: AgentConfig) -> SpawnFn {
+    fn spawn_fn(&self, agent: &AgentKey, config: AgentConfig) -> SpawnFn {
         match config {
-            AgentConfig::Local(config) => self.local_spawn_fn(agent_id.clone(), config),
-            AgentConfig::SshBacked(config) => self.ssh_backed_spawn_fn(agent_id, config),
+            AgentConfig::Local(config) => self.local_spawn_fn(agent.clone(), config),
+            AgentConfig::SshBacked(config) => self.ssh_backed_spawn_fn(agent, config),
         }
     }
 
     /// Runs `redoor agent managed` from the server's own binary, which after `redoor upgrade`
     /// is the upgraded file the restarted server will run too.
-    fn local_spawn_fn(&self, agent_id: AgentId, config: LocalAgentConfig) -> SpawnFn {
+    fn local_spawn_fn(&self, agent: AgentKey, config: LocalAgentConfig) -> SpawnFn {
         let launcher = self.clone();
         SpawnFn::new(move |request| {
             let launcher = launcher.clone();
             let config = config.clone();
-            let agent_id = agent_id.clone();
-            async move {
-                launcher
-                    .start_local_session(&agent_id, &config, request)
-                    .await
-            }
+            let agent = agent.clone();
+            async move { launcher.start_local_session(&agent, &config, request).await }
         })
     }
 
     /// Starts one local session and reads its report.
     async fn start_local_session(
         &self,
-        agent_id: &AgentId,
+        agent: &AgentKey,
         config: &LocalAgentConfig,
         request: CycleRequest,
     ) -> Result<ManagedSession, SpawnError> {
+        let token = self
+            .accounts
+            .ensure_agent_token(&agent.owner)
+            .await
+            .map_err(|error| {
+                SpawnError::Spawn(std::io::Error::other(format!(
+                    "failed to resolve agent token for '{}': {error}",
+                    agent.owner
+                )))
+            })?;
         let name = config.name.clone().unwrap_or_else(default_local_agent_name);
-        let launch = self.launch(agent_id, name, config.home.clone(), &request);
-        let mut command = self.local_command(agent_id, None)?;
+        let launch = self.launch(token, &agent.id, name, config.home.clone(), &request);
+        let mut command = self.local_command(&agent.id, None)?;
         // Dropping the child kills the session, which never touches the daemon.
         command
             .stdin(Stdio::piped())
@@ -276,11 +303,11 @@ impl ManagedLauncher {
 
     /// Every SSH cycle re-runs sniff and install so a restart cannot hide behind a previous
     /// prepare.
-    fn ssh_backed_spawn_fn(&self, agent_id: &AgentId, config: SshBackedAgentConfig) -> SpawnFn {
+    fn ssh_backed_spawn_fn(&self, agent: &AgentKey, config: SshBackedAgentConfig) -> SpawnFn {
         log!(
             Level::Debug,
-            "Creating managed SSH session closure: agent_id={}, target={}, ssh_server_port={}, name={:?}, install_dir={:?}, username={:?}",
-            agent_id,
+            "Creating managed SSH session closure: agent={}, target={}, ssh_server_port={}, name={:?}, install_dir={:?}, username={:?}",
+            agent,
             config.target,
             config
                 .ssh_port
@@ -291,20 +318,32 @@ impl ManagedLauncher {
             config.username
         );
         let config = Arc::new(config);
-        let device = self.ssh_device(agent_id);
-        let agent_id = agent_id.clone();
+        let device = self.ssh_device(agent);
+        let agent = agent.clone();
         let launcher = self.clone();
         SpawnFn::new(move |request| {
             let launcher = launcher.clone();
             let config = config.clone();
             let device = device.clone();
-            let agent_id = agent_id.clone();
+            let agent = agent.clone();
             async move {
+                let token = launcher
+                    .accounts
+                    .ensure_agent_token(&agent.owner)
+                    .await
+                    .map_err(|error| {
+                        SpawnError::Spawn(std::io::Error::other(format!(
+                            "failed to resolve agent token for '{}': {error}",
+                            agent.owner
+                        )))
+                    })?;
+                let provision = launcher
+                    .provision_for(&agent.owner)
+                    .map_err(SpawnError::Spawn)?;
                 let name = AgentConfig::SshBacked((*config).clone()).effective_name();
                 // SSH devices open the remote user's home, which only the daemon knows.
-                let launch = launcher.launch(&agent_id, name, None, &request);
-                launcher
-                    .provision
+                let launch = launcher.launch(token, &agent.id, name, None, &request);
+                provision
                     .start_managed(
                         &config,
                         launcher.server,
@@ -320,7 +359,7 @@ impl ManagedLauncher {
         .with_process_name("SSH process")
     }
 
-    /// Prepares `action` on the daemon of `config`'s device.
+    /// Prepares `action` on the daemon of `config`'s device for `owner`.
     ///
     /// Called before the device's held SSH key is released, so an encrypted key is captured
     /// with the job. Returns `None` (logged) when the device cannot be reached with its
@@ -328,10 +367,12 @@ impl ManagedLauncher {
     /// connection when it has one.
     pub(crate) async fn remote_job(
         &self,
+        owner: &str,
         config: &AgentConfig,
         action: ManagedRemoteAction,
     ) -> Option<RemoteJob> {
         let agent_id = config.id()?.clone();
+        let key = AgentKey::new(owner, agent_id.clone());
         match config {
             AgentConfig::Local(_) => {
                 let launcher = self.clone();
@@ -342,17 +383,28 @@ impl ManagedLauncher {
                 }))
             }
             AgentConfig::SshBacked(ssh) => {
-                match self
-                    .provision
-                    .managed_remote_job(ssh, self.ssh_device(&agent_id), action)
+                let provision = match self.provision_for(owner) {
+                    Ok(provision) => provision,
+                    Err(error) => {
+                        log!(
+                            Level::Warning,
+                            "Cannot prepare SSH key store for remote job: agent={}, error={}",
+                            key,
+                            error
+                        );
+                        return None;
+                    }
+                };
+                match provision
+                    .managed_remote_job(ssh, self.ssh_device(&key), action)
                     .await
                 {
                     Ok(job) => Some(job),
                     Err(error) => {
                         log!(
                             Level::Warning,
-                            "Cannot reach the device to stop its daemon; it ends at the orphan limit: agent_id={}, error={}",
-                            agent_id,
+                            "Cannot reach the device to stop its daemon; it ends at the orphan limit: agent={}, error={}",
+                            key,
                             error
                         );
                         None
@@ -392,7 +444,7 @@ impl ManagedLauncher {
 }
 
 /// Forwards supervisor snapshots to the router in order without blocking the supervisor.
-fn lifecycle_projection(router: RouterHandle, agent_id: AgentId) -> SnapshotCallback {
+fn lifecycle_projection(router: RouterHandle, agent_id: AgentKey) -> SnapshotCallback {
     let (snapshot_sender, mut snapshot_receiver) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         while let Some(snapshot) = snapshot_receiver.recv().await {
@@ -418,7 +470,7 @@ fn lifecycle_projection(router: RouterHandle, agent_id: AgentId) -> SnapshotCall
 }
 
 /// Ends a connection the supervisor found not to be the reported daemon.
-fn supersede_projection(router: RouterHandle, agent_id: AgentId) -> SupersedeCallback {
+fn supersede_projection(router: RouterHandle, agent_id: AgentKey) -> SupersedeCallback {
     Arc::new(move |socket_id| {
         let router = router.clone();
         let agent_id = agent_id.clone();

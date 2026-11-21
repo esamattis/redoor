@@ -1,11 +1,12 @@
 import {
-    chmodSync,
     existsSync,
+    mkdirSync,
     readFileSync,
     renameSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, onTestFinished, test } from "vitest";
 import { $ } from "zx";
 import { ApiClient } from "#ui/api-client";
@@ -679,11 +680,16 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
 
             const hostKey = await fixture.apiClient.getSshHostKey(deviceId);
 
-            // config.toml lives directly in the read-only home, while the key store is in a
-            // writable directory below it, so the key rename succeeds but the config write
-            // after it fails.
-            onTestFinished(() => chmodSync(fixture.home, 0o700));
-            chmodSync(fixture.home, 0o500);
+            // Blocking `.agents.json.tmp` with a directory makes the atomic agents.json write
+            // fail after the key rename has already succeeded.
+            const blockedTemp = join(
+                dirname(fixture.sshDataDir),
+                ".agents.json.tmp",
+            );
+            onTestFinished(() =>
+                rmSync(blockedTemp, { recursive: true, force: true }),
+            );
+            mkdirSync(blockedTemp, { recursive: true });
 
             const failure = await apiFailure(
                 fixture.apiClient.enrollSshKey(deviceId, {
@@ -692,7 +698,7 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
                 }),
             );
 
-            chmodSync(fixture.home, 0o700);
+            rmSync(blockedTemp, { recursive: true, force: true });
             // The config write is a server-side failure.
             expect(failure.status).toBe(500);
             // The config never claimed the key ...
@@ -1010,14 +1016,20 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
             // Nothing was staged, because the current key is checked first.
             expect(localKeyFiles(fixture, deviceId)).toEqual(["id_ed25519"]);
 
-            onTestFinished(() => chmodSync(fixture.home, 0o700));
-            chmodSync(fixture.home, 0o500);
+            const blockedTemp = join(
+                dirname(fixture.sshDataDir),
+                ".agents.json.tmp",
+            );
+            onTestFinished(() =>
+                rmSync(blockedTemp, { recursive: true, force: true }),
+            );
+            mkdirSync(blockedTemp, { recursive: true });
 
             const failedRemoval = await apiFailure(
                 fixture.apiClient.removeSshKey(deviceId),
             );
 
-            chmodSync(fixture.home, 0o700);
+            rmSync(blockedTemp, { recursive: true, force: true });
             // Revocation happens only after persistence, so a failed write keeps login working.
             expect(failedRemoval.status).toBe(500);
             expect(
@@ -1105,14 +1117,20 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")("managed SSH keys", () => {
                 1,
             );
 
-            onTestFinished(() => chmodSync(fixture.home, 0o700));
-            chmodSync(fixture.home, 0o500);
+            const blockedTemp = join(
+                dirname(fixture.sshDataDir),
+                ".agents.json.tmp",
+            );
+            onTestFinished(() =>
+                rmSync(blockedTemp, { recursive: true, force: true }),
+            );
+            mkdirSync(blockedTemp, { recursive: true });
 
             const failedDelete = await apiFailure(
                 fixture.apiClient.deleteManagedAgent(oldId, "ssh"),
             );
 
-            chmodSync(fixture.home, 0o700);
+            rmSync(blockedTemp, { recursive: true, force: true });
             // Failed persistence must leave both the config and its authorized key intact.
             expect(failedDelete.status).toBe(500);
             expect(configEntry(fixture, oldId)).toContain("managed_ssh_key");

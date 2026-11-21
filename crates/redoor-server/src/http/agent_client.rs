@@ -15,6 +15,7 @@ use crate::actors::router::{
     AgentListEntry, ExecuteCommandRequest, RouterCallError, RouterHandle, RouterMsg,
     RouterSendError,
 };
+use crate::workspaces::AgentKey;
 use redoor_core::log;
 use redoor_protocol::{
     api::agents::{AgentDetailsResponse, MountPoint},
@@ -64,7 +65,7 @@ impl AgentClient {
     /// stops working for a caller that is no longer there.
     pub(crate) async fn call<C: AgentCall>(
         &self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         call: C,
     ) -> Result<C::Response, ApiError> {
         let timeout = call.timeout();
@@ -84,37 +85,40 @@ impl AgentClient {
     /// platform, binary, account) taken from the router inventory, which is authoritative.
     pub(crate) async fn agent_details(
         &self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
     ) -> Result<AgentDetailsResponse, ApiError> {
         let mut details = self.call(agent_id, GetAgentDetails {}).await?;
         // Pseudo filesystems are noise in capacity views, so only real mounts are shown.
         details.mount_points.retain(MountPoint::is_visible);
         let entry = self
-            .inventory()
+            .inventory(agent_id.owner())
             .await?
             .into_iter()
-            .find(|entry| &entry.id == agent_id)
-            .ok_or_else(|| ApiError::not_found(format!("Agent not found: {agent_id}")))?;
+            .find(|entry| entry.id == agent_id.id)
+            .ok_or_else(|| ApiError::not_found(format!("Agent not found: {}", agent_id.id)))?;
         entry.apply_registration(&mut details);
         Ok(details)
     }
 
-    /// Retained inventory of every agent seen by this server, in router order.
-    pub(crate) async fn inventory(&self) -> Result<Vec<AgentListEntry>, ApiError> {
+    /// Retained inventory of every agent owned by `owner`, in router order.
+    pub(crate) async fn inventory(&self, owner: &str) -> Result<Vec<AgentListEntry>, ApiError> {
+        let owner = owner.to_string();
         Ok(self
             .router
-            .request(|reply| RouterMsg::GetAgentList { reply })
+            .request(|reply| RouterMsg::GetAgentList { owner, reply })
             .await?)
     }
 
-    /// Resolves a device name or id from a request to the id of a known device.
+    /// Resolves a device name or id from a request within `owner`'s workspace.
     ///
     /// Every request value that addresses a device goes through here before access control,
     /// so scope checks and stored references always use ids.
-    pub(crate) async fn resolve(&self, value: &str) -> Result<AgentId, ApiError> {
+    pub(crate) async fn resolve(&self, owner: &str, value: &str) -> Result<AgentId, ApiError> {
+        let owner = owner.to_string();
         let value_owned = value.to_string();
         self.router
             .request(|reply| RouterMsg::ResolveDevice {
+                owner,
                 value: value_owned,
                 reply,
             })
@@ -125,7 +129,7 @@ impl AgentClient {
     /// Cancels an admitted execution; `false` when no such execution belongs to the agent.
     pub(crate) async fn cancel_execution(
         &self,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         request_id: RequestId,
     ) -> Result<bool, ApiError> {
         Ok(self
@@ -145,7 +149,7 @@ impl AgentClient {
     /// nobody waits for its answer.
     async fn execute(
         &self,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         command: Command,
         timeout: Option<Duration>,
         cancel_on_abandon: bool,
@@ -199,7 +203,7 @@ impl AgentClient {
 /// Abandons a command whose caller stopped waiting before it answered.
 struct PendingCommand {
     router: RouterHandle,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     request_id: RequestId,
     armed: bool,
 }

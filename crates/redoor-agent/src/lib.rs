@@ -327,10 +327,13 @@ impl AgentSettings {
             .transpose()
             .context("invalid --agent-id")?;
 
-        let token = first_non_empty([args.token, file.map(|config| config.agent_token.clone())])
-            .context(
-                "agent token is required; set it via --token, REDOOR_AGENT_TOKEN, or top-level agent_token",
-            )?;
+        let token = first_non_empty([
+            args.token,
+            file.and_then(|config| config.agent_token.clone()),
+        ])
+        .context(
+            "agent token is required; set it via --token, REDOOR_AGENT_TOKEN, or top-level agent_token",
+        )?;
 
         let home = first_non_empty([
             args.home,

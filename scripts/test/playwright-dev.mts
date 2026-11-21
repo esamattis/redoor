@@ -98,22 +98,56 @@ exec sh -i
     await seedLogFixtures();
     await writeFile(
         join(PROJECT_ROOT, ".test-playwright-config.toml"),
-        `agent_token = "test-agent-token"
-
-[server]
+        `[server]
 username = "test-user"
 password = "test-password"
-
-[[agents]]
-local = true
-name = "lazy_managed"
-home = ".test-playwright-home/lazy-agent"
-
-[[agents]]
-local = true
-name = "failing_managed"
-home = ".test-playwright-home/missing-agent-directory"
 `,
+    );
+    const playwrightDataDir = join(HOME_DIRECTORY, ".local", "share", "redoor");
+    const playwrightUserDir = join(playwrightDataDir, "users", "test-user");
+    await mkdir(playwrightUserDir, { recursive: true, mode: 0o700 });
+    await writeFile(join(playwrightDataDir, "layout-version"), "2\n", {
+        mode: 0o600,
+    });
+    await writeFile(
+        join(playwrightUserDir, "account.json"),
+        JSON.stringify(
+            {
+                version: 1,
+                username: "test-user",
+                agent_token: "test-agent-token",
+            },
+            null,
+            2,
+        ),
+        { mode: 0o600 },
+    );
+    await writeFile(
+        join(playwrightUserDir, "agents.json"),
+        JSON.stringify(
+            {
+                version: 1,
+                agents: [
+                    {
+                        kind: "local",
+                        id: "dev_playwrightlazyaaaaaa",
+                        name: "lazy_managed",
+                        home: ".test-playwright-home/lazy-agent",
+                        terminal_env: {},
+                    },
+                    {
+                        kind: "local",
+                        id: "dev_playwrightfailaaaaaa",
+                        name: "failing_managed",
+                        home: ".test-playwright-home/missing-agent-directory",
+                        terminal_env: {},
+                    },
+                ],
+            },
+            null,
+            2,
+        ),
+        { mode: 0o600 },
     );
 
     const ports = portsSchema.parse(

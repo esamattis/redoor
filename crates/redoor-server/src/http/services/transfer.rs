@@ -9,6 +9,7 @@ use crate::http::{
     agent_helpers::require_absolute_path,
     error::ApiError,
 };
+use crate::workspaces::AgentKey;
 use redoor_core::{log, partials::SEGMENT_SIZE};
 use redoor_protocol::{
     api::{
@@ -28,6 +29,8 @@ use tokio::sync::watch;
 
 /// One requested copy or move.
 pub(crate) struct CopySpec {
+    /// Workspace owner whose devices are being copied between.
+    pub(crate) owner: String,
     /// Copy keeps the source; move deletes it after the destination is published.
     pub(crate) op: CopyOperation,
     pub(crate) source: CopyEndpoint,
@@ -42,6 +45,8 @@ pub(crate) struct CopySpec {
 
 /// One requested copy whose source is read from Git history.
 pub(crate) struct RevisionCopySpec {
+    /// Workspace owner whose devices are being copied between.
+    pub(crate) owner: String,
     pub(crate) source: CopyEndpoint,
     /// A commit id, branch, tag or other revision; resolved to a commit before streaming.
     pub(crate) rev: String,
@@ -97,8 +102,10 @@ impl TransferService {
                 "Source and destination must be different",
             ));
         }
+        let source_key = AgentKey::new(&spec.owner, spec.source.agent.clone());
+        let dest_key = AgentKey::new(&spec.owner, spec.dest.agent.clone());
         let source = self
-            .inspect_source(spec.op, &spec.source.agent, &source_path)
+            .inspect_source(spec.op, &source_key, &source_path)
             .await?;
         let mut partial = match source.content_kind {
             CopyContentKind::RawFile => Some(Box::new(PartialTransfer {
@@ -117,9 +124,9 @@ impl TransferService {
             && let Some(partial) = &mut partial
             && let Some(record) = self
                 .candidate(
-                    &spec.source.agent,
+                    &source_key,
                     &source_path,
-                    &spec.dest.agent,
+                    &dest_key,
                     &dest_path,
                     &source.identity,
                 )
@@ -148,9 +155,9 @@ impl TransferService {
             .request(|reply| {
                 RouterMsg::StartCopyRest(StartCopyRequest {
                     target: CopyTarget {
-                        source_agent_id: spec.source.agent.clone(),
+                        source_agent_id: source_key.clone(),
                         source_path: source_path.clone(),
-                        dest_agent_id: spec.dest.agent.clone(),
+                        dest_agent_id: dest_key.clone(),
                         dest_path: dest_path.clone(),
                         total_bytes: source.total_bytes,
                         content_kind: source.content_kind,
@@ -197,6 +204,8 @@ impl TransferService {
         let source_path = require_absolute_path(spec.source.path.clone())?;
         let dest_path = require_absolute_path(spec.dest.path.clone())?;
         validate_revision(&spec.rev).map_err(ApiError::bad_request)?;
+        let source_key = AgentKey::new(&spec.owner, spec.source.agent.clone());
+        let dest_key = AgentKey::new(&spec.owner, spec.dest.agent.clone());
         // Only a replacement on the repository's own agent can delete its `.git`.
         let replace_target = (spec.on_existing == CopyExistingMode::Override
             && spec.dest.agent == spec.source.agent)
@@ -204,7 +213,7 @@ impl TransferService {
         let stat = self
             .agents
             .call(
-                &spec.source.agent,
+                &source_key,
                 GitRevisionStat {
                     path: source_path.clone(),
                     rev: spec.rev.clone(),
@@ -235,9 +244,9 @@ a committed tree does not contain; merge into it instead",
             .request(|reply| {
                 RouterMsg::StartCopyRest(StartCopyRequest {
                     target: CopyTarget {
-                        source_agent_id: spec.source.agent.clone(),
+                        source_agent_id: source_key.clone(),
                         source_path: source_path.clone(),
-                        dest_agent_id: spec.dest.agent.clone(),
+                        dest_agent_id: dest_key.clone(),
                         dest_path: dest_path.clone(),
                         total_bytes,
                         content_kind,
@@ -321,9 +330,9 @@ a committed tree does not contain; merge into it instead",
     /// Preflight and ordinary copy share identity comparison; neither hashes here.
     pub(crate) async fn candidate(
         &self,
-        source_agent: &redoor_protocol::ids::AgentId,
+        source_agent: &AgentKey,
         source_path: &str,
-        dest_agent: &redoor_protocol::ids::AgentId,
+        dest_agent: &AgentKey,
         dest_path: &str,
         identity: &MoveSourceIdentity,
     ) -> Result<Option<redoor_protocol::wire::partials::PartialRecord>, ApiError> {
@@ -339,11 +348,11 @@ a committed tree does not contain; merge into it instead",
         let Some(record) = candidate else {
             return Ok(None);
         };
-        if !self.verify(dest_agent, &record).await? {
+        if !self.verify(&dest_agent.id, &record).await? {
             return Ok(None);
         }
         let authorization = &record.manifest.signed.authorization;
-        if &authorization.source_agent_id != source_agent
+        if authorization.source_agent_id != source_agent.id
             || authorization.source_path != source_path
             || &authorization.source_identity != identity
             || authorization.dest_path != dest_path
@@ -364,7 +373,7 @@ a committed tree does not contain; merge into it instead",
     async fn inspect_source(
         &self,
         op: CopyOperation,
-        agent_id: &redoor_protocol::ids::AgentId,
+        agent_id: &AgentKey,
         path: &str,
     ) -> Result<SourceShape, ApiError> {
         let path = path.to_string();
@@ -400,13 +409,14 @@ mod tests {
     /// A spec between two paths of the fake agent.
     fn spec(agent: &FakeAgent, op: CopyOperation, source: &str, dest: &str) -> CopySpec {
         CopySpec {
+            owner: agent.agent_id.owner.clone(),
             op,
             source: CopyEndpoint {
-                agent: agent.agent_id.clone(),
+                agent: agent.agent_id.id.clone(),
                 path: source.to_string(),
             },
             dest: CopyEndpoint {
-                agent: agent.agent_id.clone(),
+                agent: agent.agent_id.id.clone(),
                 path: dest.to_string(),
             },
             on_existing: CopyExistingMode::Error,

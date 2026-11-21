@@ -9,13 +9,13 @@ use super::output::{AgentStreamError, OutputStream};
 use crate::actors::router::RouterHandle;
 use crate::http::agent_client::AGENT_LIMIT_MARGIN;
 use crate::http::error::ApiError;
+use crate::workspaces::AgentKey;
 use axum::response::Response;
 use redoor_protocol::{
     api::search::{
         ContentGrepEvent, ContentGrepResponse, FileSearchEvent, FileSearchRanking,
         FileSearchResponse, FindRequest, GrepRequest,
     },
-    ids::AgentId,
     wire::{command::Command, request},
 };
 use serde::de::DeserializeOwned;
@@ -42,7 +42,7 @@ impl AgentSearch<FileSearchEvent> {
     /// Starts a path search below `path`.
     pub(crate) async fn files(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         path: String,
         search: FindRequest,
     ) -> Result<Self, ApiError> {
@@ -91,7 +91,7 @@ impl AgentSearch<ContentGrepEvent> {
     /// Starts a content search below `path`.
     pub(crate) async fn contents(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         path: String,
         search: GrepRequest,
     ) -> Result<Self, ApiError> {
@@ -154,7 +154,7 @@ impl<E: DeserializeOwned> AgentSearch<E> {
     /// (an empty query, a missing root) become HTTP statuses.
     async fn open(
         router: &RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         command: Command,
         timeout_seconds: u64,
     ) -> Result<Self, ApiError> {

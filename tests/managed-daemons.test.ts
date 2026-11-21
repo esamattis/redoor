@@ -14,12 +14,15 @@ import {
     SERVER_PATH,
     TempFileManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     managedDaemonDataDir,
     managedDaemonPid,
     processIsAlive,
+    seedUserWorkspace,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -208,23 +211,33 @@ beforeAll(async () => {
     configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-local = true
-name = "${RUNNING_AGENT}"
-home = "${agentHome}"
-
-[[agents]]
-local = true
-name = "${STOPPED_AGENT}"
-home = "${agentHome}"
 `,
     );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "local",
+                id: "dev_daemonrunningaaaaaaa",
+                name: RUNNING_AGENT,
+                home: agentHome,
+                terminal_env: {},
+            },
+            {
+                kind: "local",
+                id: "dev_daemonstoppedaaaaaaa",
+                name: STOPPED_AGENT,
+                home: agentHome,
+                terminal_env: {},
+            },
+        ],
+    });
     await startServer();
     await (await agentNamed(RUNNING_AGENT)).start();
     await waitForConnected(RUNNING_AGENT);

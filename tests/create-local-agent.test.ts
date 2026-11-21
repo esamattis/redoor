@@ -7,6 +7,7 @@ import {
     onTestFinished,
 } from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 
 import type { CreateLocalAgentRequest } from "#bindings/CreateLocalAgentRequest";
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
@@ -17,11 +18,15 @@ import {
     ProcessManager,
     TempFileManager,
     TEST_AGENT_TOKEN,
+    TEST_APP_NAME,
     TEST_PASSWORD,
+    TEST_SERVER_HOME,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
     DEVICE_ID_REGEXP,
     restartServerAndWait,
+    seedUserWorkspace,
+    serverDataDir,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -76,23 +81,40 @@ let apiClient: ApiClient;
 
 let configPath: string;
 
+let agentsJsonPath: string;
+
 let serverLog: string;
 
 beforeAll(async () => {
     configPath = tempFiles.tempFile({ suffix: ".toml" });
     writeFileSync(
         configPath,
-        `# This comment must survive the config edit.
-agent_token = "${TEST_AGENT_TOKEN}"
-
+        `# This comment must survive any server operation.
 [server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
-
-[[agents]]
-target = "fixture-host"
-name = "${SSH_FIXTURE_NAME}"
 `,
+    );
+    seedUserWorkspace({
+        home: TEST_SERVER_HOME,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+        agents: [
+            {
+                kind: "ssh_backed",
+                id: "dev_createlocalsshfixaaa",
+                target: "fixture-host",
+                name: SSH_FIXTURE_NAME,
+                terminal_env: {},
+            },
+        ],
+    });
+    agentsJsonPath = join(
+        serverDataDir(TEST_SERVER_HOME, TEST_APP_NAME),
+        "users",
+        TEST_USERNAME,
+        "agents.json",
     );
     serverLog = tempFiles.tempFile({ suffix: ".log" });
     rmSync(serverLog, { force: true });
@@ -143,16 +165,16 @@ describe("Local agent configuration API", () => {
                 ?.configurationEditable,
         ).toBe(true);
 
-        const editedConfig = readFileSync(configPath, "utf8");
-        // toml_edit must preserve unrelated operator comments while appending local fields.
-        expect(editedConfig).toContain(
-            "# This comment must survive the config edit.",
-        );
-        expect(editedConfig).toContain("local = true");
-        expect(editedConfig).toContain(`name = "${AGENT_NAME}"`);
-        expect(editedConfig).toContain('home = "/srv/local"');
+        const persisted = readFileSync(agentsJsonPath, "utf8");
+        // Device edits are persisted in the user's agents.json while config.toml stays untouched.
+        expect(persisted).toContain('"kind": "local"');
+        expect(persisted).toContain(`"name": "${AGENT_NAME}"`);
+        expect(persisted).toContain('"home": "/srv/local"');
         // The id is created on add and stored with the entry, so it survives restarts.
-        expect(editedConfig).toContain(`id = "${response.agent.id}"`);
+        expect(persisted).toContain(`"id": "${response.agent.id}"`);
+        expect(readFileSync(configPath, "utf8")).toContain(
+            "# This comment must survive any server operation.",
+        );
 
         await restartServerAndWait({ apiClient, serverLog });
 
@@ -173,8 +195,8 @@ describe("Local agent configuration API", () => {
         ).toBe(true);
     });
 
-    it("rejects duplicate effective names without appending TOML", async () => {
-        const before = readFileSync(configPath, "utf8");
+    it("rejects duplicate effective names without mutating agents.json", async () => {
+        const before = readFileSync(agentsJsonPath, "utf8");
         await expect(
             apiClient.createLocalAgent(localRequest({ name: AGENT_NAME })),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
@@ -184,7 +206,7 @@ describe("Local agent configuration API", () => {
             ),
         ).rejects.toMatchObject({ status: 409 } satisfies Partial<ApiError>);
         // Rejected submissions must not modify the durable source of truth.
-        expect(readFileSync(configPath, "utf8")).toBe(before);
+        expect(readFileSync(agentsJsonPath, "utf8")).toBe(before);
     });
 
     it("reads, updates, renames, and deletes a stopped local entry", async () => {
@@ -231,27 +253,23 @@ describe("Local agent configuration API", () => {
         expect(inventory.some((agent) => agent.name === renamed)).toBe(true);
         const afterUpdate = await apiClient.getLocalAgentConfiguration(renamed);
         expect(afterUpdate.home).toBe("/srv/updated-local");
-        const editedConfig = readFileSync(configPath, "utf8");
-        // Updating must preserve unrelated comments while replacing old local values.
-        expect(editedConfig).toContain(
-            "# This comment must survive the config edit.",
-        );
-        expect(editedConfig).toContain("local = true");
-        expect(editedConfig).toContain(`name = "${renamed}"`);
-        expect(editedConfig).not.toContain(`name = "${AGENT_NAME}"`);
+        const persisted = readFileSync(agentsJsonPath, "utf8");
+        expect(persisted).toContain('"kind": "local"');
+        expect(persisted).toContain(`"name": "${renamed}"`);
+        expect(persisted).not.toContain(`"name": "${AGENT_NAME}"`);
         // The edit handler rebuilds the entry, so it must carry the id over explicitly.
-        expect(editedConfig).toContain(`id = "${configuredAgent.id}"`);
+        expect(persisted).toContain(`"id": "${configuredAgent.id}"`);
 
         const deletion = await apiClient.deleteManagedAgent(renamed, "local");
         expect(deletion.deleted).toBe(true);
-        // Deletion must remove both durable TOML and retained runtime inventory.
+        // Deletion must remove both durable agents.json and retained runtime inventory.
         expect(
             (await apiClient.listAgents()).some(
                 (agent) => agent.name === renamed,
             ),
         ).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(
-            `name = "${renamed}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain(
+            `"name": "${renamed}"`,
         );
     });
 
@@ -285,15 +303,13 @@ describe("Local agent configuration API", () => {
             cwd: "/srv/after",
         });
 
-        const table = readFileSync(configPath, "utf8")
-            .split("[[agents]]")
-            .find((entry) => entry.includes(`name = "${name}"`));
+        const persisted = readFileSync(agentsJsonPath, "utf8");
 
         // The rewritten entry still carries the original id, so the next startup does not
         // assign a new one and break token scopes.
-        expect(table).toContain(`id = "${created.agent.id}"`);
+        expect(persisted).toContain(`"id": "${created.agent.id}"`);
         // The edit itself was applied to the same entry.
-        expect(table).toContain('home = "/srv/after"');
+        expect(persisted).toContain('"home": "/srv/after"');
     });
 
     it("returns 404 for unknown and SSH agents without converting them", async () => {
@@ -335,13 +351,13 @@ describe("Local agent configuration API", () => {
         // A rejected local mutation must not convert or remove the SSH fixture.
         expect(ssh?.managed).toBe(true);
         expect(ssh?.sshTarget).toBe("fixture-host");
-        expect(readFileSync(configPath, "utf8")).toContain(
-            `name = "${SSH_FIXTURE_NAME}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            `"name": "${SSH_FIXTURE_NAME}"`,
         );
-        expect(readFileSync(configPath, "utf8")).toContain(
-            'target = "fixture-host"',
+        expect(readFileSync(agentsJsonPath, "utf8")).toContain(
+            '"target": "fixture-host"',
         );
-        expect(readFileSync(configPath, "utf8")).not.toContain("/converted");
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain("/converted");
     });
 
     it("rejects a rename onto an existing id without stopping the original", async () => {
@@ -423,12 +439,12 @@ describe("Local agent configuration API", () => {
 
         const deletion = await apiClient.deleteManagedAgent(name, "local");
         expect(deletion.deleted).toBe(true);
-        // Both inventory and TOML must be gone after an auto-stop delete.
+        // Both inventory and agents.json must be gone after an auto-stop delete.
         expect(
             (await apiClient.listAgents()).some((agent) => agent.name === name),
         ).toBe(false);
-        expect(readFileSync(configPath, "utf8")).not.toContain(
-            `name = "${name}"`,
+        expect(readFileSync(agentsJsonPath, "utf8")).not.toContain(
+            `"name": "${name}"`,
         );
     });
 

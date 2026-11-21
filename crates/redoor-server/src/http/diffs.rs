@@ -1,6 +1,7 @@
 //! REST endpoint that diffs two editable files, possibly on different agents.
 
 use crate::actors::router::OutputStreamTracking;
+use crate::workspaces::AgentKey;
 use axum::{Extension, Json, extract::State as AxumState};
 use redoor_protocol::wire::request;
 use redoor_protocol::{
@@ -28,10 +29,17 @@ pub(crate) async fn diff_files_handler(
     Extension(principal): Extension<Principal>,
     Json(mut payload): Json<DiffFilesRequest>,
 ) -> Result<Json<DiffFilesResponse>, ApiError> {
+    let owner = principal.owner();
     // Body fields accept a name or an id; resolving before `require` keeps scope checks on
     // ids, so a name that now belongs to another device cannot slip past a scope.
-    payload.left.agent = state.agents.resolve(payload.left.agent.as_str()).await?;
-    payload.right.agent = state.agents.resolve(payload.right.agent.as_str()).await?;
+    payload.left.agent = state
+        .agents
+        .resolve(owner, payload.left.agent.as_str())
+        .await?;
+    payload.right.agent = state
+        .agents
+        .resolve(owner, payload.right.agent.as_str())
+        .await?;
     principal.require(&[Permission::FilesRead], &payload.left.agent)?;
     principal.require(&[Permission::FilesRead], &payload.right.agent)?;
     let left = DiffEndpoint {
@@ -44,8 +52,8 @@ pub(crate) async fn diff_files_handler(
     };
 
     let (left_metadata, right_metadata) = tokio::join!(
-        fetch_metadata(&state, &left),
-        fetch_metadata(&state, &right)
+        fetch_metadata(&state, owner, &left),
+        fetch_metadata(&state, owner, &right)
     );
     let (left_metadata, right_metadata) = (left_metadata?, right_metadata?);
     if !left_metadata.editable || !right_metadata.editable {
@@ -53,8 +61,8 @@ pub(crate) async fn diff_files_handler(
     }
 
     let (left_content, right_content) = tokio::join!(
-        download_editable_file(&state, &left, left_metadata.file_size),
-        download_editable_file(&state, &right, right_metadata.file_size)
+        download_editable_file(&state, owner, &left, left_metadata.file_size),
+        download_editable_file(&state, owner, &right, right_metadata.file_size)
     );
     let (left_content, right_content) = (left_content?, right_content?);
     let text_diff = similar::TextDiff::from_lines(&left_content, &right_content);
@@ -84,12 +92,14 @@ pub(crate) async fn diff_files_handler(
 /// Reuses agent metadata so diff eligibility cannot drift from the file editor's gate.
 async fn fetch_metadata(
     state: &ServerState,
+    owner: &str,
     endpoint: &DiffEndpoint,
 ) -> Result<MetadataResponse, ApiError> {
+    let key = AgentKey::new(owner, endpoint.agent.clone());
     state
         .agents
         .call(
-            &endpoint.agent,
+            &key,
             Metadata {
                 path: endpoint.path.clone(),
             },
@@ -100,6 +110,7 @@ async fn fetch_metadata(
 /// Downloads an already size-bounded editable file through the normal agent stream path.
 async fn download_editable_file(
     state: &ServerState,
+    owner: &str,
     endpoint: &DiffEndpoint,
     expected_size: u64,
 ) -> Result<String, ApiError> {
@@ -107,7 +118,7 @@ async fn download_editable_file(
         .map_err(|_| ApiError::bad_request("Editable file size is unsupported"))?;
     let mut stream = OutputStream::open(
         &state.router_ref,
-        endpoint.agent.clone(),
+        AgentKey::new(owner, endpoint.agent.clone()),
         Command::RawDownload(request::RawDownload {
             expected_identity: None,
             path: endpoint.path.clone(),

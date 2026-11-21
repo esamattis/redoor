@@ -30,6 +30,8 @@ const API_ERROR_CODES = [
     "systemd_user_manager_not_running",
     "not_git_repository",
     "fresh_login_required",
+    // TEMPORARY MIGRATION: Can be removed after layout v2 adoption.
+    "migration_required",
 ] as const satisfies readonly ApiErrorCode[];
 
 /** Fails to compile when the server gains a code this list does not name. */

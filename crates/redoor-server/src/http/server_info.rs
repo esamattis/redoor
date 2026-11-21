@@ -1,14 +1,21 @@
-//! REST endpoint that returns server identity and UI bootstrap settings.
+//! REST endpoint that returns server identity and the signed-in user's agent token.
 
-use axum::{Json, extract::State as AxumState, http::StatusCode, response::IntoResponse};
+use axum::{Extension, Json, extract::State as AxumState, http::StatusCode};
 use redoor_protocol::api::server::ServerInfoResponse;
 
-use super::state::ServerState;
+use super::{access::Principal, error::ApiError, state::ServerState};
 
-/// Route: `GET /api/v1/server` returns identity and bootstrap settings for the authenticated UI.
+/// Route: `GET /api/v1/server` returns identity and bootstrap settings for the authenticated UI,
+/// including the signed-in user's own `agent_token` (lazily creating `account.json` if needed).
 pub(crate) async fn server_info_handler(
     AxumState(state): AxumState<ServerState>,
-) -> impl IntoResponse {
+    Extension(principal): Extension<Principal>,
+) -> Result<(StatusCode, Json<ServerInfoResponse>), ApiError> {
+    let agent_token = state
+        .accounts
+        .ensure_agent_token(principal.owner())
+        .await
+        .map_err(|error| ApiError::internal(format!("Failed to load user agent token: {error}")))?;
     let binary = redoor_core::identity::current_binary_identity();
     // Home page shows which on-disk binary is serving so upgrades can be verified.
     let (exe_path, external_ip) = tokio::join!(
@@ -16,11 +23,11 @@ pub(crate) async fn server_info_handler(
         redoor_core::identity::external_ip()
     );
     let hostname = server_hostname();
-    (
+    Ok((
         StatusCode::OK,
         Json(ServerInfoResponse {
             app_name: state.runtime.paths.app_name().to_string(),
-            agent_token: state.auth.agent_token().to_string(),
+            agent_token,
             config_path: state.config_path.display().to_string(),
             self_signed_tls: state.self_signed_tls,
             exe_path,
@@ -36,8 +43,7 @@ pub(crate) async fn server_info_handler(
             build_date: binary.build_date,
             boot_id: state.boot_id.to_string(),
         }),
-    )
-        .into_response()
+    ))
 }
 
 /// The machine's hostname, or `unknown`. The UI puts it in the document title and terminal

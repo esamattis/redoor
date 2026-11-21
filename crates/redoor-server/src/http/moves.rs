@@ -23,10 +23,17 @@ pub(crate) async fn move_file_handler(
     Extension(principal): Extension<Principal>,
     Json(mut payload): Json<MoveFileRequest>,
 ) -> Result<Json<MoveFileResponse>, ApiError> {
+    let owner = principal.owner().to_string();
     // Body fields accept a name or an id; resolving before `require` keeps scope checks on
     // ids, so a name that now belongs to another device cannot slip past a scope.
-    payload.source.agent = state.agents.resolve(payload.source.agent.as_str()).await?;
-    payload.dest.agent = state.agents.resolve(payload.dest.agent.as_str()).await?;
+    payload.source.agent = state
+        .agents
+        .resolve(&owner, payload.source.agent.as_str())
+        .await?;
+    payload.dest.agent = state
+        .agents
+        .resolve(&owner, payload.dest.agent.as_str())
+        .await?;
     principal.require(
         &[
             Permission::FilesRead,
@@ -39,6 +46,7 @@ pub(crate) async fn move_file_handler(
     let StartedCopy { transfer_id, .. } = state
         .transfers
         .start_copy(CopySpec {
+            owner,
             op: CopyOperation::Move,
             source: payload.source,
             dest: payload.dest,

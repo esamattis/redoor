@@ -20,6 +20,7 @@ import {
     TEST_PASSWORD,
     TEST_USERNAME,
     VITEST_SERVER_PORT,
+    seedUserWorkspace,
     waitForPort,
     waitForValue,
 } from "./test-utils";
@@ -112,6 +113,12 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const configPath = join(home, "config.toml");
             const localLogDirectory = join(home, "logs");
             mkdirSync(localLogDirectory, { recursive: true });
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+            });
             writeFileSync(
                 configPath,
                 `agent_token = "${TEST_AGENT_TOKEN}"
@@ -170,7 +177,11 @@ log = "${join(localLogDirectory, `${relayIds[1]}.log`)}"
 
             // Remove artifacts from an interrupted run before starting remote processes.
             await cleanupSshTest({ remoteRoot, agentAppNames });
-            processManager.spawnServer({ config: configPath });
+            processManager.spawnServer({
+                config: configPath,
+                home,
+                env: { REDOOR_APP_NAME: appName },
+            });
             await waitForPort(VITEST_SERVER_PORT);
 
             const apiClient = new ApiClient(
@@ -434,21 +445,36 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const agentName = `managed-ssh-test-${suffix}`;
             const remoteRoot = `/tmp/redoor-managed-ssh-test-${suffix}`;
             const configPath = join(home, "config.toml");
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+            });
             writeFileSync(
                 configPath,
-                `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+                `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_TEST_USER}"
-name = "${agentName}"
 `,
             );
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+                agents: [
+                    {
+                        kind: "ssh_backed",
+                        id: "dev_realsshmanagedaaaaaa",
+                        target: SSH_TEST_HOST,
+                        username: SSH_TEST_USER,
+                        name: agentName,
+                        terminal_env: {},
+                    },
+                ],
+            });
 
             onTestFinished(async () => {
                 await processManager.killAll();
@@ -785,20 +811,29 @@ describe.skipIf(
 
         writeFileSync(
             configPath,
-            `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+            `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_PASSWORD_USER}"
-password = ${JSON.stringify(sshPassword)}
-name = "${agentName}"
 `,
         );
+        seedUserWorkspace({
+            home,
+            appName,
+            username: TEST_USERNAME,
+            agentToken: TEST_AGENT_TOKEN,
+            agents: [
+                {
+                    kind: "ssh_backed",
+                    id: "dev_realsshpwdaaaaaaaaaa",
+                    target: SSH_TEST_HOST,
+                    username: SSH_PASSWORD_USER,
+                    password: sshPassword,
+                    name: agentName,
+                    terminal_env: {},
+                },
+            ],
+        });
 
         onTestFinished(async () => {
             await processManager.killAll();
@@ -1048,21 +1083,36 @@ describe.skipIf(process.env.REDOOR_SSH_TEST !== "1")(
             const appName = `redoor-managed-ssh-no-password-${suffix}`;
             const agentName = `managed-ssh-no-password-${suffix}`;
             const configPath = join(home, "config.toml");
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+            });
             writeFileSync(
                 configPath,
-                `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+                `[server]
 username = "${TEST_USERNAME}"
 password = "${TEST_PASSWORD}"
 port = ${VITEST_SERVER_PORT}
-
-[[agents]]
-target = "${SSH_TEST_HOST}"
-username = "${SSH_PASSWORD_USER}"
-name = "${agentName}"
 `,
             );
+            seedUserWorkspace({
+                home,
+                appName,
+                username: TEST_USERNAME,
+                agentToken: TEST_AGENT_TOKEN,
+                agents: [
+                    {
+                        kind: "ssh_backed",
+                        id: "dev_realsshnopwdaaaaaaaa",
+                        target: SSH_TEST_HOST,
+                        username: SSH_PASSWORD_USER,
+                        name: agentName,
+                        terminal_env: {},
+                    },
+                ],
+            });
 
             onTestFinished(async () => {
                 await processManager.killAll();

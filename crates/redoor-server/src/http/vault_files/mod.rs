@@ -25,7 +25,6 @@ use axum::{
 };
 use redoor_protocol::api::ApiErrorCode;
 use redoor_protocol::api::vault::{VAULT_FILE_SUFFIX, VaultFileHeaderResponse};
-use redoor_protocol::ids::AgentId;
 use redoor_protocol::wire::{command::Command, command::MoveSourceIdentity, request};
 use redoor_vault::{
     DecryptingReader, FileKey, MAX_PREAMBLE_LEN, VaultFormatError, VaultPreamble, VaultReadError,
@@ -43,6 +42,7 @@ use super::{
     state::ServerState,
 };
 use crate::actors::router::OutputStreamTracking;
+use crate::workspaces::AgentKey;
 
 /// Carries the file key of `fetch` requests.
 pub(crate) const KEY_HEADER: &str = "redoor-vault-key";
@@ -153,7 +153,7 @@ impl VaultSource {
     /// can occupy are requested from the agent.
     pub(crate) async fn open(
         state: &ServerState,
-        agent_id: &AgentId,
+        agent_id: &AgentKey,
         path: &str,
         header_only: bool,
     ) -> Result<Self, ApiError> {
@@ -231,6 +231,7 @@ impl VaultSource {
     async fn decrypt(
         self,
         state: &ServerState,
+        owner: &str,
         key: &FileKey,
     ) -> Result<
         (
@@ -240,7 +241,10 @@ impl VaultSource {
         ),
         ApiError,
     > {
-        state.vault.require_readable(self.preamble.header()).await?;
+        state
+            .vault
+            .require_readable(owner, self.preamble.header())
+            .await?;
         let len = self.plaintext_len()?;
         let revision = revision(&self.identity);
         let reader =
@@ -261,7 +265,10 @@ pub(crate) async fn header_handler(
     // Finishing the short range keeps the transfer from being recorded as cancelled.
     let _ = tokio::io::copy(&mut source.reader, &mut tokio::io::sink()).await;
     let plaintext_size = source.plaintext_len()?;
-    let key_status = state.vault.key_status(source.preamble.header()).await?;
+    let key_status = state
+        .vault
+        .key_status(agent_id.owner(), source.preamble.header())
+        .await?;
     Ok(Json(VaultFileHeaderResponse {
         path,
         revision: revision(&source.identity),
@@ -283,7 +290,7 @@ pub(crate) async fn read_handler(
     let path = vault_path(path)?;
     let key = file_key(required_header(&headers, KEY_HEADER)?)?;
     let source = VaultSource::open(&state, &agent_id, &path, false).await?;
-    let (len, revision, reader) = source.decrypt(&state, &key).await?;
+    let (len, revision, reader) = source.decrypt(&state, agent_id.owner(), &key).await?;
     Ok(Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/octet-stream")
@@ -338,7 +345,7 @@ pub(crate) async fn download_handler(
         .and_then(|path| vault_path(Some(path)))?;
     let key = file_key(&form.file_key)?;
     let source = VaultSource::open(&state, &agent_id, &path, false).await?;
-    let (len, _, reader) = source.decrypt(&state, &key).await?;
+    let (len, _, reader) = source.decrypt(&state, agent_id.owner(), &key).await?;
     let name = path.rsplit('/').next().unwrap_or("file");
     let name = name.strip_suffix(VAULT_FILE_SUFFIX).unwrap_or(name);
     Ok(Response::builder()

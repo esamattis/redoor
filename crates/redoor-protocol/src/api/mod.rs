@@ -9,6 +9,7 @@ pub mod exec;
 pub mod files;
 pub mod git;
 pub mod logging;
+pub mod migration;
 pub mod search;
 pub mod server;
 pub mod sessions;
@@ -106,4 +107,8 @@ pub enum ApiErrorCode {
     /// credentials were checked within the last minute, so a copied browser profile cannot
     /// mint a long-lived token. The UI sends the user through the sign-in and back.
     FreshLoginRequired,
+    /// TEMPORARY MIGRATION: Legacy global workspace data exists and must be confirmed into a
+    /// user's workspace before normal API, agent, or MCP traffic is accepted. Can be removed
+    /// once all deployed servers have upgraded to layout version 2.
+    MigrationRequired,
 }

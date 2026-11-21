@@ -33,9 +33,10 @@ pub use state::CopyOperation;
 pub use state::RequestIds;
 pub use streams::{ConnectionStreams, OutboundError, OutboundStream, OutputReceiver};
 
+use crate::workspaces::AgentKey;
 use flows::Flow;
 use redoor_core::log;
-use redoor_protocol::ids::{AgentId, RequestId, SocketId, UnixTimestampSeconds};
+use redoor_protocol::ids::{RequestId, SocketId, UnixTimestampSeconds};
 use redoor_protocol::wire::log::Level;
 use state::RouterState;
 use streams::CreditViolation;
@@ -145,7 +146,7 @@ impl RouterHandle {
 /// always stops its PTY or log relay and frees the connection's stream slot.
 pub struct StreamCloseGuard {
     router: RouterHandle,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     stream: redoor_protocol::ids::RequestId,
 }
 
@@ -153,7 +154,7 @@ impl StreamCloseGuard {
     /// Arms the guard for `stream` of `agent_id`.
     pub fn new(
         router: RouterHandle,
-        agent_id: AgentId,
+        agent_id: AgentKey,
         stream: redoor_protocol::ids::RequestId,
     ) -> Self {
         Self {
@@ -244,7 +245,7 @@ impl RouterState {
     /// Request ids are guessable sequence numbers, so a frame is only trusted when the
     /// session that delivered it is the one registered for the agent it names; the flow
     /// handlers then check that this agent owns the request.
-    fn accepts_agent_frame(&self, agent_id: &AgentId, socket_id: &SocketId, what: &str) -> bool {
+    fn accepts_agent_frame(&self, agent_id: &AgentKey, socket_id: &SocketId, what: &str) -> bool {
         let current = self.agents.is_current_session(agent_id, socket_id);
         if !current {
             log!(
@@ -344,16 +345,16 @@ impl RouterState {
         for command in self.flows.prune_abandoned_commands() {
             self.cancel_abandoned(&command);
         }
-        if self.sync_progress() {
-            self.notify_transfer_refresh();
+        for owner in self.sync_progress() {
+            self.notify_transfer_refresh(&owner);
         }
-        if self
+        for owner in self
             .progress
             .prune_history_if_due(UnixTimestampSeconds::new(
                 jiff::Timestamp::now().as_second(),
             ))
         {
-            self.notify_transfer_refresh();
+            self.notify_transfer_refresh(&owner);
         }
         self.check_pending_refresh();
         self.expire_duplicate_ids();
@@ -390,11 +391,15 @@ impl RouterState {
                     self.mark_transfer_ready(request.agent_id, request.request_id)
                 }
             }
-            RouterMsg::GetAgentList { reply } => {
-                let _ = reply.send(self.list_agents());
+            RouterMsg::GetAgentList { owner, reply } => {
+                let _ = reply.send(self.list_agents(&owner));
             }
-            RouterMsg::ResolveDevice { value, reply } => {
-                let _ = reply.send(self.resolve_device(&value));
+            RouterMsg::ResolveDevice {
+                owner,
+                value,
+                reply,
+            } => {
+                let _ = reply.send(self.resolve_device(&owner, &value));
             }
             RouterMsg::ReserveName {
                 agent_id,
@@ -406,9 +411,9 @@ impl RouterState {
             RouterMsg::ReleaseName { agent_id } => {
                 self.agents.reserved_names.remove(&agent_id);
             }
-            RouterMsg::GetTransferProgress { reply } => {
+            RouterMsg::GetTransferProgress { owner, reply } => {
                 self.sync_progress();
-                let _ = reply.send(self.list_transfer_progress());
+                let _ = reply.send(self.list_transfer_progress(&owner));
             }
             RouterMsg::RegisterUiSubscriber(request) => self.register_subscriber(request),
             RouterMsg::UnregisterUiSubscriber { subscriber_id } => {
@@ -443,11 +448,17 @@ impl RouterState {
                 bytes,
                 verifying,
             } => self.update_local_verification(&agent_id, request_id, bytes, verifying),
-            RouterMsg::PauseTransfer { transfer_id, reply } => {
-                self.pause_transfer(transfer_id, reply)
-            }
-            RouterMsg::CancelPublicTransfer { transfer_id, reply } => {
-                let _ = reply.send(self.cancel_public_transfer(transfer_id));
+            RouterMsg::PauseTransfer {
+                owner,
+                transfer_id,
+                reply,
+            } => self.pause_transfer(&owner, transfer_id, reply),
+            RouterMsg::CancelPublicTransfer {
+                owner,
+                transfer_id,
+                reply,
+            } => {
+                let _ = reply.send(self.cancel_public_transfer(&owner, transfer_id));
             }
             RouterMsg::CancelExecution {
                 agent_id,
@@ -465,7 +476,7 @@ impl RouterState {
             RouterMsg::AttachTerminal(request) => self.attach_terminal(request),
             RouterMsg::OpenAgentLogStream(request) => self.open_log_stream(request),
             RouterMsg::CloseStream { agent_id, stream } => self.close_stream(&agent_id, stream),
-            RouterMsg::TerminalsChanged => self.notify_terminals_changed(),
+            RouterMsg::TerminalsChanged { owner } => self.notify_terminals_changed(&owner),
             RouterMsg::OpenPath {
                 agent_id,
                 socket_id,
@@ -567,11 +578,15 @@ mod tests {
         let (lanes, receivers) = ControlLanes::bounded(64, 16);
         let (mut text_rx, mut priority_rx, mut binary_rx) =
             (receivers.commands, receivers.priority, receivers.bulk);
-        let agent_id = redoor_core::test_support::test_agent_id("agent-1");
+        let agent_id = crate::workspaces::AgentKey::new(
+            "test",
+            redoor_core::test_support::test_agent_id("agent-1"),
+        );
         // Every stream is credited, so the reader never waits on any stream's consumer.
         let streams = ConnectionStreams::new(agent_id.clone());
 
-        let mut registration = RegisterAgentRequest::for_test(&agent_id, lanes, streams.clone());
+        let mut registration =
+            RegisterAgentRequest::for_test("test", &agent_id.id, lanes, streams.clone());
         registration.agent_name = "agent-1".to_string();
         let socket_id = registration.socket_id.clone();
         router_ref
@@ -587,11 +602,12 @@ mod tests {
         let (completion_tx, completion_rx) = oneshot::channel();
         let (ready_tx, ready_rx) = oneshot::channel();
         let router_for_start = router_ref.clone();
+        let agent_for_start = agent_id.clone();
         let upload_start = tokio::spawn(async move {
             router_for_start
                 .request(|reply| {
                     RouterMsg::StartUploadStreamRest(StartUploadRequest {
-                        agent_id: redoor_core::test_support::test_agent_id("agent-1"),
+                        agent_id: agent_for_start,
                         command: Command::EditFile(request::EditFile {
                             path: "/tmp/file.bin".to_string(),
                         }),
@@ -652,7 +668,10 @@ mod tests {
 
         let list_agents = timeout(Duration::from_millis(250), async {
             router_ref
-                .request(|reply| RouterMsg::GetAgentList { reply })
+                .request(|reply| RouterMsg::GetAgentList {
+                    owner: "test".to_string(),
+                    reply,
+                })
                 .await
         })
         .await
@@ -673,7 +692,7 @@ mod tests {
         assert_eq!(
             list_agents,
             vec![AgentListEntry {
-                id: agent_id.clone(),
+                id: agent_id.id.clone(),
                 name: "agent-1".to_string(),
                 default_directory: Some("/tmp".to_string()),
                 managed: false,
@@ -796,7 +815,10 @@ mod tests {
         drop(commit_response);
 
         let progress = router_ref
-            .request(|reply| RouterMsg::GetTransferProgress { reply })
+            .request(|reply| RouterMsg::GetTransferProgress {
+                owner: "test".to_string(),
+                reply,
+            })
             .await
             .expect("live edit progress query succeeded");
         let live_edit = progress
@@ -839,7 +861,10 @@ mod tests {
             Ok(CommandOutcome::Ok(serde_json::Value::Null))
         ));
         let progress = router_ref
-            .request(|reply| RouterMsg::GetTransferProgress { reply })
+            .request(|reply| RouterMsg::GetTransferProgress {
+                owner: "test".to_string(),
+                reply,
+            })
             .await
             .expect("completed edit progress query succeeded");
         let completed_edit = progress

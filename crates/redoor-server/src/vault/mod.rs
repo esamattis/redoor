@@ -12,6 +12,7 @@
 pub(crate) mod devices;
 mod validate;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -29,43 +30,62 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::http::error::ApiError;
-use crate::http::user_state::{prepare_data_directory, write_private_file_atomically};
+use crate::http::user_state::{
+    prepare_user_directory, user_directory, write_private_file_atomically,
+};
 
-/// File name inside the data directory.
+/// File name inside a user's workspace directory.
 const VAULT_FILE: &str = "vault.json";
 
-/// Owns reads and writes of the account's `vault.json`.
+/// Owns reads and writes of per-user `<user_dir>/vault.json` files with per-user locks.
 #[derive(Clone)]
 pub(crate) struct VaultStore {
     paths: redoor_core::paths::AppPaths,
-    /// Serializes read-modify-write cycles, so two changes can never lose each other.
-    lock: Arc<tokio::sync::Mutex<()>>,
+    /// Per-user locks serialize read-modify-write cycles without blocking other users.
+    locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl VaultStore {
-    /// The account's store; nothing is read until the first request.
+    /// Per-user vault store; nothing is read until the first request.
     pub(crate) fn new(paths: redoor_core::paths::AppPaths) -> Self {
         Self {
             paths,
-            lock: Arc::default(),
+            locks: Arc::default(),
         }
     }
 
+    /// Returns the per-user mutex for `owner`.
+    fn user_lock(&self, owner: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self
+            .locks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        locks
+            .entry(owner.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    }
+
     /// The vault without wrapped keys, or `None` before one is created.
-    pub(crate) async fn summary(&self) -> Result<Option<VaultSummary>, ApiError> {
-        let _guard = self.lock.lock().await;
-        Ok(self.load().await?.as_ref().map(summarize))
+    pub(crate) async fn summary(&self, owner: &str) -> Result<Option<VaultSummary>, ApiError> {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        Ok(self.load(owner).await?.as_ref().map(summarize))
     }
 
     /// The whole document, which is the backup format.
-    pub(crate) async fn document(&self) -> Result<VaultDocument, ApiError> {
-        let _guard = self.lock.lock().await;
-        self.load().await?.ok_or_else(vault_not_found)
+    pub(crate) async fn document(&self, owner: &str) -> Result<VaultDocument, ApiError> {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        self.load(owner).await?.ok_or_else(vault_not_found)
     }
 
     /// The slot and chain wraps the browser needs to unlock.
-    pub(crate) async fn unlock_material(&self) -> Result<VaultUnlockMaterialResponse, ApiError> {
-        let document = self.document().await?;
+    pub(crate) async fn unlock_material(
+        &self,
+        owner: &str,
+    ) -> Result<VaultUnlockMaterialResponse, ApiError> {
+        let document = self.document(owner).await?;
         Ok(VaultUnlockMaterialResponse {
             current_key_id: current_key(&document).key_id.clone(),
             vault_id: document.vault_id,
@@ -78,6 +98,7 @@ impl VaultStore {
     /// file encrypted with it unreadable.
     pub(crate) async fn create(
         &self,
+        owner: &str,
         request: CreateVaultRequest,
     ) -> Result<VaultSummary, ApiError> {
         validate::vault_id(&request.vault_id)?;
@@ -85,8 +106,9 @@ impl VaultStore {
         validate::label(&request.label)?;
         validate::verifier(&request.auth_verifier)?;
         validate::slots(&request.slots)?;
-        let _guard = self.lock.lock().await;
-        if self.load().await?.is_some() {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        if self.load(owner).await?.is_some() {
             return Err(ApiError::coded(
                 StatusCode::CONFLICT,
                 ApiErrorCode::VaultExists,
@@ -114,7 +136,7 @@ impl VaultStore {
                 .map(|slot| stored_slot(slot, &now, None))
                 .collect(),
         };
-        self.save(&document).await?;
+        self.save(owner, &document).await?;
         Ok(summarize(&document))
     }
 
@@ -122,11 +144,12 @@ impl VaultStore {
     /// name it.
     pub(crate) async fn update_label(
         &self,
+        owner: &str,
         auth_proof: &str,
         label: String,
     ) -> Result<VaultSummary, ApiError> {
         validate::label(&label)?;
-        self.change(auth_proof, |document| {
+        self.change(owner, auth_proof, |document| {
             document.label = label;
             Ok(())
         })
@@ -136,10 +159,11 @@ impl VaultStore {
     /// Adds a slot that wraps the current key.
     pub(crate) async fn add_slot(
         &self,
+        owner: &str,
         request: AddVaultSlotRequest,
     ) -> Result<VaultSummary, ApiError> {
         validate::slot(&request.slot)?;
-        self.change(&request.auth_proof, |document| {
+        self.change(owner, &request.auth_proof, |document| {
             let mut inputs: Vec<VaultSlotInput> =
                 document.slots.iter().cloned().map(slot_input).collect();
             inputs.push(request.slot.clone());
@@ -153,12 +177,13 @@ impl VaultStore {
     /// Renames a slot.
     pub(crate) async fn rename_slot(
         &self,
+        owner: &str,
         slot_id: &str,
         auth_proof: &str,
         label: String,
     ) -> Result<VaultSummary, ApiError> {
         validate::label(&label)?;
-        self.change(auth_proof, |document| {
+        self.change(owner, auth_proof, |document| {
             find_slot(document, slot_id)?.label = label;
             Ok(())
         })
@@ -169,10 +194,11 @@ impl VaultStore {
     /// unlocked again, and its files would be lost.
     pub(crate) async fn remove_slot(
         &self,
+        owner: &str,
         slot_id: &str,
         auth_proof: &str,
     ) -> Result<VaultSummary, ApiError> {
-        self.change(auth_proof, |document| {
+        self.change(owner, auth_proof, |document| {
             find_slot(document, slot_id)?;
             document.slots.retain(|slot| slot.id != slot_id);
             let inputs: Vec<VaultSlotInput> =
@@ -186,13 +212,14 @@ impl VaultStore {
     /// every slot, all in one write.
     pub(crate) async fn rotate(
         &self,
+        owner: &str,
         request: RotateVaultRequest,
     ) -> Result<VaultSummary, ApiError> {
         validate::key_id(&request.new_key_id)?;
         validate::verifier(&request.new_auth_verifier)?;
         validate::wrap(&request.previous_key_wrap)?;
         validate::slots(&request.slots)?;
-        self.change(&request.auth_proof, |document| {
+        self.change(owner, &request.auth_proof, |document| {
             if document
                 .keys
                 .iter()
@@ -242,13 +269,14 @@ impl VaultStore {
     /// and only its fingerprint and dates remain so they get a precise error.
     pub(crate) async fn destroy_key(
         &self,
+        owner: &str,
         key_id: &str,
         request: DestroyVaultKeyRequest,
     ) -> Result<VaultSummary, ApiError> {
         if let Some(relink) = &request.relink {
             validate::wrap(relink)?;
         }
-        self.change(&request.auth_proof, |document| {
+        self.change(owner, &request.auth_proof, |document| {
             let index = document
                 .keys
                 .iter()
@@ -286,26 +314,33 @@ impl VaultStore {
     /// stolen session could build its own backup and swap the vault.
     pub(crate) async fn restore(
         &self,
+        owner: &str,
         request: RestoreVaultBackupRequest,
     ) -> Result<VaultSummary, ApiError> {
         validate::document(&request.backup)?;
         check_proof(&request.backup.auth_verifier, &request.backup_auth_proof)?;
-        let _guard = self.lock.lock().await;
-        if let Some(installed) = self.load().await? {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        if let Some(installed) = self.load(owner).await? {
             let Some(proof) = request.current_auth_proof.as_deref() else {
                 return Err(proof_invalid());
             };
             check_proof(&installed.auth_verifier, proof)?;
         }
-        self.save(&request.backup).await?;
+        self.save(owner, &request.backup).await?;
         Ok(summarize(&request.backup))
     }
 
     /// Records that a slot unlocked the vault, at most once a day so unlocking does not
     /// rewrite the file every time. No proof: the date is informational only.
-    pub(crate) async fn mark_slot_used(&self, slot_id: &str) -> Result<bool, ApiError> {
-        let _guard = self.lock.lock().await;
-        let mut document = self.load().await?.ok_or_else(vault_not_found)?;
+    pub(crate) async fn mark_slot_used(
+        &self,
+        owner: &str,
+        slot_id: &str,
+    ) -> Result<bool, ApiError> {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        let mut document = self.load(owner).await?.ok_or_else(vault_not_found)?;
         let today = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC).date();
         let slot = find_slot(&mut document, slot_id)?;
         let used_today = slot
@@ -317,7 +352,7 @@ impl VaultStore {
             return Ok(false);
         }
         slot.last_used_at = Some(now());
-        self.save(&document).await?;
+        self.save(owner, &document).await?;
         Ok(true)
     }
 
@@ -325,10 +360,12 @@ impl VaultStore {
     /// listing headers must work for every file.
     pub(crate) async fn key_status(
         &self,
+        owner: &str,
         header: &VaultFileHeader,
     ) -> Result<VaultFileKeyStatus, ApiError> {
-        let _guard = self.lock.lock().await;
-        Ok(match self.load().await? {
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        Ok(match self.load(owner).await? {
             None => VaultFileKeyStatus::NoVault,
             Some(document) => key_status(&document, header),
         })
@@ -336,8 +373,12 @@ impl VaultStore {
 
     /// Fails unless the header can be opened with this vault, with the error code the UI
     /// shows for each reason.
-    pub(crate) async fn require_readable(&self, header: &VaultFileHeader) -> Result<(), ApiError> {
-        match self.key_status(header).await? {
+    pub(crate) async fn require_readable(
+        &self,
+        owner: &str,
+        header: &VaultFileHeader,
+    ) -> Result<(), ApiError> {
+        match self.key_status(owner, header).await? {
             VaultFileKeyStatus::Current | VaultFileKeyStatus::Older => Ok(()),
             status => Err(status_error(header, &status)),
         }
@@ -346,8 +387,12 @@ impl VaultStore {
     /// The document for a write, failing with `stale_vault_key` unless `key_id` is the
     /// current generation. A tab that missed a rotation still holds the old key, and its
     /// writes would otherwise keep producing files on the old generation.
-    pub(crate) async fn require_current(&self, key_id: &str) -> Result<VaultDocument, ApiError> {
-        let document = self.document().await?;
+    pub(crate) async fn require_current(
+        &self,
+        owner: &str,
+        key_id: &str,
+    ) -> Result<VaultDocument, ApiError> {
+        let document = self.document(owner).await?;
         if current_key(&document).key_id != key_id {
             return Err(ApiError::coded(
                 StatusCode::CONFLICT,
@@ -358,32 +403,33 @@ impl VaultStore {
         Ok(document)
     }
 
-    /// Runs a proof-checked change under the lock and saves the result atomically.
+    /// Runs a proof-checked change under the user's lock and saves the result atomically.
     async fn change(
         &self,
+        owner: &str,
         auth_proof: &str,
         apply: impl FnOnce(&mut VaultDocument) -> Result<(), ApiError>,
     ) -> Result<VaultSummary, ApiError> {
-        let _guard = self.lock.lock().await;
-        let mut document = self.load().await?.ok_or_else(vault_not_found)?;
+        let lock = self.user_lock(owner);
+        let _guard = lock.lock().await;
+        let mut document = self.load(owner).await?.ok_or_else(vault_not_found)?;
         check_proof(&document.auth_verifier, auth_proof)?;
         apply(&mut document)?;
         validate::document(&document)?;
-        self.save(&document).await?;
+        self.save(owner, &document).await?;
         Ok(summarize(&document))
     }
 
-    /// The file's location in the data directory; everyone who signs in shares it.
-    fn path(&self) -> Result<PathBuf, ApiError> {
-        self.paths
-            .data_dir()
+    /// The file's location in `owner`'s workspace directory.
+    fn path(&self, owner: &str) -> Result<PathBuf, ApiError> {
+        user_directory(&self.paths, owner)
             .map(|directory| directory.join(VAULT_FILE))
             .map_err(storage_error)
     }
 
     /// Reads the document; a missing file means no vault.
-    async fn load(&self) -> Result<Option<VaultDocument>, ApiError> {
-        let path = self.path()?;
+    async fn load(&self, owner: &str) -> Result<Option<VaultDocument>, ApiError> {
+        let path = self.path(owner)?;
         let contents = match tokio::fs::read(&path).await {
             Ok(contents) => contents,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -407,8 +453,8 @@ impl VaultStore {
 
     /// Writes the document with mode 0600 through a sibling, so a crash never leaves a
     /// truncated vault behind: losing `vault.json` loses every file.
-    async fn save(&self, document: &VaultDocument) -> Result<(), ApiError> {
-        let directory = prepare_data_directory(&self.paths)
+    async fn save(&self, owner: &str, document: &VaultDocument) -> Result<(), ApiError> {
+        let directory = prepare_user_directory(&self.paths, owner)
             .await
             .map_err(storage_error)?;
         let contents =

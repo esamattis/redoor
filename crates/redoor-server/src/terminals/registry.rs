@@ -10,10 +10,11 @@
 use super::TerminalsChangedNotifier;
 use crate::http::agent_client::AgentClient;
 use crate::http::error::ApiError;
+use crate::workspaces::AgentKey;
 use redoor_core::log;
 use redoor_protocol::{
     api::terminals::{CreateTerminalSessionRequest, TerminalSessionInfo, TerminalSessionStatus},
-    ids::{AgentId, TerminalSessionId},
+    ids::TerminalSessionId,
     wire::{
         log::Level,
         request::{CloseTerminal, CreateTerminal},
@@ -55,7 +56,7 @@ impl DetachReason {
 pub(crate) struct ViewerTicket {
     /// Identifies this viewer when it detaches.
     pub(crate) serial: u64,
-    pub(crate) agent_id: AgentId,
+    pub(crate) agent: AgentKey,
     pub(crate) reason: oneshot::Receiver<DetachReason>,
     /// Set when the agent no longer runs the session, so there is nothing to attach to and
     /// the browser only learns why it ended.
@@ -80,13 +81,13 @@ struct RegistryState {
 
 /// A session closed while its agent was away; the agent is told when it reconnects.
 struct PendingClose {
-    agent_id: AgentId,
+    agent: AgentKey,
     id: TerminalSessionId,
 }
 
 /// One session and its current viewer.
 struct Entry {
-    agent_id: AgentId,
+    agent: AgentKey,
     record: TerminalSessionRecord,
     /// The agent stopped reporting the session because it was restarted. The record stays,
     /// exited, so the tab can show why and offer a new shell instead of vanishing.
@@ -112,7 +113,7 @@ impl Entry {
     fn info(&self) -> TerminalSessionInfo {
         TerminalSessionInfo {
             id: self.record.id,
-            agent_id: self.agent_id.clone(),
+            agent_id: self.agent.id.clone(),
             cwd: self.record.cwd.clone(),
             title: self.record.title.clone(),
             number: self.record.number,
@@ -126,10 +127,10 @@ impl Entry {
 
 impl RegistryState {
     /// Whether the session's close still has to reach its agent.
-    fn close_pending(&self, agent_id: &AgentId, id: TerminalSessionId) -> bool {
+    fn close_pending(&self, agent: &AgentKey, id: TerminalSessionId) -> bool {
         self.pending_closes
             .iter()
-            .any(|close| &close.agent_id == agent_id && close.id == id)
+            .any(|close| &close.agent == agent && close.id == id)
     }
 }
 
@@ -163,7 +164,7 @@ impl TerminalRegistry {
     /// it.
     pub(crate) async fn create(
         &self,
-        agent_id: AgentId,
+        agent: AgentKey,
         request: CreateTerminalSessionRequest,
         env: BTreeMap<String, String>,
     ) -> Result<TerminalSessionInfo, ApiError> {
@@ -175,18 +176,19 @@ impl TerminalRegistry {
             size: request.size,
             env,
         };
-        let record = self.agents.call(&agent_id, call).await?;
+        let record = self.agents.call(&agent, call).await?;
+        let owner = agent.owner.clone();
         let mut state = self.state();
         // The agent's own report of the new session may have arrived first.
         let index = match state
             .sessions
             .iter()
-            .position(|entry| entry.record.id == record.id)
+            .position(|entry| entry.agent == agent && entry.record.id == record.id)
         {
             Some(index) => index,
             None => {
                 state.sessions.push(Entry {
-                    agent_id,
+                    agent,
                     record,
                     orphaned: false,
                     viewer: None,
@@ -196,45 +198,50 @@ impl TerminalRegistry {
         };
         let info = state.sessions[index].info();
         drop(state);
-        self.notifier.publish();
+        self.notifier.publish(&owner);
         Ok(info)
     }
 
-    /// Every session, in the order the server learned them.
-    pub(crate) fn list(&self) -> Vec<TerminalSessionInfo> {
-        self.state().sessions.iter().map(Entry::info).collect()
-    }
-
-    /// Whether a session is listed, so attaching to an unknown one is refused before the
-    /// upgrade.
-    pub(crate) fn contains(&self, id: TerminalSessionId) -> bool {
+    /// Every session belonging to `owner`, in the order the server learned them.
+    pub(crate) fn list(&self, owner: &str) -> Vec<TerminalSessionInfo> {
         self.state()
             .sessions
             .iter()
-            .any(|entry| entry.record.id == id)
+            .filter(|entry| entry.agent.owner == owner)
+            .map(Entry::info)
+            .collect()
+    }
+
+    /// Whether a session is listed for `owner`, so attaching to an unknown or foreign one is
+    /// refused before the upgrade.
+    pub(crate) fn contains(&self, owner: &str, id: TerminalSessionId) -> bool {
+        self.state()
+            .sessions
+            .iter()
+            .any(|entry| entry.agent.owner == owner && entry.record.id == id)
     }
 
     /// Makes the caller the session's only viewer; the previous one is told it was taken
-    /// over. `None` when the session is gone.
-    pub(crate) fn attach(&self, id: TerminalSessionId) -> Option<ViewerTicket> {
+    /// over. `None` when the session is gone or belongs to another user.
+    pub(crate) fn attach(&self, owner: &str, id: TerminalSessionId) -> Option<ViewerTicket> {
         let mut state = self.state();
         state.next_serial += 1;
         let serial = state.next_serial;
         let entry = state
             .sessions
             .iter_mut()
-            .find(|entry| entry.record.id == id)?;
+            .find(|entry| entry.agent.owner == owner && entry.record.id == id)?;
         entry.release_viewer(DetachReason::TakenOver);
         let (release, reason) = oneshot::channel();
         entry.viewer = Some(Viewer { serial, release });
-        let agent_id = entry.agent_id.clone();
+        let agent = entry.agent.clone();
         let ended = entry.orphaned.then(|| TerminalServerMessage::Error {
             message: ENDED_WITH_AGENT.to_string(),
         });
-        self.notifier.publish();
+        self.notifier.publish(owner);
         Some(ViewerTicket {
             serial,
-            agent_id,
+            agent,
             reason,
             ended,
         })
@@ -253,19 +260,22 @@ impl TerminalRegistry {
             return;
         };
         entry.viewer = None;
-        self.notifier.publish();
+        let owner = entry.agent.owner.clone();
+        drop(state);
+        self.notifier.publish(&owner);
     }
 
-    /// Ends a session; returns whether it was listed. The attached browser is told at once.
-    /// An agent that is away is told when it reconnects, so the close is never lost to a
-    /// disconnect and the session does not come back with the agent's next report.
-    pub(crate) async fn close(&self, id: TerminalSessionId) -> bool {
-        let agent_id = {
+    /// Ends a session belonging to `owner`; returns whether it was listed. The attached
+    /// browser is told at once. An agent that is away is told when it reconnects, so the
+    /// close is never lost to a disconnect and the session does not come back with the
+    /// agent's next report.
+    pub(crate) async fn close(&self, owner: &str, id: TerminalSessionId) -> bool {
+        let agent = {
             let mut state = self.state();
             let Some(index) = state
                 .sessions
                 .iter()
-                .position(|entry| entry.record.id == id)
+                .position(|entry| entry.agent.owner == owner && entry.record.id == id)
             else {
                 return false;
             };
@@ -275,24 +285,24 @@ impl TerminalRegistry {
                 state.pending_closes.remove(0);
             }
             state.pending_closes.push(PendingClose {
-                agent_id: entry.agent_id.clone(),
+                agent: entry.agent.clone(),
                 id,
             });
-            self.notifier.publish();
-            entry.agent_id
+            self.notifier.publish(owner);
+            entry.agent
         };
-        self.close_on_agent(agent_id, id).await;
+        self.close_on_agent(agent, id).await;
         true
     }
 
     /// Tells the agent to close a session and forgets the pending close once it has. A
     /// failure, most often a disconnected agent, keeps it for the agent's next report.
-    async fn close_on_agent(&self, agent_id: AgentId, id: TerminalSessionId) {
-        if let Err(error) = self.agents.call(&agent_id, CloseTerminal { id }).await {
+    async fn close_on_agent(&self, agent: AgentKey, id: TerminalSessionId) {
+        if let Err(error) = self.agents.call(&agent, CloseTerminal { id }).await {
             log!(
                 Level::Debug,
-                "Terminal close waits for the agent: agent_id={}, id={}, error={}",
-                agent_id,
+                "Terminal close waits for the agent: agent={}, id={}, error={}",
+                agent,
                 id,
                 error
             );
@@ -300,27 +310,27 @@ impl TerminalRegistry {
         }
         self.state()
             .pending_closes
-            .retain(|close| !(close.agent_id == agent_id && close.id == id));
+            .retain(|close| !(close.agent == agent && close.id == id));
     }
 
-    /// Replaces what the server knows about `agent_id`'s sessions with the agent's report.
+    /// Replaces what the server knows about `agent`'s sessions with the agent's report.
     ///
     /// This is also how a restarted server learns which shells still run, so the browsers
     /// get their tabs back as each agent reconnects. Sessions keep their place and viewer. A
     /// session the agent no longer has (it was restarted) stays listed as exited until its tab is closed, like a shell that exited,
     /// so the tab explains what happened. Sessions closed while the agent was away are left
     /// out and closed on the agent now.
-    pub(crate) fn report(&self, agent_id: &AgentId, records: Vec<TerminalSessionRecord>) {
+    pub(crate) fn report(&self, agent: &AgentKey, records: Vec<TerminalSessionRecord>) {
         let mut state = self.state();
         // Closes of sessions the agent no longer has are done.
         state.pending_closes.retain(|close| {
-            &close.agent_id != agent_id || records.iter().any(|record| record.id == close.id)
+            &close.agent != agent || records.iter().any(|record| record.id == close.id)
         });
         let mut to_close = Vec::new();
         let mut records: Vec<_> = records
             .into_iter()
             .filter(|record| {
-                let pending = state.close_pending(agent_id, record.id);
+                let pending = state.close_pending(agent, record.id);
                 if pending {
                     to_close.push(record.id);
                 }
@@ -332,7 +342,7 @@ impl TerminalRegistry {
         for entry in state
             .sessions
             .iter_mut()
-            .filter(|entry| &entry.agent_id == agent_id)
+            .filter(|entry| &entry.agent == agent)
         {
             match records
                 .iter()
@@ -359,7 +369,7 @@ impl TerminalRegistry {
         changed |= !records.is_empty();
         for record in records {
             state.sessions.push(Entry {
-                agent_id: agent_id.clone(),
+                agent: agent.clone(),
                 record,
                 orphaned: false,
                 viewer: None,
@@ -367,12 +377,12 @@ impl TerminalRegistry {
         }
         drop(state);
         if changed {
-            self.notifier.publish();
+            self.notifier.publish(agent.owner());
         }
         for id in to_close {
             let registry = self.clone();
-            let agent_id = agent_id.clone();
-            tokio::spawn(async move { registry.close_on_agent(agent_id, id).await });
+            let agent = agent.clone();
+            tokio::spawn(async move { registry.close_on_agent(agent, id).await });
         }
     }
 }
@@ -396,7 +406,7 @@ mod tests {
 
     fn titles(registry: &TerminalRegistry) -> Vec<String> {
         registry
-            .list()
+            .list("alice")
             .into_iter()
             .map(|session| session.title)
             .collect()
@@ -406,8 +416,8 @@ mod tests {
     /// longer runs.
     #[test]
     fn report_replaces_only_that_agents_sessions() {
-        let agent = redoor_core::test_support::test_agent_id("agent");
-        let other = redoor_core::test_support::test_agent_id("other");
+        let agent = AgentKey::new("alice", redoor_core::test_support::test_agent_id("agent"));
+        let other = AgentKey::new("alice", redoor_core::test_support::test_agent_id("other"));
         let kept = record("kept");
         let gone = record("gone");
         let registry = TerminalRegistry::disabled();
@@ -417,14 +427,14 @@ mod tests {
         exited.status = TerminalSessionStatus::Exited {
             message: "Shell exited with code 0".to_string(),
         };
-        let mut ticket = registry.attach(gone.id).unwrap();
+        let mut ticket = registry.attach("alice", gone.id).unwrap();
         registry.report(&agent, vec![exited.clone(), record("new")]);
         // Kept sessions stay in place with their new status, and other agents are untouched.
         assert_eq!(titles(&registry), vec!["kept", "gone", "other", "new"]);
-        assert_eq!(registry.list()[0].status, exited.status);
+        assert_eq!(registry.list("alice")[0].status, exited.status);
         // A session the restarted agent no longer runs stays as exited, so its tab explains it.
         assert_eq!(
-            registry.list()[1].status,
+            registry.list("alice")[1].status,
             TerminalSessionStatus::Exited {
                 message: ENDED_WITH_AGENT.to_string(),
             }
@@ -432,20 +442,20 @@ mod tests {
         // Its viewer is let go, since its shell is gone.
         assert_eq!(ticket.reason.try_recv(), Ok(DetachReason::Closed));
         // A later viewer only learns why it ended, without asking the agent.
-        assert!(registry.attach(gone.id).unwrap().ended.is_some());
+        assert!(registry.attach("alice", gone.id).unwrap().ended.is_some());
     }
 
     /// A close for an absent agent is remembered, so its next report does not bring the
     /// session back.
     #[tokio::test]
     async fn close_while_the_agent_is_away_survives_its_next_report() {
-        let agent = redoor_core::test_support::test_agent_id("agent");
+        let agent = AgentKey::new("alice", redoor_core::test_support::test_agent_id("agent"));
         let closed = record("closed");
         let open = record("open");
         let registry = TerminalRegistry::disabled();
         registry.report(&agent, vec![closed.clone(), open.clone()]);
-        let mut ticket = registry.attach(closed.id).unwrap();
-        assert!(registry.close(closed.id).await);
+        let mut ticket = registry.attach("alice", closed.id).unwrap();
+        assert!(registry.close("alice", closed.id).await);
         // The viewer learns at once, even though the agent did not answer.
         assert_eq!(ticket.reason.try_recv(), Ok(DetachReason::Closed));
         registry.report(&agent, vec![closed.clone(), open, record("later")]);
@@ -461,18 +471,18 @@ mod tests {
     /// Attaching takes the session over from the previous viewer.
     #[test]
     fn attach_takes_over_and_detach_only_frees_the_current_viewer() {
-        let agent = redoor_core::test_support::test_agent_id("agent");
+        let agent = AgentKey::new("alice", redoor_core::test_support::test_agent_id("agent"));
         let session = record("s");
         let registry = TerminalRegistry::disabled();
         registry.report(&agent, vec![session.clone()]);
-        let mut first = registry.attach(session.id).unwrap();
-        let second = registry.attach(session.id).unwrap();
+        let mut first = registry.attach("alice", session.id).unwrap();
+        let second = registry.attach("alice", session.id).unwrap();
         // The first browser learns it was taken over, not that its connection broke.
         assert_eq!(first.reason.try_recv(), Ok(DetachReason::TakenOver));
         registry.detach(session.id, first.serial);
         // A replaced viewer leaving does not mark the session detached.
-        assert!(registry.list()[0].attached);
+        assert!(registry.list("alice")[0].attached);
         registry.detach(session.id, second.serial);
-        assert!(!registry.list()[0].attached);
+        assert!(!registry.list("alice")[0].attached);
     }
 }

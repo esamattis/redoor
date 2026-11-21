@@ -1,6 +1,7 @@
 //! Streamed raw file downloads (with single-range resume) and one-time download tokens.
 
 use crate::http::access::ResolvedDevice;
+use crate::workspaces::AgentKey;
 use axum::{
     Json,
     body::Body,
@@ -10,9 +11,7 @@ use axum::{
 };
 use headers::{HeaderMap, HeaderMapExt, Range as RangeHeader};
 use redoor_protocol::wire::request;
-use redoor_protocol::{
-    api::files::CreateOneTimeTokenResponse, ids::AgentId, wire::command::Command,
-};
+use redoor_protocol::{api::files::CreateOneTimeTokenResponse, wire::command::Command};
 use serde::Deserialize;
 use uuid::Uuid;
 
@@ -31,7 +30,7 @@ pub(crate) mod upload;
 /// Records the bytes one token-authorized HTTP body handed off, including partial bodies on drop.
 struct OneTimeDownloadProgress {
     registry: crate::one_time_token_registry::OneTimeTokenRegistry,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     path: String,
     token: Uuid,
     start: u64,
@@ -246,7 +245,7 @@ pub(crate) async fn raw_agent_handler(
 /// gunzip support or a second transfer payload kind.
 pub(crate) async fn stream_directory_archive(
     state: ServerState,
-    agent_id: AgentId,
+    agent_id: AgentKey,
     path: String,
     command: Command,
 ) -> Result<Response, ApiError> {
@@ -447,7 +446,10 @@ mod tests {
         ));
         let progress = agent
             .router
-            .request(|reply| RouterMsg::GetTransferProgress { reply })
+            .request(|reply| RouterMsg::GetTransferProgress {
+                owner: agent.agent_id.owner.clone(),
+                reply,
+            })
             .await
             .expect("progress request completed");
         let transfer = progress

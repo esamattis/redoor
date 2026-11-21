@@ -28,6 +28,7 @@ import {
     getAvailablePort,
     VITEST_SERVER_PORT,
     cliLoginApproval,
+    seedUserWorkspace,
     waitForApprovalPrompt,
     waitForLogMessage,
     waitForPort,
@@ -324,9 +325,7 @@ async function startServer(
 
     const config = tempFiles.tempFile({
         suffix: ".toml",
-        content: `agent_token = "${TEST_AGENT_TOKEN}"
-
-[server]
+        content: `[server]
 ${passwordLogin ? `username = "${TEST_USERNAME}"\npassword = "${TEST_PASSWORD}"` : ""}
 
 [server.oidc]
@@ -340,6 +339,12 @@ session_lifetime_days = ${lifetimeDays}
 `,
     });
 
+    seedUserWorkspace({
+        home: serverHome,
+        appName: TEST_APP_NAME,
+        username: TEST_USERNAME,
+        agentToken: TEST_AGENT_TOKEN,
+    });
     process.env.REDOOR_PORT = VITEST_SERVER_PORT.toString();
     serverPid = processManager.spawnServer({ config, home: serverHome });
     await waitForPort(VITEST_SERVER_PORT);
