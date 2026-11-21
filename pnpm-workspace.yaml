@@ -11,6 +11,7 @@ minimumReleaseAgeExclude:
   - '@wterm/core@0.6.0'
   - '@wterm/dom@0.6.0'
   - '@wterm/ghostty@0.6.0'
+  - '@cloudflare/oxlint-config@0.1.0'
 # The local picomatch patch blocks repeated wildcard branches. Registry audits
 # cannot recognize patched contents; remove this exception with a fixed release.
 auditConfig:

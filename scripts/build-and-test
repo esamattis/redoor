@@ -65,8 +65,6 @@ run_static_checks() {
     local pids=()
     silent_unless_error pn types &
     pids+=($!)
-    silent_unless_error pn test:anti-slop &
-    pids+=($!)
     silent_unless_error pn test:unit &
     pids+=($!)
     silent_unless_error pn lint &

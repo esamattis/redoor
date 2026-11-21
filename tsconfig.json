@@ -1,6 +1,5 @@
 {
     "include": ["**/*.ts", "**/*.tsx", "**/*.mts"],
-    "exclude": ["tools/oxlint/anti-slop/**"],
     "compilerOptions": {
         "target": "ES2022",
         "jsx": "react-jsx",
