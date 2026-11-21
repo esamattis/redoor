@@ -144,6 +144,8 @@ struct IdTokenClaims {
     preferred_username: Option<String>,
     email: Option<String>,
     #[serde(default)]
+    email_verified: Option<bool>,
+    #[serde(default)]
     groups: Vec<String>,
     /// When the provider last authenticated the user (OIDC Core 2), which decides whether a
     /// fresh sign-in really checked the credentials.
@@ -164,19 +166,24 @@ struct SignedInUser {
     subject: String,
     username: Option<String>,
     email: Option<String>,
+    email_verified: Option<bool>,
     /// The token's `auth_time` claim; see [`PendingLogin::authenticated_at`].
     auth_time: Option<i64>,
 }
 
 impl SignedInUser {
-    /// The name the session records for display and logs: the readable username, else the
-    /// email address, else the stable subject. Never used for authorization.
+    /// Canonical username recorded on the session: `preferred_username`, else `email` only
+    /// when `email_verified` is explicitly `true`, else the stable `sub` claim.
     fn display_name(&self) -> &str {
-        [&self.username, &self.email]
-            .into_iter()
-            .filter_map(|name| name.as_deref())
-            .find(|name| !name.trim().is_empty())
-            .unwrap_or(&self.subject)
+        if let Some(name) = self.username.as_deref().filter(|s| !s.trim().is_empty()) {
+            return name;
+        }
+        if self.email_verified == Some(true)
+            && let Some(email) = self.email.as_deref().filter(|s| !s.trim().is_empty())
+        {
+            return email;
+        }
+        &self.subject
     }
 }
 
@@ -472,6 +479,7 @@ fn validate_id_token(
         subject: claims.sub,
         username: claims.preferred_username,
         email: claims.email,
+        email_verified: claims.email_verified,
         auth_time: claims.auth_time,
     })
 }
@@ -861,6 +869,7 @@ mod tests {
                 subject: "user-1".to_string(),
                 username: Some("alice".to_string()),
                 email: None,
+                email_verified: None,
                 auth_time: None,
             })
         );
@@ -878,30 +887,42 @@ mod tests {
         assert!(validate(many).is_ok());
     }
 
-    /// The session's display name falls back from the username to the email to the subject.
+    /// The session's display name falls back from the username to a verified email to the subject.
     #[test]
     fn display_name_falls_back_to_email_and_subject() {
-        let user = |username: Option<&str>, email: Option<&str>| SignedInUser {
-            subject: "user-1".to_string(),
-            username: username.map(str::to_string),
-            email: email.map(str::to_string),
-            auth_time: None,
+        let user = |username: Option<&str>, email: Option<&str>, email_verified: Option<bool>| {
+            SignedInUser {
+                subject: "user-1".to_string(),
+                username: username.map(str::to_string),
+                email: email.map(str::to_string),
+                email_verified,
+                auth_time: None,
+            }
         };
         // The readable username wins when the provider sends one.
         assert_eq!(
-            user(Some("alice"), Some("a@example.org")).display_name(),
+            user(Some("alice"), Some("a@example.org"), Some(true)).display_name(),
             "alice"
         );
-        // Providers without `preferred_username` still give a recognisable name.
+        // Providers without `preferred_username` use a verified email address.
         assert_eq!(
-            user(None, Some("a@example.org")).display_name(),
+            user(None, Some("a@example.org"), Some(true)).display_name(),
             "a@example.org"
         );
-        // The subject is always there.
-        assert_eq!(user(None, None).display_name(), "user-1");
-        // An empty username does not hide a usable email address.
+        // Unverified email claims must not claim a workspace; fall back to the stable subject.
         assert_eq!(
-            user(Some(""), Some("a@example.org")).display_name(),
+            user(None, Some("a@example.org"), Some(false)).display_name(),
+            "user-1"
+        );
+        assert_eq!(
+            user(None, Some("a@example.org"), None).display_name(),
+            "user-1"
+        );
+        // The subject is always there.
+        assert_eq!(user(None, None, None).display_name(), "user-1");
+        // An empty username does not hide a verified email address.
+        assert_eq!(
+            user(Some(""), Some("a@example.org"), Some(true)).display_name(),
             "a@example.org"
         );
     }
