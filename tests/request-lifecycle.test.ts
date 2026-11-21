@@ -8,7 +8,8 @@ import type { GitStatusResponse } from "#bindings/GitStatusResponse";
 import type { GitWorktreeStatusResponse } from "#bindings/GitWorktreeStatusResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { Agent, ApiClient } from "#ui/api-client";
-import { FakeAgent, type StreamFrame } from "./fake-agent";
+import { FakeAgent } from './fake-agent';
+import type { StreamFrame } from './fake-agent';
 import {
     ProcessManager,
     TempFileManager,

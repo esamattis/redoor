@@ -10,7 +10,7 @@ import {
     it,
     onTestFinished,
 } from "vitest";
-import { Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import type { ErrorResponse } from "#bindings/ErrorResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { GitDiffResponse } from "#bindings/GitDiffResponse";

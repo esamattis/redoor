@@ -8,8 +8,8 @@ import {
     RefreshCw,
     RotateCcw,
     Square,
-    type LucideIcon,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import type { SystemdScope } from "#bindings/SystemdScope";
 import type { SystemdUnitAction } from "#bindings/SystemdUnitAction";
@@ -21,8 +21,8 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import {
     SystemdFeedbackToast,
     systemdFeedback,
-    type SystemdFeedback,
 } from "#ui/components/systemd/systemd-states";
+import type { SystemdFeedback } from "#ui/components/systemd/systemd-states";
 import { queryKeys } from "#ui/queries";
 import { invalidateSystemdData, systemdScopeKey } from "#ui/systemd-queries";
 import { useIsContentBelow } from "#ui/utils/use-breakpoint";

@@ -10,16 +10,18 @@ import {
     GitDiffList,
     useCollapsedGitDiffs,
     useGitDiffFilterQuery,
-    type GitDiffBodyView,
-    type GitDiffListFile,
+} from "#ui/components/browser/git-diff-list";
+import type {
+    GitDiffBodyView,
+    GitDiffListFile,
 } from "#ui/components/browser/git-diff-list";
 import {
     ChangeBadge,
     GitPanelBar,
     LineChangeTotals,
     TruncatedDiffNotice,
-    type GitChangeKind,
 } from "#ui/components/browser/git-parts";
+import type { GitChangeKind } from "#ui/components/browser/git-parts";
 import {
     gitDiffQueryOptions,
     gitStatusQueryOptions,

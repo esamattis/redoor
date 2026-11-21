@@ -20,8 +20,8 @@ import {
     GitDiffList,
     useCollapsedGitDiffs,
     useGitDiffFilterQuery,
-    type GitDiffListFile,
 } from "#ui/components/browser/git-diff-list";
+import type { GitDiffListFile } from "#ui/components/browser/git-diff-list";
 import {
     AuthorAvatar,
     ChangeBadge,
@@ -32,7 +32,6 @@ import {
     commitDiffRevision,
     commitsOnlyRevision,
     displayRevision,
-    type GitChangeKind,
     isWorktreeRange,
     revisionRange,
     revisionRefKind,
@@ -40,6 +39,7 @@ import {
     TruncatedDiffNotice,
     WORKTREE_REVISION,
 } from "#ui/components/browser/git-parts";
+import type { GitChangeKind } from "#ui/components/browser/git-parts";
 import { formatModifiedAge } from "#ui/components/browser/utils";
 import { GitComparePicker } from "#ui/components/browser/git-compare-picker";
 import { SelectionSearch } from "#ui/components/browser/selection-search";

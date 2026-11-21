@@ -1,4 +1,5 @@
-import { queryOptions, type QueryClient } from "@tanstack/react-query";
+import { queryOptions } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 
 import type { SystemdOverviewResponse } from "#bindings/SystemdOverviewResponse";
 import type { SystemdScope } from "#bindings/SystemdScope";
@@ -10,8 +11,8 @@ import {
     fetchQueryUncancelled,
     loadDeviceRouteAgent,
     queryKeys,
-    type QueryContext,
 } from "#ui/queries";
+import type { QueryContext } from "#ui/queries";
 import { shouldCheckSystemdAfterSave } from "#ui/utils/systemd-reload-offer";
 
 /**

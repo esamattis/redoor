@@ -1,14 +1,11 @@
-import {
-    type DestinationChoice,
-    type DestinationNames,
-    type PlannedDestination,
-    planDestinationNames,
+import { planDestinationNames } from "#ui/destination-plan";
+import type {
+    DestinationChoice,
+    DestinationNames,
+    PlannedDestination,
 } from "#ui/destination-plan";
-import {
-    normalizeRelativePath,
-    type UploadBatchFile,
-    type UploadSourceFile,
-} from "#ui/upload-queue";
+import { normalizeRelativePath } from "#ui/upload-queue";
+import type { UploadBatchFile, UploadSourceFile } from "#ui/upload-queue";
 import { VAULT_SUFFIX } from "#ui/vault/vault-path";
 
 /** How an item reached the upload dialog, so its row can say what it is. */

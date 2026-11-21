@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ExecRequest } from "#bindings/ExecRequest";
-import { type Agent, type ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient } from '#ui/api-client';
 import {
     ProcessManager,
     TempFileManager,

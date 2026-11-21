@@ -22,10 +22,8 @@ import { Tooltip } from "#ui/components/tooltip";
 import { ViewCardHeader } from "#ui/components/view-card-header";
 import { DestinationConflictDialog } from "#ui/components/browser/destination-conflict";
 import { UnifiedDiff } from "#ui/components/browser/unified-diff";
-import {
-    GitDiffList,
-    type GitDiffListFile,
-} from "#ui/components/browser/git-diff-list";
+import { GitDiffList } from "#ui/components/browser/git-diff-list";
+import type { GitDiffListFile } from "#ui/components/browser/git-diff-list";
 import { getPathLoadError } from "#ui/components/browser/utils";
 import {
     WATCHED_TRANSFER_POLL_MS,

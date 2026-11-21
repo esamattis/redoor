@@ -1,13 +1,14 @@
 // Serial: terminal sessions outlive pages and every page restores them as tabs, so another
 // spec's pages would show (and could take over) the shells these tests open.
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import {
     deleteAllTerminalSessions,
     expectTerminalFocused,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /**
  * A command that prints `__<word><pid>__` without that text appearing in the echoed

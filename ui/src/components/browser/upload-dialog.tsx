@@ -15,7 +15,8 @@ import { Button } from "#ui/components/button";
 import { Checkbox } from "#ui/components/checkbox";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
-import { FileInput, type FileInputHandle } from "#ui/components/file-input";
+import { FileInput } from "#ui/components/file-input";
+import type { FileInputHandle } from "#ui/components/file-input";
 import { Tooltip } from "#ui/components/tooltip";
 import {
     ConflictBulkSelect,
@@ -24,13 +25,15 @@ import {
 import { joinBrowserPath } from "#ui/components/browser/utils";
 import {
     countUploadFiles,
-    type PlannedUploadRow,
     planUploadRows,
     resolveUpload,
-    type UploadChoices,
-    type UploadDraftItem,
-    type UploadItemChoice,
-    type UploadSource,
+} from "#ui/upload-plan";
+import type {
+    PlannedUploadRow,
+    UploadChoices,
+    UploadDraftItem,
+    UploadItemChoice,
+    UploadSource,
 } from "#ui/upload-plan";
 import { describeDestinationEntries } from "#ui/destination-plan";
 import { isLsDirectoryResponse } from "#ui/ls-response";

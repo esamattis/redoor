@@ -2,12 +2,8 @@ import { expect, test } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { $ } from "zx";
-import {
-    deviceBrowserUrl,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { deviceBrowserUrl, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** More files than a commit diff lists by default (128), so the diff starts out truncated. */
 const FILE_COUNT = 130;

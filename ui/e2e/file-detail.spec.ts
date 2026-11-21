@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -8,14 +9,11 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Waits for file navigation to replace the previous directory view before opening details. */
-async function openFileDetails(
-    page: import("@playwright/test").Page,
-    fileName: string,
-) {
+async function openFileDetails(page: Page, fileName: string) {
     await page.getByRole("link", { name: fileName, exact: true }).click();
     await expect(page.getByLabel("File editor", { exact: true })).toBeVisible();
     await page.getByRole("link", { name: "Details", exact: true }).click();

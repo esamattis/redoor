@@ -9,7 +9,8 @@ import {
 import { $ } from "zx";
 import { createHash, randomUUID } from "node:crypto";
 import { readFileSync, rmSync } from "node:fs";
-import { createServer, type IncomingMessage, type Server } from "node:http";
+import { createServer } from 'node:http';
+import type { IncomingMessage, Server } from 'node:http';
 import { join } from "node:path";
 
 import { ApiClient } from "#ui/api-client";

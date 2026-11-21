@@ -18,8 +18,8 @@ import {
     useUserState,
     userStatePersistErrorAtom,
     waitForUserStatePersist,
-    type UserState,
 } from "#ui/user-state";
+import type { UserState } from "#ui/user-state";
 
 export const Route = createFileRoute("/_app/settings/preferences")({
     component: PreferencesPage,

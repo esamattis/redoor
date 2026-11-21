@@ -1,5 +1,6 @@
 import { File, Folder, X } from "lucide-react";
-import { getSelectedFileKey, type SelectedPath } from "#ui/selected-files";
+import { getSelectedFileKey } from "#ui/selected-files";
+import type { SelectedPath } from "#ui/selected-files";
 import { IconButton } from "#ui/components/icon-button";
 import { RevisionBadge } from "#ui/components/browser/git-parts";
 

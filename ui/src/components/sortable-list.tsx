@@ -8,11 +8,13 @@ import {
     TouchSensor,
     useSensor,
     useSensors,
-    type Announcements,
-    type CollisionDetection,
-    type DragEndEvent,
-    type Modifier,
-    type UniqueIdentifier,
+} from "@dnd-kit/core";
+import type {
+    Announcements,
+    CollisionDetection,
+    DragEndEvent,
+    Modifier,
+    UniqueIdentifier,
 } from "@dnd-kit/core";
 import {
     horizontalListSortingStrategy,
@@ -21,7 +23,8 @@ import {
     useSortable,
     verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
-import { CSS, type Transform } from "@dnd-kit/utilities";
+import { CSS } from "@dnd-kit/utilities";
+import type { Transform } from "@dnd-kit/utilities";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import type { ItemMove } from "#ui/utils/reorder";

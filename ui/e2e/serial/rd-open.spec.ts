@@ -2,13 +2,14 @@
 // specs running in parallel, and its terminal sessions outlive pages, so another spec's
 // pages would restore them as tabs.
 import path from "node:path";
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import {
     deleteAllTerminalSessions,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 test.describe.serial("rd-open", () => {
     let ctx: TestContext;

@@ -1,7 +1,8 @@
 // Serial: adds, renames, starts and removes devices, including the managed lazy/failing agents.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type APIRequestContext } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { APIRequestContext } from "../fixtures";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { ManagedSshAgentConfigurationResponse } from "#bindings/ManagedSshAgentConfigurationResponse";

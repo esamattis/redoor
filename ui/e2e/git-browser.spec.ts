@@ -11,8 +11,8 @@ import {
     simulateTabRefocus,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** The part of a diff request the tests inspect: which files it asked for. */
 const gitDiffRequestSchema = z.object({ files: z.array(z.string()) });

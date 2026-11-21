@@ -7,7 +7,7 @@ import {
     it,
     onTestFinished,
 } from "vitest";
-import { Agent, ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 import {
     agentRegisteredPattern,
     ProcessManager,

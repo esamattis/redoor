@@ -1,5 +1,6 @@
 import React from "react";
-import { Dialog, type DialogProps } from "#ui/components/dialog";
+import { Dialog } from "#ui/components/dialog";
+import type { DialogProps } from "#ui/components/dialog";
 import { useIsBelowBreakpoint } from "#ui/utils/use-breakpoint";
 
 type ResponsiveAnchoredDialogProps = Omit<

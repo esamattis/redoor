@@ -1,23 +1,19 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { opensInEditor } from "#ui/vault/vault-path";
-import {
-    createFileRoute,
-    retainSearchParams,
-    type ErrorComponentProps,
-} from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { createFileRoute, retainSearchParams } from "@tanstack/react-router";
+import type { ErrorComponentProps } from "@tanstack/react-router";
+import { useEffect } from "react";
+import type { ReactNode } from "react";
 import { useSetAtom } from "jotai";
 import { agentStartStatesAtom } from "#ui/agent-start-state";
-import { type ApiClient, type Agent } from "#ui/api-client";
+import type { ApiClient, Agent } from "#ui/api-client";
 import type { LsDirectoryResponse } from "#bindings/LsDirectoryResponse";
 import type { LsFileResponse } from "#bindings/LsFileResponse";
 import type { LsEntry } from "#bindings/LsEntry";
-import {
-    isLsDirectoryResponse,
-    isLsFileResponse,
-    type LsResponse,
-} from "#ui/ls-response";
-import { browserSearchSchema, type FileSortColumn } from "#ui/browser-search";
+import { isLsDirectoryResponse, isLsFileResponse } from "#ui/ls-response";
+import type { LsResponse } from "#ui/ls-response";
+import { browserSearchSchema } from "#ui/browser-search";
+import type { FileSortColumn } from "#ui/browser-search";
 import { useUserState } from "#ui/user-state";
 import { AgentLifecycle } from "#ui/components/agent-lifecycle";
 import { RouteError } from "#ui/components/route-error";
@@ -25,8 +21,10 @@ import {
     BrowserHeader,
     UnavailablePathState,
     gitTabHead,
-    type BrowserView,
-    type GitTabHead,
+} from "#ui/components/browser/navigation";
+import type {
+    BrowserView,
+    GitTabHead,
 } from "#ui/components/browser/navigation";
 import { ViewToolbarSlotProvider } from "#ui/components/browser/view-toolbar-slot";
 import { MissingPathCreationForm } from "#ui/components/browser/missing-path";
@@ -53,15 +51,14 @@ import {
     RevisionListingNotice,
     revisionListing,
     revisionListingEntries,
-    type RevisionListing,
 } from "#ui/components/browser/revision";
+import type { RevisionListing } from "#ui/components/browser/revision";
 import {
     getImmediateParentPath,
     getPathLoadError,
     sortFileEntries,
-    type FileSort,
-    type PathLoadError,
 } from "#ui/components/browser/utils";
+import type { FileSort, PathLoadError } from "#ui/components/browser/utils";
 import {
     agentAccountsQueryOptions,
     agentDetailsQueryOptions,

@@ -1,11 +1,10 @@
 import { Columns2, PanelLeftClose, PanelsLeftRight } from "lucide-react";
 import { useAtom } from "jotai";
 
-import {
-    SegmentedControl,
-    type SegmentedControlOption,
-} from "#ui/components/segmented-control";
-import { sidebarModeAtom, type SidebarMode } from "#ui/side-menu-state";
+import { SegmentedControl } from "#ui/components/segmented-control";
+import type { SegmentedControlOption } from "#ui/components/segmented-control";
+import { sidebarModeAtom } from "#ui/side-menu-state";
+import type { SidebarMode } from "#ui/side-menu-state";
 
 const sidebarModeOptions = [
     {

@@ -1,12 +1,8 @@
 import { Bookmark, BookmarkCheck } from "lucide-react";
 
 import { ActionMenuButton } from "#ui/components/action-menu";
-import {
-    isPathBookmarked,
-    toggleBookmark,
-    useUserState,
-    type Bookmark as BookmarkEntry,
-} from "#ui/user-state";
+import { isPathBookmarked, toggleBookmark, useUserState } from "#ui/user-state";
+import type { Bookmark as BookmarkEntry } from "#ui/user-state";
 
 /** Lets every path menu persist the same bookmark document through user state. */
 export function BookmarkMenuButton(props: {

@@ -24,10 +24,8 @@ import {
     sideMenuDrawerIds,
     usePersistentSideMenus,
 } from "#ui/side-menu-state";
-import {
-    useAgentViewContext,
-    type AgentViewContext,
-} from "#ui/agent-view-context";
+import { useAgentViewContext } from "#ui/agent-view-context";
+import type { AgentViewContext } from "#ui/agent-view-context";
 import { SearchButton } from "#ui/components/search-button";
 
 /**

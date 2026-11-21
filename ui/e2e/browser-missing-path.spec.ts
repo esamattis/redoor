@@ -5,8 +5,8 @@ import {
     teardownTestDir,
     encodeFilesystemPath,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe.serial("Missing path creation", () => {
     let ctx: TestContext;

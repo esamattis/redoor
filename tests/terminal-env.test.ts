@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ApiClient, type Agent } from "#ui/api-client";
+import { ApiClient } from '#ui/api-client';
+import type { Agent } from '#ui/api-client';
 import {
     ProcessManager,
     TempFileManager,

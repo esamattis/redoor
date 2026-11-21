@@ -32,9 +32,8 @@ import {
     openGenerations,
     openPasskeySlot,
     openPassphraseSlot,
-    type OpenedSlot,
-    type SlotToWrap,
 } from "#ui/vault/vault-keys";
+import type { OpenedSlot, SlotToWrap } from "#ui/vault/vault-keys";
 import {
     currentRpId,
     derivePasskeyKek,

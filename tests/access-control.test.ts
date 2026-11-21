@@ -9,11 +9,8 @@ import type { Permission } from "#bindings/Permission";
 import { ApiError } from "#ui/api-transport";
 import type { AgentListResponse } from "#bindings/AgentListResponse";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
-import {
-    type JsonObject,
-    type McpTestClient,
-    createMcpTestClient,
-} from "./mcp-client";
+import { createMcpTestClient } from './mcp-client';
+import type { JsonObject, McpTestClient } from './mcp-client';
 import {
     ALL_PERMISSIONS,
     ProcessManager,

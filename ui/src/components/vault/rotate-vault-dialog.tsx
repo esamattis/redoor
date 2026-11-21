@@ -15,8 +15,8 @@ import {
     FreshUnlockFields,
     useFreshUnlock,
     useUnlockMaterial,
-    type FreshUnlock,
 } from "#ui/components/vault/fresh-unlock";
+import type { FreshUnlock } from "#ui/components/vault/fresh-unlock";
 import {
     NewPassphraseFields,
     PasswordlessWarning,
@@ -34,9 +34,11 @@ import {
     passphraseSlot,
     proofFromRaw,
     wipeOpened,
-    type FreshUnlockInput,
-    type OpenedSlot,
-    type SlotToWrap,
+} from "#ui/vault/vault-keys";
+import type {
+    FreshUnlockInput,
+    OpenedSlot,
+    SlotToWrap,
 } from "#ui/vault/vault-keys";
 import { derivePasskeyKek, currentRpId } from "#ui/vault/vault-passkeys";
 

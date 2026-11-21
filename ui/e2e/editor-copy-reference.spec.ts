@@ -9,8 +9,8 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe("Editor copy reference", () => {
     let ctx: TestContext;

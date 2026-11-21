@@ -7,8 +7,8 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 const terminalFrameSchema = z.union([
     z.string(),

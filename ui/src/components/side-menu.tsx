@@ -10,8 +10,8 @@ import {
     sideMenuDrawerIds,
     sidebarWidthsAtom,
     usePersistentSideMenus,
-    type SideMenuId,
 } from "#ui/side-menu-state";
+import type { SideMenuId } from "#ui/side-menu-state";
 import { shouldIgnoreKeyboardShortcut } from "#ui/utils/keyboard";
 import { focusableSelector, useFocusTrap } from "#ui/utils/use-focus-trap";
 

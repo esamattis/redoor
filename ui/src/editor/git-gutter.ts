@@ -1,24 +1,12 @@
-import {
-    RangeSet,
-    StateEffect,
-    StateField,
-    type EditorState,
-    type Extension,
-    type Text,
-} from "@codemirror/state";
-import {
-    EditorView,
-    gutter,
-    GutterMarker,
-    ViewPlugin,
-    type ViewUpdate,
-} from "@codemirror/view";
-import {
-    GIT_GUTTER_HIDDEN,
-    gitLineMarks,
-    type GitGutterSource,
-    type GitLineChange,
-    type GitLineMark,
+import { RangeSet, StateEffect, StateField } from "@codemirror/state";
+import type { EditorState, Extension, Text } from "@codemirror/state";
+import { EditorView, gutter, GutterMarker, ViewPlugin } from "@codemirror/view";
+import type { ViewUpdate } from "@codemirror/view";
+import { GIT_GUTTER_HIDDEN, gitLineMarks } from "./git-line-marks";
+import type {
+    GitGutterSource,
+    GitLineChange,
+    GitLineMark,
 } from "./git-line-marks";
 
 /** How long typing must pause before the marks are recomputed against the bases. */

@@ -3,8 +3,8 @@ import {
     useMatch,
     useMatchRoute,
     useRouterState,
-    type RegisteredRouter,
 } from "@tanstack/react-router";
+import type { RegisteredRouter } from "@tanstack/react-router";
 
 import type { Agent } from "#ui/api-client";
 import { useAgents, useRequiredAgent } from "#ui/use-agents";

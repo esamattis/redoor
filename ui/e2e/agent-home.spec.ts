@@ -1,11 +1,7 @@
 import { expect, test } from "./fixtures";
 
-import {
-    WEB_BASE_URL,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { WEB_BASE_URL, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 let context: TestContext;
 

@@ -1,11 +1,8 @@
 import type { ResumeMode } from "#bindings/ResumeMode";
 import React from "react";
 import { useAtomValue, useSetAtom } from "jotai";
-import {
-    useMutation,
-    useQueryClient,
-    type QueryClient,
-} from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { useRouterState } from "@tanstack/react-router";
 import {
     Archive,
@@ -19,10 +16,8 @@ import {
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
-import {
-    DeletePathsDialog,
-    type DeletePathTarget,
-} from "#ui/components/browser/delete-paths-dialog";
+import { DeletePathsDialog } from "#ui/components/browser/delete-paths-dialog";
+import type { DeletePathTarget } from "#ui/components/browser/delete-paths-dialog";
 import { IconButton } from "#ui/components/icon-button";
 import { Toast } from "#ui/components/toast";
 import type { Agent, ApiClient } from "#ui/api-client";
@@ -34,27 +29,25 @@ import {
     clearSelectedFilesAtom,
     hasRevisionSelection,
     unselectFileAtom,
-    type SelectedPath,
 } from "#ui/selected-files";
+import type { SelectedPath } from "#ui/selected-files";
 import {
     isBrowserPathInside,
     joinBrowserPath,
 } from "#ui/components/browser/utils";
 import { getErrorMessage } from "#ui/utils/error";
-import {
-    SelectedFilesTransferTrigger,
-    type SelectedFilesTransferOperation,
-    type SelectedFilesTransferTriggerApi,
-    type PlannedTransferItem,
+import { SelectedFilesTransferTrigger } from "#ui/components/browser/selected-files-transfer-dialog";
+import type {
+    SelectedFilesTransferOperation,
+    SelectedFilesTransferTriggerApi,
+    PlannedTransferItem,
 } from "#ui/components/browser/selected-files-transfer-dialog";
 import { activateBottomDrawerTabAtom } from "#ui/bottom-drawer-state";
 import { useIsContentBelow } from "#ui/utils/use-breakpoint";
 import { AffectedPathsList } from "#ui/components/browser/affected-paths-list";
 import { CreateArchiveDialog } from "#ui/components/browser/create-archive-dialog";
-import {
-    getCreateArchiveSelectionError,
-    type ArchiveSource,
-} from "#ui/utils/archive";
+import { getCreateArchiveSelectionError } from "#ui/utils/archive";
+import type { ArchiveSource } from "#ui/utils/archive";
 
 /** A selection paired with the name it lands under, which differs only when renamed. */
 

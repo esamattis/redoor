@@ -19,21 +19,21 @@ import {
 } from "#ui/history-entry-state";
 import { gitDiffQueryOptions, prefetchGitDiffs } from "#ui/queries";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
-import { parseDiff, type DiffFile } from "#ui/utils/diff-parse";
-import {
-    diffMatchKey,
-    findDiffMatches,
-    type DiffSearchFile,
-    type DiffSearchMatch,
-    type DiffSearchResult,
+import { parseDiff } from "#ui/utils/diff-parse";
+import type { DiffFile } from "#ui/utils/diff-parse";
+import { diffMatchKey, findDiffMatches } from "#ui/utils/diff-search";
+import type {
+    DiffSearchFile,
+    DiffSearchMatch,
+    DiffSearchResult,
 } from "#ui/utils/diff-search";
 import { formatKeyChord, isTerminalInputTarget } from "#ui/utils/keyboard";
 import {
     DiffSearchHighlighter,
     firstMatchOnScreen,
     isAnchoredMatch,
-    type DiffSearchAnchor,
 } from "#ui/utils/diff-search-highlighter";
+import type { DiffSearchAnchor } from "#ui/utils/diff-search-highlighter";
 import type { GitDiffMode } from "#bindings/GitDiffMode";
 import type { GitDiffResult } from "#bindings/GitDiffResult";
 

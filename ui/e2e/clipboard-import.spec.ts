@@ -6,10 +6,10 @@ import {
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
     uploadDialog,
     WEB_BASE_URL,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe("Clipboard imports", () => {
     let ctx: TestContext;

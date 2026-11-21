@@ -4,13 +4,14 @@ import { describe, expect, onTestFinished, test, vi } from "vitest";
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { RawUploadResponse } from "#bindings/RawUploadResponse";
-import { ApiClient, type Agent } from "#ui/api-client";
+import { ApiClient } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import {
     MAX_CONCURRENT_UPLOADS,
     MAX_QUEUED_UPLOADS,
-    type UploadBatchFile,
     UploadQueue,
 } from "#ui/upload-queue";
+import type { UploadBatchFile } from "#ui/upload-queue";
 
 /** A promise the test settles by hand, to hold uploads in flight while it inspects the queue. */
 type Deferred = {

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "./fixtures";
+import { test, expect } from "./fixtures";
+import type { Page } from "./fixtures";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +10,8 @@ import {
     confirmUpload,
     uploadDialog,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Reads a file the background upload queue may not have written yet. */
 async function readWhenPresent(filePath: string): Promise<string | null> {

@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { ApiClient, Agent } from "#ui/api-client";
+import type { ApiClient, Agent } from "#ui/api-client";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
 import {
     agentRegisteredPattern,

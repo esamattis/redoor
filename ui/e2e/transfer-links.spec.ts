@@ -11,8 +11,8 @@ import {
     encodeFilesystemPath,
     confirmUpload,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe.serial("Transfer Path Links", () => {
     let ctx: TestContext;

@@ -2,10 +2,8 @@ import * as React from "react";
 import { createLink } from "@tanstack/react-router";
 import { cn } from "#ui/utils/cn";
 
-import {
-    OptionalTooltip,
-    type ControlTooltipProps,
-} from "#ui/components/tooltip";
+import { OptionalTooltip } from "#ui/components/tooltip";
+import type { ControlTooltipProps } from "#ui/components/tooltip";
 
 /**
  * Picks the visual weight of an icon-only control. Leaving it out keeps the control unstyled

@@ -11,17 +11,8 @@ import type { ApiErrorCode } from "#bindings/ApiErrorCode";
 import { ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
 import { rewrapSshKey } from "#ui/vault/ssh-key-vault";
-import {
-    buildDestroy,
-    buildNewVault,
-    buildRotation,
-    fileKeyForHeader,
-    newPassphraseKek,
-    newSshKeySeal,
-    openGenerations,
-    openPassphraseSlot,
-    type UnlockedVault,
-} from "#ui/vault/vault-keys";
+import { buildDestroy, buildNewVault, buildRotation, fileKeyForHeader, newPassphraseKek, newSshKeySeal, openGenerations, openPassphraseSlot } from '#ui/vault/vault-keys';
+import type { UnlockedVault } from '#ui/vault/vault-keys';
 import {
     ALL_PERMISSIONS,
     VITEST_SERVER_PORT,
@@ -30,22 +21,8 @@ import {
     waitForValue,
 } from "./test-utils";
 import { SSH_TEST_USER } from "./ssh-test-utils";
-import {
-    CONNECT_TIMEOUT_MS,
-    SSH_KEY_TEST_TIMEOUT_MS,
-    type KeyFixture,
-    createDevice,
-    deviceDir,
-    enrollConfirmed,
-    findAgent,
-    keyMarker,
-    localKeyFiles,
-    modeOf,
-    remoteDeviceLines,
-    startAndWaitConnected,
-    startKeyFixture,
-    waitReconnected,
-} from "./ssh-key-test-utils";
+import { CONNECT_TIMEOUT_MS, SSH_KEY_TEST_TIMEOUT_MS, createDevice, deviceDir, enrollConfirmed, findAgent, keyMarker, localKeyFiles, modeOf, remoteDeviceLines, startAndWaitConnected, startKeyFixture, waitReconnected } from './ssh-key-test-utils';
+import type { KeyFixture } from './ssh-key-test-utils';
 
 const PASSPHRASE = "correct horse battery staple";
 

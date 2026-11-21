@@ -3,8 +3,8 @@ import {
     highlightLines,
     languageForFileName,
     languageForName,
-    type HighlightToken,
 } from "#ui/utils/code-highlight";
+import type { HighlightToken } from "#ui/utils/code-highlight";
 import { loadHighlightLanguage } from "#ui/utils/use-code-highlight";
 
 /** Highlights code with a bundled grammar, failing loudly when none is found. */

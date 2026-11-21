@@ -1,13 +1,10 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { Page } from "./fixtures";
 
 import type { AgentUpgradeJob } from "#bindings/AgentUpgradeJob";
 import type { AgentUpgradePhase } from "#bindings/AgentUpgradePhase";
-import {
-    WEB_BASE_URL,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { WEB_BASE_URL, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 let context: TestContext;
 

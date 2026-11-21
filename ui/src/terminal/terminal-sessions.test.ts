@@ -15,7 +15,8 @@ import {
 import { queryKeys } from "#ui/queries";
 import { TerminalSessions } from "#ui/terminal/terminal-sessions";
 import type { CreateEmulator } from "#ui/terminal/wterm";
-import { defaultUserState, type UserState } from "#ui/user-state";
+import { defaultUserState } from "#ui/user-state";
+import type { UserState } from "#ui/user-state";
 
 /** Stands in for wterm, which is wasm and draws into a real layout; tabs only need a size. */
 const createIdleEmulator: CreateEmulator = async () => ({

@@ -29,9 +29,9 @@ import {
     buildAccessTokenPolicyDraft,
     expiresAtFor,
     TokenExpiryField,
-    type TokenAgents,
     tokenFormSearchSchema,
 } from "#ui/components/access-token-policy";
+import type { TokenAgents } from "#ui/components/access-token-policy";
 import { Button } from "#ui/components/button";
 import { FactItem } from "#ui/components/fact-item";
 import { TextField } from "#ui/components/text-field";

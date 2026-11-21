@@ -1,26 +1,13 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import fs from "node:fs";
 import { join } from "node:path";
-import { ApiClient, Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
+import { ApiClient } from "#ui/api-client";
 import { ApiError } from "#ui/api-transport";
 import type { ApiErrorCode } from "#bindings/ApiErrorCode";
 import type { VaultUnlockMaterialResponse } from "#bindings/VaultUnlockMaterialResponse";
-import {
-    buildDestroy,
-    buildNewVault,
-    buildRotation,
-    currentProof,
-    fileKeyForHeader,
-    newPassphraseKek,
-    newWriteKeys,
-    openFreshSlots,
-    openGenerations,
-    openPassphraseSlot,
-    proofFromRaw,
-    rewrapKeys,
-    wipeOpened,
-    type UnlockedVault,
-} from "#ui/vault/vault-keys";
+import { buildDestroy, buildNewVault, buildRotation, currentProof, fileKeyForHeader, newPassphraseKek, newWriteKeys, openFreshSlots, openGenerations, openPassphraseSlot, proofFromRaw, rewrapKeys, wipeOpened } from '#ui/vault/vault-keys';
+import type { UnlockedVault } from '#ui/vault/vault-keys';
 import {
     deriveAuthProof,
     fromBase64Url,

@@ -7,8 +7,8 @@ import {
     deviceBrowserUrl,
     API_BASE_URL,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe.serial("Document title", () => {
     let ctx: TestContext;

@@ -1,6 +1,7 @@
 import * as React from "react";
 import { getRouteApi, useRouter } from "@tanstack/react-router";
-import { FilePlus, FileText, Folder, type LucideIcon } from "lucide-react";
+import { FilePlus, FileText, Folder } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import { browserRoute } from "#ui/browser-route";
 import { Button } from "#ui/components/button";

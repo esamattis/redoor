@@ -8,7 +8,7 @@ import {
 } from "vitest";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import {
     ProcessManager,
     TempFileManager,

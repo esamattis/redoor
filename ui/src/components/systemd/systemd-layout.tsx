@@ -5,10 +5,8 @@ import { Server, User, Users } from "lucide-react";
 
 import type { Agent } from "#ui/api-client";
 import { systemdScopeRoute, systemdUsersRoute } from "#ui/browser-route";
-import {
-    SegmentedControl,
-    type SegmentedControlOption,
-} from "#ui/components/segmented-control";
+import { SegmentedControl } from "#ui/components/segmented-control";
+import type { SegmentedControlOption } from "#ui/components/segmented-control";
 import { systemdOverviewQueryOptions } from "#ui/systemd-queries";
 
 /** The managers the scope switch offers: the system, the agent's own user, every user. */

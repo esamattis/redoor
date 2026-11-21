@@ -1,6 +1,7 @@
 import * as React from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
-import { useRouter, type ErrorComponentProps } from "@tanstack/react-router";
+import { useRouter } from "@tanstack/react-router";
+import type { ErrorComponentProps } from "@tanstack/react-router";
 import { z } from "zod";
 import { ApiError } from "#ui/api-transport";
 import { Button } from "#ui/components/button";

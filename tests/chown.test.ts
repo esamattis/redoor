@@ -2,8 +2,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { Agent } from "#ui/api-client";
-import { ApiError } from "#ui/api-transport";
+import type { Agent } from "#ui/api-client";
+import type { ApiError } from "#ui/api-transport";
 import {
     ProcessManager,
     TempFileManager,

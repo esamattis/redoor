@@ -1,5 +1,7 @@
-import { MutationObserver, type QueryClient } from "@tanstack/react-query";
-import { newWriteKeys, type UnlockedVault } from "#ui/vault/vault-keys";
+import { MutationObserver } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { newWriteKeys } from "#ui/vault/vault-keys";
+import type { UnlockedVault } from "#ui/vault/vault-keys";
 
 import type { CopyExistingMode } from "#bindings/CopyExistingMode";
 import type { Agent } from "#ui/api-client";

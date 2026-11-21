@@ -31,10 +31,8 @@ import {
     newSshKeySealIfVault,
 } from "#ui/vault/ssh-key-vault";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
-import {
-    VaultUnlockCancelled,
-    type VaultSession,
-} from "#ui/vault/vault-session";
+import { VaultUnlockCancelled } from "#ui/vault/vault-session";
+import type { VaultSession } from "#ui/vault/vault-session";
 
 const rootRouteApi = getRouteApi("__root__");
 

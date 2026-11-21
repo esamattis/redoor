@@ -4,7 +4,7 @@ import { File, Folder, FolderSearch } from "lucide-react";
 
 import type { ContentGrepMatch } from "#bindings/ContentGrepMatch";
 import type { FileSearchEntry } from "#bindings/FileSearchEntry";
-import { type Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import {
     OpenInBackgroundButton,

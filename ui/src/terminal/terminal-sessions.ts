@@ -1,8 +1,5 @@
-import {
-    MutationObserver,
-    QueryObserver,
-    type QueryClient,
-} from "@tanstack/react-query";
+import { MutationObserver, QueryObserver } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import type { createStore } from "jotai";
 
 import type { Agent, ApiClient } from "#ui/api-client";
@@ -23,19 +20,18 @@ import {
     terminalSessionsQueryOptions,
 } from "#ui/queries";
 import { OneShotTerminalCommand } from "#ui/terminal/one-shot-command";
-import {
-    TerminalSession,
-    type BrowserListingRefreshTarget,
-    type TerminalTabSnapshot,
+import { TerminalSession } from "#ui/terminal/terminal-session";
+import type {
+    BrowserListingRefreshTarget,
+    TerminalTabSnapshot,
 } from "#ui/terminal/terminal-session";
-import { createWTerm, type CreateEmulator } from "#ui/terminal/wterm";
-import {
-    defaultUserState,
-    updateUserState,
-    type UserState,
-} from "#ui/user-state";
+import { createWTerm } from "#ui/terminal/wterm";
+import type { CreateEmulator } from "#ui/terminal/wterm";
+import { defaultUserState, updateUserState } from "#ui/user-state";
+import type { UserState } from "#ui/user-state";
 import { ExternalStore } from "#ui/utils/external-store";
-import { moveKeyedItems, type ItemMove } from "#ui/utils/reorder";
+import { moveKeyedItems } from "#ui/utils/reorder";
+import type { ItemMove } from "#ui/utils/reorder";
 
 /** Identifies the routed agent and directory used by the direct new-terminal action. */
 export type ActiveTerminalTarget = { agent: Agent; cwd: string };

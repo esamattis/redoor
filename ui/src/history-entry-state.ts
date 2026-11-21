@@ -4,11 +4,8 @@
  * restores depends on, since a list with other files expanded has another height.
  */
 import React from "react";
-import {
-    useRouter,
-    useRouterState,
-    type ParsedLocation,
-} from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
+import type { ParsedLocation } from "@tanstack/react-router";
 
 /**
  * Identifies the history entry of a location. It mirrors the router's

@@ -1,5 +1,6 @@
 // Serial: rewrites the whole shared user settings document to drop its pins afterwards.
-import { test, expect, type Page } from "../fixtures";
+import { test, expect } from "../fixtures";
+import type { Page } from "../fixtures";
 import fs from "node:fs/promises";
 import { ApiClient } from "#ui/api-client";
 import { userStateSchema } from "#ui/user-state";
@@ -10,8 +11,8 @@ import {
     encodeFilesystemPath,
     WEB_BASE_URL,
     API_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /** Opens the overflow menu by its public name so renames stay covered. */
 async function openEditorActions(page: Page) {

@@ -5,12 +5,8 @@ import os from "node:os";
 import path from "node:path";
 import { $ } from "zx";
 import { z } from "zod";
-import {
-    deviceBrowserUrl,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { deviceBrowserUrl, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** The part of the path-status answer that tells whether this save left systemd behind. */
 const pathStatusSchema = z.object({

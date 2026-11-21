@@ -1,4 +1,5 @@
-import { test, expect, type Locator, type Page } from "./fixtures";
+import { test, expect } from "./fixtures";
+import type { Locator, Page } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -12,8 +13,8 @@ import {
     openEditorContextMenu,
     simulateTabRefocus,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** CodeMirror is contenteditable, so assertions use text content instead of input value. */
 async function expectEditorText(editor: Locator, text: string) {

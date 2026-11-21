@@ -1,4 +1,5 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 /** Waits for the pickup paint and the library's deferred keyboard listener attachment. */
 export async function waitForKeyboardSensor(page: Page) {

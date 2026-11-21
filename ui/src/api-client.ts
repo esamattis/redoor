@@ -185,8 +185,8 @@ import {
     requireSuccessfulResponse,
     streamNdjson,
     withAuthentication,
-    type RequestContext,
 } from "#ui/api-transport";
+import type { RequestContext } from "#ui/api-transport";
 import * as apiPaths from "#ui/api-paths";
 import type { LsResponse } from "#ui/ls-response";
 

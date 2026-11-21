@@ -1,22 +1,16 @@
 import * as React from "react";
 import { getRouteApi } from "@tanstack/react-router";
-import {
-    queryOptions,
-    useQuery,
-    useQueryClient,
-    type QueryClient,
-} from "@tanstack/react-query";
-import { atom, useStore, type createStore } from "jotai";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { atom, useStore } from "jotai";
+import type { createStore } from "jotai";
 import { z } from "zod";
 import type { ApiClient } from "#ui/api-client";
 import type { CaretReport } from "#ui/editor/editor-workspace";
 import { queryKeys } from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
-import {
-    moveKeyedItems,
-    moveKeyedSubsequence,
-    type ItemMove,
-} from "#ui/utils/reorder";
+import { moveKeyedItems, moveKeyedSubsequence } from "#ui/utils/reorder";
+import type { ItemMove } from "#ui/utils/reorder";
 
 const rootRouteApi = getRouteApi("__root__");
 

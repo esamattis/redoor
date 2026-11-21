@@ -21,8 +21,8 @@ import {
     callerStack,
     nextPasskeyPromptId,
     vaultDebug,
-    type VaultDebugValue,
 } from "#ui/vault/vault-debug";
+import type { VaultDebugValue } from "#ui/vault/vault-debug";
 
 /** Thrown when an authenticator cannot derive keys (no PRF support). */
 export class PasskeyPrfUnsupported extends Error {

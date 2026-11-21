@@ -9,7 +9,8 @@ import { Password } from "#ui/components/password";
 import { queryKeys } from "#ui/queries";
 import { vaultDebug } from "#ui/vault/vault-debug";
 import { vaultErrorMessage } from "#ui/vault/vault-errors";
-import { passphraseSlot, type FreshUnlockInput } from "#ui/vault/vault-keys";
+import { passphraseSlot } from "#ui/vault/vault-keys";
+import type { FreshUnlockInput } from "#ui/vault/vault-keys";
 import {
     currentRpId,
     derivePasskeyKek,

@@ -1,9 +1,6 @@
 import { describe, expect, test } from "vitest";
-import {
-    highlightLines,
-    languageForFileName,
-    type HighlightToken,
-} from "#ui/utils/code-highlight";
+import { highlightLines, languageForFileName } from "#ui/utils/code-highlight";
+import type { HighlightToken } from "#ui/utils/code-highlight";
 import { loadHighlightLanguage } from "#ui/utils/use-code-highlight";
 import { syntaxLanguageFromFileName } from "#ui/utils/syntax-language";
 

@@ -23,7 +23,7 @@ import {
     Package,
     Unplug,
 } from "lucide-react";
-import { type Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import { agentStartStatesAtom } from "#ui/agent-start-state";

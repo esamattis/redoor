@@ -9,7 +9,7 @@ import {
     onTestFinished,
 } from "vitest";
 import { z } from "zod";
-import { ApiClient, Agent } from "#ui/api-client";
+import type { ApiClient, Agent } from "#ui/api-client";
 import { encodeFilesystemPath } from "#ui/api-paths";
 import { isLsDirectoryResponse, isLsFileResponse } from "#ui/ls-response";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";

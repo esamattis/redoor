@@ -4,17 +4,16 @@ import {
     EditorState,
     Text,
     Transaction,
-    type ChangeSpec,
-    type StateEffect,
-    type TransactionSpec,
+} from "@codemirror/state";
+import type {
+    ChangeSpec,
+    StateEffect,
+    TransactionSpec,
 } from "@codemirror/state";
 import { EditorView } from "@codemirror/view";
 import { getCM } from "@replit/codemirror-vim";
-import {
-    EditorConfiguration,
-    type EditorCallbacks,
-    type EditorSettings,
-} from "./editor-extensions";
+import { EditorConfiguration } from "./editor-extensions";
+import type { EditorCallbacks, EditorSettings } from "./editor-extensions";
 import type { StoredBufferData, StoredScroll } from "./stored-buffer";
 
 /**

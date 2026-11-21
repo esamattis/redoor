@@ -1,6 +1,7 @@
 import { Search } from "lucide-react";
 
-import { IconButton, type IconButtonSize } from "#ui/components/icon-button";
+import { IconButton } from "#ui/components/icon-button";
+import type { IconButtonSize } from "#ui/components/icon-button";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
 
 /** Opens the shared URL-owned search workflow from any agent-specific toolbar. */

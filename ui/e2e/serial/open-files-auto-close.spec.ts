@@ -3,18 +3,15 @@ import path from "node:path";
 import { expect, test } from "../fixtures";
 
 import { ApiClient } from "#ui/api-client";
-import {
-    defaultUserState,
-    userStateSchema,
-    type OpenFile,
-} from "#ui/user-state";
+import { defaultUserState, userStateSchema } from "#ui/user-state";
+import type { OpenFile } from "#ui/user-state";
 import {
     API_BASE_URL,
     WEB_BASE_URL,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 const HOUR_MS = 60 * 60 * 1000;
 

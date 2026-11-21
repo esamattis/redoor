@@ -7,7 +7,8 @@ import {
     onTestFinished,
 } from "vitest";
 
-import { ApiClient, type Agent } from "#ui/api-client";
+import { ApiClient } from '#ui/api-client';
+import type { Agent } from '#ui/api-client';
 import { ApiError } from "#ui/api-transport";
 import { existsSync } from "node:fs";
 

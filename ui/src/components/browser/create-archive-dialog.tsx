@@ -14,9 +14,8 @@ import {
     buildCreateArchiveCommand,
     getArchiveNameError,
     getDefaultArchiveName,
-    type ArchiveCreateFormat,
-    type ArchiveSource,
 } from "#ui/utils/archive";
+import type { ArchiveCreateFormat, ArchiveSource } from "#ui/utils/archive";
 import { useTerminals } from "#ui/use-terminals";
 
 /**

@@ -1,12 +1,6 @@
 import * as React from "react";
-import {
-    Eye,
-    FilePen,
-    FileX,
-    type LucideIcon,
-    Power,
-    SquareTerminal,
-} from "lucide-react";
+import { Eye, FilePen, FileX, Power, SquareTerminal } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { z } from "zod";
 
 import type { AccessTokenResponse } from "#bindings/AccessTokenResponse";

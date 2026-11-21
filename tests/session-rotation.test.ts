@@ -8,7 +8,7 @@ import {
 } from "vitest";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Agent, ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 import type { BrowserSessionListResponse } from "#bindings/BrowserSessionListResponse";
 import type { SessionRotationResponse } from "#bindings/SessionRotationResponse";
 import {

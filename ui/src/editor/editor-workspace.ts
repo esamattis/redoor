@@ -1,7 +1,8 @@
 import { isVaultPath } from "#ui/vault/vault-path";
 import type { EditorState, StateEffect, Text } from "@codemirror/state";
 import type { EditorView, ViewUpdate } from "@codemirror/view";
-import { MutationObserver, type QueryClient } from "@tanstack/react-query";
+import { MutationObserver } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import type { DeleteEditorBufferResponse } from "#bindings/DeleteEditorBufferResponse";
 import type { PutEditorBufferRequest } from "#bindings/PutEditorBufferRequest";
 import type { PutEditorBufferResponse } from "#bindings/PutEditorBufferResponse";
@@ -12,16 +13,17 @@ import {
     isDirtyAgainst,
     minimalChange,
     reconcileDeviceContent,
-    type BufferBase,
 } from "./buffer-sync";
+import type { BufferBase } from "./buffer-sync";
 import type { EditorEngine } from "./editor-engine";
 import type { EditorCallbacks, EditorSettings } from "./editor-extensions";
-import { GIT_GUTTER_HIDDEN, type GitGutterSource } from "./git-line-marks";
-import {
-    MAX_STORED_BUFFER_CHARS,
-    type StoredBuffer,
-    type StoredBufferData,
-    type StoredScroll,
+import { GIT_GUTTER_HIDDEN } from "./git-line-marks";
+import type { GitGutterSource } from "./git-line-marks";
+import { MAX_STORED_BUFFER_CHARS } from "./stored-buffer";
+import type {
+    StoredBuffer,
+    StoredBufferData,
+    StoredScroll,
 } from "./stored-buffer";
 
 /** What the editor chrome shows about one buffer. */

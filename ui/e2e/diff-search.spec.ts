@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { Page } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { $ } from "zx";

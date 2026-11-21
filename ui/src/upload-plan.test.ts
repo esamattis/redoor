@@ -5,8 +5,8 @@ import {
     createUploadItems,
     planUploadRows,
     resolveUpload,
-    type UploadDraftItem,
 } from "#ui/upload-plan";
+import type { UploadDraftItem } from "#ui/upload-plan";
 
 /** Makes a destination listing entry; only the name and type matter for planning. */
 function entry(name: string, type: "file" | "directory" = "file"): LsEntry {

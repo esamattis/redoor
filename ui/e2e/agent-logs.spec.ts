@@ -1,18 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-    expect,
-    test,
-    type WebSocket as PlaywrightWebSocket,
-} from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { WebSocket as PlaywrightWebSocket } from "./fixtures";
 
-import {
-    WEB_BASE_URL,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { WEB_BASE_URL, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 const projectRoot = path.join(
     path.dirname(fileURLToPath(import.meta.url)),

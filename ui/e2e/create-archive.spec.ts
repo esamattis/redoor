@@ -8,8 +8,8 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /**
  * Lists archive members with the tool matching the extension, so assertions check what was

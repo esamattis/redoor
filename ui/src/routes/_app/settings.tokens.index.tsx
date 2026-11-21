@@ -27,9 +27,11 @@ import {
     permissionLabels,
     permissionOrder,
     TokenExpiryField,
-    type TokenAgents,
-    type TokenFormSearch,
     tokenFormSearchSchema,
+} from "#ui/components/access-token-policy";
+import type {
+    TokenAgents,
+    TokenFormSearch,
 } from "#ui/components/access-token-policy";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";

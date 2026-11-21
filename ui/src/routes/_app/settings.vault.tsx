@@ -24,10 +24,8 @@ import {
     LOCK_AFTER_OPTIONS,
     useVaultSession,
 } from "#ui/components/vault-dialog";
-import {
-    RotateVaultDialog,
-    type RotationIntent,
-} from "#ui/components/vault/rotate-vault-dialog";
+import { RotateVaultDialog } from "#ui/components/vault/rotate-vault-dialog";
+import type { RotationIntent } from "#ui/components/vault/rotate-vault-dialog";
 import {
     AddPassphraseDialog,
     AddPasskeyDialog,
@@ -35,10 +33,8 @@ import {
     RenameVaultDialog,
     RestoreBackupDialog,
 } from "#ui/components/vault/vault-dialogs";
-import {
-    VaultScan,
-    type ScannedVaultFile,
-} from "#ui/components/vault/vault-scan";
+import { VaultScan } from "#ui/components/vault/vault-scan";
+import type { ScannedVaultFile } from "#ui/components/vault/vault-scan";
 import { VaultSshKeys } from "#ui/components/vault/vault-ssh-keys";
 import { queryKeys, vaultStatusQueryOptions } from "#ui/queries";
 import { rewrapOlderSshKeys } from "#ui/vault/ssh-key-vault";

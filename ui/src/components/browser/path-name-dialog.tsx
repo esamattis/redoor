@@ -5,7 +5,8 @@ import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
 import { TextField } from "#ui/components/text-field";
 import { focusAndSelectFileNameStem } from "#ui/utils/file-name";
-import { validatePathComponent, type PathComponentKind } from "#ui/utils/path";
+import { validatePathComponent } from "#ui/utils/path";
+import type { PathComponentKind } from "#ui/utils/path";
 
 /** What the dialog needs from a mutation, so each caller keeps its own request and result. */
 type NameSubmission = {

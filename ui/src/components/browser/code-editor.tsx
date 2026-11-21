@@ -4,10 +4,8 @@ import type { EditorView, ViewUpdate } from "@codemirror/view";
 import { getRouteApi, useRouterState } from "@tanstack/react-router";
 import { useAtomValue } from "jotai";
 import { EditorContextMenu } from "#ui/components/browser/editor-context-menu";
-import {
-    EditorSearch,
-    type EditorSearchHandle,
-} from "#ui/components/browser/editor-search";
+import { EditorSearch } from "#ui/components/browser/editor-search";
+import type { EditorSearchHandle } from "#ui/components/browser/editor-search";
 import type { EditorHandlers, LineTargets } from "#ui/editor/editor-workspace";
 import type { GitGutterSource } from "#ui/editor/git-line-marks";
 import type { StoredBuffer } from "#ui/editor/stored-buffer";

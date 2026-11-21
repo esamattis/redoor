@@ -1,8 +1,6 @@
-import {
-    expect,
-    test,
-    type WebSocket as PlaywrightWebSocket,
-} from "./fixtures";
+import type { Page } from "@playwright/test";
+import { expect, test } from "./fixtures";
+import type { WebSocket as PlaywrightWebSocket } from "./fixtures";
 
 import { WEB_BASE_URL, upgradeWithProtocol } from "./helpers";
 
@@ -12,7 +10,7 @@ function isServerLogSocket(socket: PlaywrightWebSocket): boolean {
 }
 
 /** Opens the logs page through the user-visible navigation path. */
-async function navigateToServerLogs(page: import("@playwright/test").Page) {
+async function navigateToServerLogs(page: Page) {
     await page.goto(`${WEB_BASE_URL}/`);
     await page
         .getByRole("navigation", { name: "Application" })

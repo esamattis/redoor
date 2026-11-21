@@ -1,11 +1,8 @@
 import * as React from "react";
 import { createLink } from "@tanstack/react-router";
 
-import {
-    getButtonClassName,
-    type ButtonSize,
-    type ButtonVariant,
-} from "#ui/components/button";
+import { getButtonClassName } from "#ui/components/button";
+import type { ButtonSize, ButtonVariant } from "#ui/components/button";
 
 type ButtonAnchorProps = React.ComponentPropsWithRef<"a"> & {
     variant?: ButtonVariant;

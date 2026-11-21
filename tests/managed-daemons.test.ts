@@ -7,7 +7,8 @@ import {
     writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { ApiClient, type Agent } from "#ui/api-client";
+import { ApiClient } from '#ui/api-client';
+import type { Agent } from '#ui/api-client';
 import {
     ProcessManager,
     SERVER_PATH,

@@ -36,17 +36,17 @@ import {
 } from "#ui/selected-files";
 import {
     compareFileEntries,
-    type FileSort,
     formatModifiedAge,
     joinBrowserPath,
     sortFileEntries,
 } from "#ui/components/browser/utils";
+import type { FileSort } from "#ui/components/browser/utils";
 import {
     getPendingTransferSortEntry,
     PendingFileEntry,
-    type PendingTransfer,
     usePendingTransfers,
 } from "#ui/components/browser/pending-transfers";
+import type { PendingTransfer } from "#ui/components/browser/pending-transfers";
 import type { FileSortColumn } from "#ui/browser-search";
 import { browserRoute } from "#ui/browser-route";
 import { formatSize } from "#ui/utils/path";
@@ -58,18 +58,18 @@ import {
     getArchiveInfo,
     getDirectoryArchiveName,
     getCustomArchiveDirectoryError,
-    type UnarchiveDestination,
 } from "#ui/utils/archive";
+import type { UnarchiveDestination } from "#ui/utils/archive";
 import { useTerminals } from "#ui/use-terminals";
 import type { RevisionListing } from "#ui/components/browser/revision";
 import {
-    type GitColumnData,
     gitColumnData,
     gitColumnNote,
     gitEntryState,
     gitRankByName,
     GitStatusCell,
 } from "#ui/components/browser/git-status-column";
+import type { GitColumnData } from "#ui/components/browser/git-status-column";
 import { gitDirectoryEntriesQueryOptions } from "#ui/queries";
 import {
     HistoryEntryStore,

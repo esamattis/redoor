@@ -8,10 +8,8 @@ import type { SystemdScope } from "#bindings/SystemdScope";
 import type { Agent } from "#ui/api-client";
 import { browserRoute, systemdScopeRoute } from "#ui/browser-route";
 import { BrowserViewCard } from "#ui/components/browser-view-card";
-import {
-    SegmentedControl,
-    type SegmentedControlOption,
-} from "#ui/components/segmented-control";
+import { SegmentedControl } from "#ui/components/segmented-control";
+import type { SegmentedControlOption } from "#ui/components/segmented-control";
 import { SystemdLoadError } from "#ui/components/systemd/systemd-states";
 import { SystemdUnitFileLink } from "#ui/components/systemd/unit-file-link";
 import { SystemdUnitPanel } from "#ui/components/systemd/unit-panel";

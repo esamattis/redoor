@@ -12,9 +12,8 @@ import {
     getSelectedFileKey,
     selectedFilesAtom,
     unselectFileAtom,
-    type SelectedPath,
-    type SelectedPathIdentity,
 } from "#ui/selected-files";
+import type { SelectedPath, SelectedPathIdentity } from "#ui/selected-files";
 import { RevisionBadge } from "#ui/components/browser/git-parts";
 
 /** Keeps the drawer tab's count in a leaf so selection changes never rerender the drawer. */

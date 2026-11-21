@@ -10,7 +10,7 @@ import WebSocket from "ws";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { type Agent, type ApiClient } from "#ui/api-client";
+import type { Agent, ApiClient } from '#ui/api-client';
 import type { LogEvent } from "#bindings/LogEvent";
 import { ApiError } from "#ui/api-transport";
 import {

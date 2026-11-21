@@ -2,8 +2,8 @@ import type { WTerm } from "@wterm/dom";
 import type { GhosttyCore } from "@wterm/ghostty";
 
 type WTermModules = {
-    WTerm: typeof import("@wterm/dom").WTerm;
-    GhosttyCore: typeof import("@wterm/ghostty").GhosttyCore;
+    WTerm: typeof WTerm;
+    GhosttyCore: typeof GhosttyCore;
 };
 
 /** Keeps code downloads shared while every tab receives an independent emulator core. */

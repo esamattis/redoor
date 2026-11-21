@@ -1,4 +1,5 @@
-import { type APIRequest, test as base } from "@playwright/test";
+import { test as base } from "@playwright/test";
+import type { APIRequest } from "@playwright/test";
 
 import { WEB_BASE_URL } from "./helpers";
 

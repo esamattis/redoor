@@ -23,12 +23,8 @@ import type { Agent, ApiClient } from "#ui/api-client";
 import type { SystemdLingerResponse } from "#bindings/SystemdLingerResponse";
 import type { SystemdScope } from "#bindings/SystemdScope";
 import { FakeAgent } from "./fake-agent";
-import {
-    type Failure,
-    failureOf,
-    journalMessages,
-    openSystemdJournal,
-} from "./systemd-test-utils";
+import { failureOf, journalMessages, openSystemdJournal } from './systemd-test-utils';
+import type { Failure } from './systemd-test-utils';
 import {
     ProcessManager,
     TempFileManager,

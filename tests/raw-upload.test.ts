@@ -7,7 +7,8 @@ import {
     afterEach,
     onTestFinished,
 } from "vitest";
-import { ApiClient, Agent } from "#ui/api-client";
+import type { ApiClient} from "#ui/api-client";
+import { Agent } from "#ui/api-client";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
 import path from "node:path";
 import fs from "node:fs";

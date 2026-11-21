@@ -1,7 +1,8 @@
 import { expect, test } from "vitest";
 import type { LsEntry } from "#bindings/LsEntry";
 import type { GitDirectoryEntriesResponse } from "#bindings/GitDirectoryEntriesResponse";
-import { compareFileEntries, type FileSort } from "./utils";
+import { compareFileEntries } from "./utils";
+import type { FileSort } from "./utils";
 import { gitColumnData, gitRankByName } from "./git-status-column";
 
 /** A listing entry that only differs by name, so only the Git state can order it. */

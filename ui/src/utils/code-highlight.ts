@@ -1,4 +1,5 @@
-import { LanguageDescription, type Language } from "@codemirror/language";
+import { LanguageDescription } from "@codemirror/language";
+import type { Language } from "@codemirror/language";
 import { languages } from "@codemirror/language-data";
 import { highlightCode, tagHighlighter, tags } from "@lezer/highlight";
 import { loadSyntaxLanguage } from "#ui/utils/editor-language";
@@ -6,8 +7,8 @@ import type { HighlightLanguageSource } from "#ui/utils/use-code-highlight";
 import {
     syntaxLanguageFromFileName,
     syntaxLanguageFromName,
-    type SupportedSyntaxLanguage,
 } from "#ui/utils/syntax-language";
+import type { SupportedSyntaxLanguage } from "#ui/utils/syntax-language";
 
 /**
  * A run of highlighted text. Tokens are flat rather than a tree so a caller can cut them at

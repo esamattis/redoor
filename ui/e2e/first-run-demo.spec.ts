@@ -1,4 +1,5 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import fs from "node:fs/promises";
 import os from "node:os";

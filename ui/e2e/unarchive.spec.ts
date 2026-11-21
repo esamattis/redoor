@@ -1,10 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import {
-    expect,
-    test,
-    type WebSocket as PlaywrightWebSocket,
-} from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { WebSocket as PlaywrightWebSocket } from "./fixtures";
 import { $ } from "zx";
 import { z } from "zod";
 import {
@@ -16,8 +13,8 @@ import {
     teardownTestDir,
     WEB_BASE_URL,
     terminalSocketCwd,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 const terminalFrameSchema = z.union([
     z.string(),

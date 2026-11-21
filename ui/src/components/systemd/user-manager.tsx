@@ -10,8 +10,8 @@ import { Tooltip } from "#ui/components/tooltip";
 import {
     SystemdFeedbackToast,
     systemdFeedback,
-    type SystemdFeedback,
 } from "#ui/components/systemd/systemd-states";
+import type { SystemdFeedback } from "#ui/components/systemd/systemd-states";
 import {
     invalidateSystemdData,
     systemdOverviewQueryOptions,

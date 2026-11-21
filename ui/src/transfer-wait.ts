@@ -1,4 +1,5 @@
-import { QueryObserver, type QueryClient } from "@tanstack/react-query";
+import { QueryObserver } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 
 import type { ApiClient } from "#ui/api-client";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";

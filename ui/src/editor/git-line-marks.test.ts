@@ -6,8 +6,8 @@ import {
     gitLineMarks,
     lineHunks,
     splitLines,
-    type GitLineBases,
 } from "./git-line-marks";
+import type { GitLineBases } from "./git-line-marks";
 
 /** Bases with nothing staged, as the agent sends for an unstaged edit. */
 function unstagedBases(index: string): GitLineBases {

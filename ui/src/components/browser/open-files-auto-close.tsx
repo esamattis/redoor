@@ -1,7 +1,9 @@
 import * as React from "react";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
-import { useStore, type createStore } from "jotai";
+import { useStore } from "jotai";
+import type { createStore } from "jotai";
 
 import type { ApiClient } from "#ui/api-client";
 import { isOpenFileShown } from "#ui/components/browser/open-file-actions";
@@ -19,9 +21,8 @@ import {
     userStateQueryOptions,
     useUserState,
     waitForUserStatePersist,
-    type OpenFile,
-    type UserState,
 } from "#ui/user-state";
+import type { OpenFile, UserState } from "#ui/user-state";
 
 const rootRouteApi = getRouteApi("__root__");
 

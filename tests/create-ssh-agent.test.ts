@@ -7,12 +7,13 @@ import {
     onTestFinished,
 } from "vitest";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { createServer, type Socket } from "node:net";
+import { createServer } from 'node:net';
+import type { Socket } from 'node:net';
 
 import type { CreateSshAgentRequest } from "#bindings/CreateSshAgentRequest";
 import type { UpdateSshAgentRequest } from "#bindings/UpdateSshAgentRequest";
 import { ApiClient } from "#ui/api-client";
-import { ApiError } from "#ui/api-transport";
+import type { ApiError } from "#ui/api-transport";
 import {
     ProcessManager,
     TempFileManager,

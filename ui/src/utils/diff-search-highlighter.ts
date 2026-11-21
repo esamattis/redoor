@@ -3,7 +3,8 @@
  * found in the parsed patches; this module maps them to the rows React rendered, which it
  * finds by the search keys the diff view writes on every row.
  */
-import { diffRowKey, type DiffSearchMatch } from "#ui/utils/diff-search";
+import { diffRowKey } from "#ui/utils/diff-search";
+import type { DiffSearchMatch } from "#ui/utils/diff-search";
 
 /** The attribute that names a card's section by its path, so the search can find it. */
 export const DIFF_SEARCH_PATH_ATTRIBUTE = "data-diff-search-path";

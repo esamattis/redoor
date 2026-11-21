@@ -15,8 +15,8 @@ import {
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 test.describe.serial("Open files unsaved changes", () => {
     let ctx: TestContext;

@@ -16,9 +16,9 @@ import { joinBrowserPath } from "#ui/components/browser/utils";
 import {
     getSelectedFileKey,
     keepSelectionAfterCopyAtom,
-    type SelectedPath,
     unselectFileAtom,
 } from "#ui/selected-files";
+import type { SelectedPath } from "#ui/selected-files";
 import {
     ConflictBulkSelect,
     DestinationRow,
@@ -26,12 +26,14 @@ import {
 } from "#ui/components/browser/destination-conflict";
 import { RevisionBadge } from "#ui/components/browser/git-parts";
 import {
-    type ConflictResolution,
     describeDestinationEntries,
-    type DestinationChoice,
-    type DestinationItem,
-    type PlannedDestination,
     planDestinationNames,
+} from "#ui/destination-plan";
+import type {
+    ConflictResolution,
+    DestinationChoice,
+    DestinationItem,
+    PlannedDestination,
 } from "#ui/destination-plan";
 import type { LsEntry } from "#bindings/LsEntry";
 

@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "./fixtures";
+import { test, expect } from "./fixtures";
+import type { Page } from "./fixtures";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -10,8 +11,8 @@ import {
     confirmUpload,
     uploadDialog,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 const supportsMoveToTrash =
     process.platform === "linux" || process.platform === "darwin";

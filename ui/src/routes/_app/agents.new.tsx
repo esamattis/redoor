@@ -4,10 +4,8 @@ import { deviceRoute } from "#ui/browser-route";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
-import {
-    ManagedAgentForm,
-    type ManagedAgentSubmitRequest,
-} from "#ui/components/managed-agent-form";
+import { ManagedAgentForm } from "#ui/components/managed-agent-form";
+import type { ManagedAgentSubmitRequest } from "#ui/components/managed-agent-form";
 import { SshKeySetupDialog } from "#ui/components/ssh-key-setup-dialog";
 import { agentsQueryOptions, serverInfoQueryOptions } from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";

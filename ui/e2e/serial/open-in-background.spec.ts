@@ -1,7 +1,8 @@
 // Serial: opening files in the background writes the shared user settings' open files list.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import { $ } from "zx";
 
 import { ApiClient } from "#ui/api-client";
@@ -11,8 +12,8 @@ import {
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /** Far enough down that showing it needs the editor to scroll. */
 const TARGET_LINE = 250;

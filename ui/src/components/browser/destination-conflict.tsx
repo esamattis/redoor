@@ -8,13 +8,15 @@ import { IconButton } from "#ui/components/icon-button";
 import { InputControl } from "#ui/components/input-control";
 import { Select } from "#ui/components/select";
 import {
-    type ConflictResolution,
-    type DestinationChoice,
-    type DestinationItem,
     getSharedResolution,
-    type PlannedDestination,
     planDestinationNames,
     resolveAllConflicts,
+} from "#ui/destination-plan";
+import type {
+    ConflictResolution,
+    DestinationChoice,
+    DestinationItem,
+    PlannedDestination,
 } from "#ui/destination-plan";
 import { cn } from "#ui/utils/cn";
 import { focusAndSelectFileNameStem } from "#ui/utils/file-name";

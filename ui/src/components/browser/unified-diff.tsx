@@ -1,7 +1,8 @@
 import React from "react";
 import { createPortal } from "react-dom";
 import { browserRoute } from "#ui/browser-route";
-import { parseDiff, type DiffFile } from "#ui/utils/diff-parse";
+import { parseDiff } from "#ui/utils/diff-parse";
+import type { DiffFile } from "#ui/utils/diff-parse";
 import { Diff, diffFileName } from "#ui/components/browser/diff-view";
 import { useBackgroundOpen } from "#ui/components/browser/open-file-actions";
 import { getBaseName } from "#ui/utils/path";

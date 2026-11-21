@@ -2,7 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { $ } from "zx";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
 import type { GitRevisionTreeResponse } from "#bindings/GitRevisionTreeResponse";
 import {

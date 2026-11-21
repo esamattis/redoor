@@ -2,11 +2,8 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 
-import {
-    ShortcutRegistry,
-    shortcutPriority,
-    type ShortcutBinding,
-} from "#ui/shortcuts";
+import { ShortcutRegistry, shortcutPriority } from "#ui/shortcuts";
+import type { ShortcutBinding } from "#ui/shortcuts";
 
 /** Builds a binding for one key with sensible defaults, so each test states only what matters. */
 function binding(

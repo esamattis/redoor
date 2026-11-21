@@ -5,7 +5,8 @@ import {
     findCachedAgent,
     queryKeys,
 } from "#ui/queries";
-import { getOpenFileKey, type UserState } from "#ui/user-state";
+import { getOpenFileKey } from "#ui/user-state";
+import type { UserState } from "#ui/user-state";
 import { isVaultPath } from "#ui/vault/vault-path";
 import type { EditorWorkspace } from "./editor-workspace";
 

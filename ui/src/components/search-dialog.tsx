@@ -1,25 +1,19 @@
 import * as React from "react";
-import {
-    hashKey,
-    useQuery,
-    type QueryKey,
-    type UseQueryResult,
-} from "@tanstack/react-query";
+import { hashKey, useQuery } from "@tanstack/react-query";
+import type { QueryKey, UseQueryResult } from "@tanstack/react-query";
 import { getRouteApi, Link, useNavigate } from "@tanstack/react-router";
 import { FolderOpen } from "lucide-react";
 
 import type { ContentGrepResponse } from "#bindings/ContentGrepResponse";
 import type { FileSearchResponse } from "#bindings/FileSearchResponse";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
-import { type Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
 import { getImmediateParentPath } from "#ui/components/browser/utils";
 import { Dialog } from "#ui/components/dialog";
 import { PathBreadcrumbs } from "#ui/components/path-breadcrumbs";
-import {
-    SearchResultList,
-    type SearchResultTarget,
-} from "#ui/components/search-results";
+import { SearchResultList } from "#ui/components/search-results";
+import type { SearchResultTarget } from "#ui/components/search-results";
 import {
     GitRootToggle,
     SearchFilters,
@@ -30,18 +24,16 @@ import {
     contentGrepQueryOptions,
     fileSearchQueryOptions,
     gitContextQueryOptions,
-    type ContentGrepParams,
 } from "#ui/queries";
+import type { ContentGrepParams } from "#ui/queries";
 import type { AgentSearch } from "#ui/agent-search";
 import {
     HistoryEntryStore,
     useHistoryEntryState,
 } from "#ui/history-entry-state";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
-import {
-    useBrowserLocation,
-    type BrowserLocation,
-} from "#ui/use-browser-location";
+import { useBrowserLocation } from "#ui/use-browser-location";
+import type { BrowserLocation } from "#ui/use-browser-location";
 import { useUserState } from "#ui/user-state";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { isPlainKey } from "#ui/utils/keyboard";

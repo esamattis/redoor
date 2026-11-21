@@ -1,10 +1,8 @@
 import * as React from "react";
 import { cn } from "#ui/utils/cn";
 
-import {
-    OptionalTooltip,
-    type ControlTooltipProps,
-} from "#ui/components/tooltip";
+import { OptionalTooltip } from "#ui/components/tooltip";
+import type { ControlTooltipProps } from "#ui/components/tooltip";
 
 type ToggleButtonVariant = "outline" | "subtle";
 

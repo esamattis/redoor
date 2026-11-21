@@ -11,18 +11,16 @@ import { editorBufferQueryOptions } from "#ui/editor/stored-buffer";
 import { queryKeys } from "#ui/queries";
 import { shortcutPriority, useShortcut } from "#ui/shortcuts";
 import { useAgents } from "#ui/use-agents";
-import {
-    useBrowserLocation,
-    type BrowserLocation,
-} from "#ui/use-browser-location";
+import { useBrowserLocation } from "#ui/use-browser-location";
+import type { BrowserLocation } from "#ui/use-browser-location";
 import {
     getOpenFileKey,
     isFileOpen,
     openFile,
     openFileAtLine,
     useUserState,
-    type OpenFile,
 } from "#ui/user-state";
+import type { OpenFile } from "#ui/user-state";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
 import {

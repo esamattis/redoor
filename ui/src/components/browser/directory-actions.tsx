@@ -15,7 +15,8 @@ import {
 } from "lucide-react";
 import { ActionMenu, ActionMenuButton } from "#ui/components/action-menu";
 import { Button } from "#ui/components/button";
-import { FileInput, type FileInputHandle } from "#ui/components/file-input";
+import { FileInput } from "#ui/components/file-input";
+import type { FileInputHandle } from "#ui/components/file-input";
 import { PathNameDialog } from "#ui/components/browser/path-name-dialog";
 import { browserRoute } from "#ui/browser-route";
 import {

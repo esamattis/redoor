@@ -1,5 +1,6 @@
 // Serial: the script and image approvals of previews are stored in the shared user settings.
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";
@@ -10,8 +11,8 @@ import {
     deviceBrowserUrl,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /**
  * The page reports what its script could do into its own text, so the test can read the

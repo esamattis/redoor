@@ -6,10 +6,8 @@ import { LockKeyhole } from "lucide-react";
 import type { Agent } from "#ui/api-client";
 import { Button } from "#ui/components/button";
 import { vaultErrorCode, vaultErrorMessage } from "#ui/vault/vault-errors";
-import {
-    vaultFileContentQueryOptions,
-    type VaultFileContent,
-} from "#ui/vault/vault-files";
+import { vaultFileContentQueryOptions } from "#ui/vault/vault-files";
+import type { VaultFileContent } from "#ui/vault/vault-files";
 import { newWriteKeys, rewrapKeys } from "#ui/vault/vault-keys";
 import { VaultUnlockCancelled } from "#ui/vault/vault-session";
 

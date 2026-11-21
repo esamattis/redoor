@@ -1,4 +1,5 @@
-import { expect, test, type Locator } from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { Locator } from "./fixtures";
 
 import {
     deleteIsolatedTerminalSessions,

@@ -5,8 +5,8 @@ import {
     isExpandable,
     lineSideText,
     parseDiff,
-    type DiffHunk,
 } from "#ui/utils/diff-parse";
+import type { DiffHunk } from "#ui/utils/diff-parse";
 
 /** Returns a file's hunks without skip blocks, failing loudly when the file is missing. */
 function hunksOf(diff: string, fileIndex = 0): DiffHunk[] {

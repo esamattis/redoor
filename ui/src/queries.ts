@@ -4,11 +4,13 @@ import {
     keepPreviousData,
     queryOptions,
     isCancelledError,
-    type FetchQueryOptions,
-    type InvalidateOptions,
-    type Query,
-    type QueryClient,
-    type QueryKey,
+} from "@tanstack/react-query";
+import type {
+    FetchQueryOptions,
+    InvalidateOptions,
+    Query,
+    QueryClient,
+    QueryKey,
 } from "@tanstack/react-query";
 import { notFound } from "@tanstack/react-router";
 

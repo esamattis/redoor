@@ -25,11 +25,8 @@ import {
     waitForPort,
     waitForValue,
 } from "./test-utils";
-import {
-    type JsonObject,
-    MCP_PROTOCOL_VERSION,
-    createMcpTestClient,
-} from "./mcp-client";
+import { MCP_PROTOCOL_VERSION, createMcpTestClient } from './mcp-client';
+import type { JsonObject } from './mcp-client';
 
 import { registerMcpCommandOutputTests } from "./mcp-command-output";
 import { registerMcpTransferRegressionTests } from "./mcp-transfer-regressions";

@@ -6,7 +6,8 @@ import {
     it,
     onTestFinished,
 } from "vitest";
-import { $, type ProcessPromise } from "zx";
+import { $ } from 'zx';
+import type { ProcessPromise } from 'zx';
 import * as fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { hostname } from "node:os";

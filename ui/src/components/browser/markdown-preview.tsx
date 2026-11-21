@@ -5,11 +5,11 @@ import {
     useMemo,
     useRef,
     useState,
-    type ComponentProps,
-    type ReactNode,
 } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
-import Markdown, { type ExtraProps } from "react-markdown";
+import Markdown from "react-markdown";
+import type { ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize from "rehype-sanitize";
@@ -22,16 +22,8 @@ import {
     LinkIcon,
     ListTree,
 } from "lucide-react";
-import {
-    isMap,
-    isNode,
-    isScalar,
-    isSeq,
-    parseDocument,
-    stringify,
-    type Node,
-    type YAMLMap,
-} from "yaml";
+import { isMap, isNode, isScalar, isSeq, parseDocument, stringify } from "yaml";
+import type { Node, YAMLMap } from "yaml";
 import { browserRoute } from "#ui/browser-route";
 import { HistoryEntryStore } from "#ui/history-entry-state";
 import { useCopyFeedback } from "#ui/components/copyable-code-row";

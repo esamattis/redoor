@@ -1,7 +1,9 @@
 import React from "react";
 import { atom, useSetAtom, useStore } from "jotai";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useRouter, type RegisteredRouter } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
+import { useRouter } from "@tanstack/react-router";
+import type { RegisteredRouter } from "@tanstack/react-router";
 import { queryKeys } from "#ui/queries";
 import { invalidateDeviceViews } from "#ui/use-active-agent";
 

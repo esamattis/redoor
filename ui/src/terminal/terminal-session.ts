@@ -1,6 +1,7 @@
 import { z } from "zod";
 
-import { type Agent, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
+import { SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import type { TerminalClientMessage } from "#bindings/TerminalClientMessage";
 import type { TerminalServerMessage } from "#bindings/TerminalServerMessage";
 import type { TerminalSize } from "#bindings/TerminalSize";

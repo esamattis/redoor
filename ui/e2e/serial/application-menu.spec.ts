@@ -1,6 +1,7 @@
 // Serial: seeds the shared open files list and asserts on what the menu shows.
 import path from "node:path";
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 
 import { ApiClient } from "#ui/api-client";
 import {
@@ -9,8 +10,8 @@ import {
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 test.describe.serial("Application menu layout", () => {
     let ctx: TestContext;

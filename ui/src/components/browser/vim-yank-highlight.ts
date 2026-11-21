@@ -1,15 +1,7 @@
-import {
-    StateEffect,
-    StateField,
-    type Extension,
-    type Text,
-} from "@codemirror/state";
-import {
-    Decoration,
-    EditorView,
-    ViewPlugin,
-    type DecorationSet,
-} from "@codemirror/view";
+import { StateEffect, StateField } from "@codemirror/state";
+import type { Extension, Text } from "@codemirror/state";
+import { Decoration, EditorView, ViewPlugin } from "@codemirror/view";
+import type { DecorationSet } from "@codemirror/view";
 import { getCM } from "@replit/codemirror-vim";
 
 /**

@@ -3,7 +3,8 @@ import { test, expect } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiClient } from "#ui/api-client";
-import { defaultUserState, type OpenFile } from "#ui/user-state";
+import { defaultUserState } from "#ui/user-state";
+import type { OpenFile } from "#ui/user-state";
 import {
     deleteAllTerminalSessions,
     expectTerminalBlurred,
@@ -13,8 +14,8 @@ import {
     encodeFilesystemPath,
     API_BASE_URL,
     WEB_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 test.describe.serial("File editor options", () => {
     let ctx: TestContext;

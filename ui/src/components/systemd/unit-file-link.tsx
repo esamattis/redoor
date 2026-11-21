@@ -10,10 +10,8 @@ import {
     systemdUnitIndexQueryOptions,
 } from "#ui/systemd-queries";
 import { cn } from "#ui/utils/cn";
-import {
-    systemdUnitFileTarget,
-    type SystemdUnitFileTarget,
-} from "#ui/utils/systemd-unit-file";
+import { systemdUnitFileTarget } from "#ui/utils/systemd-unit-file";
+import type { SystemdUnitFileTarget } from "#ui/utils/systemd-unit-file";
 
 /**
  * A unit's name, linked to the Systemd view of its file when it has one. A unit's status

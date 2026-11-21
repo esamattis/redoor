@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "./fixtures";
+import { test, expect } from "./fixtures";
+import type { Page } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -6,8 +7,8 @@ import {
     teardownTestDir,
     encodeFilesystemPath,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Opens the find panel from the editor actions menu, the route phones have to it. */
 async function findInFileFromMenu(page: Page) {

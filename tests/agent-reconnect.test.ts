@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
-import { connect, createServer, type Socket } from "node:net";
+import { connect, createServer } from 'node:net';
+import type { Socket } from 'node:net';
 import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import {

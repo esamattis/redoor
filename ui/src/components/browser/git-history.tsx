@@ -19,10 +19,8 @@ import { CopyableGitRef } from "#ui/components/copyable-git-ref";
 import { IconLinkButton } from "#ui/components/icon-button";
 import { LinkButton } from "#ui/components/link-button";
 import { Tooltip } from "#ui/components/tooltip";
-import {
-    SegmentedControl,
-    type SegmentedControlOption,
-} from "#ui/components/segmented-control";
+import { SegmentedControl } from "#ui/components/segmented-control";
+import type { SegmentedControlOption } from "#ui/components/segmented-control";
 import {
     AuthorAvatar,
     CommitAge,
@@ -39,8 +37,8 @@ import {
     GIT_LIST_PAGE_SIZE,
     gitLogQueryOptions,
     gitRefsQueryOptions,
-    type GitRefListKind,
 } from "#ui/queries";
+import type { GitRefListKind } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
 import { getErrorMessage } from "#ui/utils/error";
 import type { GitCommitSummary } from "#bindings/GitCommitSummary";

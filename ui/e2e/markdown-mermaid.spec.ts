@@ -1,12 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "./fixtures";
-import {
-    deviceBrowserUrl,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { deviceBrowserUrl, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe.serial("Markdown preview Mermaid diagrams", () => {
     let ctx: TestContext;

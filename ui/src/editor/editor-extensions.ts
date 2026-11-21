@@ -19,18 +19,12 @@ import {
     foldKeymap,
     indentOnInput,
     syntaxHighlighting,
-    type LanguageSupport,
 } from "@codemirror/language";
+import type { LanguageSupport } from "@codemirror/language";
 import { lintKeymap } from "@codemirror/lint";
 import { highlightSelectionMatches, search } from "@codemirror/search";
-import {
-    Compartment,
-    EditorState,
-    Facet,
-    Prec,
-    type Extension,
-    type StateEffect,
-} from "@codemirror/state";
+import { Compartment, EditorState, Facet, Prec } from "@codemirror/state";
+import type { Extension, StateEffect } from "@codemirror/state";
 import {
     Decoration,
     drawSelection,
@@ -42,8 +36,8 @@ import {
     keymap,
     lineNumbers,
     rectangularSelection,
-    type ViewUpdate,
 } from "@codemirror/view";
+import type { ViewUpdate } from "@codemirror/view";
 import { tagHighlighter, tags } from "@lezer/highlight";
 import { vim, Vim } from "@replit/codemirror-vim";
 import { bbedit } from "@uiw/codemirror-theme-bbedit";
@@ -56,11 +50,10 @@ import {
 } from "./git-gutter";
 import type { GitGutterSource } from "./git-line-marks";
 import { loadSyntaxLanguage } from "#ui/utils/editor-language";
-import {
-    syntaxLanguageFromFileName,
-    type SupportedSyntaxLanguage,
-} from "#ui/utils/syntax-language";
-import { isUnmodifiedAltKey, type KeyChord } from "#ui/utils/keyboard";
+import { syntaxLanguageFromFileName } from "#ui/utils/syntax-language";
+import type { SupportedSyntaxLanguage } from "#ui/utils/syntax-language";
+import { isUnmodifiedAltKey } from "#ui/utils/keyboard";
+import type { KeyChord } from "#ui/utils/keyboard";
 import { getBaseName } from "#ui/utils/path";
 
 /**

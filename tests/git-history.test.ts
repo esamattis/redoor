@@ -9,7 +9,7 @@ import {
     it,
     onTestFinished,
 } from "vitest";
-import { Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 import type { GitCommitNeighborsResponse } from "#bindings/GitCommitNeighborsResponse";
 import type { GitLogResponse } from "#bindings/GitLogResponse";
 import type { GitRefListResponse } from "#bindings/GitRefListResponse";

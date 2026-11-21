@@ -7,8 +7,8 @@ import {
     gitStatusQueryOptions,
     prefetchGitList,
     refreshCachedGitDiffs,
-    type QueryContext,
 } from "#ui/queries";
+import type { QueryContext } from "#ui/queries";
 import type { GitContextResponse } from "#bindings/GitContextResponse";
 
 /**

@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { Page } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import {
@@ -7,10 +8,10 @@ import {
     setupTestDir,
     simulateTabRefocus,
     teardownTestDir,
-    type TestContext,
     uploadDialog,
     WEB_BASE_URL,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Pastes text into the page the way the browser does when nothing editable is focused. */
 async function pasteText(page: Page, text: string): Promise<void> {

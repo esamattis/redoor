@@ -9,17 +9,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { $ } from "zx";
 import { z } from "zod";
-import { type Agent, ApiClient } from "#ui/api-client";
-import {
-    type ProcessManager,
-    SERVER_PATH,
-    TEST_AGENT_TOKEN,
-    TEST_PASSWORD,
-    TEST_USERNAME,
-    VITEST_SERVER_PORT,
-    waitForPort,
-    waitForValue,
-} from "./test-utils";
+import { ApiClient } from '#ui/api-client';
+import type { Agent } from '#ui/api-client';
+import { SERVER_PATH, TEST_AGENT_TOKEN, TEST_PASSWORD, TEST_USERNAME, VITEST_SERVER_PORT, waitForPort, waitForValue } from './test-utils';
+import type { ProcessManager } from './test-utils';
 import { TEST_TERMINAL_SIZE, TerminalViewer } from "./terminal-test-utils";
 
 // Every SSH test file shares the one remote test host and its `authorized_keys`, so they must

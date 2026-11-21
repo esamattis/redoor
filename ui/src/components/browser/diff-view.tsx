@@ -16,18 +16,14 @@ import {
 import type { browserRoute } from "#ui/browser-route";
 import { HighlightedTokens } from "#ui/components/highlighted-tokens";
 import { IconButton, IconLinkButton } from "#ui/components/icon-button";
-import {
-    OpenInBackgroundButton,
-    type BackgroundOpen,
-} from "#ui/components/browser/open-file-actions";
-import {
-    fileLines,
-    isExpandable,
-    lineSideText,
-    type DiffFile,
-    type DiffLine,
-    type LineSegment,
-    type SkipBlock,
+import { OpenInBackgroundButton } from "#ui/components/browser/open-file-actions";
+import type { BackgroundOpen } from "#ui/components/browser/open-file-actions";
+import { fileLines, isExpandable, lineSideText } from "#ui/utils/diff-parse";
+import type {
+    DiffFile,
+    DiffLine,
+    LineSegment,
+    SkipBlock,
 } from "#ui/utils/diff-parse";
 import type { HighlightToken } from "#ui/utils/code-highlight";
 import {
@@ -37,10 +33,8 @@ import {
 import { cn } from "#ui/utils/cn";
 import { diffRowKey } from "#ui/utils/diff-search";
 import { useHasBeenVisible } from "#ui/utils/use-has-been-visible";
-import {
-    useFoldReveals,
-    type FoldReveal,
-} from "#ui/components/browser/diff-fold-reveals";
+import { useFoldReveals } from "#ui/components/browser/diff-fold-reveals";
+import type { FoldReveal } from "#ui/components/browser/diff-fold-reveals";
 
 /** Where the editor opens the diffed file, as built by `browserRoute`. */
 export type DiffEditorRoute = ReturnType<typeof browserRoute>;

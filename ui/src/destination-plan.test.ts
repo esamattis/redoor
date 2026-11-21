@@ -1,11 +1,10 @@
 import { describe, expect, test } from "vitest";
 import {
-    type DestinationItem,
-    type DestinationNames,
     getSharedResolution,
     planDestinationNames,
     resolveAllConflicts,
 } from "#ui/destination-plan";
+import type { DestinationItem, DestinationNames } from "#ui/destination-plan";
 
 /** A destination holding the given files and directories. */
 function destination(

@@ -3,12 +3,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { $ } from "zx";
-import {
-    deviceBrowserUrl,
-    setupTestDir,
-    teardownTestDir,
-    type TestContext,
-} from "./helpers";
+import { deviceBrowserUrl, setupTestDir, teardownTestDir } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe("Git status column", () => {
     let ctx: TestContext;

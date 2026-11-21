@@ -8,8 +8,8 @@ import {
     teardownTestDir,
     API_BASE_URL,
     WEB_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 test.describe.serial("Dotfile filter", () => {
     let ctx: TestContext;

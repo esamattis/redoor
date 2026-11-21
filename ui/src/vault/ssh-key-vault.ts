@@ -17,8 +17,8 @@ import {
     fileKeyForHeader,
     newSshKeySeal,
     rewrapKeys,
-    type UnlockedVault,
 } from "#ui/vault/vault-keys";
+import type { UnlockedVault } from "#ui/vault/vault-keys";
 import type { VaultSession } from "#ui/vault/vault-session";
 
 /**

@@ -5,8 +5,8 @@ import { usePreviewApproval } from "#ui/user-state";
 import {
     buildPreviewDocument,
     previewSandboxTokens,
-    type SandboxedPreviewKind,
 } from "#ui/utils/sandboxed-preview-document";
+import type { SandboxedPreviewKind } from "#ui/utils/sandboxed-preview-document";
 
 /** Names each kind the way readers know the format, for the region and the frame title. */
 const kindLabels = {

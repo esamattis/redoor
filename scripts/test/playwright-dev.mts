@@ -8,7 +8,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { $, type ProcessPromise } from "zx";
+import { $ } from 'zx';
+import type { ProcessPromise } from 'zx';
 import { z } from "zod";
 import { stageTestBinary } from "./stage-test-binary.mts";
 

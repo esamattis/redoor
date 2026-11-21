@@ -18,18 +18,14 @@ import {
     WholeFileToggle,
     WrapDiffLinesToggle,
 } from "#ui/components/browser/diff-layout-control";
-import {
-    ChangeBadge,
-    type GitChangeKind,
-} from "#ui/components/browser/git-parts";
+import { ChangeBadge } from "#ui/components/browser/git-parts";
+import type { GitChangeKind } from "#ui/components/browser/git-parts";
 import {
     OpenInBackgroundButton,
     useBackgroundOpen,
 } from "#ui/components/browser/open-file-actions";
-import {
-    changedFilesOutlineAtom,
-    type ChangedFilesOutlineSnapshot,
-} from "#ui/components/browser/changed-files-outline";
+import { changedFilesOutlineAtom } from "#ui/components/browser/changed-files-outline";
+import type { ChangedFilesOutlineSnapshot } from "#ui/components/browser/changed-files-outline";
 import { DiffSummarySlotContext } from "#ui/components/browser/unified-diff";
 import { SelectionSearch } from "#ui/components/browser/selection-search";
 import { useDiffCopyReference } from "#ui/components/browser/diff-copy-reference";
@@ -42,8 +38,10 @@ import {
     DiffSearchStore,
     DiffSearchStoreContext,
     useDiffSearchMatchCount,
-    type DiffSearchListFile,
-    type DiffSearchSource,
+} from "#ui/components/browser/diff-search";
+import type {
+    DiffSearchListFile,
+    DiffSearchSource,
 } from "#ui/components/browser/diff-search";
 import {
     HistoryEntryStore,

@@ -8,10 +8,8 @@ import {
     isWorktreeRange,
     revisionRange,
 } from "#ui/components/browser/git-parts";
-import {
-    getPathLoadError,
-    type PathLoadError,
-} from "#ui/components/browser/utils";
+import { getPathLoadError } from "#ui/components/browser/utils";
+import type { PathLoadError } from "#ui/components/browser/utils";
 import {
     agentDetailsQueryOptions,
     fetchQueryUncancelled,
@@ -20,8 +18,8 @@ import {
     gitRevisionContentQueryOptions,
     gitRevisionTreeQueryOptions,
     prefetchGitList,
-    type QueryContext,
 } from "#ui/queries";
+import type { QueryContext } from "#ui/queries";
 import { getErrorMessage } from "#ui/utils/error";
 import type { GitCommitDiffResponse } from "#bindings/GitCommitDiffResponse";
 import type { GitRevisionTreeResponse } from "#bindings/GitRevisionTreeResponse";

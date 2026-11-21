@@ -10,11 +10,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
-import {
-    type Agent,
-    ApiClient,
-    SESSION_ENDED_CLOSE_CODE,
-} from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
+import { SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
 import type { LoginRequest } from "#bindings/LoginRequest";
 import type { SessionLength } from "#bindings/SessionLength";
 import {

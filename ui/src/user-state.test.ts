@@ -17,9 +17,8 @@ import {
     TOUCH_REFRESH_MS,
     touchOpenFiles,
     userStateSchema,
-    type Bookmark,
-    type OpenFile,
 } from "#ui/user-state";
+import type { Bookmark, OpenFile } from "#ui/user-state";
 
 /** Supplies metadata so movement tests also exercise object preservation. */
 function openEntry(agentId: string, name: string): OpenFile {

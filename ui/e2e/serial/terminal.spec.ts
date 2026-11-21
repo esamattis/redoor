@@ -1,10 +1,7 @@
 // Serial: switches the shared theme to dark and resets every user setting after each test,
 // and its terminal sessions outlive pages, so another spec's pages would restore them as tabs.
-import {
-    expect,
-    test,
-    type WebSocket as PlaywrightWebSocket,
-} from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { WebSocket as PlaywrightWebSocket } from "../fixtures";
 import { z } from "zod";
 import { ApiClient } from "#ui/api-client";
 import { dragReorderRow } from "../reorder";
@@ -18,8 +15,8 @@ import {
     teardownTestDir,
     terminalSocketCwd,
     WEB_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 const terminalFrameSchema = z.union([
     z.string(),

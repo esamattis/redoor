@@ -10,8 +10,8 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 import { ApiClient } from "#ui/api-client";
 
 /**

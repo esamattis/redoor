@@ -1,4 +1,5 @@
-import { expect, test, type Page } from "./fixtures";
+import { expect, test } from "./fixtures";
+import type { Page } from "./fixtures";
 
 import { WEB_BASE_URL } from "./helpers";
 

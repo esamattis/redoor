@@ -31,8 +31,8 @@ import {
     reorderBookmarks,
     resolveDeviceOrder,
     useUserState,
-    type Bookmark as BookmarkEntry,
 } from "#ui/user-state";
+import type { Bookmark as BookmarkEntry } from "#ui/user-state";
 import type { ItemMove } from "#ui/utils/reorder";
 import {
     foldedBookmarkAgentsAtom,

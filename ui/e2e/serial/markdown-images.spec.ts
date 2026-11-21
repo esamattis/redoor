@@ -1,7 +1,8 @@
 // Serial: image approvals of markdown previews are stored in the shared user settings.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import { ApiClient } from "#ui/api-client";
 import {
     PREVIEW_APPROVAL_TTL_MS,
@@ -13,8 +14,8 @@ import {
     deviceBrowserUrl,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /** Reads the stored approvals, so a test knows a toggle was saved before it reloads. */
 async function storedApprovals(api: ApiClient) {

@@ -1,7 +1,8 @@
 // Serial: replaces the shared user settings to seed open files and asserts on the saved list.
 import fs from "node:fs/promises";
 import path from "node:path";
-import { expect, test, type Page } from "../fixtures";
+import { expect, test } from "../fixtures";
+import type { Page } from "../fixtures";
 import {
     dragReorderRow,
     keyboardReorder,
@@ -18,8 +19,8 @@ import {
     encodeFilesystemPath,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 /** Matches a URL literally inside a pattern, since paths contain regex characters. */
 function escapeRegExp(text: string) {

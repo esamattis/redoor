@@ -10,8 +10,8 @@ import {
     setupTestDir,
     teardownTestDir,
     terminalSocketCwd,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Terminal input travels as binary frames and control messages as text; both read as text. */
 const terminalFrameSchema = z.union([

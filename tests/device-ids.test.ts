@@ -24,7 +24,8 @@ import type { AgentDetailsResponse } from "#bindings/AgentDetailsResponse";
 import type { LsDirectoryResponse } from "#bindings/LsDirectoryResponse";
 import type { Permission } from "#bindings/Permission";
 import { ApiError } from "#ui/api-transport";
-import { type JsonObject, createMcpTestClient } from "./mcp-client";
+import { createMcpTestClient } from './mcp-client';
+import type { JsonObject } from './mcp-client';
 import {
     ALL_PERMISSIONS,
     DEVICE_ID_PATTERN,

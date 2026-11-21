@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 
-import { type JsonObject, createMcpTestClient } from "./mcp-client";
+import { createMcpTestClient } from './mcp-client';
+import type { JsonObject } from './mcp-client';
 
 /** The live MCP fixture the command output tests run against. */
 type McpCommandOutputFixture = {

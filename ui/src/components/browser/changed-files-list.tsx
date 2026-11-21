@@ -6,10 +6,8 @@ import {
 } from "lucide-react";
 
 import type { ChangedFilesOutlineSnapshot } from "#ui/components/browser/changed-files-outline";
-import {
-    buildChangedFilesTree,
-    type ChangedFilesTreeRow,
-} from "#ui/components/browser/changed-files-tree";
+import { buildChangedFilesTree } from "#ui/components/browser/changed-files-tree";
+import type { ChangedFilesTreeRow } from "#ui/components/browser/changed-files-tree";
 import { ChangeBadge } from "#ui/components/browser/git-parts";
 import { Button } from "#ui/components/button";
 import { ClearableInput } from "#ui/components/clearable-input";

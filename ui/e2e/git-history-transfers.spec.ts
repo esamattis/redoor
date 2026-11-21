@@ -8,8 +8,8 @@ import {
     setupTestDir,
     teardownTestDir,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe.serial("Git history copies and downloads", () => {
     let ctx: TestContext;

@@ -20,8 +20,8 @@ import {
     UserRound,
     Users,
     X,
-    type LucideIcon,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 
 import type { Agent } from "#ui/api-client";
 import { browserRoute } from "#ui/browser-route";
@@ -58,8 +58,8 @@ import {
     getOpenFileParentLabels,
     reorderOpenFiles,
     useUserState,
-    type OpenFile,
 } from "#ui/user-state";
+import type { OpenFile } from "#ui/user-state";
 
 const rootRouteApi = getRouteApi("__root__");
 

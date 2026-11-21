@@ -31,30 +31,26 @@ import {
     isEditorInputTarget,
     isPlainKey,
     isTerminalInputTarget,
-    type KeyChord,
 } from "#ui/utils/keyboard";
+import type { KeyChord } from "#ui/utils/keyboard";
 import { useAgentSearchNavigation } from "#ui/search-navigation";
 import {
     getOpenFileKey,
     usePreviewApproval,
     useUserState,
-    type OpenFileReveal,
 } from "#ui/user-state";
-import {
-    editorBufferQueryOptions,
-    type StoredBuffer,
-} from "#ui/editor/stored-buffer";
+import type { OpenFileReveal } from "#ui/user-state";
+import { editorBufferQueryOptions } from "#ui/editor/stored-buffer";
+import type { StoredBuffer } from "#ui/editor/stored-buffer";
 import {
     GIT_GUTTER_EMPTY,
     GIT_GUTTER_HIDDEN,
     gitGutterSource,
-    type GitGutterSource,
 } from "#ui/editor/git-line-marks";
+import type { GitGutterSource } from "#ui/editor/git-line-marks";
 import { SandboxedPreview } from "#ui/components/browser/sandboxed-preview";
-import {
-    filePreviewKind,
-    type FilePreviewKind,
-} from "#ui/utils/sandboxed-preview-document";
+import { filePreviewKind } from "#ui/utils/sandboxed-preview-document";
+import type { FilePreviewKind } from "#ui/utils/sandboxed-preview-document";
 import { FileEditHeader } from "#ui/components/browser/file-edit-toolbar";
 import {
     useVaultFile,

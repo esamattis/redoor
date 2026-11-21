@@ -7,10 +7,10 @@ import { Button } from "#ui/components/button";
 
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { DeviceBreadcrumb } from "#ui/components/device-header";
-import {
-    ManagedAgentForm,
-    type ManagedAgentKind,
-    type ManagedAgentSubmitRequest,
+import { ManagedAgentForm } from "#ui/components/managed-agent-form";
+import type {
+    ManagedAgentKind,
+    ManagedAgentSubmitRequest,
 } from "#ui/components/managed-agent-form";
 import { SshKeySection } from "#ui/components/ssh-key-section";
 import { TerminalEnvSection } from "#ui/components/terminal-env-section";

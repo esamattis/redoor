@@ -6,7 +6,7 @@ import {
     it,
     onTestFinished,
 } from "vitest";
-import WebSocket from "ws";
+import type WebSocket from "ws";
 import type { Agent, ApiClient } from "#ui/api-client";
 import type { TransferProgressEntry } from "#bindings/TransferProgressEntry";
 import type { ExecEvent } from "#bindings/ExecEvent";

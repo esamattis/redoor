@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { expect, it, onTestFinished } from "vitest";
 
 import { TEST_USERNAME, TEST_PASSWORD, waitForValue } from "./test-utils";
-import { type JsonObject, createMcpTestClient } from "./mcp-client";
+import { createMcpTestClient } from './mcp-client';
+import type { JsonObject } from './mcp-client';
 
 /** Grants and paths shared by transfer regressions on the existing live fixture. */
 type McpTransferRegressionFixture = {

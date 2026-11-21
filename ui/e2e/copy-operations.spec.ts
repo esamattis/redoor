@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import { test, expect } from "./fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,12 +9,12 @@ import {
     confirmSelectedTransfer,
     minimizeBottomDrawer,
     WEB_BASE_URL,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 /** Selects one source entry and opens the directory that contains its conflict. */
 async function openCopyConflict(props: {
-    page: import("@playwright/test").Page;
+    page: Page;
     ctx: TestContext;
     sourceName: string;
     sourceType: "file" | "directory";
@@ -42,7 +43,7 @@ async function openCopyConflict(props: {
 
 /** Measures listing geometry around a selection so desktop and mobile can share the same shift check. */
 async function expectSelectionDoesNotShiftLayout(props: {
-    page: import("@playwright/test").Page;
+    page: Page;
     ctx: TestContext;
 }) {
     await props.page.goto(

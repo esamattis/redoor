@@ -7,8 +7,8 @@ import {
     isolateTerminalSessions,
     setupTestDir,
     teardownTestDir,
-    type TestContext,
 } from "./helpers";
+import type { TestContext } from "./helpers";
 
 test.describe("Bottom drawer after a reload", () => {
     let ctx: TestContext;

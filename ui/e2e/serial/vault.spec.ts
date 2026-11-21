@@ -1,6 +1,7 @@
 // Serial: the vault belongs to the one test account, so creating, unlocking or rotating it
 // changes state every other spec would share.
-import { test, expect, signedInStorageState, type Page } from "../fixtures";
+import { test, expect, signedInStorageState } from "../fixtures";
+import type { Page } from "../fixtures";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
@@ -12,8 +13,8 @@ import {
     teardownTestDir,
     uploadDialog,
     WEB_BASE_URL,
-    type TestContext,
 } from "../helpers";
+import type { TestContext } from "../helpers";
 
 const PASSPHRASE = "correct horse battery staple";
 

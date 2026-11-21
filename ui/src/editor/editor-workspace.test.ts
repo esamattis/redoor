@@ -18,15 +18,16 @@ import type { EditorBufferResponse } from "#bindings/EditorBufferResponse";
 import type { PutEditorBufferRequest } from "#bindings/PutEditorBufferRequest";
 import type { PutEditorBufferResponse } from "#bindings/PutEditorBufferResponse";
 
-import {
-    EditorWorkspace,
-    type ActivateRequest,
-    type CaretReport,
-    type EditorBufferApi,
+import { EditorWorkspace } from "./editor-workspace";
+import type {
+    ActivateRequest,
+    CaretReport,
+    EditorBufferApi,
 } from "./editor-workspace";
 import { gitGutterField } from "./git-gutter";
 import { GIT_GUTTER_HIDDEN, gitGutterSource } from "./git-line-marks";
-import { parseStoredBuffer, type StoredBuffer } from "./stored-buffer";
+import { parseStoredBuffer } from "./stored-buffer";
+import type { StoredBuffer } from "./stored-buffer";
 import { loadSyntaxLanguage } from "#ui/utils/editor-language";
 
 // JSDOM does not measure text ranges, while CodeMirror only needs stable stubs here.

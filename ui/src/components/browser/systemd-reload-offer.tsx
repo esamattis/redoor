@@ -14,8 +14,8 @@ import {
     systemdReloadOffer,
     systemdScopeKey,
     withoutSystemdScope,
-    type SystemdReloadOffer,
 } from "#ui/utils/systemd-reload-offer";
+import type { SystemdReloadOffer } from "#ui/utils/systemd-reload-offer";
 
 /**
  * Asks systemd after a save whether it still runs the old version of a unit file, and offers

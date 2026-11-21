@@ -1,8 +1,5 @@
-import {
-    LanguageSupport,
-    StreamLanguage,
-    type Language,
-} from "@codemirror/language";
+import { LanguageSupport, StreamLanguage } from "@codemirror/language";
+import type { Language } from "@codemirror/language";
 import { systemd } from "#ui/utils/systemd-language";
 import type { SupportedSyntaxLanguage } from "#ui/utils/syntax-language";
 

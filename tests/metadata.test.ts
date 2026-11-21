@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
-import { Agent } from "#ui/api-client";
+import type { Agent } from "#ui/api-client";
 
 import {
     ProcessManager,

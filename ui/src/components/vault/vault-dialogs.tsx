@@ -10,7 +10,8 @@ import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
-import { FileInput, type FileInputHandle } from "#ui/components/file-input";
+import { FileInput } from "#ui/components/file-input";
+import type { FileInputHandle } from "#ui/components/file-input";
 import { TextField } from "#ui/components/text-field";
 import {
     FreshUnlockFields,
@@ -31,9 +32,8 @@ import {
     openFreshSlots,
     proofFromRaw,
     wipeOpened,
-    type FreshUnlockInput,
-    type SlotToWrap,
 } from "#ui/vault/vault-keys";
+import type { FreshUnlockInput, SlotToWrap } from "#ui/vault/vault-keys";
 import { currentRpId, newPasskeySlot } from "#ui/vault/vault-passkeys";
 import { parseVaultBackup } from "#ui/vault/vault-document";
 

@@ -1,9 +1,11 @@
 import * as React from "react";
-import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { z } from "zod";
 
 import type { AgentInfoResponse } from "#bindings/AgentInfoResponse";
-import { type ApiClient, SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
+import { SESSION_ENDED_CLOSE_CODE } from "#ui/api-client";
+import type { ApiClient } from "#ui/api-client";
 import type { UiEvent } from "#bindings/UiEvent";
 import type { OpenPathKind } from "#bindings/OpenPathKind";
 import type { VaultSession } from "#ui/vault/vault-session";

@@ -9,8 +9,10 @@ import type { GitContextResponse } from "#bindings/GitContextResponse";
 import type { MetadataResponse } from "#bindings/MetadataResponse";
 import type { Agent } from "#ui/api-client";
 import type { BrowserSearch } from "#ui/browser-search";
-import { isLsFileResponse, type LsResponse } from "#ui/ls-response";
-import { fetchQueryUncancelled, type QueryContext } from "#ui/queries";
+import { isLsFileResponse } from "#ui/ls-response";
+import type { LsResponse } from "#ui/ls-response";
+import { fetchQueryUncancelled } from "#ui/queries";
+import type { QueryContext } from "#ui/queries";
 import {
     isSystemdFileCandidate,
     systemdPathStatusQueryOptions,

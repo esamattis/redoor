@@ -1,18 +1,13 @@
 import React from "react";
 import { ClipboardPaste, Upload } from "lucide-react";
-import { type Agent } from "#ui/api-client";
-import {
-    type PendingUpload,
-    UploadDialog,
-} from "#ui/components/browser/upload-dialog";
-import {
-    countUploadFiles,
-    createUploadItems,
-    type UploadDraftItem,
-    type UploadSource,
-} from "#ui/upload-plan";
+import type { Agent } from "#ui/api-client";
+import { UploadDialog } from "#ui/components/browser/upload-dialog";
+import type { PendingUpload } from "#ui/components/browser/upload-dialog";
+import { countUploadFiles, createUploadItems } from "#ui/upload-plan";
+import type { UploadDraftItem, UploadSource } from "#ui/upload-plan";
 import { getErrorMessage } from "#ui/utils/error";
-import { MAX_QUEUED_UPLOADS, type UploadSourceFile } from "#ui/upload-queue";
+import { MAX_QUEUED_UPLOADS } from "#ui/upload-queue";
+import type { UploadSourceFile } from "#ui/upload-queue";
 import { Toast } from "./toast";
 
 /** Identifies the agent directory that can accept imported files. */

@@ -7,12 +7,13 @@ import {
     onTestFinished,
 } from "vitest";
 import type { Proxy } from "toxiproxy-node-client";
-import { createMcpTestClient, type JsonObject } from "./mcp-client";
+import { createMcpTestClient } from './mcp-client';
+import type { JsonObject } from './mcp-client';
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import { createHash } from "node:crypto";
-import { ApiClient, type Agent } from "#ui/api-client";
+import type { Agent, ApiClient } from "#ui/api-client";
 import type { ResumableTransfer } from "#bindings/ResumableTransfer";
 import {
     ProcessManager,

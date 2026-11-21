@@ -25,7 +25,8 @@ import { ApiError } from "#ui/api-transport";
 import { ExternalStore } from "#ui/utils/external-store";
 import { unwrapForDevice, wipe, wrapForDevice } from "#ui/vault/vault-crypto";
 import { callerStack, vaultDebug } from "#ui/vault/vault-debug";
-import { openGenerations, type UnlockedVault } from "#ui/vault/vault-keys";
+import { openGenerations } from "#ui/vault/vault-keys";
+import type { UnlockedVault } from "#ui/vault/vault-keys";
 
 /** The shortest choice, so an unlock without a deliberate pick locks soon. */
 export const DEFAULT_VAULT_LOCK_AFTER: VaultLockAfter = "15_minutes";

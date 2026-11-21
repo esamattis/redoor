@@ -20,10 +20,8 @@ import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { CopyableCodeRow } from "#ui/components/copyable-code-row";
 import { Dialog } from "#ui/components/dialog";
 import { DialogActions } from "#ui/components/dialog-actions";
-import {
-    SshKeySetupDialog,
-    type SshKeySetupMode,
-} from "#ui/components/ssh-key-setup-dialog";
+import { SshKeySetupDialog } from "#ui/components/ssh-key-setup-dialog";
+import type { SshKeySetupMode } from "#ui/components/ssh-key-setup-dialog";
 import { Toast } from "#ui/components/toast";
 import {
     invalidateSshKeyQueries,
