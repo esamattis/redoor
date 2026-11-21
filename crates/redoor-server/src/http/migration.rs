@@ -8,7 +8,9 @@ use axum::{
     extract::State,
     http::{HeaderMap, StatusCode},
 };
-use redoor_protocol::api::migration::{ConfirmMigrationResponse, MigrationStatusResponse};
+use redoor_protocol::api::migration::{
+    ConfirmMigrationRequest, ConfirmMigrationResponse, MigrationStatusResponse,
+};
 
 use super::{
     access::Principal, error::ApiError, state::ServerState, websocket_security::is_same_origin,
@@ -35,6 +37,7 @@ pub(crate) async fn confirm_migration_handler(
     State(state): State<ServerState>,
     Extension(principal): Extension<Principal>,
     headers: HeaderMap,
+    Json(request): Json<ConfirmMigrationRequest>,
 ) -> Result<Json<ConfirmMigrationResponse>, ApiError> {
     if !is_same_origin(&headers) {
         return Err(ApiError::status(
@@ -43,6 +46,12 @@ pub(crate) async fn confirm_migration_handler(
         ));
     }
     let user = principal.session_user()?;
+    if request.expected_username != user.name {
+        return Err(ApiError::conflict(format!(
+            "Signed-in user changed to '{}'; reload and confirm again before migrating",
+            user.name
+        )));
+    }
     let response = state.migration.confirm(&state, &user.name).await?;
     Ok(Json(response))
 }

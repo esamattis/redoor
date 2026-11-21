@@ -51,6 +51,7 @@ import type { SessionRotationResponse } from "#bindings/SessionRotationResponse"
 import type { SessionLength } from "#bindings/SessionLength";
 import type { LogoutResponse } from "#bindings/LogoutResponse";
 import type { MigrationStatusResponse } from "#bindings/MigrationStatusResponse";
+import type { ConfirmMigrationRequest } from "#bindings/ConfirmMigrationRequest";
 import type { ConfirmMigrationResponse } from "#bindings/ConfirmMigrationResponse";
 import type { BrowserSessionListResponse } from "#bindings/BrowserSessionListResponse";
 import type { SignOutSessionsResponse } from "#bindings/SignOutSessionsResponse";
@@ -2641,10 +2642,20 @@ export class ApiClient {
      *
      * TEMPORARY MIGRATION: Can be removed after layout v2 adoption.
      */
-    async confirmMigration(): Promise<ConfirmMigrationResponse> {
+    async confirmMigration(
+        expectedUsername: string,
+    ): Promise<ConfirmMigrationResponse> {
+        const request: ConfirmMigrationRequest = {
+            expected_username: expectedUsername,
+        };
+
         return apiRequest<ConfirmMigrationResponse>(
             `${this.baseUrl}/api/v1/migration/confirm`,
-            { method: "POST" },
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(request),
+            },
             this.requestContext(),
         );
     }

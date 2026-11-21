@@ -151,7 +151,7 @@ function MigratePage() {
     const router = useRouter();
 
     const confirmMutation = useMutation({
-        mutationFn: () => api.confirmMigration(),
+        mutationFn: () => api.confirmMigration(currentUser.name),
         onSuccess: () => {
             queryClient.clear();
             window.location.replace(safeRedirectUrl(search.redirect));

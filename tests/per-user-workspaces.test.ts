@@ -397,10 +397,15 @@ describe("Per-user workspaces", () => {
         );
         expect(blockedWsStatus).toBe(503);
 
-        // Operator switches to Bob and confirms migration into Bob's workspace.
+        // Operator switches to Bob; confirming with stale expected_username "alice" is rejected.
         const bob = new ApiClient(server.baseUrl);
         await bob.login("bob", "bob-password");
-        const confirmed = await bob.confirmMigration();
+        await expect(bob.confirmMigration("alice")).rejects.toMatchObject({
+            status: 409,
+        });
+        expect((await bob.getMigrationStatus()).pending).toBe(true);
+
+        const confirmed = await bob.confirmMigration("bob");
         expect(confirmed.migrated_to).toBe("bob");
 
         // Gate is lifted immediately without restart.

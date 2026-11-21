@@ -40,6 +40,18 @@ pub struct MigrationStatusResponse {
     pub summary: Option<MigrationSummary>,
 }
 
+/// Request body for `POST /api/v1/migration/confirm`.
+///
+/// TEMPORARY MIGRATION: Binds the confirmation to the username shown on the migration screen
+/// so switching accounts in another tab cannot assign legacy data to the wrong user. Can be
+/// removed after layout v2 adoption.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct ConfirmMigrationRequest {
+    /// Canonical username the operator explicitly confirmed in the UI.
+    pub expected_username: String,
+}
+
 /// Response for `POST /api/v1/migration/confirm`.
 ///
 /// TEMPORARY MIGRATION: Confirms which user received the migrated legacy workspace. Can be
