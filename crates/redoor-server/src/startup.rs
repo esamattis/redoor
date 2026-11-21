@@ -382,21 +382,28 @@ impl ServerRuntime {
                 crate::workspaces::write_layout_version(&runtime.paths).await?;
             }
             if let Some(created) = &config.bootstrapped {
-                let agent_token = redoor_core::config::generate_agent_token()?;
-                accounts
-                    .set_account_token(&created.username, agent_token.clone())
-                    .await
-                    .context("Failed to initialize starter user account")?;
-                let starter_local = AgentConfig::Local(redoor_core::config::LocalAgentConfig {
-                    id: Some(redoor_protocol::ids::AgentId::generate()),
-                    name: Some("local".to_string()),
-                    home: None,
-                    terminal_env: std::collections::BTreeMap::new(),
-                });
-                user_agents
-                    .write_all(&created.username, &[starter_local])
-                    .await
-                    .context("Failed to initialize starter local agent")?;
+                let agent_token = match accounts.existing_agent_token(&created.username).await {
+                    Some(existing) => existing,
+                    None => {
+                        let token = redoor_core::config::generate_agent_token()?;
+                        accounts
+                            .set_account_token(&created.username, token.clone())
+                            .await
+                            .context("Failed to initialize starter user account")?;
+                        let starter_local =
+                            AgentConfig::Local(redoor_core::config::LocalAgentConfig {
+                                id: Some(redoor_protocol::ids::AgentId::generate()),
+                                name: Some("local".to_string()),
+                                home: None,
+                                terminal_env: std::collections::BTreeMap::new(),
+                            });
+                        user_agents
+                            .write_all(&created.username, &[starter_local])
+                            .await
+                            .context("Failed to initialize starter local agent")?;
+                        token
+                    }
+                };
                 print_bootstrap_secrets(&config.config_path, created, &agent_token);
             }
         } else {

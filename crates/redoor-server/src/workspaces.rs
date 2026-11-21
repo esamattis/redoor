@@ -204,6 +204,15 @@ impl UserAccountStore {
         Ok(store)
     }
 
+    /// Returns `username`'s already-loaded agent token without creating one on disk.
+    pub(crate) async fn existing_agent_token(&self, username: &str) -> Option<String> {
+        self.accounts
+            .read()
+            .await
+            .get(username)
+            .map(|entry| entry.agent_token.clone())
+    }
+
     /// Returns the user's `agent_token`, creating and persisting `account.json` on first use.
     pub(crate) async fn ensure_agent_token(&self, username: &str) -> Result<String> {
         if let Some(entry) = self.accounts.read().await.get(username) {
