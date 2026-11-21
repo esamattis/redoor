@@ -1,6 +1,6 @@
 # Configuration (`config.toml`)
 
-Server, agent, and relays share one TOML file. The same file can hold `[server]`, `[agent]`, `[[agents]]`, and `[[relays]]`.
+Server, agent, and relays share one TOML file. The same file can hold `[server]`, `[agent]`, and `[[relays]]`. Managed server devices are configured in the UI and stored per user under `<data_dir>/users/<user>/agents.json`.
 
 The UI and remote CLI call the machines you access **devices**. A **Redoor agent**
 is the process running on a device. Configuration keys, environment variables,
@@ -31,13 +31,13 @@ For values that exist in more than one place:
 
 **CLI flag > environment variable > `config.toml` > built-in default**
 
-Unknown keys anywhere in the file (top level, `[server]`, `[agent]`, `[[agents]]` and `[[relays]]` rows) are rejected so typos fail fast.
+Unknown keys anywhere in the file (top level, `[server]`, `[agent]`, `[[relays]]`, and legacy migration-only `[[agents]]` rows) are rejected so typos fail fast.
 
 ## Top-level
 
 | Key           | Type   | Required | Description                                                                                    |
 | ------------- | ------ | -------- | ---------------------------------------------------------------------------------------------- |
-| `agent_token` | string | yes      | Shared agent secret. When an agent opens its websocket (`/api/v1/agent/ws`), the agent and the server each prove they know it with an HMAC over fresh nonces; the token itself is never sent, and an agent refuses a server that cannot prove it. Use a long random value, since a short one can be guessed offline from captured proofs. Must be non-empty. |
+| `agent_token` | string | for `[agent]` / `[[relays]]` | Per-user agent registration secret used by standalone agents and relays (shown on the Server page in the UI). Not needed for `[server]`-only configs. When an agent opens its websocket (`/api/v1/agent/ws`), the agent and the server each prove they know it with an HMAC over fresh nonces; the token itself is never sent, and an agent refuses a server that cannot prove it. |
 
 ```toml
 agent_token = "long-private-secret"
@@ -90,7 +90,7 @@ Session cookies are always marked `Secure` with built-in HTTPS.
 
 ### Browser authentication
 
-Redoor has exactly one account with full access: anyone who can sign in can already run commands as the server's OS user through the local agent, so per-user rights would only pretend to protect anything. Several people and several methods can sign in to it. Everyone shares the vault, SSH keys, devices, terminal sessions and access tokens; only the UI state (preferences, open files, editor drafts) is kept per login name. Log lines written for a request name who made it (`[user=alice (password)]`), and the application menu shows who is signed in.
+Each signed-in user owns an isolated **workspace** keyed by their canonical username (so password and OIDC logins for the same username share one workspace). Managed devices, per-user agent tokens, vaults, SSH keys, access tokens, terminal sessions, transfers, UI state, and editor buffers are all isolated per user. Server-wide operations (server logs, restart, upgrade, and local agents) remain equally available to all signed-in users because anyone who can run a local agent already acts as the server's OS user. Log lines written for a request name who made it (`[user=alice (password)]`), and the application menu shows who is signed in.
 
 At least one login method must be configured, or the server refuses to start:
 
@@ -152,7 +152,7 @@ password = "long-private-password"
 
 ### `[server.oidc]` (optional OpenID Connect sign-in)
 
-Adds "Sign in with …" to the login page using any OpenID Connect provider (Pocket ID, Authentik, Keycloak, …). It is off unless this table exists. When configured, the login page leads with the provider button; password logins stay available next to it, so a provider outage cannot lock you out when one is configured. A successful sign-in creates a browser session for the server's single account, named after the ID token's `preferred_username` (else `email`, else `sub`) in logs and the UI. Agent connections, access tokens and MCP are not affected.
+Adds "Sign in with …" to the login page using any OpenID Connect provider (Pocket ID, Authentik, Keycloak, …). It is off unless this table exists. When configured, the login page leads with the provider button; password logins stay available next to it, so a provider outage cannot lock you out when one is configured. A successful sign-in creates a browser session for that user's isolated workspace, keyed by the ID token's `preferred_username` (else `email` when `email_verified` is `true`, else `sub`). Agent connections, access tokens and MCP remain scoped to each user's workspace.
 
 | Key                     | Type             | Default                          | Description                                                                                                                         |
 | ----------------------- | ---------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
@@ -182,7 +182,7 @@ allowed_groups = ["admins"]
 
 ## `[agent]`
 
-Used by a standalone `redoor agent` process (and by systemd/launchd agent units). Not used for server-managed `[[agents]]` entries.
+Used by a standalone `redoor agent` process (and by systemd/launchd agent units). Not used for server-managed devices.
 
 | Key          | Type   | Default                     | Description                                                                                                                                  |
 | ------------ | ------ | --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,17 +209,16 @@ log_format = "line"
 
 CLI values take precedence over role-specific environment variables, which take precedence over TOML. Server-managed agent daemons use the defaults (and `REDOOR_AGENT_LOG_LEVEL` / `REDOOR_AGENT_LOG_FORMAT` of their own environment). Log format does not change the structured WebSocket records shown in the browser.
 
-## `[[agents]]`
+## Managed devices (legacy `[[agents]]`)
 
-Optional array of device connections with server-managed agents. Only the server reads this section. Each entry is either **SSH-backed** (default) or **local** (`local = true`). Agents start when you start a device from the UI or management API. The server never starts a device on its own: after a server restart, a local device whose agent is still running reconnects by itself, and an SSH device stays stopped until you start it. The UI uses **Add device**, **Edit device**, and **Remove device** to manage these entries; removing a device stops its agent daemon, deletes the daemon's own namespace directories on the device and removes its configuration, without touching any other files on the device.
+Managed devices (SSH-backed or local) are added and edited in the UI (**Add device**, **Edit device**, **Remove device**) and stored per user in `<data_dir>/users/<user>/agents.json`. Agents start when you start a device from the UI or management API. The server never starts a device on its own: after a server restart, a local device whose agent is still running reconnects by itself, and an SSH device stays stopped until you start it. Legacy `[[agents]]` entries in `config.toml` are only read during the one-time upgrade migration to per-user workspaces.
 
 ### Device ids and names
 
 Every device has a stable **id** (`dev_` followed by 20 lowercase letters and digits) and an editable **name**. Access token scopes and everything else the server stores refer to the id, so renaming a device never changes what a token can reach. Requests (REST, MCP, `redoor remote`) accept either the name or the id; use the id in scripts that must stay on one device across renames.
 
-- The server writes `id` into entries added through the UI or API. Entries you write by hand get an `id` written back on the next server start, keeping the file's comments and formatting. Do not change or copy it: duplicate ids are rejected, so when you copy an entry, delete its `id` line and let the server assign a new one.
-- If the server cannot write the file (for example a read-only mount), startup fails and prints a ready-to-paste `id = "dev_..."` line for each entry without one.
-- Names must be unique, must not be empty, must not contain `:` or `/`, and must not look like an id.
+- The server assigns a fresh `id` when a device is added through the UI or API, and assigns ids to legacy `[[agents]]` entries during the one-time upgrade migration. Do not duplicate ids across entries.
+- Names must be unique within a user's workspace, must not be empty, must not contain `:` or `/`, and must not look like an id.
 - A standalone `redoor agent` stores its id in `agent-id` in its data directory (`~/.local/share/redoor/agent-id` by default). Delete that file on a cloned machine to give it its own identity.
 
 ### SSH-backed agent
@@ -239,6 +238,8 @@ Default when `local` is omitted or `false`. The server SSHes to the host, ensure
 | `terminal_env` | table        | no       | Extra environment variables for the device's terminals. See [Terminal environment](#terminal-environment).                                                      |
 
 The server always installs and updates the binary itself, and the device opens the remote user's home directory. Set `install_dir` when programs cannot run from the home directory because it is mounted `noexec`, as on TrueNAS: the server then stops before uploading and says which mount refuses to run programs. `install_dir` is used literally on the device, except that a leading `~/`, `$HOME/` or `${HOME}/` is expanded to the remote user's home directory. Other shell syntax such as variables or `$(...)` is not interpreted.
+
+Legacy `config.toml` migration format:
 
 ```toml
 [[agents]]
@@ -264,6 +265,8 @@ Runs on the same machine as the server. The server reuses its own binary (`std::
 
 SSH-only keys (`target`, `username`, `ssh_port`, `install_dir`, `password`) are rejected on local entries, and `home` is rejected on SSH entries.
 
+Legacy `config.toml` migration format:
+
 ```toml
 [[agents]]
 local = true
@@ -274,6 +277,8 @@ home = "/home/me/projects"
 ### Terminal environment
 
 `terminal_env` sets extra environment variables in every terminal opened on the device, on top of what the agent itself was started with. Edit it on the device's **Edit device** page under **Terminal environment**. Saving there does not stop the agent: open terminals keep their environment and the next terminal gets the new variables.
+
+Legacy `config.toml` migration format:
 
 ```toml
 [[agents]]
@@ -372,15 +377,6 @@ server = "http://127.0.0.1:7666"
 name = "macbook"
 home = "/home/me/projects"
 # log = "log/agent.log"
-
-[[agents]]
-local = true
-name = "local"
-home = "/home/me/projects"
-
-[[agents]]
-target = "user@example.com"
-name = "prod-server"
 
 [[relays]]
 id = "production"

@@ -90,15 +90,12 @@ Full reference for every option: [docs/config.md](docs/config.md).
 ### Server
 
 ```toml
-# Shared secret between the server and the agent
-agent_token = "secret"
-
 [server]
 # port = 7666
 # bind = "0.0.0.0" # default 127.0.0.1
 # cookie_secure = false # set true behind an HTTPS reverse proxy
 
-# Web UI login: one entry per person.
+# Web UI login: one entry per person, each with their own isolated workspace.
 [[server.users]]
 name = "admin"
 password = "long-private-password"
@@ -107,17 +104,9 @@ password = "long-private-password"
 # (or set cert = "..." and key = "..." to use your own).
 # [server.tls]
 # self_signed = true
-
-## Automatically spawn agents via SSH
-[[agents]]
-target = "user@example.com"
-name = "Linux Server"
-
-[[agents]]
-# local agent that runs on the same computer as the server
-local = true
-name = "local"
 ```
+
+Add local or SSH-backed devices from the Web UI after signing in. Each user gets their own agent registration token on the Server page for standalone agents.
 
 Run it
 
