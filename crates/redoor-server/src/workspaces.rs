@@ -229,6 +229,13 @@ impl UserAccountStore {
             Ok(bytes) => {
                 let doc: AccountDocument = serde_json::from_slice(&bytes)
                     .with_context(|| format!("Failed to parse '{}'", path.display()))?;
+                anyhow::ensure!(
+                    doc.username == username,
+                    "Workspace '{}' belongs to '{}', not '{}'",
+                    path.display(),
+                    doc.username,
+                    username
+                );
                 doc.agent_token
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {

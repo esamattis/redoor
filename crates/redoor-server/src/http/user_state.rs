@@ -101,23 +101,26 @@ async fn write_user_state(directory: &Path, state: &serde_json::Value) -> anyhow
     .await
 }
 
-/// `<data_dir>/users/<name>`, the directory of one user's personal files (UI state and
-/// editor buffers).
+/// `<data_dir>/users/<name>`, the directory of one user's personal files (UI state,
+/// editor buffers, account, managed devices, vault, SSH keys, and access tokens).
 ///
-/// Login names from the config follow the portable allowlist and are used as they
-/// are. OIDC names are whatever the provider sends (an email address, a subject), so any
-/// other name becomes `~` and its SHA-256: `~` is outside the allowlist, so such a name can
-/// never take another user's directory, and no name can leave `users/`.
+/// All-lowercase login names from the portable allowlist are used as they are. Any name
+/// containing uppercase letters or characters outside the allowlist becomes `~` and its
+/// SHA-256 so distinct usernames such as `Alice` and `alice` never collide on
+/// case-insensitive filesystems (default macOS APFS), `~` is outside the allowlist so a
+/// hashed name can never take another user's directory, and no name can leave `users/`.
 pub(crate) fn user_directory(
     paths: &redoor_core::paths::AppPaths,
     name: &str,
 ) -> anyhow::Result<PathBuf> {
-    let component =
-        redoor_core::config::parse_server_username(name, "user name").unwrap_or_else(|_| {
+    let component = match redoor_core::config::parse_server_username(name, "user name") {
+        Ok(valid) if !valid.bytes().any(|byte| byte.is_ascii_uppercase()) => valid,
+        _ => {
             let digest = Sha256::digest(name.as_bytes());
             let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
             format!("~{hex}")
-        });
+        }
+    };
     Ok(paths.data_dir()?.join(USERS_DIRECTORY).join(component))
 }
 
@@ -249,10 +252,20 @@ mod tests {
                 "{name}"
             );
         }
-        // Different names never share a directory.
+        // Different names never share a directory, even differing only in ASCII case on
+        // case-insensitive filesystems (default macOS APFS).
         assert_ne!(
             user_directory(&paths, "a@example.org").unwrap(),
             user_directory(&paths, "b@example.org").unwrap()
         );
+        let lower = user_directory(&paths, "alice")
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        let upper = user_directory(&paths, "Alice")
+            .unwrap()
+            .to_string_lossy()
+            .to_ascii_lowercase();
+        assert_ne!(lower, upper);
     }
 }
