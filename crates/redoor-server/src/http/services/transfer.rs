@@ -286,34 +286,39 @@ a committed tree does not contain; merge into it instead",
         identity: &MoveSourceIdentity,
     ) -> Result<SignedPartial, ApiError> {
         self.signer
-            .sign(PartialAuthorization {
-                version: 1,
-                source_agent_id: spec.source.agent.clone(),
-                source_path: source_path.to_string(),
-                source_identity: identity.clone(),
-                dest_agent_id: spec.dest.agent.clone(),
-                dest_path: dest_path.to_string(),
-                operation: match spec.op {
-                    CopyOperation::Copy => PartialOperation::Copy,
-                    CopyOperation::Move => PartialOperation::Move,
+            .sign_for_owner(
+                &spec.owner,
+                PartialAuthorization {
+                    version: 1,
+                    source_agent_id: spec.source.agent.clone(),
+                    source_path: source_path.to_string(),
+                    source_identity: identity.clone(),
+                    dest_agent_id: spec.dest.agent.clone(),
+                    dest_path: dest_path.to_string(),
+                    operation: match spec.op {
+                        CopyOperation::Copy => PartialOperation::Copy,
+                        CopyOperation::Move => PartialOperation::Move,
+                    },
+                    on_existing: spec.on_existing,
+                    created_at: redoor_core::partials::now(),
                 },
-                on_existing: spec.on_existing,
-                created_at: redoor_core::partials::now(),
-            })
+            )
             .await
             .map_err(|error| ApiError::internal(format!("Cannot sign partial: {error}")))
     }
 
-    /// Verifies server authorization and binds it to the agent returning the manifest.
+    /// Verifies server authorization and binds it to the workspace owner and agent returning
+    /// the manifest.
     pub(crate) async fn verify(
         &self,
+        owner: &str,
         agent: &redoor_protocol::ids::AgentId,
         record: &redoor_protocol::wire::partials::PartialRecord,
     ) -> Result<bool, ApiError> {
         let valid = &record.manifest.signed.authorization.dest_agent_id == agent
             && self
                 .signer
-                .verify(&record.manifest.signed)
+                .verify_for_owner(owner, &record.manifest.signed)
                 .await
                 .map_err(|error| ApiError::bad_request(error.to_string()))?;
         if !valid {
@@ -348,7 +353,10 @@ a committed tree does not contain; merge into it instead",
         let Some(record) = candidate else {
             return Ok(None);
         };
-        if !self.verify(&dest_agent.id, &record).await? {
+        if !self
+            .verify(&dest_agent.owner, &dest_agent.id, &record)
+            .await?
+        {
             return Ok(None);
         }
         let authorization = &record.manifest.signed.authorization;

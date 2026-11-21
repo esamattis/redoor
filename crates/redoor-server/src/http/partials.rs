@@ -65,7 +65,7 @@ pub(crate) async fn list(
             }) {
                 continue;
             }
-            if !state.transfers.verify(&agent.id, &record).await? {
+            if !state.transfers.verify(&owner, &agent.id, &record).await? {
                 continue;
             }
             let authorization = record.manifest.signed.authorization;
@@ -122,7 +122,7 @@ pub(crate) async fn resume(
         .ok_or_else(|| ApiError::not_found("Partial not found"))?;
     if !state
         .transfers
-        .verify(&request.dest_agent_id, &record)
+        .verify(&owner, &request.dest_agent_id, &record)
         .await?
     {
         return Err(ApiError::bad_request("Invalid partial signature"));

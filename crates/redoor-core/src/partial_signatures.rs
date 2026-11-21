@@ -72,6 +72,44 @@ impl PartialSigner {
             .await
     }
 
+    /// Signing covers a fixed canonical tuple bound to `owner` so a partial left on an agent
+    /// whose token is reassigned to another user never verifies under the new owner.
+    pub async fn sign_for_owner(
+        &self,
+        owner: &str,
+        authorization: PartialAuthorization,
+    ) -> std::io::Result<SignedPartial> {
+        let mut payload = Vec::with_capacity(owner.len() + 1 + 128);
+        payload.extend_from_slice(owner.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&crate::partials::canonical(&authorization));
+        let signature = blake3::keyed_hash(self.key().await?, &payload)
+            .to_hex()
+            .to_string();
+        Ok(SignedPartial {
+            authorization,
+            signature,
+        })
+    }
+
+    /// Hash equality uses the digest's constant-time comparison after decoding untrusted text,
+    /// scoped to `owner`.
+    pub async fn verify_for_owner(
+        &self,
+        owner: &str,
+        signed: &SignedPartial,
+    ) -> std::io::Result<bool> {
+        let Ok(signature) = blake3::Hash::from_hex(&signed.signature) else {
+            return Ok(false);
+        };
+        let mut payload = Vec::with_capacity(owner.len() + 1 + 128);
+        payload.extend_from_slice(owner.as_bytes());
+        payload.push(0);
+        payload.extend_from_slice(&crate::partials::canonical(&signed.authorization));
+        Ok(signed.authorization.version == 1
+            && signature == blake3::keyed_hash(self.key().await?, &payload))
+    }
+
     /// Signing covers a fixed canonical tuple, including operation and conflict policy.
     pub async fn sign(
         &self,
