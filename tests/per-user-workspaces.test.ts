@@ -1,6 +1,12 @@
 import { afterAll, describe, expect, it, onTestFinished } from "vitest";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    chmodSync,
+    existsSync,
+    mkdirSync,
+    readFileSync,
+    writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import WebSocket from "ws";
 
@@ -452,6 +458,85 @@ describe("Per-user workspaces", () => {
         expect((await alice.listAgents()).map((a) => a.name)).not.toContain(
             "reconnected-agent",
         );
+    }, 30_000);
+
+    it("completes migration and lifts the gate even when config.toml is read-only", async () => {
+        if (process.getuid?.() === 0) {
+            // Root ignores directory mode bits, so read-only config mounts cannot be simulated.
+            return;
+        }
+        const port = await getAvailablePort();
+        const home = tempFiles.tempDirectory({ suffix: "-ro-migrate-home" });
+        const configDir = tempFiles.tempDirectory({
+            suffix: "-ro-migrate-cfg",
+        });
+        const appName = `${TEST_APP_NAME}-ro-migrate-${port}`;
+        const configPath = join(configDir, "config.toml");
+        writeFileSync(
+            configPath,
+            `agent_token = "ro-legacy-token"
+
+[server]
+port = ${port}
+
+[[server.users]]
+name = "alice"
+password = "alice-password"
+
+[[agents]]
+local = true
+name = "ro_legacy_box"
+home = "${home}"
+`,
+            { mode: 0o444 },
+        );
+        // Read-only parent directory mirrors a Docker `:ro` bind mount where atomic rename fails.
+        chmodSync(configDir, 0o500);
+        onTestFinished(() => chmodSync(configDir, 0o700));
+
+        const pid1 = processManager.spawnServer({
+            config: configPath,
+            home,
+            env: { REDOOR_PORT: String(port), REDOOR_APP_NAME: appName },
+            skipWorkspaceSeed: true,
+        });
+        onTestFinished(async () => {
+            await processManager.killAndWait(pid1);
+        });
+        await waitForPort(port);
+
+        const alice = new ApiClient(`http://127.0.0.1:${port}`);
+        await alice.login("alice", "alice-password");
+        // Confirming migration must succeed even when config.toml cannot be rewritten.
+        const confirmed = await alice.confirmMigration("alice");
+        expect(confirmed.migrated_to).toBe("alice");
+        expect((await alice.getMigrationStatus()).pending).toBe(false);
+        expect((await alice.listAgents()).map((a) => a.name)).toEqual([
+            "ro_legacy_box",
+        ]);
+        expect((await alice.getServerInfo()).agent_token).toBe(
+            "ro-legacy-token",
+        );
+
+        // Restarting against the same untouched read-only config.toml must not re-enter migration.
+        await processManager.killAndWait(pid1);
+        const pid2 = processManager.spawnServer({
+            config: configPath,
+            home,
+            env: { REDOOR_PORT: String(port), REDOOR_APP_NAME: appName },
+            skipWorkspaceSeed: true,
+        });
+        onTestFinished(async () => {
+            await processManager.killAndWait(pid2);
+        });
+        await waitForPort(port);
+
+        const aliceAfter = new ApiClient(`http://127.0.0.1:${port}`);
+        await aliceAfter.login("alice", "alice-password");
+        expect((await aliceAfter.getMigrationStatus()).pending).toBe(false);
+        expect((await aliceAfter.listAgents()).map((a) => a.name)).toEqual([
+            "ro_legacy_box",
+        ]);
     }, 30_000);
 
     it("skips migration on a fresh install with no legacy data", async () => {

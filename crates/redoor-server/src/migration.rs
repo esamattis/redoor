@@ -25,6 +25,10 @@ use crate::http::state::ServerState;
 use crate::http::user_state::prepare_user_directory;
 use crate::workspaces::{has_layout_version, write_layout_version};
 
+/// File written before moving any legacy files so an interrupted migration can only be
+/// resumed by the same user, never split across two accounts.
+const MIGRATION_OWNER_FILE: &str = ".migration-owner";
+
 /// Legacy global data captured at startup while migration is pending.
 ///
 /// TEMPORARY MIGRATION: Held in memory until `POST /api/v1/migration/confirm` completes. Can
@@ -37,6 +41,9 @@ pub(crate) struct PendingMigration {
     pub(crate) agents: Vec<AgentConfig>,
     /// Whether `[agent]` or `[[relays]]` share `config.toml`, so `agent_token` must stay in it.
     pub(crate) keep_config_agent_token: bool,
+    /// User who has already started migrating; prevents a retry from splitting files across
+    /// two different workspaces.
+    pub(crate) claimed_owner: Option<String>,
     /// Summary shown to the operator on the confirmation screen.
     pub(crate) summary: MigrationSummary,
 }
@@ -89,8 +96,19 @@ impl MigrationState {
         username: &str,
     ) -> Result<ConfirmMigrationResponse, ApiError> {
         let _guard = self.confirm_lock.lock().await;
-        let Some(pending) = self.pending.read().await.clone() else {
-            return Err(ApiError::conflict("Migration has already completed"));
+        let mut pending = {
+            let guard = self.pending.read().await;
+            let Some(pending) = guard.as_ref() else {
+                return Err(ApiError::conflict("Migration has already completed"));
+            };
+            if let Some(claimed) = &pending.claimed_owner
+                && claimed != username
+            {
+                return Err(ApiError::conflict(format!(
+                    "Migration is already in progress for user '{claimed}'; sign in as '{claimed}' to finish it"
+                )));
+            }
+            pending.clone()
         };
 
         let data_dir =
@@ -103,9 +121,9 @@ impl MigrationState {
                 ApiError::internal(format!("Failed to prepare user workspace: {error}"))
             })?;
 
-        // Assign stable device ids to any legacy `[[agents]]` entries that lacked one.
-        let mut agents = pending.agents;
-        for agent in &mut agents {
+        // Persist the claimed owner and pre-assigned device ids before moving any files so a
+        // retry after a partial failure resumes into the exact same workspace with the same ids.
+        for agent in &mut pending.agents {
             match agent {
                 AgentConfig::Local(local) => {
                     if local.id.is_none() {
@@ -119,6 +137,19 @@ impl MigrationState {
                 }
             }
         }
+        pending.claimed_owner = Some(username.to_string());
+        *self.pending.write().await = Some(pending.clone());
+        let owner_marker = data_dir.join(MIGRATION_OWNER_FILE);
+        crate::http::user_state::write_private_file_atomically(
+            &data_dir.join(".migration-owner.tmp"),
+            &owner_marker,
+            username.as_bytes(),
+        )
+        .await
+        .map_err(|error| {
+            ApiError::internal(format!("Failed to record migration owner: {error}"))
+        })?;
+        let agents = pending.agents;
 
         // 1. Write `account.json`, preserving the legacy agent token when present.
         let agent_token = match pending.agent_token {
@@ -179,28 +210,8 @@ impl MigrationState {
             let _ = tokio::fs::remove_dir(&legacy_tokens_dir).await;
         }
 
-        // 6. Clean legacy server fields from `config.toml`.
-        let _config_guard = state.config_edit_lock.lock().await;
-        redoor_core::config::remove_legacy_server_fields(
-            &state.config_path,
-            !pending.keep_config_agent_token,
-        )
-        .await
-        .map_err(|error| {
-            ApiError::internal(format!(
-                "Failed to clean legacy fields from config.toml: {error}"
-            ))
-        })?;
-        drop(_config_guard);
-
-        // 7. Write `<data_dir>/layout-version` = 2.
-        write_layout_version(&state.runtime.paths)
-            .await
-            .map_err(|error| {
-                ApiError::internal(format!("Failed to write layout-version: {error}"))
-            })?;
-
-        // 8. Activate migrated access tokens and managed watchdogs/inventory live.
+        // 6. Activate migrated access tokens and managed watchdogs/inventory live before
+        // writing `layout-version` so an activation error remains retryable under the same owner.
         state.tokens.reload_user(username).await.map_err(|error| {
             ApiError::internal(format!("Failed to load migrated access tokens: {error}"))
         })?;
@@ -217,8 +228,38 @@ impl MigrationState {
                 ApiError::internal(format!("Failed to register migrated devices: {error}"))
             })?;
 
-        // 9. Clear the pending gate so normal traffic and agent reconnects resume immediately.
+        // 7. Write `<data_dir>/layout-version` = 2 and clear the pending gate before
+        // best-effort `config.toml` cleanup so a read-only config mount (e.g. Docker `:ro`)
+        // can never leave the server stuck in pending migration.
+        write_layout_version(&state.runtime.paths)
+            .await
+            .map_err(|error| {
+                ApiError::internal(format!("Failed to write layout-version: {error}"))
+            })?;
+        let _ = tokio::fs::remove_file(&owner_marker).await;
         *self.pending.write().await = None;
+
+        // 8. Best-effort cleanup of legacy server fields from `config.toml`.
+        let _config_guard = state.config_edit_lock.lock().await;
+        if let Err(error) = redoor_core::config::remove_legacy_server_fields(
+            &state.config_path,
+            !pending.keep_config_agent_token,
+        )
+        .await
+        {
+            let fields = if pending.keep_config_agent_token {
+                "the legacy [[agents]] entries"
+            } else {
+                "the top-level agent_token and [[agents]] entries"
+            };
+            log!(
+                Level::Warning,
+                "Migration succeeded, but could not remove legacy fields from '{}': {error}. You can remove {fields} manually.",
+                state.config_path.display()
+            );
+        }
+        drop(_config_guard);
+
         log!(
             Level::Info,
             "Migrated legacy workspace to user '{}': devices={}, has_vault={}, ssh_keys={}, access_tokens={}",
@@ -277,10 +318,24 @@ pub(crate) async fn detect_pending_migration(
         access_token_count,
         agent_token: file.agent_token.clone(),
     };
+    let claimed_owner = match tokio::fs::read_to_string(data_dir.join(MIGRATION_OWNER_FILE)).await {
+        Ok(owner) if !owner.trim().is_empty() => Some(owner.trim().to_string()),
+        Ok(_) => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "reading '{}'",
+                    data_dir.join(MIGRATION_OWNER_FILE).display()
+                )
+            });
+        }
+    };
     Ok(Some(PendingMigration {
         agent_token: file.agent_token.clone(),
         agents: file.agents.clone(),
         keep_config_agent_token: file.agent.is_some() || !file.relays.is_empty(),
+        claimed_owner,
         summary,
     }))
 }
