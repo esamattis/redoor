@@ -1024,6 +1024,20 @@ mod tests {
         String::from_utf8(output.stdout).unwrap().trim().to_string()
     }
 
+    /// Every object id in the repository, loose or packed, so tests can prove a view wrote
+    /// nothing. `git count-objects -v` is not used because its `size` is disk-block usage,
+    /// which filesystems such as ZFS update lazily after the objects were written.
+    fn object_ids(root: &Path) -> String {
+        git(
+            root,
+            &[
+                "cat-file",
+                "--batch-all-objects",
+                "--batch-check=%(objectname)",
+            ],
+        )
+    }
+
     /// Writes `contents` to `relative` below `root`.
     fn write(root: &Path, relative: &str, contents: &str) {
         std::fs::write(root.join(relative), contents).unwrap();
@@ -1152,7 +1166,7 @@ mod tests {
         write(root, "shared.txt", "one\nfeature side\nthree\n");
         write(root, "clean.txt", "clean\n");
         commit(root, "feature edit");
-        let objects_before = git(root, &["count-objects", "-v"]);
+        let objects_before = object_ids(root);
 
         let response = diff(root, "main...feature");
         assert_eq!(paths(&response), ["clean.txt", "shared.txt"]);
@@ -1169,7 +1183,7 @@ mod tests {
         assert!(shared.contains("+<<<<<<< main"), "{shared}");
         assert!(shared.contains("+>>>>>>> feature"), "{shared}");
         // Viewing must never write to the repository, so merged objects stay in memory.
-        assert_eq!(git(root, &["count-objects", "-v"]), objects_before);
+        assert_eq!(object_ids(root), objects_before);
         // Listed conflicts also say why, naming main as the side merged into.
         let reason = response
             .files
@@ -1434,7 +1448,7 @@ three
         let temp = fixture();
         let root = temp.path();
         write(root, "shared.txt", "one\ntwo edited\nthree\n");
-        let objects_before = git(root, &["count-objects", "-v"]);
+        let objects_before = object_ids(root);
 
         let response = diff(root, &format!("main...{WORKTREE_REVISION}"));
         // HEAD is main, so the uncommitted edit is all that differs.
@@ -1445,7 +1459,7 @@ three
         // The range names HEAD, the commit the working tree is built on.
         assert_eq!(response.commit.id, git(root, &["rev-parse", "HEAD"]));
         // Viewing must never write to the repository, so the built trees stay in memory.
-        assert_eq!(git(root, &["count-objects", "-v"]), objects_before);
+        assert_eq!(object_ids(root), objects_before);
     }
 
     /// Untracked, staged and deleted files all count as the working tree, the way
