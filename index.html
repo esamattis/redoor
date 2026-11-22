@@ -30,8 +30,9 @@
     --blue-bright: #3b82f6;
     --blue-soft: #60a5fa;
     --blue-pale: #93c5fd;
-    --red: #dd1719;
-    --red-bright: #ff2422;
+    --red: #dc2626;
+    --red-bright: #ef4444;
+    --red-soft: #f87171;
     --green: #34d399;
     --amber: #fbbf24;
     --violet: #c084fc;
@@ -42,7 +43,7 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 
-html { scroll-behavior: smooth; scroll-padding-top: 80px; }
+html { scroll-padding-top: 80px; }
 
 body {
     margin: 0;
@@ -53,21 +54,6 @@ body {
     line-height: 1.6;
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
-}
-
-/* Faint grid that fades out below the hero, giving the page depth without competing with the screenshots. */
-body::before {
-    content: "";
-    position: absolute;
-    inset: 0 0 auto 0;
-    height: 1100px;
-    background-image:
-        linear-gradient(to right, rgb(148 163 184 / 0.05) 1px, transparent 1px),
-        linear-gradient(to bottom, rgb(148 163 184 / 0.05) 1px, transparent 1px);
-    background-size: 56px 56px;
-    mask-image: radial-gradient(ellipse 80% 70% at 50% 0%, #000 30%, transparent 100%);
-    pointer-events: none;
-    z-index: -1;
 }
 
 a { color: var(--blue-soft); text-decoration: none; }
@@ -95,22 +81,23 @@ img { max-width: 100%; display: block; }
     position: sticky;
     top: 0;
     z-index: 50;
-    backdrop-filter: blur(14px) saturate(140%);
-    -webkit-backdrop-filter: blur(14px) saturate(140%);
-    background: rgb(11 13 18 / 0.72);
-    border-bottom: 1px solid transparent;
-    transition: border-color 0.2s, background 0.2s;
+    background: rgb(11 13 18 / 0.94);
+    border-top: 3px solid var(--red);
+    border-bottom: 1px solid var(--border);
 }
-.nav.scrolled { border-bottom-color: var(--border); background: rgb(11 13 18 / 0.88); }
-.nav .container { display: flex; align-items: center; gap: 24px; height: 64px; }
+.nav .container { display: flex; align-items: center; gap: 24px; height: 62px; }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--text-strong); font-weight: 700; font-size: 19px; letter-spacing: -0.01em; }
 .brand:hover { color: var(--text-strong); }
-.brand img { width: 34px; height: 34px; }
+.brand img { width: 32px; height: 32px; }
 .nav-links { display: flex; gap: 4px; margin-left: auto; align-items: center; }
-.nav-links a { color: var(--muted); font-size: 15px; padding: 8px 12px; border-radius: 8px; transition: color 0.15s, background 0.15s; }
-.nav-links a:hover { color: var(--text-strong); background: rgb(255 255 255 / 0.05); }
-.nav-links .gh { display: inline-flex; align-items: center; gap: 8px; color: var(--text); border: 1px solid var(--border-strong); }
-.nav-links .gh svg { width: 18px; height: 18px; }
+.nav-links a { color: var(--muted); font-size: 15px; padding: 7px 11px; border-radius: 7px; transition: color 0.15s, background 0.15s; }
+.nav-links a:hover { color: var(--text-strong); background: rgb(255 255 255 / 0.06); }
+.nav-links .gh { display: inline-flex; align-items: center; gap: 8px; color: var(--text-strong); border: 1px solid var(--border-strong); margin-left: 6px; }
+.nav-links .gh:hover { border-color: var(--faint); }
+.nav-links .gh svg { width: 17px; height: 17px; }
+@media (max-width: 760px) {
+    .nav-links .nav-jump { display: none; }
+}
 @media (max-width: 520px) {
     .nav .container { gap: 12px; }
     .nav-links { gap: 0; }
@@ -125,161 +112,131 @@ img { max-width: 100%; display: block; }
     display: inline-flex;
     align-items: center;
     gap: 10px;
-    padding: 12px 20px;
-    border-radius: 10px;
+    padding: 12px 22px;
+    border-radius: 9px;
     font-weight: 600;
     font-size: 16px;
     border: 1px solid transparent;
-    transition: transform 0.15s, background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
     cursor: pointer;
     font-family: inherit;
 }
 .btn svg { width: 18px; height: 18px; }
-.btn-primary { background: var(--blue); color: #fff; box-shadow: 0 8px 30px -8px rgb(37 99 235 / 0.7); }
-.btn-primary:hover { background: var(--blue-bright); color: #fff; transform: translateY(-1px); }
-.btn-ghost { color: var(--text); border-color: var(--border-strong); background: rgb(255 255 255 / 0.02); }
-.btn-ghost:hover { color: var(--text-strong); border-color: var(--faint); background: rgb(255 255 255 / 0.05); transform: translateY(-1px); }
+.btn-primary { background: var(--red); color: #fff; border-color: rgb(255 255 255 / 0.12); }
+.btn-primary:hover { background: var(--red-bright); color: #fff; }
+.btn-ghost { color: var(--text-strong); border-color: var(--border-strong); background: var(--surface); }
+.btn-ghost:hover { color: #fff; border-color: var(--faint); background: var(--raised); }
 
 /* ---------- Hero ---------- */
 
-.hero { position: relative; padding: 72px 0 40px; text-align: center; }
-.hero-glow {
-    position: absolute;
-    inset: -120px 0 auto 0;
-    height: 760px;
-    background:
-        radial-gradient(40% 50% at 50% 30%, rgb(37 99 235 / 0.22), transparent 70%),
-        radial-gradient(22% 30% at 62% 22%, rgb(221 23 25 / 0.14), transparent 70%);
-    pointer-events: none;
-    z-index: -1;
-}
+.hero { position: relative; padding: 64px 0 72px; text-align: center; }
 .hero-logo {
-    width: 112px;
-    height: 112px;
-    margin: 0 auto 28px;
-    filter: drop-shadow(0 20px 40px rgb(221 23 25 / 0.25));
-    animation: float 7s ease-in-out infinite;
+    width: 92px;
+    height: 92px;
+    margin: 0 auto 20px;
 }
-@keyframes float {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-8px); }
+.hero-meta {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.04em;
+    color: var(--muted);
+    margin: 0 0 18px;
 }
-.eyebrow {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-    font-size: 14px;
-    color: var(--blue-pale);
-    background: rgb(37 99 235 / 0.1);
-    border: 1px solid rgb(59 130 246 / 0.3);
-    padding: 5px 14px;
-    border-radius: 999px;
-    margin-bottom: 22px;
-}
-.eyebrow .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); box-shadow: 0 0 10px var(--green); }
+.hero-meta .prompt { color: var(--red-bright); font-weight: 700; margin-right: 6px; }
 h1 {
-    font-size: clamp(40px, 7vw, 76px);
-    line-height: 1.04;
+    font-size: clamp(38px, 6.5vw, 68px);
+    line-height: 1.05;
     letter-spacing: -0.035em;
-    margin: 0 auto 22px;
+    margin: 0 auto 20px;
     color: var(--text-strong);
     font-weight: 800;
-    max-width: 14ch;
+    max-width: 15ch;
 }
-.grad {
-    background: linear-gradient(100deg, #93c5fd 0%, #3b82f6 45%, #ff4a48 100%);
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-}
-.lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 34px; }
+.lead { font-size: clamp(18px, 2.2vw, 21px); color: var(--muted); max-width: 640px; margin: 0 auto 30px; }
 .hero-actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 26px; }
 .hero-install {
     position: relative;
     max-width: 920px;
-    margin: 0 auto 26px;
+    margin: 0 auto 22px;
     text-align: left;
-    box-shadow: 0 20px 50px -25px rgb(37 99 235 / 0.5);
+    border-color: var(--border-strong);
+    border-left: 3px solid var(--red);
 }
 .code-block.hero-install pre { font-size: 13px; padding: 15px 64px 15px 18px; white-space: pre-wrap; word-break: break-all; }
 .hero-install .copy { top: 50%; transform: translateY(-50%); }
 .hero-note { color: var(--faint); font-size: 14.5px; max-width: 920px; margin: 2px auto 26px; }
 .hero-note code { font-size: 0.85em; }
-.platforms { display: flex; gap: 10px 22px; justify-content: center; flex-wrap: wrap; color: var(--faint); font-size: 14px; }
+.platforms { display: flex; gap: 10px 24px; justify-content: center; flex-wrap: wrap; color: var(--muted); font-size: 14px; font-family: var(--mono); }
 .platforms span { display: inline-flex; align-items: center; gap: 7px; }
-.platforms svg { width: 16px; height: 16px; opacity: 0.8; }
+.platforms svg { width: 15px; height: 15px; color: var(--faint); }
 
-/* Screenshot framed as an app window, used everywhere a screenshot appears. */
+/* Matte double-bezel screenshot frame, used everywhere a screenshot appears. */
 .window {
     position: relative;
-    border-radius: var(--radius);
-    background: var(--chrome);
+    padding: 7px;
+    border-radius: calc(var(--radius) + 3px);
+    background: var(--surface);
+    border: 1px solid var(--border-strong);
+    box-shadow: 0 24px 60px -28px rgb(0 0 0 / 0.9);
+    transition: border-color 0.15s;
+}
+.window:hover { border-color: var(--faint); }
+.shot {
+    position: relative;
+    cursor: zoom-in;
     border: 1px solid var(--border);
-    box-shadow:
-        0 0 0 1px rgb(255 255 255 / 0.02) inset,
-        0 40px 80px -30px rgb(0 0 0 / 0.9),
-        0 20px 60px -20px rgb(37 99 235 / 0.18);
+    border-radius: calc(var(--radius) - 4px);
+    padding: 0;
+    background: var(--code);
+    display: block;
+    width: 100%;
     overflow: hidden;
 }
-.window-bar {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    height: 36px;
-    padding: 0 14px;
-    background: var(--surface);
-    border-bottom: 1px solid var(--border);
-}
-.window-bar i { width: 11px; height: 11px; border-radius: 50%; background: var(--border-strong); }
-.window-bar i:nth-child(1) { background: #f87171; }
-.window-bar i:nth-child(2) { background: #fbbf24; }
-.window-bar i:nth-child(3) { background: #34d399; }
-.window-bar .url {
-    margin: 0 auto;
-    font-size: 12px;
-    color: var(--faint);
-    font-family: var(--mono);
-    background: var(--code);
-    border: 1px solid var(--border);
-    padding: 2px 14px;
-    border-radius: 6px;
-    transform: translateX(-20px);
-}
-.shot { cursor: zoom-in; border: 0; padding: 0; background: none; display: block; width: 100%; }
 .shot img { width: 100%; height: auto; }
+.shot::after {
+    content: "Expand ↗";
+    position: absolute;
+    right: 12px;
+    bottom: 12px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--text-strong);
+    background: rgb(11 13 18 / 0.86);
+    border: 1px solid var(--border-strong);
+    padding: 4px 10px;
+    border-radius: 6px;
+    opacity: 0;
+    transition: opacity 0.15s;
+    pointer-events: none;
+}
+.window:hover .shot::after { opacity: 1; }
 
-.hero-shot { margin: 64px auto 0; max-width: 1080px; perspective: 1800px; }
-.hero-shot .window {
-    transform: rotateX(8deg) scale(0.98);
-    transform-origin: 50% 0;
-    transition: transform 0.9s cubic-bezier(.2,.7,.2,1);
-}
-.hero-shot.flat .window { transform: none; }
+.hero-shot { margin: 52px auto 0; max-width: 1080px; }
 /* Crop the tall screenshot so the hero shows the interesting top part. */
-.hero-shot .shot { aspect-ratio: 16 / 11; overflow: hidden; }
+.hero-shot .shot { aspect-ratio: 16 / 11; }
 .hero-shot .shot img { object-fit: cover; object-position: top; height: 100%; }
-.hero-shot::after {
-    content: "";
-    display: block;
-    height: 1px;
-    margin-top: -1px;
-}
 
 /* ---------- Sections ---------- */
 
-section { padding: 110px 0; }
-.section-head { text-align: center; max-width: 720px; margin: 0 auto 64px; }
+section { padding: 96px 0; }
+.section-head { text-align: center; max-width: 720px; margin: 0 auto 56px; }
 .kicker {
     font-family: var(--mono);
     font-size: 13px;
-    letter-spacing: 0.12em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: var(--blue-soft);
-    margin-bottom: 14px;
+    color: var(--muted);
+    margin-bottom: 12px;
     display: block;
 }
+.kicker::before {
+    content: ">";
+    color: var(--red-bright);
+    margin-right: 0.5em;
+    font-weight: 700;
+}
 h2 {
-    font-size: clamp(30px, 4.4vw, 48px);
+    font-size: clamp(30px, 4.4vw, 46px);
     line-height: 1.1;
     letter-spacing: -0.025em;
     margin: 0 0 18px;
@@ -297,64 +254,89 @@ h2 {
 }
 .anchor:hover::after, .anchor:focus-visible::after { opacity: 1; }
 @media (hover: none) { .anchor::after { opacity: 0.5; } }
-h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin: 0 0 10px; line-height: 1.25; }
+h3 { font-size: 21px; letter-spacing: -0.01em; color: var(--text-strong); margin: 0 0 10px; line-height: 1.25; }
 .section-head p { color: var(--muted); font-size: 19px; margin: 0; }
 
-/* Story intro */
+/* Story band */
+.story-band {
+    background: var(--chrome);
+    border-block: 1px solid var(--border);
+    padding: 68px 0;
+}
+.story-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr);
+    gap: 56px;
+    align-items: center;
+}
 .story {
-    max-width: 760px;
-    margin: 0 auto;
-    text-align: center;
-    font-size: clamp(20px, 2.6vw, 26px);
+    margin: 0;
+    padding-left: 24px;
+    border-left: 3px solid var(--red);
+    font-size: clamp(19px, 2.2vw, 24px);
     line-height: 1.5;
     color: var(--muted);
     letter-spacing: -0.01em;
 }
-.story + .story { margin-top: 28px; }
 .story strong { color: var(--text-strong); font-weight: 600; }
+.replaces-label {
+    font-family: var(--mono);
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--faint);
+    margin: 0 0 14px;
+}
+.tool-chips {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.tool-chips li {
+    font-family: var(--mono);
+    font-size: 14px;
+    color: var(--text-strong);
+    background: var(--code);
+    border: 1px solid var(--border-strong);
+    padding: 6px 12px;
+    border-radius: 7px;
+}
 
 /* ---------- Feature showcases ---------- */
 
+.features-section { padding: 24px 0 40px; }
 .showcase {
     display: grid;
     grid-template-columns: 5fr 7fr;
     gap: 64px;
     align-items: center;
-    margin-bottom: 140px;
+    padding: 76px 0;
+    border-bottom: 1px solid var(--border);
 }
-.showcase:last-child { margin-bottom: 0; }
+.showcase:last-child { border-bottom: 0; }
 .showcase.reverse { grid-template-columns: 7fr 5fr; }
 .showcase.reverse .showcase-text { order: 2; }
 .showcase-text p { color: var(--muted); margin: 0 0 22px; }
 .showcase-text .kicker { margin-bottom: 10px; }
-.showcase-text h2 { font-size: clamp(28px, 3.4vw, 40px); }
-.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 12px; }
-.checks li { position: relative; padding-left: 32px; color: var(--text); }
+.showcase-text h2 { font-size: clamp(28px, 3.4vw, 38px); }
+.checks { list-style: none; padding: 0; margin: 0; display: grid; gap: 11px; }
+.checks li { position: relative; padding-left: 20px; color: var(--text); }
 .checks li::before {
-    content: "";
+    content: "›";
     position: absolute;
-    left: 0;
-    top: 3px;
-    width: 20px;
-    height: 20px;
-    border-radius: 6px;
-    background:
-        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2393c5fd' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M5 12l5 5L20 7'/%3E%3C/svg%3E") center / 12px no-repeat,
-        rgb(37 99 235 / 0.18);
-    border: 1px solid rgb(59 130 246 / 0.35);
+    left: 2px;
+    top: -1px;
+    color: var(--red-bright);
+    font-weight: 700;
+    font-size: 19px;
+    line-height: 1.4;
 }
 .showcase-media { position: relative; }
 .showcase-media .shot.crop { aspect-ratio: 4 / 3.3; overflow: hidden; }
 .showcase-media .shot.crop img { height: 100%; object-fit: cover; object-position: top left; }
-.media-glow {
-    position: absolute;
-    inset: 10% 5%;
-    background: radial-gradient(closest-side, rgb(37 99 235 / 0.28), transparent);
-    filter: blur(40px);
-    z-index: -1;
-}
-.media-glow.red { background: radial-gradient(closest-side, rgb(221 23 25 / 0.22), transparent); }
-.media-glow.green { background: radial-gradient(closest-side, rgb(52 211 153 / 0.16), transparent); }
 
 /* Two screenshots stacked over each other for the vault and access token showcases. */
 .stack { position: relative; padding-bottom: 18%; }
@@ -396,6 +378,10 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 
 /* ---------- Connection diagram ---------- */
 
+.connect-band {
+    background: var(--chrome);
+    border-block: 1px solid var(--border);
+}
 .connect {
     display: grid;
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
@@ -407,7 +393,7 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
     padding: 22px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: linear-gradient(180deg, var(--surface), var(--chrome));
+    background: var(--surface);
 }
 .net-scroll { overflow-x: auto; }
 .net-hint { display: none; margin: 10px 0 0; color: var(--faint); font-size: 13px; text-align: center; }
@@ -432,7 +418,7 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
     padding: 20px 22px;
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    background: linear-gradient(180deg, var(--surface), var(--chrome));
+    background: var(--surface);
     transition: border-color 0.15s;
     outline: none;
 }
@@ -478,29 +464,27 @@ h3 { font-size: 22px; letter-spacing: -0.01em; color: var(--text-strong); margin
 .card p { color: var(--muted); margin: 0; font-size: 16px; }
 /* Long commands in card text must wrap, or they widen the grid column past the screen. */
 .card code { white-space: normal; overflow-wrap: anywhere; }
-.card h3 { font-size: 18px; }
+.card-head {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 10px;
+}
+.card-head h3 { font-size: 18px; margin: 0; }
 .icon {
-    width: 42px;
-    height: 42px;
-    border-radius: 11px;
+    flex: none;
+    width: 20px;
+    height: 20px;
     display: grid;
     place-items: center;
-    margin-bottom: 18px;
-    background: rgb(37 99 235 / 0.12);
-    border: 1px solid rgb(59 130 246 / 0.28);
-    color: var(--blue-pale);
+    color: var(--red-soft);
 }
-.icon svg { width: 21px; height: 21px; }
-.icon.red { background: rgb(221 23 25 / 0.12); border-color: rgb(248 113 113 / 0.3); color: #fca5a5; }
-.icon.green { background: rgb(52 211 153 / 0.1); border-color: rgb(52 211 153 / 0.28); color: #6ee7b7; }
-.icon.amber { background: rgb(251 191 36 / 0.1); border-color: rgb(251 191 36 / 0.28); color: #fcd34d; }
+.icon svg { width: 20px; height: 20px; }
 
 /* ---------- Install ---------- */
 
 .install {
-    background:
-        radial-gradient(60% 80% at 50% 0%, rgb(37 99 235 / 0.12), transparent 70%),
-        var(--chrome);
+    background: var(--chrome);
     border-block: 1px solid var(--border);
 }
 .install-box { max-width: 820px; margin: 0 auto; }
@@ -599,23 +583,13 @@ footer p { margin: 6px 0; }
 }
 .lightbox figcaption { text-align: center; color: var(--muted); margin-top: 12px; font-size: 15px; }
 
-/* ---------- Reveal on scroll ---------- */
-
-.reveal { opacity: 0; transform: translateY(26px); transition: opacity 0.8s ease, transform 0.8s cubic-bezier(.2,.7,.2,1); }
-.reveal.in { opacity: 1; transform: none; }
-
-@media (prefers-reduced-motion: reduce) {
-    html { scroll-behavior: auto; }
-    .reveal { opacity: 1; transform: none; transition: none; }
-    .hero-logo { animation: none; }
-    .hero-shot .window { transform: none; transition: none; }
-}
-
 /* ---------- Responsive ---------- */
 
 @media (max-width: 960px) {
-    section { padding: 80px 0; }
-    .showcase, .showcase.reverse { grid-template-columns: 1fr; gap: 36px; margin-bottom: 100px; }
+    section { padding: 72px 0; }
+    .story-band { padding: 52px 0; }
+    .story-grid { grid-template-columns: 1fr; gap: 32px; }
+    .showcase, .showcase.reverse { grid-template-columns: 1fr; gap: 36px; padding: 56px 0; }
     .showcase.reverse .showcase-text { order: 0; }
     .connect { grid-template-columns: minmax(0, 1fr); gap: 28px; }
     .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -626,10 +600,8 @@ footer p { margin: 6px 0; }
     .net-diagram svg { min-width: 560px; }
     .net-hint { display: block; }
     .hero { padding-top: 48px; }
-    .hero-logo { width: 88px; height: 88px; }
+    .hero-logo { width: 80px; height: 80px; }
     .hero-shot { margin-top: 44px; }
-    .hero-shot .window { transform: none; }
-    .window-bar .url { display: none; }
     .grid { grid-template-columns: minmax(0, 1fr); }
     .stack { padding-bottom: 30%; }
     .stack .back { width: 92%; }
@@ -655,8 +627,11 @@ footer p { margin: 6px 0; }
 
 <nav class="nav" id="nav">
     <div class="container">
-        <a class="brand" href="#top"><img src="logo.svg" alt="" width="34" height="34">Redoor</a>
+        <a class="brand" href="#top"><img src="logo.svg" alt="" width="32" height="32">Redoor</a>
         <div class="nav-links">
+            <a class="nav-jump" href="#features">Features</a>
+            <a class="nav-jump" href="#connect">Networking</a>
+            <a class="nav-jump" href="#install">Install</a>
             <a href="https://github.com/esamattis/redoor/tree/main/docs">Docs</a>
             <a href="https://github.com/esamattis/redoor/blob/main/CHANGELOG.md">Changelog</a>
             <a class="gh" href="https://github.com/esamattis/redoor" aria-label="GitHub"><svg aria-hidden="true"><use href="#i-github"/></svg><span class="gh-label">GitHub</span></a>
@@ -665,11 +640,10 @@ footer p { margin: 6px 0; }
 </nav>
 
 <header class="hero" id="top">
-    <div class="hero-glow"></div>
     <div class="container">
-        <img class="hero-logo" src="logo.svg" alt="Redoor logo" width="112" height="112">
-        <div class="eyebrow"><span class="dot"></span>Free and open source</div>
-        <h1>One door to <span class="grad">all your devices</span></h1>
+        <img class="hero-logo" src="logo.svg" alt="Redoor logo" width="92" height="92">
+        <p class="hero-meta"><span class="prompt">&gt;</span>free &amp; open source · rust · single binary</p>
+        <h1>One door to all your devices</h1>
         <p class="lead">A web based file browser, editor, Git viewer and terminal that puts your servers, laptops and phones behind a single interface.</p>
         <div class="hero-actions">
             <a class="btn btn-primary" href="#install"><svg><use href="#i-download"/></svg>Install Redoor</a>
@@ -688,7 +662,6 @@ footer p { margin: 6px 0; }
         </div>
         <div class="hero-shot" id="hero-shot">
             <div class="window">
-                <div class="window-bar"><i></i><i></i><i></i><span class="url">redoor.example.com</span></div>
                 <button class="shot" type="button" data-full="screenshots/filebrowser.webp" data-caption="File browser with open files, device list and a persistent terminal">
                     <img src="screenshots/filebrowser.webp" alt="Redoor file browser listing a directory, with open files on the left, the device list on the right and a terminal at the bottom" width="1600" height="1596">
                 </button>
@@ -697,24 +670,36 @@ footer p { margin: 6px 0; }
     </div>
 </header>
 
-<section>
+<section class="story-band">
     <div class="container">
-        <p class="story reveal">
-            Today you work on many devices: <strong>servers, laptops, phones</strong>. You need to manage files on all of them and move files between them.
-            Redoor <strong>combines them behind one interface</strong>, reached over a direct SSH connection or by a small Redoor Agent that dials in to your Redoor Server.
-        </p>
-        <p class="story reveal">
-            Depending on how you work, it might replace tools like <strong>tmux, ssh, vim, nano, terminal apps, scp, rsync and filezilla</strong> for you.
-        </p>
+        <div class="story-grid">
+            <p class="story">
+                Today you work on many devices: <strong>servers, laptops, phones</strong>. You need to manage files on all of them and move files between them.
+                Redoor <strong>combines them behind one interface</strong>, reached over a direct SSH connection or by a small Redoor Agent that dials in to your Redoor Server.
+            </p>
+            <div>
+                <p class="replaces-label">Depending on how you work, it can replace</p>
+                <ul class="tool-chips">
+                    <li>tmux</li>
+                    <li>ssh</li>
+                    <li>vim</li>
+                    <li>nano</li>
+                    <li>terminal apps</li>
+                    <li>scp</li>
+                    <li>rsync</li>
+                    <li>filezilla</li>
+                </ul>
+            </div>
+        </div>
     </div>
 </section>
 
-<section id="features" style="padding-top: 20px">
+<section class="features-section" id="features">
     <div class="container">
 
         <div class="showcase" id="files">
-            <div class="showcase-text reveal">
-                <span class="kicker">01 / Files</span>
+            <div class="showcase-text">
+                <span class="kicker">Files</span>
                 <h2><a class="anchor" href="#files">Browse every device like it’s local</a></h2>
                 <p>Every connected device shows up in the sidebar with its bookmarks. Jump between machines without opening a single SSH session by hand.</p>
                 <ul class="checks">
@@ -724,8 +709,7 @@ footer p { margin: 6px 0; }
                     <li>Transfers are streamed with minimal memory use and resume after a dropped connection</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow"></div>
+            <div class="showcase-media">
                 <div class="window">
                     <button class="shot crop" type="button" data-full="screenshots/filebrowser.webp" data-caption="File browser">
                         <img src="screenshots/filebrowser.webp" alt="File browser listing the crates directory of a project" loading="lazy" width="1600" height="1596">
@@ -735,8 +719,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase reverse" id="search">
-            <div class="showcase-text reveal">
-                <span class="kicker">02 / Search</span>
+            <div class="showcase-text">
+                <span class="kicker">Search</span>
                 <h2><a class="anchor" href="#search">Find anything, on any device</a></h2>
                 <p>Search a device by file path or by file contents. The search runs on the device itself using the same libraries as ripgrep, so even large trees answer quickly.</p>
                 <ul class="checks">
@@ -746,8 +730,7 @@ footer p { margin: 6px 0; }
                     <li>Matches shown with context lines, one click to open the file</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow"></div>
+            <div class="showcase-media">
                 <div class="window">
                     <button class="shot" type="button" data-full="screenshots/search.webp" data-caption="Content search with surrounding context lines">
                         <img src="screenshots/search.webp" alt="Search device dialog showing content search results with context lines" loading="lazy" width="1250" height="1054">
@@ -757,8 +740,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase" id="editor">
-            <div class="showcase-text reveal">
-                <span class="kicker">03 / Editor</span>
+            <div class="showcase-text">
+                <span class="kicker">Editor</span>
                 <h2><a class="anchor" href="#editor">A text editor, right in the browser</a></h2>
                 <p>Open any file on any device in a real code editor and save it straight back. No local copy, no sync step.</p>
                 <ul class="checks">
@@ -768,8 +751,7 @@ footer p { margin: 6px 0; }
                     <li>Keep many files open at once, from different devices, and switch between them from the sidebar</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow red"></div>
+            <div class="showcase-media">
                 <div class="window">
                     <button class="shot" type="button" data-full="screenshots/editor.webp" data-caption="Editor with the context menu open, and open files from several devices in the sidebar">
                         <img src="screenshots/editor.webp" alt="Editor showing Rust code in Vim visual mode with a context menu, and open files from several devices listed in the sidebar" loading="lazy" width="1600" height="1469">
@@ -779,8 +761,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase reverse" id="terminal">
-            <div class="showcase-text reveal">
-                <span class="kicker">04 / Terminal</span>
+            <div class="showcase-text">
+                <span class="kicker">Terminal</span>
                 <h2><a class="anchor" href="#terminal">Terminals that outlive your browser session</a></h2>
                 <p>Open a shell on any device from anywhere in the app. Sessions keep running on the device when you close the browser, so you can pick up where you left off from your laptop or your phone.</p>
                 <ul class="checks">
@@ -790,8 +772,7 @@ footer p { margin: 6px 0; }
                     <li>Powered by <a href="https://ghostty.org/">libghostty</a>, so full-screen apps like btop and vim just work</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow green"></div>
+            <div class="showcase-media">
                 <div class="window">
                     <button class="shot" type="button" data-full="screenshots/terminal.webp" data-caption="Terminal sessions on several devices, running btop">
                         <img src="screenshots/terminal.webp" alt="Terminal drawer with sessions on several devices, running btop" loading="lazy" width="1600" height="1142">
@@ -801,8 +782,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase" id="systemd">
-            <div class="showcase-text reveal">
-                <span class="kicker">05 / Systemd</span>
+            <div class="showcase-text">
+                <span class="kicker">Systemd</span>
                 <h2><a class="anchor" href="#systemd">Services and timers without the shell</a></h2>
                 <p>Check why a unit failed, restart it after editing its file and follow its log, all in the browser. Redoor drives the standard <code>systemctl</code> and <code>journalctl</code> tools on Linux devices running systemd.</p>
                 <ul class="checks">
@@ -812,8 +793,7 @@ footer p { margin: 6px 0; }
                     <li>Offers the daemon-reload after you save a unit file, and manages user linger</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow"></div>
+            <div class="showcase-media">
                 <div class="stack wide">
                     <div class="window back">
                         <button class="shot" type="button" data-full="screenshots/systemd_unit.webp" data-caption="A unit file's Systemd tab with its status, controls and live journal">
@@ -830,8 +810,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase reverse" id="git">
-            <div class="showcase-text reveal">
-                <span class="kicker">06 / Git</span>
+            <div class="showcase-text">
+                <span class="kicker">Git</span>
                 <h2><a class="anchor" href="#git">Read your history, not just your files</a></h2>
                 <p>Redoor understands Git repositories on every device. Step through commits, review diffs, and browse the whole tree as it was at any point in time.</p>
                 <ul class="checks">
@@ -841,8 +821,7 @@ footer p { margin: 6px 0; }
                     <li>Previous and next commit navigation</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow green"></div>
+            <div class="showcase-media">
                 <div class="window">
                     <button class="shot crop" type="button" data-full="screenshots/diff2.webp" data-caption="Git history viewer showing a commit diff">
                         <img src="screenshots/diff2.webp" alt="Git history viewer showing a commit message and its diff" loading="lazy" width="1600" height="1646">
@@ -852,8 +831,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase" id="vault">
-            <div class="showcase-text reveal">
-                <span class="kicker">07 / SSH keys &amp; vault</span>
+            <div class="showcase-text">
+                <span class="kicker">SSH keys &amp; vault</span>
                 <h2><a class="anchor" href="#vault">SSH keys managed for you, locked by your passkey</a></h2>
                 <p>Redoor manages the SSH keys of your devices and their rotation, and keeps them in a vault encrypted with your passkey. The same encryption protects any file you choose, so devices only ever store ciphertext.</p>
                 <ul class="checks">
@@ -863,8 +842,7 @@ footer p { margin: 6px 0; }
                     <li>Multiple passkeys, optional passphrase and vault key rotation</li>
                 </ul>
             </div>
-            <div class="showcase-media reveal">
-                <div class="media-glow"></div>
+            <div class="showcase-media">
                 <div class="stack">
                     <div class="window back">
                         <button class="shot" type="button" data-full="screenshots/vault_settings.webp" data-caption="Vault settings: unlock methods, key generations and backup">
@@ -881,8 +859,8 @@ footer p { margin: 6px 0; }
         </div>
 
         <div class="showcase reverse" id="automation">
-            <div class="showcase-text reveal">
-                <span class="kicker">08 / Automation</span>
+            <div class="showcase-text">
+                <span class="kicker">Automation</span>
                 <h2><a class="anchor" href="#automation">Let your AI agents in, with scoped keys</a></h2>
                 <p>A stateless MCP endpoint and a remote CLI give scripts and AI agents access to all your devices at once. Every token is limited to the permissions and devices you pick.</p>
                 <ul class="checks">
@@ -892,15 +870,13 @@ footer p { margin: 6px 0; }
                     <li>Per-device scopes, expiry and one click rotation</li>
                 </ul>
             </div>
-            <div class="showcase-media cli-media reveal">
-                <div class="media-glow"></div>
+            <div class="showcase-media cli-media">
                 <div class="window">
                     <button class="shot" type="button" data-full="screenshots/access_tokens.webp" data-caption="Access tokens with scoped permissions">
                         <img src="screenshots/access_tokens.webp" alt="Access tokens page showing a token with read, write, delete, run commands and manage agents permissions" loading="lazy" width="1400" height="1142">
                     </button>
                 </div>
                 <div class="terminal">
-                    <div class="window-bar"><i></i><i></i><i></i></div>
 <pre><span class="t-prompt">$ </span><span class="t-cmd">redoor remote</span> devices
 <span class="t-dim">devbox        connected</span>
 <span class="t-dim">macbook       connected</span>
@@ -915,13 +891,13 @@ footer p { margin: 6px 0; }
     </div>
 </section>
 
-<section id="connect" style="padding-top: 40px">
+<section class="connect-band" id="connect">
     <div class="container">
-        <div class="section-head reveal">
+        <div class="section-head">
             <h2><a class="anchor" href="#connect">One server. Any network.</a></h2>
             <p>Run the server once, then attach devices in whichever way their network allows.</p>
         </div>
-        <div class="connect reveal">
+        <div class="connect">
             <div class="net-diagram">
                 <div class="net-scroll">
                 <svg viewBox="0 0 760 420" role="img" aria-label="Network diagram: Linux desktop, Termux and a macOS laptop connect to the redoor server over http/ws. The server reaches Linux Server 1 over ssh. The macOS laptop reaches a firewalled Linux server through an ssh relay, while the server cannot reach it directly.">
@@ -971,42 +947,54 @@ footer p { margin: 6px 0; }
     </div>
 </section>
 
-<section id="more" style="padding-top: 40px">
+<section id="more">
     <div class="container">
-        <div class="section-head reveal">
+        <div class="section-head">
             <span class="kicker">And more</span>
             <h2><a class="anchor" href="#more">Built for running on anything</a></h2>
             <p>Redoor is written in Rust. That means one static binary with no runtime to install, a small memory footprint, and async I/O that stays responsive during big transfers, from a beefy server to a phone in your pocket.</p>
         </div>
-        <div class="grid reveal">
+        <div class="grid">
             <div class="card">
-                <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg></div>
-                <h3>Trash, not oblivion</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14"/><path d="M10 11v5M14 11v5"/></svg></div>
+                    <h3>Trash, not oblivion</h3>
+                </div>
                 <p>Deleted files go to a per-device trash first, so a slip of the finger can be restored from the UI.</p>
             </div>
             <div class="card">
-                <div class="icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="8" height="12" rx="1.5"/><rect x="14" y="8" width="8" height="12" rx="1.5"/><path d="M10 10h4M12 8l2 2-2 2"/></svg></div>
-                <h3>Device to device</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="4" width="8" height="12" rx="1.5"/><rect x="14" y="8" width="8" height="12" rx="1.5"/><path d="M10 10h4M12 8l2 2-2 2"/></svg></div>
+                    <h3>Device to device</h3>
+                </div>
                 <p>Copy and move files directly between your devices without downloading them to your browser first.</p>
             </div>
             <div class="card">
-                <div class="icon amber"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
-                <h3>Flexible login</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg></div>
+                    <h3>Flexible login</h3>
+                </div>
                 <p>Static credentials, PAM system users, or OIDC single sign-on with Pocket ID, Keycloak and friends.</p>
             </div>
             <div class="card">
-                <div class="icon red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
-                <h3>Single static binary</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg></div>
+                    <h3>Single static binary</h3>
+                </div>
                 <p>Server, UI, agent and relay ship as one <code>redoor</code> binary. Copy it anywhere and run.</p>
             </div>
             <div class="card">
-                <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div>
-                <h3>One click updates</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg></div>
+                    <h3>One click updates</h3>
+                </div>
                 <p>Hit Update in the web UI, or run <code>redoor upgrade</code> to replace the binary and restart its services in place. Agents the server starts over SSH are brought to the server's version automatically when they connect.</p>
             </div>
             <div class="card">
-                <div class="icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
-                <h3>Systemd &amp; launchd</h3>
+                <div class="card-head">
+                    <div class="icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg></div>
+                    <h3>Systemd &amp; launchd</h3>
+                </div>
                 <p><code>redoor server systemd install --start</code> writes and enables the service for you, with or without root.</p>
             </div>
         </div>
@@ -1015,12 +1003,12 @@ footer p { margin: 6px 0; }
 
 <section class="install" id="install">
     <div class="container">
-        <div class="section-head reveal">
+        <div class="section-head">
             <span class="kicker">Get started</span>
             <h2><a class="anchor" href="#install">Up and running in a minute</a></h2>
             <p>For Linux, macOS and Termux on Android.</p>
         </div>
-        <div class="install-box reveal">
+        <div class="install-box">
             <div class="tabs" role="tablist" aria-label="Install method">
                 <button class="tab" role="tab" type="button" aria-selected="true" aria-controls="p-script" id="t-script">Install script</button>
                 <button class="tab" role="tab" type="button" aria-selected="false" aria-controls="p-docker" id="t-docker" tabindex="-1">Docker</button>
@@ -1067,29 +1055,6 @@ footer p { margin: 6px 0; }
 </dialog>
 
 <script>
-// Give the sticky nav a border only once the page has scrolled, so the hero stays seamless.
-const nav = document.getElementById("nav");
-const onScroll = () => nav.classList.toggle("scrolled", window.scrollY > 8);
-onScroll();
-window.addEventListener("scroll", onScroll, { passive: true });
-
-// Fade sections in as they enter the viewport.
-const revealObserver = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-        if (entry.isIntersecting) {
-            entry.target.classList.add("in");
-            revealObserver.unobserve(entry.target);
-        }
-    }
-}, { rootMargin: "0px 0px -8% 0px", threshold: 0.08 });
-document.querySelectorAll(".reveal").forEach((el) => revealObserver.observe(el));
-
-// Straighten the tilted hero screenshot as it scrolls into full view.
-const heroShot = document.getElementById("hero-shot");
-new IntersectionObserver(([entry]) => {
-    heroShot.classList.toggle("flat", entry.intersectionRatio > 0.45);
-}, { threshold: [0, 0.45, 1] }).observe(heroShot);
-
 // Open screenshots full size in a lightbox.
 const lightbox = document.getElementById("lightbox");
 const lbImg = lightbox.querySelector("img");
