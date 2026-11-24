@@ -2,13 +2,21 @@ import * as React from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { getRouteApi } from "@tanstack/react-router";
 import { useAtomValue, useSetAtom } from "jotai";
-import { HardDrive, LoaderCircle, Play, Power } from "lucide-react";
+import {
+    HardDrive,
+    LoaderCircle,
+    Play,
+    Power,
+    ShieldAlert,
+} from "lucide-react";
 
 import type { Agent } from "#ui/api-client";
 import { agentStartStatesAtom } from "#ui/agent-start-state";
 import { Button } from "#ui/components/button";
 import { ConfirmationDialog } from "#ui/components/confirmation-dialog";
 import { FoldingSection } from "#ui/components/folding-section";
+import { SshHostKeyRepinDialog } from "#ui/components/ssh-host-key-repin-dialog";
+import { Toast } from "#ui/components/toast";
 import { Tooltip } from "#ui/components/tooltip";
 import { queryKeys } from "#ui/queries";
 import { cn } from "#ui/utils/cn";
@@ -107,7 +115,12 @@ export function AgentLifecycle(props: {
                 <p className="mt-2 text-sm text-slate-500">
                     {formatAgentRecency(props.agent, now)}
                 </p>
-                <AgentLifecycleMessages agent={props.agent} className="mt-4" />
+                <AgentLifecycleMessages
+                    key={props.agent.id}
+                    agent={props.agent}
+                    preserveDestination={props.preserveDestination}
+                    className="mt-4"
+                />
                 <div className="mt-6 flex justify-center gap-3">
                     <AgentPowerControls
                         agent={props.agent}
@@ -120,6 +133,20 @@ export function AgentLifecycle(props: {
 }
 
 /**
+ * Recognizes the server's pinned host key mismatch diagnostic, so the lifecycle view can
+ * offer the re-pin dialog right beside the failure instead of sending the user to settings.
+ */
+export function isHostKeyChangeIssue(
+    issue: string | null | undefined,
+): boolean {
+    return (
+        issue !== null &&
+        issue !== undefined &&
+        issue.startsWith("SSH host key changed.")
+    );
+}
+
+/**
  * Explains what the device is doing while it is not connected: the start steps while it
  * connects, otherwise what the operator can do, followed by the supervisor's diagnostic,
  * the last failed start attempt and the last start request failure. Kept apart from the
@@ -128,17 +155,105 @@ export function AgentLifecycle(props: {
  */
 export function AgentLifecycleMessages(props: {
     agent: Agent;
+    preserveDestination?: boolean;
     className?: string;
 }) {
+    const queryClient = useQueryClient();
+    const { api, vault } = rootRouteApi.useRouteContext();
     const phase = useAgentLifecyclePhase(props.agent);
     const startStates = useAtomValue(agentStartStatesAtom);
+    const setStartStates = useSetAtom(agentStartStatesAtom);
     const startError = startStates[props.agent.id]?.error ?? null;
     const now = useNow(100);
     const steps = props.agent.provisioningStatus;
     const lastStep = steps.at(-1);
 
+    const [isRepinOpen, setIsRepinOpen] = React.useState(false);
+
+    const [repinFeedback, setRepinFeedback] = React.useState<string | null>(
+        null,
+    );
+
+    const [pinnedAttemptKey, setPinnedAttemptKey] = React.useState<
+        string | null
+    >(null);
+
+    const [pinnedIssue, setPinnedIssue] = React.useState<string | null>(null);
+
+    // Clear the live-issue dismissal as soon as that issue clears or changes, so a later
+    // recurrence with identical text is not suppressed while the page stays mounted.
+    if (pinnedIssue !== null && props.agent.connectionIssue !== pinnedIssue) {
+        setPinnedIssue(null);
+    }
+
     const lastFailedAttempt =
         phase === "connected" ? null : props.agent.lastFailedAttempt;
+
+    const retryAfterPinMutation = useMutation({
+        mutationFn: () => retryAgentStart({ agent: props.agent, api, vault }),
+        onMutate: () => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: true,
+                    error: null,
+                    autoRedirect:
+                        props.preserveDestination !== true &&
+                        (states[props.agent.id]?.autoRedirect ?? true),
+                },
+            }));
+        },
+        onSuccess: () =>
+            queryClient.invalidateQueries({
+                queryKey: queryKeys.agents(),
+                exact: true,
+            }),
+        onError: (error) => {
+            setStartStates((states) => ({
+                ...states,
+                [props.agent.id]: {
+                    starting: true,
+                    error: vaultErrorMessage(error, "Failed to start agent"),
+                    autoRedirect:
+                        props.preserveDestination !== true &&
+                        (states[props.agent.id]?.autoRedirect ?? true),
+                },
+            }));
+        },
+    });
+
+    const currentIssueIsHostKey = isHostKeyChangeIssue(
+        props.agent.connectionIssue,
+    );
+
+    const attemptIsHostKey = isHostKeyChangeIssue(lastFailedAttempt?.error);
+
+    const attemptKey =
+        attemptIsHostKey && lastFailedAttempt !== null
+            ? `attempt:${lastFailedAttempt.at}:${lastFailedAttempt.error}`
+            : null;
+
+    const hasUnpinnedDifferentIssue =
+        currentIssueIsHostKey &&
+        (phase === "stopping" ||
+            props.agent.connectionIssue !== lastFailedAttempt?.error) &&
+        props.agent.connectionIssue !== pinnedIssue;
+
+    const hasUnpinnedAttempt =
+        attemptKey !== null && attemptKey !== pinnedAttemptKey;
+
+    const hasUnpinnedStandaloneIssue =
+        attemptKey === null &&
+        currentIssueIsHostKey &&
+        props.agent.connectionIssue !== pinnedIssue;
+
+    const showHostKeyRepin =
+        phase !== "connected" &&
+        props.agent.managed &&
+        props.agent.sshTarget !== null &&
+        (hasUnpinnedDifferentIssue ||
+            hasUnpinnedAttempt ||
+            hasUnpinnedStandaloneIssue);
 
     return (
         <div className={cn("space-y-4", props.className)}>
@@ -154,6 +269,36 @@ export function AgentLifecycleMessages(props: {
                     messages={steps}
                     nowMs={phase === "connecting" ? now : lastStep.at}
                 />
+            ) : null}
+            {showHostKeyRepin ? (
+                <div className="flex flex-col gap-3 rounded-lg border border-amber-800 bg-amber-950/30 p-3 text-left text-sm text-amber-200 @xl:flex-row @xl:items-center @xl:justify-between">
+                    <div className="flex min-w-0 flex-1 items-start gap-2.5">
+                        <ShieldAlert
+                            className="mt-0.5 h-4 w-4 shrink-0 text-amber-400"
+                            aria-hidden="true"
+                        />
+                        <div className="min-w-0">
+                            <p className="font-medium text-amber-100">
+                                SSH host key changed
+                            </p>
+                            <p className="mt-0.5 text-amber-300/90">
+                                Verify the new fingerprint and re-pin it if this
+                                change is expected.
+                            </p>
+                        </div>
+                    </div>
+                    <Button
+                        type="button"
+                        variant="warning"
+                        size="sm"
+                        tooltipClassName="shrink-0"
+                        tooltip="Inspect the device's current host key and trust it if the change is expected"
+                        onClick={() => setIsRepinOpen(true)}
+                    >
+                        <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+                        Re-pin host key
+                    </Button>
+                </div>
             ) : null}
             {/* The failed attempt's error is shown with its steps below. */}
             {props.agent.connectionIssue &&
@@ -175,6 +320,42 @@ export function AgentLifecycleMessages(props: {
                 >
                     {startError}
                 </p>
+            ) : null}
+            <SshHostKeyRepinDialog
+                isOpen={isRepinOpen}
+                agentId={props.agent.id}
+                deviceName={props.agent.name}
+                onClose={() => setIsRepinOpen(false)}
+                onPinned={(fingerprint) => {
+                    setIsRepinOpen(false);
+
+                    if (attemptKey !== null) {
+                        setPinnedAttemptKey(attemptKey);
+                    }
+
+                    if (
+                        currentIssueIsHostKey &&
+                        props.agent.connectionIssue !== null
+                    ) {
+                        setPinnedIssue(props.agent.connectionIssue);
+                    }
+
+                    if (phase === "connecting") {
+                        setRepinFeedback(
+                            `Pinned the new host key ${fingerprint} for ${props.agent.name}. Retrying connection…`,
+                        );
+                        retryAfterPinMutation.mutate();
+                    } else {
+                        setRepinFeedback(
+                            `Pinned the new host key ${fingerprint} for ${props.agent.name}.`,
+                        );
+                    }
+                }}
+            />
+            {repinFeedback !== null ? (
+                <Toast tone="success" onDismiss={() => setRepinFeedback(null)}>
+                    {repinFeedback}
+                </Toast>
             ) : null}
         </div>
     );

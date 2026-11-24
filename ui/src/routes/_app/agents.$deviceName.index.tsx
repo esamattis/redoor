@@ -132,7 +132,10 @@ function AgentConnectionCard(props: { agent: Agent }) {
             }
         >
             <div aria-live="polite">
-                <AgentLifecycleMessages agent={props.agent} />
+                <AgentLifecycleMessages
+                    key={props.agent.id}
+                    agent={props.agent}
+                />
             </div>
         </DetailCard>
     );
