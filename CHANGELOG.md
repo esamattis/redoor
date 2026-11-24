@@ -1,5 +1,14 @@
 # Changelog
 
+## v2.19.1
+
+_2026-11-24_
+
+### Fixes
+
+- Terminal typing is more responsive: the terminal uses the DOM renderer again instead of WebGL, avoids layout reflows on every render, and the bottom drawer no longer blurs the live terminal behind it.
+- Reverse-forwarded SSH agent tunnels now use `IPQoS=af21` when the SSH config leaves IPQoS at OpenSSH's default, so terminal keystrokes are no longer queued as background bulk traffic on Wi-Fi.
+
 ## v2.19.0
 
 _2026-11-24_
