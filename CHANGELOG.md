@@ -1,5 +1,24 @@
 # Changelog
 
+## v2.19.0
+
+_2026-11-24_
+
+### Breaking changes
+
+- Server state is now isolated per user under `<data_dir>/users/<dir>/` instead of shared globally across all signed-in accounts. Each user owns their own devices, managed agent definitions, agent registration token, vault, SSH keys, access tokens, terminals, transfers, MCP access, and live UI events. To upgrade an existing server, open the Redoor UI after installing this release, sign in as the account that should inherit the existing data, and confirm the one-time migration screen. Normal API, MCP, and agent traffic returns `503` until migration is confirmed, and standalone agents reconnect automatically afterward. If `config.toml` is mounted read-only, remove legacy top-level `agent_token` and `[[agents]]` entries manually after migrating.
+
+### Features
+
+- When a managed SSH device presents a changed host key while connecting, the connecting view and device home now let you inspect the pinned and presented fingerprints, re-pin the new key in place, and immediately retry startup without opening the device edit page.
+
+### Fixes
+
+- Upgraded the `url` crate to 2.5.9 to fix a stack overflow (`RUSTSEC-2026-0592`) on nested `blob:` URLs.
+- Tightened same-origin redirect validation on the login page to reject backslash and protocol-relative paths.
+- Disconnecting while a streamed agent command is still being set up now cancels the agent's work instead of letting it run until timeout.
+- Processes now flush their final log lines to stdout and the log file before exiting, so shutdown reasons are no longer dropped.
+
 ## v2.18.1
 
 _2026-11-20_
