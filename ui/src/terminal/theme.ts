@@ -67,8 +67,8 @@ export function applyTerminalTheme(
         host.style.setProperty(property, value);
     }
 
-    // The WebGL renderer caches the palette and re-reads it only through setThemeColors, so
-    // the CSS variables alone would leave the canvas in the previous theme's colors.
+    // Keeps GhosttyCore's palette in sync with the CSS variables so terminal color queries
+    // (OSC 10/11, mode 2031) answer with the active theme's colors.
     terminal?.setThemeColors(toThemeColors(theme));
 }
 

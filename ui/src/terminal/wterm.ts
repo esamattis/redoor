@@ -161,10 +161,6 @@ export async function createWTerm(
     const terminal = new modules.WTerm(options.host, {
         autoResize: true,
         cursorBlink: true,
-        // Paints live output on a shared WebGL2 canvas so full-screen redraws skip DOM
-        // layout; wterm keeps the DOM text for selection and find, and falls back to DOM
-        // rendering without WebGL2.
-        renderer: "webgl",
         core,
         onData: options.onData,
         onResize: options.onResize,
