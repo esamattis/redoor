@@ -1,17 +1,58 @@
 diff --git a/dist/input.js b/dist/input.js
-index 78a86ffd96eec03222777f40e9db6a0561684c3f..21c8dbb0bb5f9230069000fe478a538c539aff89 100644
+index 78a86ffd96eec03222777f40e9db6a0561684c3f..c52b208f5433b98e9a97ef5d80cc606f7072009b 100644
 --- a/dist/input.js
 +++ b/dist/input.js
-@@ -224,8 +224,10 @@ export class InputHandler {
+@@ -224,8 +224,51 @@ export class InputHandler {
          this.textarea.focus({ preventScroll: true });
      }
      syncInputPosition() {
 -        if (this.composing || this.touchPrimary)
 -            this.positionTextarea();
-+        // Follow the cursor on every render, not only while composing: the absolutely
-+        // positioned textarea otherwise stays where the last focus put it and holds the
-+        // scroll height past a buffer that shrank (vercel-labs/wterm#245).
-+        this.positionTextarea();
++        // Keep the hidden textarea aligned with the cursor without forcing a layout read
++        // (querySelector + getBoundingClientRect) on every render: it must follow a shrinking
++        // buffer so it never stretches scroll height (vercel-labs/wterm#245) and stay at the
++        // prompt row so native text insertion (Option/AltGr/dead keys) does not scroll into
++        // scrollback.
++        const bridge = this.getBridge();
++        const cellSize = this.getCellSize();
++        const s = this.textarea.style;
++        if (!bridge || !cellSize || cellSize.rowHeight <= 0 || !bridge.getCursor) {
++            if (s.left !== "0px")
++                s.left = "0px";
++            if (s.top !== "0px")
++                s.top = "0px";
++            if (this.composing) {
++                const width = `${Math.max(1, this.compositionWidth)}px`;
++                const height = `${cellSize?.rowHeight ?? 17}px`;
++                if (s.width !== width)
++                    s.width = width;
++                if (s.height !== height)
++                    s.height = height;
++            }
++            return;
++        }
++        const { charWidth, rowHeight } = cellSize;
++        const cursor = bridge.getCursor();
++        const row = Math.max(0, Math.min(cursor.row, bridge.getRows() - 1));
++        const scrollback = bridge.getScrollbackCount?.() ?? 0;
++        const top = `${(scrollback + row) * rowHeight}px`;
++        let left = "0px";
++        if ((this.composing || this.touchPrimary) && charWidth > 0) {
++            const col = Math.max(0, Math.min(cursor.col, bridge.getCols() - 1));
++            left = `${col * charWidth}px`;
++            if (this.composing) {
++                const width = `${Math.min((bridge.getCols() - col) * charWidth, Math.max(charWidth, this.compositionWidth))}px`;
++                const height = `${rowHeight}px`;
++                if (s.width !== width)
++                    s.width = width;
++                if (s.height !== height)
++                    s.height = height;
++            }
++        }
++        if (s.left !== left)
++            s.left = left;
++        if (s.top !== top)
++            s.top = top;
      }
      destroy() {
          this.accessibility.destroy();
