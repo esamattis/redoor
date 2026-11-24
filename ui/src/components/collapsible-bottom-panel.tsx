@@ -3,6 +3,7 @@ import { ChevronDown, ChevronUp } from "lucide-react";
 import type { BottomDrawerTabId } from "#ui/bottom-drawer-state";
 import { Tab, TabList } from "#ui/components/tabs";
 import { IconButton } from "#ui/components/icon-button";
+import { cn } from "#ui/utils/cn";
 import { useIsContentBelow } from "#ui/utils/use-breakpoint";
 
 /** Describes one mounted pane and its compact representation in the drawer tab strip. */
@@ -57,6 +58,13 @@ export function TabbedBottomDrawer(props: {
         props.onCollapsedChange(false);
     };
 
+    // The terminal pane paints an opaque surface on every keystroke and cursor blink;
+    // keeping backdrop-blur on the enclosing drawer would re-blur the underlying page on
+    // every frame even though nothing shows through it.
+    const useOpaqueSurface =
+        props.isFullWindow ||
+        (!props.isCollapsed && props.activeTab === "terminal");
+
     return (
         <div
             data-collapsed={props.isCollapsed}
@@ -76,11 +84,16 @@ export function TabbedBottomDrawer(props: {
                 }
                 aria-label="Application tools"
                 data-overlay-bottom-panel=""
-                className={`absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden bg-surface/95 shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] backdrop-blur supports-backdrop-filter:bg-surface/80 motion-reduce:transition-none ${props.isFullWindow ? "" : "border-t border-slate-800"} ${
-                    resize.isResizing || props.isFullWindow
-                        ? ""
-                        : "transition-[height] duration-150 ease-out"
-                }`}
+                className={cn(
+                    "absolute inset-x-0 bottom-0 flex min-h-0 flex-col overflow-hidden shadow-[0_-10px_30px_-12px_rgba(0,0,0,0.6)] motion-reduce:transition-none",
+                    useOpaqueSurface
+                        ? "bg-surface"
+                        : "bg-surface/95 backdrop-blur supports-backdrop-filter:bg-surface/80",
+                    !props.isFullWindow && "border-t border-slate-800",
+                    !resize.isResizing &&
+                        !props.isFullWindow &&
+                        "transition-[height] duration-150 ease-out",
+                )}
             >
                 {isContentVisible && !props.isFullWindow ? (
                     <div
