@@ -52,4 +52,10 @@ export const test = base.extend({
     storageState: async ({ playwright }, use) => {
         await use(await signedInStorageState(playwright.request));
     },
+    page: async ({ page }, use) => {
+        await use(page);
+        // Unroute intercepted handlers on teardown without hanging on gated routes or
+        // surfacing closing-page errors from in-flight route fetches.
+        await page.unrouteAll({ behavior: "ignoreErrors" });
+    },
 });
