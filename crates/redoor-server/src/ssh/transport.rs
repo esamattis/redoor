@@ -28,6 +28,26 @@ const SSH_CONNECT_TIMEOUT_SECONDS: u32 = 15;
 /// notices the exit and builds a new tunnel.
 const SSH_SERVER_ALIVE_INTERVAL_SECONDS: u32 = 10;
 
+/// DSCP class applied to reverse-forwarded SSH agent tunnels when OpenSSH would otherwise
+/// classify `-T` sessions as non-interactive bulk traffic (`cs1` / `throughput`).
+///
+/// Matches OpenSSH's own interactive default (`af21`), avoiding Wi-Fi WMM background-queue
+/// starvation without using `ef` (Voice), which can disable frame aggregation for bulk transfers.
+const SSH_TUNNEL_IPQOS: &str = "af21";
+
+/// Whether `value` is OpenSSH's built-in two-class `IPQoS` default (upstream `af21 cs1`, or
+/// Debian/Ubuntu's `lowdelay throughput`), which demotes `-T` tunnel sessions to bulk traffic.
+fn is_default_ssh_ipqos(value: &str) -> bool {
+    value.eq_ignore_ascii_case("af21 cs1") || value.eq_ignore_ascii_case("lowdelay throughput")
+}
+
+/// Whether `ssh -G` left `IPQoS` unset or at OpenSSH's built-in two-class default, so a
+/// reverse-forwarded tunnel can safely set `IPQoS=af21` without overriding an explicit user
+/// setting such as `IPQoS cs0` or `IPQoS none`.
+fn should_use_tunnel_ipqos(dump: &SshConfigDump) -> bool {
+    dump.get("ipqos").is_none_or(is_default_ssh_ipqos)
+}
+
 /// Where a reverse forward listens on the remote host.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum ForwardListen {
@@ -997,13 +1017,30 @@ async fn build_ssh_command(
     options: &SshRunOptions,
 ) -> Result<SshCommand, std::io::Error> {
     // Managed-key connections ignore the config files, so their routing is resolved first,
-    // and they authenticate through their own in-process ssh-agent.
-    let (routing, ssh_agent) = match &host.auth {
-        AuthPolicy::ManagedKey { key } => (
-            Some(ResolvedRouting::resolve(host).await?),
-            Some(SshAgentSocket::bind(key.clone()).await?),
-        ),
-        _ => (None, None),
+    // and they authenticate through their own in-process ssh-agent. Non-managed-key tunnels
+    // also inspect `ssh -G` so `-o IPQoS=af21` never overrides an explicit user `IPQoS`.
+    let remote_command = remote_shell_command(command, args, options);
+    let is_tunnel = !options.reverse_forwards.is_empty();
+    let (routing, ssh_agent, use_tunnel_ipqos) = match &host.auth {
+        AuthPolicy::ManagedKey { key } => {
+            let dump = SshConfigDump::load(host, Some(&remote_command)).await?;
+            let use_tunnel_ipqos = is_tunnel && should_use_tunnel_ipqos(&dump);
+            (
+                Some(ResolvedRouting::from_dump(&dump)),
+                Some(SshAgentSocket::bind(key.clone()).await?),
+                use_tunnel_ipqos,
+            )
+        }
+        _ => {
+            let use_tunnel_ipqos = if is_tunnel {
+                SshConfigDump::load(host, Some(&remote_command))
+                    .await
+                    .is_ok_and(|dump| should_use_tunnel_ipqos(&dump))
+            } else {
+                false
+            };
+            (None, None, use_tunnel_ipqos)
+        }
     };
     let ssh_agent_paths = ssh_agent.as_ref().map(|socket| SshAgentPaths {
         socket: socket.socket_path(),
@@ -1017,6 +1054,7 @@ async fn build_ssh_command(
         command,
         args,
         options,
+        use_tunnel_ipqos,
     ));
     if let AuthPolicy::Password(password) = &host.auth {
         apply_askpass_env(&mut ssh, password)?;
@@ -1192,6 +1230,7 @@ fn ssh_argv(
     command: &str,
     args: &[&str],
     options: &SshRunOptions,
+    use_tunnel_ipqos: bool,
 ) -> Vec<String> {
     let mut argv = Vec::new();
     let mut ssh_options = OptionWriter::default();
@@ -1204,7 +1243,11 @@ fn ssh_argv(
             argv.push("-F".to_string());
             argv.push("none".to_string());
             for (name, value) in &routing.options {
-                ssh_options.set(name, value);
+                if use_tunnel_ipqos && name == "IPQoS" {
+                    ssh_options.set("IPQoS", SSH_TUNNEL_IPQOS);
+                } else {
+                    ssh_options.set(name, value);
+                }
             }
         }
         None => {
@@ -1239,6 +1282,9 @@ fn ssh_argv(
     if !routing_sets("ServerAliveInterval") {
         ssh_options.set("ServerAliveInterval", SSH_SERVER_ALIVE_INTERVAL_SECONDS);
     }
+    if use_tunnel_ipqos && !routing_sets("IPQoS") {
+        ssh_options.set("IPQoS", SSH_TUNNEL_IPQOS);
+    }
     host.host_key.write_options(&mut ssh_options);
     host.auth.write_options(&mut ssh_options, ssh_agent);
     if options
@@ -1259,6 +1305,15 @@ fn ssh_argv(
     // A session-supplied target beginning with '-' must never become a local SSH option.
     argv.push("--".to_string());
     argv.push(host.target.clone());
+    argv.push(remote_shell_command(command, args, options));
+    argv
+}
+
+/// Builds the POSIX shell command string passed as the final SSH argument.
+///
+/// Contains only environment variable names (never secret values) so it is safe to reuse for
+/// `ssh -G` config resolution as well as the real SSH invocation.
+fn remote_shell_command(command: &str, args: &[&str], options: &SshRunOptions) -> String {
     let mut script = String::new();
     if let Some((name, _)) = &options.secret_env {
         // Keep the secret out of both the local ssh argv and the remote agent argv,
@@ -1276,8 +1331,7 @@ fn ssh_argv(
     script.push_str(command);
     // The login shell only sees quoted words, so fish or tcsh users get the same POSIX
     // script and arguments with spaces or quotes are not split or interpreted.
-    argv.push(super::shell::sh_command(&script, args));
-    argv
+    super::shell::sh_command(&script, args)
 }
 
 /// Connection routing resolved from the user's ssh config for a managed-key connection,
@@ -1310,23 +1364,18 @@ const ROUTING_SAFELIST: &[(&str, &str)] = &[
 ];
 
 impl ResolvedRouting {
-    /// Runs `ssh -G` for the host. It evaluates `~/.ssh/config` and the system config,
-    /// including `Host` and `Match` blocks, and prints the effective options without
-    /// connecting.
-    async fn resolve(host: &SshHost) -> Result<Self, std::io::Error> {
-        let output = SshConfigDump::load(host).await?;
-        Ok(Self::from_dump(&output))
-    }
-
     /// Picks the safelisted options from an `ssh -G` dump and turns a `ProxyJump` into an
     /// explicit `ProxyCommand`.
     fn from_dump(dump: &SshConfigDump) -> Self {
         let mut options = Vec::new();
         for (key, name) in ROUTING_SAFELIST {
-            // `ssh -G` prints `none` for unset options and `0` for a disabled
+            // `ssh -G` prints `none` for unset options (except `IPQoS`, where `none`
+            // explicitly disables DSCP marking) and `0` for a disabled
             // `ServerAliveInterval`; both leave the option to redoor's default.
-            let unset =
-                |value: &&str| *value == "none" || (*key == "serveraliveinterval" && *value == "0");
+            let unset = |value: &&str| {
+                (*value == "none" && *key != "ipqos")
+                    || (*key == "serveraliveinterval" && *value == "0")
+            };
             if let Some(value) = dump.get(key).filter(|value| !unset(value)) {
                 options.push((name.to_string(), value.to_string()));
             }
@@ -1387,18 +1436,41 @@ pub(super) struct SshConfigDump {
 }
 
 impl SshConfigDump {
-    /// Runs `ssh -G` with the host's username and port overrides.
-    pub(super) async fn load(host: &SshHost) -> Result<Self, std::io::Error> {
-        let mut ssh = Command::new("ssh");
-        ssh.arg("-G");
+    /// Builds the `ssh -G` argv for `host`. When a remote command is supplied, passes `-T`,
+    /// `-o RemoteCommand=none`, and that command so OpenSSH 10+ `Match sessiontype exec` and
+    /// `Match command` blocks evaluate identically to the real invocation without failing on
+    /// hosts whose SSH config defines `RemoteCommand`.
+    fn argv(host: &SshHost, remote_command: Option<&str>) -> Vec<String> {
+        let mut args = vec!["-G".to_string()];
+        if remote_command.is_some() {
+            args.push("-T".to_string());
+            args.push("-o".to_string());
+            args.push("RemoteCommand=none".to_string());
+        }
         if let Some(ref username) = host.username {
-            ssh.arg("-l").arg(username);
+            args.push("-l".to_string());
+            args.push(username.clone());
         }
         if let Some(port) = host.ssh_port {
-            ssh.arg("-p").arg(port.to_string());
+            args.push("-p".to_string());
+            args.push(port.to_string());
         }
         // Config resolution has the same option-injection boundary as a real connection.
-        ssh.arg("--").arg(&host.target);
+        args.push("--".to_string());
+        args.push(host.target.clone());
+        if let Some(command) = remote_command {
+            args.push(command.to_string());
+        }
+        args
+    }
+
+    /// Runs `ssh -G` with the host's username and port overrides and optional remote command.
+    pub(super) async fn load(
+        host: &SshHost,
+        remote_command: Option<&str>,
+    ) -> Result<Self, std::io::Error> {
+        let mut ssh = Command::new("ssh");
+        ssh.args(Self::argv(host, remote_command));
         ssh.stdin(Stdio::null());
         ssh.kill_on_drop(true);
         let output = ssh.output().await?;
@@ -1682,6 +1754,7 @@ mod tests {
             r#"printf '%s|' "$REDOOR_AGENT_TOKEN" "$REDOOR_MANAGED_AGENT" "$@""#,
             &["My Laptop", "it's $(touch pwned)"],
             &options,
+            false,
         );
         let remote_command = argv.last().unwrap();
         // csh-family login shells reject newlines inside quotes.
@@ -2026,6 +2099,7 @@ proxyjump bob@j1:2201,carol@j2
                     "true",
                     &[],
                     &super::SshRunOptions::default(),
+                    false,
                 );
                 let isolated = !matches!(host_key, super::HostKeyPolicy::TrustOnFirstUse);
                 let expected: Vec<(&str, Option<&str>)> = vec![
@@ -2173,6 +2247,7 @@ connecttimeout 37
             "true",
             &[],
             &super::SshRunOptions::default(),
+            false,
         );
         // A slow route may need the user's timeout rather than redoor's 15-second fallback.
         assert_eq!(option_values(&argv, "ConnectTimeout"), ["37"]);
@@ -2193,6 +2268,7 @@ connecttimeout 37
                 "true",
                 &[],
                 &super::SshRunOptions::default(),
+                false,
             )
         };
         let configured = argv_for(
@@ -2222,6 +2298,7 @@ serveraliveinterval 0
             "true",
             &[],
             &super::SshRunOptions::default(),
+            false,
         );
         let end = argv.iter().position(|arg| arg == "--").unwrap();
         // The option parser must stop before it encounters an untrusted target.
@@ -2397,5 +2474,97 @@ Host key verification failed.";
         assert!(argv.iter().any(|arg| arg == "StreamLocalBindUnlink=yes"));
         // A failed forward still ends the session instead of leaving it without a tunnel.
         assert!(argv.iter().any(|arg| arg == "ExitOnForwardFailure=yes"));
+    }
+
+    /// Reverse-forwarded tunnels use `af21` instead of OpenSSH's non-interactive bulk default
+    /// so `-T` does not demote interactive terminal traffic to background QoS, while explicit
+    /// user `IPQoS` settings and non-tunnel commands are preserved for both managed-key and
+    /// password/host-key sessions.
+    #[test]
+    fn tunnel_uses_interactive_ipqos_unless_user_configured_one() {
+        let tunnel_options =
+            super::SshRunOptions::default().with_reverse_forward(3000, "localhost", 7666);
+        let managed_argv = |dump_text: &str, options: &super::SshRunOptions| {
+            let dump = super::SshConfigDump::parse(dump_text);
+            let routing = super::ResolvedRouting::from_dump(&dump);
+            let use_tunnel_ipqos =
+                !options.reverse_forwards.is_empty() && super::should_use_tunnel_ipqos(&dump);
+            let host = super::SshHost::new("device".to_string())
+                .auth(super::AuthPolicy::ManagedKey { key: test_key() });
+            super::ssh_argv(
+                &host,
+                Some(&routing),
+                None,
+                "true",
+                &[],
+                options,
+                use_tunnel_ipqos,
+            )
+        };
+        let plain_argv = |dump_text: &str, options: &super::SshRunOptions| {
+            let dump = super::SshConfigDump::parse(dump_text);
+            let use_tunnel_ipqos =
+                !options.reverse_forwards.is_empty() && super::should_use_tunnel_ipqos(&dump);
+            let host = super::SshHost::new("device".to_string());
+            super::ssh_argv(&host, None, None, "true", &[], options, use_tunnel_ipqos)
+        };
+
+        // Both upstream OpenSSH (`af21 cs1`) and Ubuntu (`lowdelay throughput`) defaults are
+        // upgraded to single-value `af21` on managed-key and plain tunnels alike.
+        for default in ["af21 cs1", "lowdelay throughput"] {
+            let dump = format!("hostname example.test\nipqos {default}\n");
+            assert_eq!(
+                option_values(&managed_argv(&dump, &tunnel_options), "IPQoS"),
+                ["af21"]
+            );
+            assert_eq!(
+                option_values(&plain_argv(&dump, &tunnel_options), "IPQoS"),
+                ["af21"]
+            );
+        }
+
+        // Explicit user IPQoS settings (including `cs0` and `none`) are preserved on managed-key
+        // tunnels and left unset on the CLI for plain tunnels so `~/.ssh/config` wins.
+        for custom in ["cs0", "cs0 cs0", "none none", "none"] {
+            let dump = format!("hostname example.test\nipqos {custom}\n");
+            assert_eq!(
+                option_values(&managed_argv(&dump, &tunnel_options), "IPQoS"),
+                [custom]
+            );
+            assert!(
+                option_values(&plain_argv(&dump, &tunnel_options), "IPQoS").is_empty(),
+                "plain tunnel must not override explicit user IPQoS '{custom}'"
+            );
+        }
+
+        // Non-tunnel commands (probes, uploads) keep OpenSSH's normal IPQoS.
+        let probe = managed_argv(
+            "hostname example.test\nipqos af21 cs1\n",
+            &super::SshRunOptions::default(),
+        );
+        assert_eq!(option_values(&probe, "IPQoS"), ["af21 cs1"]);
+
+        // `ssh -G` for a command passes `-T`, `-o RemoteCommand=none`, and the real remote
+        // command so OpenSSH 10+ `Match sessiontype exec` / `Match command` blocks match
+        // without failing on hosts whose SSH config defines `RemoteCommand`.
+        let host = super::SshHost::new("device".to_string());
+        let dump_argv = super::SshConfigDump::argv(&host, Some("sh -c 'redoor-agent'"));
+        assert_eq!(
+            dump_argv,
+            [
+                "-G",
+                "-T",
+                "-o",
+                "RemoteCommand=none",
+                "--",
+                "device",
+                "sh -c 'redoor-agent'"
+            ]
+        );
+        // Host-only config lookups omit the remote command and RemoteCommand override.
+        assert_eq!(
+            super::SshConfigDump::argv(&host, None),
+            ["-G", "--", "device"]
+        );
     }
 }

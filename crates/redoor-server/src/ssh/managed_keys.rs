@@ -791,7 +791,7 @@ impl ManagedKeyDevice {
     /// Whether the server user's known_hosts files already trust `key` for this host.
     /// Informational only, so any failure just means "not known".
     async fn previously_trusted(&self, key: &HostKey) -> bool {
-        let Ok(dump) = SshConfigDump::load(&SshHost::for_config(&self.config)).await else {
+        let Ok(dump) = SshConfigDump::load(&SshHost::for_config(&self.config), None).await else {
             return false;
         };
         let Some(host_name) = dump
